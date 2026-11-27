@@ -21,6 +21,7 @@ function setupGatedRepo() {
   fs.mkdirSync(scriptsTarget, { recursive: true });
   for (const file of [
     "landing-turn.cjs",
+    "landing-record.cjs",
     "bounded-git.cjs",
     "lease-queue.cjs",
     "git-history.cjs",

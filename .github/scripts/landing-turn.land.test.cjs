@@ -7,6 +7,7 @@ const path = require("node:path");
 const {
   LEASE_REF,
   LEASE_RESERVE_MS,
+  RECORD_ENV,
   TURN_ENV,
   TURN_MAX_MS,
   checkBudgetSeconds,
@@ -42,6 +43,17 @@ function watchPushRecord(git, origin, lander) {
     { mode: 0o755 },
   );
   return () => JSON.parse(fs.readFileSync(seen, "utf8"));
+}
+
+/** The landing records in the lander's Git folder, oldest first; `file` names the current or the rotated one. */
+function recordsOf(lander, file = "landings.jsonl") {
+  const records = path.join(lander, ".git", "t3-landing", file);
+  if (!fs.existsSync(records)) return [];
+  return fs
+    .readFileSync(records, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 test("a second lander cannot push to main while the first holds the turn, and the first checks under it only against a main that moved during its wait", async () => {
@@ -389,6 +401,7 @@ test("the CLI continues with main's copy of the script after it rebases before t
       "process-tree.cjs",
       "git-history.cjs",
       "release-notes.cjs",
+      "landing-record.cjs",
     ]) {
       fs.copyFileSync(path.join(__dirname, file), path.join(scripts, file));
     }
@@ -401,7 +414,8 @@ test("the CLI continues with main's copy of the script after it rebases before t
     commit(lander, "change.txt");
     fs.writeFileSync(
       path.join(scripts, "landing-turn.cjs"),
-      'console.log(`main\'s copy: ${process.argv.slice(2).join(" ")}`);\n',
+      'console.log(`main\'s copy: ${process.argv.slice(2).join(" ")}`);\n' +
+        "console.log(Object.keys(JSON.parse(process.env.T3_LANDING_RECORD).phases).join());\n",
     );
     git(seed, "commit", "-qam", "main's script");
     git(seed, "push", "-q", "origin", "HEAD:main");
@@ -427,7 +441,7 @@ test("the CLI continues with main's copy of the script after it rebases before t
       [run.status, run.stdout],
       [
         0,
-        `main's copy: land-rebased --base ${git(seed, "rev-parse", "HEAD")} --head ${git(lander, "rev-parse", "HEAD")}\n`,
+        `main's copy: land-rebased --base ${git(seed, "rev-parse", "HEAD")} --head ${git(lander, "rev-parse", "HEAD")}\nrebase\n`,
       ],
       run.stderr,
     );
@@ -1052,6 +1066,204 @@ test("a landing lists other worktrees with unmerged work on the same files, and 
     assert.equal(reports.length, 1);
     assert.match(reports[0], /overlapping[\s\S]*shared\.txt/);
     assert.doesNotMatch(reports[0], /unrelated/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a landing records one line with its status, commits and the time each phase took", async () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    git(dir, "switch", "-q", "-c", "topic/recorded");
+    commit(dir, "recorded.txt");
+    const base = git(dir, "rev-parse", "HEAD~1");
+    const holder = clone("holder");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    let elapsed = 0;
+
+    const result = await land({
+      cwd: dir,
+      remote: origin,
+      now: () => Date.UTC(2026, 0, 1),
+      recordClock: () => elapsed,
+      check: () => ((elapsed += 1000), true),
+      sleep: () => {
+        elapsed += 5000;
+        release({ cwd: holder, remote: origin }, held);
+      },
+    });
+
+    assert.equal(result.status, "landed");
+    // The whole record: a field added, renamed or dropped changes what landing measurements read.
+    assert.deepEqual(recordsOf(dir), [
+      {
+        schema: 1,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        branch: "topic/recorded",
+        base,
+        head: git(dir, "rev-parse", "HEAD"),
+        status: "landed",
+        stage: "under-turn",
+        durationMs: 6000,
+        phases: { preWaitCheck: 1000, waitForTurn: 5000, push: 0 },
+      },
+    ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a landing records a check that failed under the turn apart from one that failed before the wait", async () => {
+  const { root, git, origin, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "change.txt");
+    const mover = clone("mover");
+    let elapsed = 0;
+    const failing = (check) =>
+      land({ cwd: dir, remote: origin, recordClock: () => elapsed, check });
+
+    assert.equal((await failing(() => false)).status, "check-failed");
+    const underTurn = await failing((turn) => {
+      elapsed += turn === null ? 1000 : 3000;
+      if (turn !== null) return false;
+      commit(mover, "mover.txt");
+      git(mover, "push", "-q", "origin", "HEAD:main");
+      return true;
+    });
+
+    assert.equal(underTurn.status, "check-failed");
+    const records = recordsOf(dir);
+    assert.deepEqual(
+      records.map(({ status, stage, base }) => [status, stage, base]),
+      [
+        ["check-failed", "before-wait", git(mover, "rev-parse", "HEAD~1")],
+        ["check-failed", "under-turn", git(mover, "rev-parse", "HEAD")],
+      ],
+    );
+    assert.deepEqual(records[1].phases, {
+      preWaitCheck: 1000,
+      waitForTurn: 0,
+      rebase: 0,
+      underTurnCheck: 3000,
+    });
+    assert.equal(records[1].head, git(dir, "rev-parse", "HEAD"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a landing that rebases before its wait and its relaunch record one line between them, a conflict one of its own", async (t) => {
+  const { root, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "mine.txt");
+    const mover = clone("mover");
+    commit(mover, "mover.txt");
+    git(mover, "push", "-q", "origin", "HEAD:main");
+    let elapsed = 0;
+    let carried;
+
+    const rebased = await land({
+      cwd: dir,
+      remote: "origin",
+      now: () => Date.UTC(2026, 0, 1),
+      // Each reading is a second after the last.
+      recordClock: () => (elapsed += 1000),
+      check: () => assert.fail("checked"),
+      onRebased: (state) => (carried = state),
+    });
+    assert.equal(rebased.status, "rebased");
+    assert.deepEqual(recordsOf(dir), []);
+
+    // As the first process starts the relaunch: its record's state in the environment, which no check may inherit.
+    process.env[RECORD_ENV] = carried;
+    t.mock.method(console, "log", () => {});
+    const code = await main(["land-rebased", "--base", rebased.base, "--head", rebased.head], {
+      cwd: dir,
+      check: () => RECORD_ENV in process.env === false,
+    });
+
+    assert.equal(code, 0);
+    const [record, ...others] = recordsOf(dir);
+    assert.deepEqual(others, []);
+    assert.deepEqual(
+      [record.status, record.startedAt, record.base, record.head],
+      ["landed", "2026-01-01T00:00:00.000Z", rebased.base, rebased.head],
+    );
+    assert.deepEqual(Object.keys(record.phases), ["rebase", "preWaitCheck", "waitForTurn", "push"]);
+    // The first process's rebase and its three seconds, with what the relaunch took added.
+    assert.equal(record.phases.rebase, 1000);
+    assert.ok(record.durationMs >= 3000, `${record.durationMs}`);
+
+    for (const [lander, text] of [
+      [dir, "mine\n"],
+      [mover, "theirs\n"],
+    ]) {
+      git(lander, "pull", "-q", "--rebase", "origin", "main");
+      fs.writeFileSync(path.join(lander, "base.txt"), text);
+      git(lander, "commit", "-qam", text.trim());
+    }
+    git(mover, "push", "-q", "origin", "HEAD:main");
+    await assert.rejects(
+      () => land({ cwd: dir, remote: "origin", check: () => assert.fail("checked") }),
+      /git rebase failed/,
+    );
+    const conflict = recordsOf(dir).at(-1);
+    assert.deepEqual(
+      [recordsOf(dir).length, conflict.status, conflict.stage, Object.keys(conflict.phases)],
+      [2, "conflict", "before-wait", ["rebase"]],
+    );
+  } finally {
+    delete process.env[RECORD_ENV];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a record that cannot be written warns once and leaves the landing's outcome as it was", async (t) => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "change.txt");
+    // A file where the records' folder goes.
+    fs.writeFileSync(path.join(dir, ".git", "t3-landing"), "");
+    const warnings = [];
+    t.mock.method(process.stderr, "write", (chunk) => warnings.push(String(chunk)) > 0);
+
+    const failed = await land({ cwd: dir, remote: origin, check: () => false });
+    const landed = await land({ cwd: dir, remote: origin, check: () => true });
+    t.mock.restoreAll();
+
+    assert.deepEqual([failed, landed.status], [{ status: "check-failed" }, "landed"]);
+    assert.equal(git(origin, "rev-parse", "main"), git(dir, "rev-parse", "HEAD"));
+    const unrecorded = warnings.filter((line) => line.includes("could not record the landing"));
+    assert.equal(unrecorded.length, 2, warnings.join(""));
+    for (const line of unrecorded) assert.match(line, /^[^\n]+\n$/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the landing records stay bounded: a full file replaces the one before it", async () => {
+  const { root, origin, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "change.txt");
+    const folder = path.join(dir, ".git", "t3-landing");
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "landings.1.jsonl"), '{"old":0}\n');
+    fs.writeFileSync(path.join(folder, "landings.jsonl"), '{"old":1}\n'.repeat(999));
+    const fail = () => land({ cwd: dir, remote: origin, check: () => false });
+
+    await fail();
+    await fail();
+
+    const rotated = recordsOf(dir, "landings.1.jsonl");
+    assert.deepEqual(
+      [rotated.length, rotated[0], rotated.at(-1).status, recordsOf(dir).length],
+      [1000, { old: 1 }, "check-failed", 1],
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
