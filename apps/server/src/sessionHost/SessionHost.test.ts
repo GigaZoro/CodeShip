@@ -14,7 +14,9 @@ import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
-import { DETACH_REPLAY_OVERLAP_MS, DetachedStdioHandle } from "./DetachedStdioHandle.ts";
+import { compareIdentity, timeIdentity } from "../commandRunner/processIdentity.ts";
+import { readSelfProcessIdentity } from "./broker.ts";
+import { DetachedStdioHandle } from "./DetachedStdioHandle.ts";
 import {
   ensurePrivateSocketDirectory,
   resolveSessionHostSocketPath,
@@ -44,6 +46,8 @@ const controlServer = net.createServer((socket) => {
       process.stdout.write(JSON.stringify({ kind: "detached", seq: 3 }) + "\\n", () => {
         socket.write("done\\n");
       });
+    } else if (line === "longline") {
+      process.stdout.write("x".repeat(4096), () => socket.write("done\\n"));
     } else if (line === "ping") {
       socket.write("pong\\n");
     } else if (line === "half1") {
@@ -153,12 +157,18 @@ const spawnTestBroker = async (
     readonly maxBufferBytes?: number;
     readonly maxBufferFrames?: number;
     readonly childScript?: string;
+    readonly command?: string;
+    readonly args?: ReadonlyArray<string>;
+    readonly socketPath?: (dir: string) => string;
+    /** False for a broker expected to give up before it is ready. */
+    readonly awaitReady?: boolean;
   } = {},
 ): Promise<SpawnedTestBroker> => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-session-host-test-"));
   const id = NodeCrypto.randomUUID();
   const authToken = NodeCrypto.randomBytes(24).toString("hex");
-  const socketPath = resolveSessionHostSocketPath(dir, id, HOST_PLATFORM);
+  const socketPath =
+    overrides.socketPath?.(dir) ?? resolveSessionHostSocketPath(dir, id, HOST_PLATFORM);
   const configPath = NodePath.join(dir, `cfg-${id}.json`);
   const readyFilePath = NodePath.join(dir, `ready-${id}.json`);
 
@@ -167,8 +177,8 @@ const spawnTestBroker = async (
     platform: HOST_PLATFORM,
     socketPath,
     authToken,
-    command: process.execPath,
-    args: ["-e", overrides.childScript ?? MOCK_PROVIDER_SCRIPT],
+    command: overrides.command ?? process.execPath,
+    args: [...(overrides.args ?? ["-e", overrides.childScript ?? MOCK_PROVIDER_SCRIPT])],
     cwd: dir,
     env: Object.fromEntries(
       Object.entries(process.env).filter(
@@ -194,18 +204,21 @@ const spawnTestBroker = async (
   );
   const exited = NodeEvents.EventEmitter.once(broker, "close");
 
-  const readyLine = await createLineReader(broker.stdout).nextLine();
-  const readyInfo = JSON.parse(readyLine) as { sessionHostId: string };
-  assert.equal(readyInfo.sessionHostId, id);
-  assert.isTrue(NodeFS.existsSync(readyFilePath));
+  if (overrides.awaitReady !== false) {
+    const readyLine = await createLineReader(broker.stdout).nextLine();
+    const readyInfo = JSON.parse(readyLine) as { sessionHostId: string };
+    assert.equal(readyInfo.sessionHostId, id);
+    assert.isTrue(NodeFS.existsSync(readyFilePath));
+  }
 
   const cleanup = async () => {
     if (broker.exitCode === null && broker.signalCode === null) {
-      broker.kill("SIGKILL");
+      // SIGTERM lets the broker end its child; SIGKILL would leave the child running.
+      broker.kill("SIGTERM");
     }
     await exited;
     if (!isWindowsHost && NodeFS.existsSync(socketPath)) {
-      NodeFS.rmSync(socketPath, { force: true });
+      NodeFS.rmSync(socketPath, { recursive: true, force: true });
     }
     NodeFS.rmSync(dir, { recursive: true, force: true });
   };
@@ -530,29 +543,25 @@ describe("Detached session host broker (__session-host)", () => {
     }
   });
 
-  it("replays the frames of the last seconds before a detach and holds them for the taker", async () => {
+  it("replays exactly the output a detach held back, and holds it for the taker", async () => {
     const host = await spawnTestBroker();
     let childPid: number | null = null;
-    let nowMs = 0;
     try {
       const handle1 = await DetachedStdioHandle.connect({
         sessionHostId: host.id,
         socketPath: host.socketPath,
         authToken: host.authToken,
         initialAfterSeq: 0,
-        now: () => nowMs,
       });
       const stdout1 = createLineReader(handle1.stdout);
       childPid = (JSON.parse(await stdout1.nextLine()) as { pid: number }).pid;
-      const readySeq = handle1.lastAckedSeq;
+      handle1.stdin.write(`${JSON.stringify({ cmd: "echo", tag: "delivered" })}\n`);
+      assert.equal((JSON.parse(await stdout1.nextLine()) as { tag: string }).tag, "delivered");
 
-      nowMs = DETACH_REPLAY_OVERLAP_MS * 2;
-      handle1.stdin.write(`${JSON.stringify({ cmd: "echo", tag: "recent" })}\n`);
-      assert.equal((JSON.parse(await stdout1.nextLine()) as { tag: string }).tag, "recent");
-      // The echo may still be in flight to a server that dies now, so it is not settled yet.
-      nowMs += DETACH_REPLAY_OVERLAP_MS - 1;
-      const replayFromSeq = handle1.replayPointForUpdate();
-      assert.equal(replayFromSeq, readySeq);
+      const replayFromSeq = handle1.holdForDetach();
+      assert.equal(replayFromSeq, handle1.deliveredSeq);
+      // Output after the hold never reaches this reader; the next server replays it.
+      handle1.stdin.write(`${JSON.stringify({ cmd: "echo", tag: "held" })}\n`);
       await handle1.detach();
 
       const handle2 = await DetachedStdioHandle.connect({
@@ -566,7 +575,86 @@ describe("Detached session host broker (__session-host)", () => {
       assert.equal(handle2.stdout.readableLength, 0, "Output reached the taker before release");
       const stdout2 = createLineReader(handle2.stdout);
       handle2.releaseOutput();
-      assert.equal((JSON.parse(await stdout2.nextLine()) as { tag: string }).tag, "recent");
+      // The first replayed line is the held one: nothing the old reader got is repeated.
+      assert.equal((JSON.parse(await stdout2.nextLine()) as { tag: string }).tag, "held");
+
+      await handle2.terminate();
+      await host.exited;
+    } finally {
+      if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
+      await host.cleanup();
+    }
+  });
+
+  it("still detaches when the detach was asked for before the attach completed", async () => {
+    const host = await spawnTestBroker();
+    let childPid: number | null = null;
+    try {
+      const handle1 = DetachedStdioHandle.createPending({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: 0,
+      });
+      handle1.markDetachingForUpdate();
+      await handle1.detach();
+      const ownSocket = NodeNet.createConnection(host.socketPath);
+      await NodeEvents.EventEmitter.once(ownSocket, "connect");
+      await handle1.bindSocket(ownSocket, 0);
+      const detachedAtSeq = await handle1.detach();
+      // Without the detach message the broker takes this close as the server going away.
+      ownSocket.destroy();
+
+      const handle2 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: detachedAtSeq,
+      });
+      const stdout2 = createLineReader(handle2.stdout);
+      handle2.stdin.write(`${JSON.stringify({ cmd: "echo", tag: "alive" })}\n`);
+      let line: { kind: string; pid?: number; tag?: string };
+      do {
+        line = JSON.parse(await stdout2.nextLine()) as typeof line;
+      } while (line.kind !== "echo");
+      childPid = line.pid ?? null;
+      assert.equal(line.tag, "alive");
+
+      await handle2.terminate();
+      await host.exited;
+    } finally {
+      if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
+      await host.cleanup();
+    }
+  });
+
+  it("cuts a stdout line longer than the replay buffer into a frame instead of growing", async () => {
+    const host = await spawnTestBroker({ maxBufferBytes: 1_024 });
+    let childPid: number | null = null;
+    try {
+      const handle1 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: 0,
+      });
+      const ready = JSON.parse(await createLineReader(handle1.stdout).nextLine()) as {
+        pid: number;
+        controlPort: number;
+      };
+      childPid = ready.pid;
+      const seqBefore = handle1.lastAckedSeq;
+      const detachedAtSeq = await handle1.detach();
+      assert.equal(await sendControlCommand(ready.controlPort, "longline"), "done");
+
+      const handle2 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: detachedAtSeq,
+      });
+      // The unterminated 4 KiB line was framed while detached, so the replay ends past it.
+      assert.isAbove(await handle2.waitForReplayComplete(), seqBefore);
 
       await handle2.terminate();
       await host.exited;
@@ -655,6 +743,148 @@ describe("Detached session host broker (__session-host)", () => {
     } finally {
       if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
       await host.cleanup();
+    }
+  });
+});
+
+describe.skipIf(isWindowsHost)("Detached session host broker startup", () => {
+  it("starts no child when it cannot listen on its socket", async () => {
+    const marker = NodePath.join(
+      NodeOS.tmpdir(),
+      `t3-session-host-marker-${NodeCrypto.randomUUID()}`,
+    );
+    const host = await spawnTestBroker({
+      // A directory at the socket path makes listen fail.
+      socketPath: (dir) => {
+        const path = NodePath.join(dir, "taken");
+        NodeFS.mkdirSync(path);
+        return path;
+      },
+      command: "/bin/sh",
+      args: ["-c", `trap "" TERM; touch '${marker}'; sleep 1`],
+      awaitReady: false,
+    });
+    try {
+      await host.exited;
+      assert.equal(host.broker.exitCode, 2);
+      assert.isFalse(
+        NodeFS.existsSync(marker),
+        "The child ran although the broker could not serve it",
+      );
+    } finally {
+      NodeFS.rmSync(marker, { force: true });
+      await host.cleanup();
+    }
+  });
+});
+
+describe("Detached session host broker identity", () => {
+  it("records its own start time where no ps line is read", () => {
+    const identity = readSelfProcessIdentity("win32");
+    assert.isNotNull(identity);
+    const startedAtMs = Math.round(performance.timeOrigin);
+    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs)), "same");
+  });
+});
+
+describe("DetachedStdioHandle held output", () => {
+  const serveFakeBroker = async (messages: ReadonlyArray<object>) => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-session-host-fake-"));
+    const socketPath = isWindowsHost
+      ? resolveSessionHostSocketPath(dir, NodeCrypto.randomUUID(), HOST_PLATFORM)
+      : NodePath.join(dir, "fake.sock");
+    const received: Array<{ type: string }> = [];
+    const receivedWaiters: Array<() => void> = [];
+    const sockets = new Set<NodeNet.Socket>();
+    const server = NodeNet.createServer((socket) => {
+      sockets.add(socket);
+      const reader = createLineReader(socket);
+      const readNext = (): void => {
+        void reader.nextLine().then((line) => {
+          received.push(JSON.parse(line) as { type: string });
+          for (const waiter of receivedWaiters.splice(0)) waiter();
+          readNext();
+        });
+      };
+      readNext();
+      socket.write(messages.map((message) => `${JSON.stringify(message)}\n`).join(""));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    return {
+      socketPath,
+      waitForReceived: async (type: string) => {
+        while (!received.some((message) => message.type === type)) {
+          await new Promise<void>((resolve) => receivedWaiters.push(resolve));
+        }
+      },
+      close: async () => {
+        for (const socket of sockets) socket.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        NodeFS.rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  };
+  const attached = {
+    type: "attached",
+    sessionHostId: "fake",
+    brokerPid: 1,
+    brokerIdentity: null,
+    childPid: null,
+    latestSeq: 2,
+    oldestSeq: 1,
+    droppedFrames: 0,
+    exited: true,
+    exitCode: 0,
+    signal: null,
+  };
+
+  it("keeps a process that ended while detached running for its taker until release", async () => {
+    const broker = await serveFakeBroker([
+      attached,
+      { type: "frame", seq: 1, stream: "stdout", chunk: "last words\n" },
+      { type: "frame", seq: 2, stream: "exit", chunk: "", exitCode: 0, signal: null },
+      { type: "replay_complete", latestSeq: 2 },
+    ]);
+    try {
+      const handle = await DetachedStdioHandle.connect({
+        sessionHostId: "fake",
+        socketPath: broker.socketPath,
+        authToken: "token",
+        initialAfterSeq: 0,
+        holdOutput: true,
+      });
+      await handle.waitForReplayComplete();
+      assert.isFalse(handle.exited, "The exit overtook output the taker has not read");
+      const stdout = createLineReader(handle.stdout);
+      handle.releaseOutput();
+      assert.equal(await stdout.nextLine(), "last words");
+      assert.deepEqual(await handle.waitForExit(), { exitCode: 0, signal: null });
+    } finally {
+      await broker.close();
+    }
+  });
+
+  it("stops the process once it held more output than its cap", async () => {
+    const broker = await serveFakeBroker([
+      { ...attached, exited: false, exitCode: null },
+      { type: "frame", seq: 1, stream: "stdout", chunk: "0123456789abcdef\n" },
+    ]);
+    try {
+      const handle = await DetachedStdioHandle.connect({
+        sessionHostId: "fake",
+        socketPath: broker.socketPath,
+        authToken: "token",
+        initialAfterSeq: 0,
+        holdOutput: true,
+        maxHeldOutputBytes: 8,
+      });
+      assert.isNotNull(handle.info);
+      await broker.waitForReceived("terminate");
+    } finally {
+      await broker.close();
     }
   });
 });

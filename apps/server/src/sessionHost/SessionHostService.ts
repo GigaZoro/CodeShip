@@ -54,8 +54,15 @@ const BROKER_START_TIMEOUT_MS = 10_000;
 // The broker escalates to SIGKILL after its grace period; the last second covers the exit frame's trip.
 const TERMINATE_EXIT_WAIT = Duration.millis(DEFAULT_TERMINATE_GRACE_MS + KILL_CONFIRM_MS + 1_000);
 const BROKER_CONNECT_RETRY_MS = 25;
-const ACK_FLUSH_INTERVAL_MS = 500;
 const SW_HIDE = 0;
+/** A server runs a few provider processes; a listing past this is left for the next sweep. */
+const MAX_HOST_ROWS = 256;
+/**
+ * The launcher waits 5 seconds for a planned shutdown; draining the output a server already got
+ * must leave it time to detach. A host that cannot drain in time is stopped and its threads
+ * continue from their transcript instead.
+ */
+const DETACH_DRAIN_TIMEOUT = Duration.seconds(2);
 
 class SessionHostError extends Data.TaggedError("SessionHostError")<{
   readonly detail: string;
@@ -67,6 +74,7 @@ interface SessionHostRow {
   readonly provider_session_id: string;
   readonly provider_thread_id: string | null;
   readonly thread_id: string;
+  readonly thread_ids_json: string;
   readonly driver: string;
   readonly socket_path: string;
   readonly broker_pid: number | null;
@@ -83,6 +91,8 @@ export interface SessionHostRecord {
   readonly providerSessionId: string;
   readonly providerThreadId: string | null;
   readonly threadId: ThreadId;
+  /** Every thread the process served when it was detached; the spawning thread before that. */
+  readonly threadIds: ReadonlyArray<ThreadId>;
   readonly driver: SessionHostDriver;
   readonly socketPath: string;
   readonly brokerPid: number | null;
@@ -114,12 +124,25 @@ export interface SpawnSessionHostInput {
 export interface DetachedHostSummary {
   readonly id: string;
   readonly providerSessionId: string;
-  readonly threadId: ThreadId;
+  readonly threadIds: ReadonlyArray<ThreadId>;
   readonly driver: SessionHostDriver;
   readonly lastAckedSeq: number;
 }
 
-export type ProbedDetachedHost =
+/** What the session on a host's process does before the host is detached for an update. */
+export interface DetachPreparation {
+  /** Every thread the process serves; each one's run is taken over after the restart. */
+  readonly threadIds: ReadonlyArray<ThreadId>;
+  /** Completes once every event from output the session already got is persisted. */
+  readonly drain: Effect.Effect<void>;
+}
+
+export interface DetachAllForUpdateOptions {
+  /** Undefined: no session uses the process, so it is stopped rather than detached. */
+  readonly prepare?: (providerSessionId: string) => Effect.Effect<DetachPreparation | undefined>;
+}
+
+type ProbedDetachedHost =
   | {
       readonly status: "alive";
       readonly record: SessionHostRecord;
@@ -162,12 +185,14 @@ export interface SessionHostServiceShape {
     },
     SessionHostError
   >;
-  readonly probeDetachedForUpdate: () => Effect.Effect<ReadonlyArray<ProbedDetachedHost>>;
-  readonly reattachAllDetachedForUpdate: () => Effect.Effect<ReadonlyArray<ReattachedDetachedHost>>;
-  readonly listDetachedForUpdate: () => Effect.Effect<ReadonlyArray<SessionHostRecord>>;
   /**
-   * Hands a host reattached at startup to the session that takes over its process, once. Its
-   * output stays held until the taker calls releaseOutput on the handle.
+   * Reattaches every host detached for an update, then ends hosts a crashed server left
+   * running and forgets them.
+   */
+  readonly reattachAllDetachedForUpdate: () => Effect.Effect<ReadonlyArray<ReattachedDetachedHost>>;
+  /**
+   * Hands a host reattached at startup to the session that takes over its process. Its output
+   * stays held until recovery has registered every turn on it and calls releaseOutput.
    */
   readonly takeAdoptable: (providerSessionId: string) => Effect.Effect<
     Option.Option<{
@@ -175,28 +200,15 @@ export interface SessionHostServiceShape {
       readonly childProcess: ChildProcessSpawner.ChildProcessHandle;
     }>
   >;
-  readonly detachAllForUpdate: () => Effect.Effect<ReadonlyArray<DetachedHostSummary>>;
+  readonly detachAllForUpdate: (
+    options?: DetachAllForUpdateOptions,
+  ) => Effect.Effect<ReadonlyArray<DetachedHostSummary>>;
   readonly isProviderSessionDetachedForUpdate: (
     providerSessionId: string,
   ) => Effect.Effect<boolean>;
   readonly isThreadDetachedForUpdate: (threadId: ThreadId) => Effect.Effect<boolean>;
-  readonly getActiveHandleByProviderSession: (
-    providerSessionId: string,
-  ) => Effect.Effect<DetachedStdioHandle | undefined>;
-  readonly getActiveHandleByThread: (
-    threadId: ThreadId,
-  ) => Effect.Effect<DetachedStdioHandle | undefined>;
-  readonly updateProviderThreadId: (
-    providerSessionId: string,
-    providerThreadId: string,
-  ) => Effect.Effect<void>;
-  readonly markDead: (sessionHostId: string) => Effect.Effect<void>;
+  /** Ends the host's process, waits for it to exit, and forgets the host. */
   readonly terminate: (sessionHostId: string, signal?: NodeJS.Signals) => Effect.Effect<void>;
-  readonly terminateByProviderSession: (
-    providerSessionId: string,
-    signal?: NodeJS.Signals,
-  ) => Effect.Effect<void>;
-  readonly terminateByThread: (threadId: ThreadId, signal?: NodeJS.Signals) => Effect.Effect<void>;
 }
 
 export class SessionHostService extends Context.Service<
@@ -210,7 +222,6 @@ interface ActiveTrackedHost {
   readonly threadId: ThreadId;
   readonly driver: SessionHostDriver;
   readonly handle: DetachedStdioHandle;
-  readonly ackFiber: { current: Fiber.Fiber<void, never> | null };
   readonly unit: string | null;
 }
 
@@ -226,11 +237,22 @@ function rowToRecord(row: SessionHostRow): SessionHostRecord {
       brokerIdentity = row.broker_identity_json;
     }
   }
+  const threadId = ThreadId.make(row.thread_id);
+  let threadIds: ReadonlyArray<ThreadId> = [threadId];
+  try {
+    const parsed: unknown = JSON.parse(row.thread_ids_json);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      threadIds = parsed.filter((id) => typeof id === "string").map((id) => ThreadId.make(id));
+    }
+  } catch {
+    // An unreadable list leaves the spawning thread, whose run recovery then checks alone.
+  }
   return {
     id: row.id,
     providerSessionId: row.provider_session_id,
     providerThreadId: row.provider_thread_id,
-    threadId: ThreadId.make(row.thread_id),
+    threadId,
+    threadIds,
     driver: row.driver as SessionHostDriver,
     socketPath: row.socket_path,
     brokerPid: row.broker_pid,
@@ -278,7 +300,7 @@ const make = Effect.gen(function* () {
   const isExecutable = yield* HostProcess.IsExecutable;
   const hostEnv = yield* HostProcess.Environment;
   const agentScopeOption = yield* Effect.serviceOption(AgentScope);
-  const processRunnerOption = yield* Effect.serviceOption(ProcessRunner.ProcessRunner);
+  const processRunner = yield* ProcessRunner.ProcessRunner;
 
   const cliEntry = isExecutable
     ? ""
@@ -347,47 +369,33 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const persistAckSeq = (id: string, seq: number) =>
+  const updateRowStatus = (id: string, status: SessionHostStatus) =>
     nowIso().pipe(
       Effect.flatMap(
-        (updatedAt) =>
-          sql`
-            UPDATE session_hosts
-            SET last_acked_seq = MAX(last_acked_seq, ${seq}), updated_at = ${updatedAt}
-            WHERE id = ${id}
-          `,
-      ),
-      Effect.asVoid,
-      Effect.ignore({
-        log: "Error",
-        message: `Failed to persist the acked seq of session host ${id}`,
-      }),
-    );
-
-  const updateRowStatus = (id: string, status: SessionHostStatus, lastAckedSeq?: number) =>
-    nowIso().pipe(
-      Effect.flatMap((updatedAt) =>
-        lastAckedSeq === undefined
-          ? sql`
-              UPDATE session_hosts
-              SET status = ${status}, updated_at = ${updatedAt}
-              WHERE id = ${id}
-            `
-          : sql`
-              UPDATE session_hosts
-              SET status = ${status},
-                  last_acked_seq = MAX(last_acked_seq, ${lastAckedSeq}),
-                  updated_at = ${updatedAt}
-              WHERE id = ${id}
-            `,
+        (updatedAt) => sql`
+          UPDATE session_hosts
+          SET status = ${status}, updated_at = ${updatedAt}
+          WHERE id = ${id}
+        `,
       ),
       Effect.asVoid,
       Effect.ignore({ log: "Error", message: `Failed to mark session host ${id} ${status}` }),
-      Effect.andThen(status === "exited" || status === "dead" ? removeAuthToken(id) : Effect.void),
     );
 
-  // Sets the seq rather than raising it: the replay point is older than the last flushed ack.
-  const markDetachedForUpdate = (id: string, replayFromSeq: number) =>
+  /** A host whose process ended or cannot be used is forgotten with the token that drives it. */
+  const retireRow = (id: string) =>
+    sql`DELETE FROM session_hosts WHERE id = ${id}`.pipe(
+      Effect.asVoid,
+      Effect.ignore({ log: "Error", message: `Failed to forget session host ${id}` }),
+      Effect.andThen(removeAuthToken(id)),
+    );
+
+  // Sets the seq rather than raising it: the replay point can be older than the last flushed ack.
+  const markDetachedForUpdate = (
+    id: string,
+    replayFromSeq: number,
+    threadIds: ReadonlyArray<ThreadId>,
+  ) =>
     nowIso().pipe(
       Effect.flatMap(
         (updatedAt) =>
@@ -395,6 +403,7 @@ const make = Effect.gen(function* () {
             UPDATE session_hosts
             SET status = 'detached_for_update',
                 last_acked_seq = ${replayFromSeq},
+                thread_ids_json = ${JSON.stringify(threadIds)},
                 updated_at = ${updatedAt}
             WHERE id = ${id}
           `,
@@ -404,11 +413,6 @@ const make = Effect.gen(function* () {
     );
 
   const clearTrackedHost = (tracked: ActiveTrackedHost) => {
-    if (tracked.ackFiber.current !== null) {
-      const fiber = tracked.ackFiber.current;
-      tracked.ackFiber.current = null;
-      fiber.interruptUnsafe();
-    }
     if (activeById.get(tracked.id) === tracked) {
       activeById.delete(tracked.id);
     }
@@ -435,42 +439,25 @@ const make = Effect.gen(function* () {
       threadId,
       driver,
       handle,
-      ackFiber: { current: null },
       unit,
     };
     activeById.set(id, tracked);
     activeByProviderSession.set(providerSessionId, tracked);
 
+    handle.events.on("error", (error: unknown) => {
+      runFork(Effect.logError("A session host connection failed", { sessionHostId: id, error }));
+    });
     handle.events.once("exit", () => {
       // Whoever cleared the host first (terminate, a failed reattach) already wrote its status.
       if (handle.detachingForUpdate || activeById.get(id) !== tracked) return;
       clearTrackedHost(tracked);
-      runFork(updateRowStatus(id, "exited", handle.lastAckedSeq));
+      runFork(retireRow(id));
       if (unit !== null && Option.isSome(agentScopeOption)) {
         runFork(agentScopeOption.value.stop(unit).pipe(Effect.ignore));
       }
     });
 
     return tracked;
-  };
-
-  const scheduleAckFlush = (
-    tracked: ActiveTrackedHost,
-    seq: number,
-    runFork: <E>(effect: Effect.Effect<void, E>) => Fiber.Fiber<void, never>,
-  ) => {
-    if (tracked.ackFiber.current !== null) return;
-    tracked.ackFiber.current = runFork(
-      Effect.sleep(Duration.millis(ACK_FLUSH_INTERVAL_MS)).pipe(
-        Effect.andThen(
-          Effect.suspend(() => {
-            tracked.ackFiber.current = null;
-            return persistAckSeq(tracked.id, Math.max(seq, tracked.handle.lastAckedSeq));
-          }),
-        ),
-        Effect.ignoreCause,
-      ),
-    );
   };
 
   const identityOfBroker = Effect.fn("SessionHostService.identityOfBroker")(function* (
@@ -483,11 +470,8 @@ const make = Effect.gen(function* () {
       ]).pipe(Effect.option);
       return Option.isSome(read) ? linuxIdentity(read.value[0], read.value[1]) : undefined;
     }
-    if (Option.isNone(processRunnerOption)) {
-      return undefined;
-    }
     const startedAt = yield* readProcessStartedAt(pid).pipe(
-      Effect.provideService(ProcessRunner.ProcessRunner, processRunnerOption.value),
+      Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
     );
     return startedAt === undefined ? undefined : timeIdentity(startedAt);
   });
@@ -514,15 +498,21 @@ const make = Effect.gen(function* () {
     if (probe.state === "gone") {
       return { alive: false, reason: `broker_gone:${probe.code}` };
     }
+    if (record.brokerIdentity === null) {
+      return { alive: false, reason: "missing_broker_identity" };
+    }
     if (record.brokerIdentity === ENDED_IDENTITY) {
       return { alive: false, reason: "broker_ended" };
     }
-    if (record.brokerIdentity !== null) {
-      const current = yield* identityOfBroker(record.brokerPid);
-      const verdict = compareIdentity(record.brokerIdentity, current);
-      if (verdict === "other") {
-        return { alive: false, reason: "broker_pid_reused" };
-      }
+    // The token goes only to the process that was given it: a pid that cannot be told apart
+    // from a later holder counts as gone.
+    const current = yield* identityOfBroker(record.brokerPid);
+    const verdict = compareIdentity(record.brokerIdentity, current);
+    if (verdict === "other") {
+      return { alive: false, reason: "broker_pid_reused" };
+    }
+    if (verdict === "unknown") {
+      return { alive: false, reason: "broker_identity_unknown" };
     }
     return { alive: true };
   });
@@ -531,7 +521,10 @@ const make = Effect.gen(function* () {
     function* (
       configPath: string,
       cwd: string,
-    ): Effect.fn.Return<{ readonly unit: string | null }, SessionHostError> {
+    ): Effect.fn.Return<
+      { readonly unit: string | null; readonly pid: number | null },
+      SessionHostError
+    > {
       const brokerArgs = [...(cliEntry ? [cliEntry] : []), "__session-host", configPath];
       const brokerEnv: Record<string, string> = {
         ...sanitizeEnv(hostEnv),
@@ -550,9 +543,9 @@ const make = Effect.gen(function* () {
             })
           : { command: runtime, args: brokerArgs, unit: undefined };
 
-        yield* Effect.tryPromise({
+        const pid = yield* Effect.tryPromise({
           try: () =>
-            new Promise<void>((resolve, reject) => {
+            new Promise<number | null>((resolve, reject) => {
               const child = NodeChildProcess.spawn(scoped.command, [...scoped.args], {
                 cwd,
                 env: brokerEnv,
@@ -566,7 +559,7 @@ const make = Effect.gen(function* () {
               const onSpawn = () => {
                 child.removeListener("error", onError);
                 child.unref();
-                resolve();
+                resolve(child.pid ?? null);
               };
               child.once("error", onError);
               child.once("spawn", onSpawn);
@@ -578,11 +571,11 @@ const make = Effect.gen(function* () {
             }),
         });
 
-        return { unit: scoped.unit ?? null };
+        return { unit: scoped.unit ?? null, pid };
       }
 
       // On Windows, prefer Win32_Process.Create so the broker lives outside any desktop Job Object.
-      if (Option.isSome(processRunnerOption)) {
+      {
         const commandLine = [runtime, ...brokerArgs].map(quoteWindowsArg).join(" ");
         const envBase64 = Buffer.from(
           Object.entries(brokerEnv)
@@ -590,7 +583,7 @@ const make = Effect.gen(function* () {
             .join("\0"),
           "utf8",
         ).toString("base64");
-        const created = yield* processRunnerOption.value
+        const created = yield* processRunner
           .run({
             command: "powershell.exe",
             args: [
@@ -605,13 +598,13 @@ const make = Effect.gen(function* () {
           })
           .pipe(Effect.option);
         if (Option.isSome(created) && created.value.code === 0) {
-          return { unit: null };
+          return { unit: null, pid: null };
         }
       }
 
-      yield* Effect.tryPromise({
+      const pid = yield* Effect.tryPromise({
         try: () =>
-          new Promise<void>((resolve, reject) => {
+          new Promise<number | null>((resolve, reject) => {
             const child = NodeChildProcess.spawn(runtime, brokerArgs, {
               cwd,
               env: brokerEnv,
@@ -623,7 +616,7 @@ const make = Effect.gen(function* () {
             const onSpawn = () => {
               child.removeListener("error", onError);
               child.unref();
-              resolve();
+              resolve(child.pid ?? null);
             };
             child.once("error", onError);
             child.once("spawn", onSpawn);
@@ -634,9 +627,26 @@ const make = Effect.gen(function* () {
             cause,
           }),
       });
-      return { unit: null };
+      return { unit: null, pid };
     },
   );
+
+  /** Stops a broker no client got to attach to; it would otherwise wait out its orphan TTL. */
+  const stopUnattachedBroker = (launched: {
+    readonly unit: string | null;
+    readonly pid: number | null;
+  }) =>
+    launched.unit !== null && Option.isSome(agentScopeOption)
+      ? agentScopeOption.value.stop(launched.unit).pipe(Effect.ignore({ log: "Error" }))
+      : Effect.sync(() => {
+          if (launched.pid === null) return;
+          try {
+            // The broker ends its child on SIGTERM; it may already be gone.
+            process.kill(launched.pid, "SIGTERM");
+          } catch {
+            // ESRCH: nothing left to stop.
+          }
+        });
 
   const connectWithRetry = Effect.fn("SessionHostService.connectWithRetry")(function* (
     handle: DetachedStdioHandle,
@@ -692,9 +702,10 @@ const make = Effect.gen(function* () {
             provider_session_id,
             provider_thread_id,
             thread_id,
+            thread_ids_json,
             driver,
             socket_path,
-              broker_pid,
+            broker_pid,
             broker_identity_json,
             child_pid,
             last_acked_seq,
@@ -706,6 +717,7 @@ const make = Effect.gen(function* () {
             ${input.providerSessionId},
             ${input.providerThreadId},
             ${input.threadId},
+            ${JSON.stringify([input.threadId])},
             ${input.driver},
             ${input.socketPath},
             ${input.brokerPid},
@@ -757,15 +769,6 @@ const make = Effect.gen(function* () {
   const runForkInService = yield* FiberSet.makeRuntime<never, void, never>();
   const runFork = <E>(effect: Effect.Effect<void, E>): Fiber.Fiber<void, never> =>
     runForkInService(effect.pipe(Effect.ignoreCause));
-  // Added after the fiber set, so it runs first: acks still waiting for their flush are written
-  // while the database is open, and a reattach after the restart replays from them.
-  yield* Effect.addFinalizer(() =>
-    Effect.forEach(
-      [...activeById.values()].filter((tracked) => tracked.ackFiber.current !== null),
-      (tracked) => persistAckSeq(tracked.id, tracked.handle.lastAckedSeq),
-      { discard: true },
-    ),
-  );
 
   const spawn: SessionHostServiceShape["spawn"] = Effect.fn("SessionHostService.spawn")(function* (
     input: SpawnSessionHostInput,
@@ -782,26 +785,21 @@ const make = Effect.gen(function* () {
     yield* storeAuthToken(id, authToken).pipe(
       Effect.tapError(() => Effect.sync(() => safeUnlinkSync(configPath))),
     );
-    const { unit } = yield* launchDetachedBrokerProcess(configPath, input.cwd).pipe(
+    const launched = yield* launchDetachedBrokerProcess(configPath, input.cwd).pipe(
       Effect.tapError(() =>
         Effect.sync(() => safeUnlinkSync(configPath)).pipe(Effect.andThen(removeAuthToken(id))),
       ),
     );
+    const { unit } = launched;
 
-    let trackedRef: ActiveTrackedHost | undefined;
     const handle = DetachedStdioHandle.createPending({
       sessionHostId: id,
       socketPath,
       authToken,
       initialAfterSeq: 0,
       ...(input.onStderr !== undefined ? { onStderr: input.onStderr } : {}),
-      onAckSeq: (seq) => {
-        if (trackedRef !== undefined) {
-          scheduleAckFlush(trackedRef, seq, runFork);
-        }
-      },
     });
-    trackedRef = trackHandle(
+    const tracked = trackHandle(
       id,
       input.providerSessionId,
       input.threadId,
@@ -814,10 +812,13 @@ const make = Effect.gen(function* () {
     const attached = yield* connectWithRetry(handle, readyFilePath, 0).pipe(
       Effect.tapError(() =>
         Effect.sync(() => {
-          clearTrackedHost(trackedRef!);
+          clearTrackedHost(tracked);
           safeUnlinkSync(configPath);
           safeUnlinkSync(readyFilePath);
-        }).pipe(Effect.andThen(removeAuthToken(id))),
+        }).pipe(
+          Effect.andThen(stopUnattachedBroker(launched)),
+          Effect.andThen(removeAuthToken(id)),
+        ),
       ),
     );
 
@@ -831,7 +832,7 @@ const make = Effect.gen(function* () {
       brokerPid: attached.brokerPid,
       brokerIdentity: attached.brokerIdentity,
       childPid: attached.childPid,
-      status: attached.exited ? "exited" : "running",
+      status: "running",
     }).pipe(
       Effect.mapError(
         (cause) =>
@@ -840,6 +841,8 @@ const make = Effect.gen(function* () {
             cause,
           }),
       ),
+      // A host with no row is one no later server can find, so it must not outlive this one.
+      Effect.tapError(() => terminate(id)),
     );
 
     return handle;
@@ -864,15 +867,16 @@ const make = Effect.gen(function* () {
     };
   });
 
-  const listDetachedForUpdate: SessionHostServiceShape["listDetachedForUpdate"] = Effect.fn(
-    "SessionHostService.listDetachedForUpdate",
-  )(function* () {
+  const listHostsWithStatus = Effect.fn("SessionHostService.listHostsWithStatus")(function* (
+    status: SessionHostStatus,
+  ) {
     const rows = yield* sql<SessionHostRow>`
       SELECT
         id,
         provider_session_id,
         provider_thread_id,
         thread_id,
+        thread_ids_json,
         driver,
         socket_path,
         broker_pid,
@@ -883,91 +887,96 @@ const make = Effect.gen(function* () {
         created_at,
         updated_at
       FROM session_hosts
-      WHERE status = 'detached_for_update'
+      WHERE status = ${status}
       ORDER BY created_at ASC
-    `.pipe(orEmptyLogged("detached session hosts"));
+      LIMIT ${MAX_HOST_ROWS}
+    `.pipe(orEmptyLogged(`${status} session hosts`));
     return rows.map(rowToRecord);
   });
 
-  const probeDetachedForUpdate: SessionHostServiceShape["probeDetachedForUpdate"] = Effect.fn(
-    "SessionHostService.probeDetachedForUpdate",
-  )(function* () {
-    const records = yield* listDetachedForUpdate();
-    const results: Array<ProbedDetachedHost> = [];
-    for (const record of records) {
-      const verdict = yield* verifyBrokerIdentity(record);
-      if (!verdict.alive) {
-        yield* updateRowStatus(record.id, "dead");
-        results.push({ status: "dead", record, reason: verdict.reason });
-      } else {
-        results.push({ status: "alive", record });
+  const probeDetachedForUpdate = Effect.fn("SessionHostService.probeDetachedForUpdate")(
+    function* () {
+      const records = yield* listHostsWithStatus("detached_for_update");
+      const results: Array<ProbedDetachedHost> = [];
+      for (const record of records) {
+        const verdict = yield* verifyBrokerIdentity(record);
+        if (!verdict.alive) {
+          yield* retireRow(record.id);
+          results.push({ status: "dead", record, reason: verdict.reason });
+        } else {
+          results.push({ status: "alive", record });
+        }
       }
-    }
-    return results;
-  });
+      return results;
+    },
+  );
+
+  const readHostRecord = (sessionHostId: string) =>
+    sql<SessionHostRow>`
+      SELECT
+        id,
+        provider_session_id,
+        provider_thread_id,
+        thread_id,
+        thread_ids_json,
+        driver,
+        socket_path,
+        broker_pid,
+        broker_identity_json,
+        child_pid,
+        last_acked_seq,
+        status,
+        created_at,
+        updated_at
+      FROM session_hosts
+      WHERE id = ${sessionHostId}
+      LIMIT 1
+    `.pipe(
+      Effect.map((rows) => (rows[0] === undefined ? undefined : rowToRecord(rows[0]))),
+      Effect.mapError(
+        (cause) =>
+          new SessionHostError({
+            detail: `Failed to read session host ${sessionHostId}: ${String(cause)}`,
+            cause,
+          }),
+      ),
+    );
+
+  // The attach message carries the auth token, so it never goes to a socket another user could
+  // have planted.
+  const ensurePrivateSocket = (record: SessionHostRecord) =>
+    isWindows
+      ? Effect.void
+      : Effect.try({
+          try: () => ensurePrivateSocketDirectory(NodePath.dirname(record.socketPath)),
+          catch: (cause) =>
+            new SessionHostError({
+              detail: `Refusing to connect to session host ${record.id}: ${String(cause)}`,
+              cause,
+            }),
+        });
 
   const reattach: SessionHostServiceShape["reattach"] = Effect.fn("SessionHostService.reattach")(
     function* (sessionHostId: string) {
-      const rows = yield* sql<SessionHostRow>`
-        SELECT
-          id,
-          provider_session_id,
-          provider_thread_id,
-          thread_id,
-          driver,
-          socket_path,
-          broker_pid,
-          broker_identity_json,
-          child_pid,
-          last_acked_seq,
-          status,
-          created_at,
-          updated_at
-        FROM session_hosts
-        WHERE id = ${sessionHostId}
-        LIMIT 1
-      `.pipe(
-        Effect.mapError(
-          (cause) =>
-            new SessionHostError({
-              detail: `Failed to read session host ${sessionHostId}: ${String(cause)}`,
-              cause,
-            }),
-        ),
-      );
-      const row = rows[0];
-      if (row === undefined) {
+      const record = yield* readHostRecord(sessionHostId);
+      if (record === undefined) {
         return yield* new SessionHostError({
           detail: `Session host ${sessionHostId} not found.`,
         });
       }
-      const record = rowToRecord(row);
       const verdict = yield* verifyBrokerIdentity(record);
       if (!verdict.alive) {
-        yield* updateRowStatus(record.id, "dead");
+        yield* retireRow(record.id);
         return yield* new SessionHostError({
           detail: `Session host ${sessionHostId} is no longer alive (${verdict.reason}).`,
         });
       }
 
-      // The attach message carries the auth token, so never send it to a socket another user
-      // could have planted.
-      if (!isWindows) {
-        yield* Effect.try({
-          try: () => ensurePrivateSocketDirectory(NodePath.dirname(record.socketPath)),
-          catch: (cause) =>
-            new SessionHostError({
-              detail: `Refusing to reattach session host ${record.id}: ${String(cause)}`,
-              cause,
-            }),
-        }).pipe(Effect.tapError(() => updateRowStatus(record.id, "dead")));
-      }
-
+      yield* ensurePrivateSocket(record).pipe(Effect.tapError(() => retireRow(record.id)));
       const authToken = yield* readAuthToken(record.id).pipe(
-        Effect.tapError(() => updateRowStatus(record.id, "dead")),
+        Effect.tapError(() => retireRow(record.id)),
       );
 
-      let trackedRef: ActiveTrackedHost | undefined;
       const handle = DetachedStdioHandle.createPending({
         sessionHostId: record.id,
         socketPath: record.socketPath,
@@ -976,13 +985,8 @@ const make = Effect.gen(function* () {
         // The replay must wait for the session that takes the process over: run now, its
         // notifications would find no turn to belong to.
         holdOutput: true,
-        onAckSeq: (seq) => {
-          if (trackedRef !== undefined) {
-            scheduleAckFlush(trackedRef, seq, runFork);
-          }
-        },
       });
-      trackedRef = trackHandle(
+      const tracked = trackHandle(
         record.id,
         record.providerSessionId,
         record.threadId,
@@ -1001,10 +1005,7 @@ const make = Effect.gen(function* () {
           }),
       }).pipe(
         Effect.tapError(() =>
-          Effect.gen(function* () {
-            clearTrackedHost(trackedRef!);
-            yield* updateRowStatus(record.id, "dead");
-          }),
+          Effect.sync(() => clearTrackedHost(tracked)).pipe(Effect.andThen(retireRow(record.id))),
         ),
       );
 
@@ -1012,15 +1013,13 @@ const make = Effect.gen(function* () {
       // output; adopting the process anyway would leave the run waiting on it forever.
       const missedFrames = attachedInfo.oldestSeq - (record.lastAckedSeq + 1);
       if (missedFrames > 0) {
-        clearTrackedHost(trackedRef);
-        yield* Effect.promise(() => handle.terminate());
-        yield* updateRowStatus(record.id, "dead");
+        yield* terminate(record.id);
         return yield* new SessionHostError({
           detail: `Session host ${record.id} dropped ${missedFrames} unread output frames while detached.`,
         });
       }
 
-      yield* updateRowStatus(record.id, attachedInfo.exited ? "exited" : "running");
+      yield* updateRowStatus(record.id, "running");
       adoptableByProviderSession.set(record.providerSessionId, handle);
 
       return { record, handle, attachedInfo };
@@ -1052,38 +1051,76 @@ const make = Effect.gen(function* () {
           });
         }
       }
+      // A host still marked running was left by a server that stopped without detaching it; its
+      // broker ends its child once that server's socket closes, and no session will take it.
+      const leftovers = yield* listHostsWithStatus("running");
+      for (const record of leftovers) {
+        if (!activeById.has(record.id)) {
+          yield* terminate(record.id);
+        }
+      }
       return results;
     });
 
+  const detachOneForUpdate = Effect.fn("SessionHostService.detachOneForUpdate")(function* (
+    tracked: ActiveTrackedHost,
+    prepare: DetachAllForUpdateOptions["prepare"],
+  ): Effect.fn.Return<DetachedHostSummary | undefined> {
+    if (tracked.handle.exited) {
+      clearTrackedHost(tracked);
+      yield* retireRow(tracked.id);
+      return undefined;
+    }
+    // Output the session got before this point must be persisted; the next server replays the rest.
+    const replayFromSeq = tracked.handle.holdForDetach();
+    const preparation: DetachPreparation | undefined =
+      prepare === undefined
+        ? { threadIds: [tracked.threadId], drain: Effect.void }
+        : yield* prepare(tracked.providerSessionId);
+    const drained =
+      preparation === undefined || preparation.threadIds.length === 0
+        ? false
+        : yield* preparation.drain.pipe(
+            Effect.timeoutOption(DETACH_DRAIN_TIMEOUT),
+            Effect.map(Option.isSome),
+            Effect.catchCause((cause) =>
+              Effect.logError("A session host's output could not be drained", cause).pipe(
+                Effect.as(false),
+              ),
+            ),
+          );
+    if (!drained || preparation === undefined) {
+      yield* Effect.logWarning("A session host is stopped instead of detached for the update", {
+        sessionHostId: tracked.id,
+        reason: preparation === undefined ? "no_session" : "drain_incomplete",
+      });
+      yield* terminate(tracked.id);
+      return undefined;
+    }
+    for (const threadId of preparation.threadIds) detachedThreads.add(threadId);
+    detachedProviderSessions.add(tracked.providerSessionId);
+    tracked.handle.markDetachingForUpdate();
+    yield* Effect.promise(() => tracked.handle.detach());
+    clearTrackedHost(tracked);
+    yield* markDetachedForUpdate(tracked.id, replayFromSeq, preparation.threadIds);
+    return {
+      id: tracked.id,
+      providerSessionId: tracked.providerSessionId,
+      threadIds: preparation.threadIds,
+      driver: tracked.driver,
+      lastAckedSeq: replayFromSeq,
+    };
+  });
+
   const detachAllForUpdate: SessionHostServiceShape["detachAllForUpdate"] = Effect.fn(
     "SessionHostService.detachAllForUpdate",
-  )(function* () {
-    const trackedHosts = [...activeById.values()];
-    const summaries: Array<DetachedHostSummary> = [];
-
-    for (const tracked of trackedHosts) {
-      if (tracked.handle.exited) {
-        clearTrackedHost(tracked);
-        yield* updateRowStatus(tracked.id, "exited", tracked.handle.lastAckedSeq);
-        continue;
-      }
-      detachedProviderSessions.add(tracked.providerSessionId);
-      detachedThreads.add(tracked.threadId);
-      tracked.handle.markDetachingForUpdate();
-      yield* Effect.promise(() => tracked.handle.detach());
-      const lastAckedSeq = tracked.handle.replayPointForUpdate();
-      clearTrackedHost(tracked);
-      yield* markDetachedForUpdate(tracked.id, lastAckedSeq);
-      summaries.push({
-        id: tracked.id,
-        providerSessionId: tracked.providerSessionId,
-        threadId: tracked.threadId,
-        driver: tracked.driver,
-        lastAckedSeq,
-      });
-    }
-
-    return summaries;
+  )(function* (options?: DetachAllForUpdateOptions) {
+    const summaries = yield* Effect.forEach(
+      [...activeById.values()],
+      (tracked) => detachOneForUpdate(tracked, options?.prepare),
+      { concurrency: "unbounded" },
+    );
+    return summaries.filter((summary) => summary !== undefined);
   });
 
   const isProviderSessionDetachedForUpdate: SessionHostServiceShape["isProviderSessionDetachedForUpdate"] =
@@ -1093,169 +1130,84 @@ const make = Effect.gen(function* () {
     threadId,
   ) => Effect.sync(() => detachedThreads.has(threadId));
 
-  const getActiveHandleByProviderSession: SessionHostServiceShape["getActiveHandleByProviderSession"] =
-    (providerSessionId) =>
-      Effect.sync(() => activeByProviderSession.get(providerSessionId)?.handle);
-
-  const getActiveHandleByThread: SessionHostServiceShape["getActiveHandleByThread"] = (threadId) =>
-    Effect.sync(() => {
-      for (const tracked of activeById.values()) {
-        if (tracked.threadId === threadId) return tracked.handle;
-      }
-      return undefined;
-    });
-
-  const updateProviderThreadId: SessionHostServiceShape["updateProviderThreadId"] = Effect.fn(
-    "SessionHostService.updateProviderThreadId",
-  )(function* (providerSessionId: string, providerThreadId: string) {
-    const updatedAt = yield* nowIso();
-    yield* sql`
-      UPDATE session_hosts
-      SET provider_thread_id = ${providerThreadId}, updated_at = ${updatedAt}
-      WHERE provider_session_id = ${providerSessionId}
-    `.pipe(
-      Effect.asVoid,
-      Effect.ignore({
-        log: "Error",
-        message: `Failed to record the provider thread of session ${providerSessionId}`,
-      }),
+  const awaitExitLogged = (handle: DetachedStdioHandle, sessionHostId: string) =>
+    Effect.promise(() => handle.waitForExit()).pipe(
+      Effect.timeoutOption(TERMINATE_EXIT_WAIT),
+      Effect.flatMap((exited) =>
+        Option.isSome(exited)
+          ? Effect.void
+          : Effect.logError("A session host did not confirm its process ended", {
+              sessionHostId,
+              waitedMs: Duration.toMillis(TERMINATE_EXIT_WAIT),
+            }),
+      ),
     );
-  });
-
-  const markDead: SessionHostServiceShape["markDead"] = (sessionHostId) =>
-    updateRowStatus(sessionHostId, "dead");
 
   const terminate: SessionHostServiceShape["terminate"] = Effect.fn("SessionHostService.terminate")(
     function* (sessionHostId: string, signal?: NodeJS.Signals) {
       const tracked = activeById.get(sessionHostId);
       if (tracked !== undefined) {
-        detachedProviderSessions.delete(tracked.providerSessionId);
-        detachedThreads.delete(tracked.threadId);
         clearTrackedHost(tracked);
         yield* Effect.promise(() => tracked.handle.terminate(signal));
         // A caller that starts a replacement must not find the old process still running.
         if (!tracked.handle.detachingForUpdate) {
-          const exited = yield* Effect.promise(() => tracked.handle.waitForExit()).pipe(
-            Effect.timeoutOption(TERMINATE_EXIT_WAIT),
-          );
-          if (Option.isNone(exited)) {
-            yield* Effect.logError("A session host did not confirm its process ended", {
-              sessionHostId,
-              waitedMs: Duration.toMillis(TERMINATE_EXIT_WAIT),
-            });
-          }
+          yield* awaitExitLogged(tracked.handle, sessionHostId);
         }
-        yield* updateRowStatus(sessionHostId, "exited", tracked.handle.lastAckedSeq);
+        yield* retireRow(sessionHostId);
         if (tracked.unit !== null && Option.isSome(agentScopeOption)) {
           yield* agentScopeOption.value.stop(tracked.unit).pipe(Effect.ignore);
         }
         return;
       }
 
-      // If not currently attached in memory, connect briefly and send terminate if still alive.
-      const rows = yield* sql<SessionHostRow>`
-      SELECT
-        id,
-        provider_session_id,
-        provider_thread_id,
-        thread_id,
-        driver,
-        socket_path,
-        broker_pid,
-        broker_identity_json,
-        child_pid,
-        last_acked_seq,
-        status,
-        created_at,
-        updated_at
-      FROM session_hosts
-      WHERE id = ${sessionHostId}
-      LIMIT 1
-    `.pipe(orEmptyLogged(`session host ${sessionHostId}`));
-      const row = rows[0];
-      if (row === undefined) return;
-      const record = rowToRecord(row);
+      // Not attached here: connect briefly and stop it if it still runs.
+      const record = yield* readHostRecord(sessionHostId).pipe(
+        Effect.catch((cause) =>
+          Effect.logError(`Failed to read session host ${sessionHostId}`, cause).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      );
+      if (record === undefined) return;
       const verdict = yield* verifyBrokerIdentity(record);
       if (verdict.alive) {
-        yield* readAuthToken(record.id).pipe(
-          Effect.flatMap((authToken) =>
-            Effect.tryPromise(async () => {
-              const handle = await DetachedStdioHandle.connect({
+        yield* Effect.gen(function* () {
+          yield* ensurePrivateSocket(record);
+          const authToken = yield* readAuthToken(record.id);
+          const handle = yield* Effect.tryPromise({
+            try: () =>
+              DetachedStdioHandle.connect({
                 sessionHostId: record.id,
                 socketPath: record.socketPath,
                 authToken,
                 initialAfterSeq: record.lastAckedSeq,
-              });
-              await handle.terminate(signal);
-            }),
-          ),
+              }),
+            catch: (cause) =>
+              new SessionHostError({
+                detail: `Failed to connect to session host ${record.id}: ${String(cause)}`,
+                cause,
+              }),
+          });
+          yield* Effect.promise(() => handle.terminate(signal));
+          yield* awaitExitLogged(handle, record.id);
+        }).pipe(
           Effect.ignore({ log: "Error", message: `Failed to terminate session host ${record.id}` }),
         );
       }
-      yield* updateRowStatus(sessionHostId, "exited");
+      yield* retireRow(sessionHostId);
     },
   );
-
-  const terminateByProviderSession: SessionHostServiceShape["terminateByProviderSession"] =
-    Effect.fn("SessionHostService.terminateByProviderSession")(function* (
-      providerSessionId: string,
-      signal?: NodeJS.Signals,
-    ) {
-      const tracked = activeByProviderSession.get(providerSessionId);
-      if (tracked !== undefined) {
-        yield* terminate(tracked.id, signal);
-        return;
-      }
-      const rows = yield* sql<{ readonly id: string }>`
-        SELECT id FROM session_hosts
-        WHERE provider_session_id = ${providerSessionId}
-          AND status IN ('running', 'detached_for_update')
-      `.pipe(orEmptyLogged(`session hosts of provider session ${providerSessionId}`));
-      for (const row of rows) {
-        yield* terminate(row.id, signal);
-      }
-    });
-
-  const terminateByThread: SessionHostServiceShape["terminateByThread"] = Effect.fn(
-    "SessionHostService.terminateByThread",
-  )(function* (threadId: ThreadId, signal?: NodeJS.Signals) {
-    const ids = new Set<string>();
-    for (const tracked of activeById.values()) {
-      if (tracked.threadId === threadId) {
-        ids.add(tracked.id);
-      }
-    }
-    const rows = yield* sql<{ readonly id: string }>`
-      SELECT id FROM session_hosts
-      WHERE thread_id = ${threadId}
-        AND status IN ('running', 'detached_for_update')
-    `.pipe(orEmptyLogged(`session hosts of thread ${threadId}`));
-    for (const row of rows) {
-      ids.add(row.id);
-    }
-    for (const id of ids) {
-      yield* terminate(id, signal);
-    }
-  });
 
   return {
     spawn,
     spawnChildProcessHandle,
     reattach,
-    probeDetachedForUpdate,
     reattachAllDetachedForUpdate,
     takeAdoptable,
-    listDetachedForUpdate,
     detachAllForUpdate,
     isProviderSessionDetachedForUpdate,
     isThreadDetachedForUpdate,
-    getActiveHandleByProviderSession,
-    getActiveHandleByThread,
-    updateProviderThreadId,
-    markDead,
     terminate,
-    terminateByProviderSession,
-    terminateByThread,
   } satisfies SessionHostServiceShape;
 });
 

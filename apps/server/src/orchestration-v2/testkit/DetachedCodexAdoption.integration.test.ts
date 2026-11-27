@@ -21,6 +21,7 @@ import * as Stream from "effect/Stream";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ProcessRunner from "../../processRunner.ts";
 import * as SessionHostService from "../../sessionHost/SessionHostService.ts";
 import * as CodexAdapterV2 from "../Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "../Orchestrator.ts";
@@ -102,6 +103,7 @@ describe.skipIf(isWindowsHost)("a Codex turn running across a planned update", (
       // Both servers find the broker through the same state directory and secret store.
       const sessionHostLayer = SessionHostService.layer.pipe(
         Layer.provide(ServerSecretStore.layer),
+        Layer.provide(ProcessRunner.layer),
         Layer.provide(Layer.merge(ServerConfig.layerTest(tempDir, tempDir), databaseLayer)),
         Layer.provide(NodeServices.layer),
       );
@@ -185,7 +187,7 @@ describe.skipIf(isWindowsHost)("a Codex turn running across a planned update", (
             const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
             const detached = yield* sessionHost.detachAllForUpdate();
             assert.deepEqual(
-              detached.map((host) => host.threadId),
+              detached.flatMap((host) => host.threadIds),
               [threadId],
             );
             const shutdown = yield* recovery.reconcile("shutdown");

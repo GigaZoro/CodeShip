@@ -26,6 +26,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { timeIdentity } from "../commandRunner/processIdentity.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
@@ -35,11 +36,15 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "../orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderTurnStart from "../orchestration-v2/ProviderTurnStartService.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import type { DetachedStdioHandle } from "./DetachedStdioHandle.ts";
 import * as SessionHostService from "./SessionHostService.ts";
 
-const sessionHostLayer = SessionHostService.layer.pipe(Layer.provide(ServerSecretStore.layer));
+const sessionHostLayer = SessionHostService.layer.pipe(
+  Layer.provide(ServerSecretStore.layer),
+  Layer.provide(ProcessRunner.layer),
+);
 
 const ECHO_CHILD_SCRIPT = `
 const readline = require("node:readline");
@@ -298,7 +303,7 @@ it.live(
         // Planned update shutdown: detach hosts first, then run shutdown reconciliation.
         const detached = yield* sessionHost.detachAllForUpdate();
         assert.equal(detached.length, 1);
-        assert.equal(detached[0]?.threadId, threadId);
+        assert.deepEqual(detached[0]?.threadIds, [threadId]);
 
         const shutdownSummary = yield* recovery.reconcile("shutdown");
         assert.equal(shutdownSummary.terminalizedRuns, 0);
@@ -333,11 +338,7 @@ it.live(
         const reattachedHandle = adoptedHandle;
         assert.isDefined(reattachedHandle);
         if (reattachedHandle !== undefined) {
-          // Frames from the last seconds before the detach replay, so the taker sees them again.
-          const replayed = JSON.parse(
-            yield* Effect.promise(() => readNextLine(reattachedHandle.stdout)),
-          ) as { kind: string; pid: number };
-          assert.deepEqual(replayed, { kind: "ready", pid: originalChildPid });
+          // The ready line reached the old server, so the replay starts after it.
           reattachedHandle.stdin.write("hello-after-restart\n");
           const echo = JSON.parse(
             yield* Effect.promise(() => readNextLine(reattachedHandle.stdout)),
@@ -348,7 +349,9 @@ it.live(
         }
 
         // Cleanly terminate the surviving detached host.
-        yield* sessionHost.terminateByProviderSession(providerSessionId);
+        if (reattachedHandle !== undefined) {
+          yield* sessionHost.terminate(reattachedHandle.sessionHostId);
+        }
       }).pipe(
         Effect.provide(
           Layer.unwrap(
@@ -455,8 +458,7 @@ it.live(
         const rows = yield* sql<{ readonly status: string }>`
           SELECT status FROM session_hosts WHERE provider_session_id = ${providerSessionId}
         `;
-        assert.notEqual(rows[0]?.status, "detached_for_update");
-        assert.notEqual(rows[0]?.status, "active");
+        assert.deepEqual(rows, [], "An ended host stays recorded");
       }).pipe(
         Effect.provide(
           buildRecoveryLayer(
@@ -587,7 +589,7 @@ it.live(
         const rows = yield* sql<{ readonly status: string }>`
           SELECT status FROM session_hosts WHERE provider_session_id = ${providerSessionId}
         `;
-        assert.equal(rows[0]?.status, "dead");
+        assert.deepEqual(rows, [], "An ended host stays recorded");
       }).pipe(
         Effect.provide(
           buildRecoveryLayer(threadId, projection, (input) => commits.push(input)).pipe(
@@ -673,7 +675,7 @@ it.live(
         const rows = yield* sql<{ readonly status: string }>`
           SELECT status FROM session_hosts WHERE provider_session_id = ${providerSessionId}
         `;
-        assert.equal(rows[0]?.status, "dead");
+        assert.deepEqual(rows, [], "An ended host stays recorded");
       }).pipe(
         Effect.provide(
           buildRecoveryLayer(threadId, projection, (input) => commits.push(input)).pipe(
@@ -728,8 +730,9 @@ it.live("keeps the broker auth token in the secret store and removes it when the
     const secretPath = NodePath.join(config.secretsDir, `session-host-${handle.sessionHostId}.bin`);
     assert.equal(NodeFS.readFileSync(secretPath, "utf8"), handle.authToken);
 
-    yield* sessionHost.terminateByProviderSession(providerSessionId);
+    yield* sessionHost.terminate(handle.sessionHostId);
     assert.isFalse(NodeFS.existsSync(secretPath));
+    assert.deepEqual(yield* sql`SELECT id FROM session_hosts`, []);
   }).pipe(
     Effect.provide(sessionHostLayer),
     Effect.ensuring(
@@ -739,45 +742,196 @@ it.live("keeps the broker auth token in the secret store and removes it when the
   );
 });
 
-// regression: ack flushes ran outside the service and failed once its database had closed.
-it.live("writes a running host's pending acked seq when the service closes", () => {
-  const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-session-host-ack-"));
-  const baseLayer = Layer.mergeAll(
-    Sqlite.layerMemory,
-    ServerConfig.layerTest(tempBaseDir, tempBaseDir),
-  ).pipe(Layer.provideMerge(NodeServices.layer));
-  let brokerPid: number | null = null;
+const isolatedBaseLayer = (tempBaseDir: string) =>
+  Layer.mergeAll(Sqlite.layerMemory, ServerConfig.layerTest(tempBaseDir, tempBaseDir)).pipe(
+    Layer.provideMerge(NodeServices.layer),
+  );
 
+/** Spawns a host in a service that then closes, as a server does when it stops. */
+const spawnHostInClosedService = (tempBaseDir: string, detachForUpdate: boolean) =>
+  Effect.gen(function* () {
+    const sessionHost = yield* SessionHostService.SessionHostService;
+    const handle = yield* sessionHost.spawn({
+      providerSessionId: ProviderSessionId.make(`ps_${NodePath.basename(tempBaseDir)}`),
+      threadId: ThreadId.make(`thread_${NodePath.basename(tempBaseDir)}`),
+      driver: "codex",
+      command: process.execPath,
+      args: ["-e", ECHO_CHILD_SCRIPT],
+      cwd: tempBaseDir,
+      env: process.env,
+    });
+    const ready = JSON.parse(yield* Effect.promise(() => readNextLine(handle.stdout))) as {
+      pid: number;
+    };
+    if (detachForUpdate) yield* sessionHost.detachAllForUpdate();
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly broker_pid: number; readonly socket_path: string }>`
+      SELECT broker_pid, socket_path FROM session_hosts WHERE id = ${handle.sessionHostId}
+    `;
+    return {
+      id: handle.sessionHostId,
+      childPid: ready.pid,
+      brokerPid: rows[0]?.broker_pid ?? null,
+      socketPath: rows[0]?.socket_path ?? handle.socketPath,
+    };
+  }).pipe(Effect.provide(sessionHostLayer));
+
+/** Stops the broker and child of a test by the pids recorded at spawn. */
+const stopSpawned = (pids: ReadonlyArray<number | null>) => {
+  for (const pid of pids) {
+    if (pid !== null && isProcessAlive(pid)) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+};
+
+it.live("ends hosts a stopped server left running and forgets them with their tokens", () => {
+  const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sh-leftover-"));
+  let spawned: { brokerPid: number | null; childPid: number } | undefined;
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const sessionHostId = yield* Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const host = yield* spawnHostInClosedService(tempBaseDir, false);
+    spawned = host;
+    const secretPath = NodePath.join(config.secretsDir, `session-host-${host.id}.bin`);
+    assert.isTrue(NodeFS.existsSync(secretPath));
+
+    yield* Effect.gen(function* () {
       const sessionHost = yield* SessionHostService.SessionHostService;
-      const handle = yield* sessionHost.spawn({
-        providerSessionId: ProviderSessionId.make("ps_ack_on_close"),
-        threadId: ThreadId.make("thread_ack_on_close"),
-        driver: "codex",
-        command: process.execPath,
-        args: ["-e", ECHO_CHILD_SCRIPT],
-        cwd: tempBaseDir,
-        env: process.env,
-      });
-      yield* Effect.promise(() => readNextLine(handle.stdout));
-      return handle.sessionHostId;
+      yield* sessionHost.reattachAllDetachedForUpdate();
     }).pipe(Effect.provide(sessionHostLayer));
 
-    const rows = yield* sql<{ readonly last_acked_seq: number; readonly broker_pid: number }>`
-      SELECT last_acked_seq, broker_pid FROM session_hosts WHERE id = ${sessionHostId}
-    `;
-    brokerPid = rows[0]?.broker_pid ?? null;
-    assert.isAbove(rows[0]?.last_acked_seq ?? 0, 0);
+    assert.deepEqual(yield* sql`SELECT id FROM session_hosts`, []);
+    assert.isFalse(NodeFS.existsSync(secretPath), "The leftover host's token is still stored");
+    assert.isFalse(isProcessAlive(host.childPid), "The leftover host's process still runs");
   }).pipe(
     Effect.ensuring(
       Effect.sync(() => {
-        // The broker the closed service left running; its pid was recorded at spawn.
-        if (brokerPid !== null && isProcessAlive(brokerPid)) process.kill(brokerPid, "SIGTERM");
+        stopSpawned([spawned?.childPid ?? null, spawned?.brokerPid ?? null]);
         NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
       }),
     ),
-    Effect.provide(baseLayer),
+    Effect.provide(isolatedBaseLayer(tempBaseDir)),
   );
 });
+
+const refusesReattach = (
+  name: string,
+  tamper: (
+    host: { readonly id: string; readonly socketPath: string },
+    tempBaseDir: string,
+  ) => Effect.Effect<void, never, SqlClient.SqlClient>,
+  expectedDetail: RegExp,
+) =>
+  it.live(name, () => {
+    const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sh-refuse-"));
+    let spawned: { brokerPid: number | null; childPid: number } | undefined;
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const host = yield* spawnHostInClosedService(tempBaseDir, true);
+      spawned = host;
+      yield* tamper(host, tempBaseDir);
+
+      const refused = yield* Effect.gen(function* () {
+        const sessionHost = yield* SessionHostService.SessionHostService;
+        return yield* sessionHost.reattach(host.id).pipe(Effect.flip);
+      }).pipe(Effect.provide(sessionHostLayer));
+
+      assert.match(refused.detail, expectedDetail);
+      assert.deepEqual(yield* sql`SELECT id FROM session_hosts`, []);
+      // The broker never got the token, so it still waits for a server it can trust.
+      assert.isTrue(isProcessAlive(host.childPid));
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          stopSpawned([spawned?.childPid ?? null, spawned?.brokerPid ?? null]);
+          NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
+        }),
+      ),
+      Effect.provide(isolatedBaseLayer(tempBaseDir)),
+    );
+  });
+
+refusesReattach(
+  "refuses a reattach to a broker pid now held by another process",
+  (host) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // An identity from long before this broker started: its pid was reused since.
+      yield* sql`UPDATE session_hosts SET broker_identity_json = ${timeIdentity(0)} WHERE id = ${host.id}`;
+    }).pipe(Effect.orDie),
+  /broker_pid_reused/,
+);
+
+refusesReattach(
+  "refuses a reattach to a broker whose identity cannot be checked",
+  (host) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE session_hosts SET broker_identity_json = ${"unreadable"} WHERE id = ${host.id}`;
+    }).pipe(Effect.orDie),
+  /broker_identity_unknown/,
+);
+
+if (!isWindowsHost) {
+  refusesReattach(
+    "refuses a reattach through a symlinked socket directory",
+    (host, tempBaseDir) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const link = NodePath.join(tempBaseDir, "socket-link");
+        NodeFS.symlinkSync(NodePath.dirname(host.socketPath), link);
+        const linkedPath = NodePath.join(link, NodePath.basename(host.socketPath));
+        yield* sql`UPDATE session_hosts SET socket_path = ${linkedPath} WHERE id = ${host.id}`;
+      }).pipe(Effect.orDie),
+    /not a real directory/,
+  );
+
+  const terminateUnattached = (name: string, throughSymlink: boolean) =>
+    it.live(name, () => {
+      const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sh-terminate-"));
+      let spawned: { brokerPid: number | null; childPid: number } | undefined;
+      return Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const host = yield* spawnHostInClosedService(tempBaseDir, true);
+        spawned = host;
+        if (throughSymlink) {
+          const link = NodePath.join(tempBaseDir, "socket-link");
+          NodeFS.symlinkSync(NodePath.dirname(host.socketPath), link);
+          const linkedPath = NodePath.join(link, NodePath.basename(host.socketPath));
+          yield* sql`UPDATE session_hosts SET socket_path = ${linkedPath} WHERE id = ${host.id}`;
+        }
+
+        yield* Effect.gen(function* () {
+          const sessionHost = yield* SessionHostService.SessionHostService;
+          yield* sessionHost.terminate(host.id);
+        }).pipe(Effect.provide(sessionHostLayer));
+
+        assert.deepEqual(yield* sql`SELECT id FROM session_hosts`, []);
+        if (throughSymlink) {
+          assert.isTrue(isProcessAlive(host.childPid), "The token went to an unchecked socket");
+        } else {
+          // A caller that starts a replacement must not find the old process still running.
+          assert.isFalse(isProcessAlive(host.childPid), "terminate returned before the exit");
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            stopSpawned([spawned?.childPid ?? null, spawned?.brokerPid ?? null]);
+            NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
+          }),
+        ),
+        Effect.provide(isolatedBaseLayer(tempBaseDir)),
+      );
+    });
+
+  terminateUnattached("terminates a host it is not attached to and waits for it to end", false);
+  terminateUnattached(
+    "sends no token when terminating a host through a symlinked socket directory",
+    true,
+  );
+}

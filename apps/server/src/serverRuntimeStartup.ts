@@ -485,7 +485,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           if (detached.length > 0) {
             yield* Effect.logInfo("Detached live provider session hosts for planned update", {
               count: detached.length,
-              threadIds: detached.map((entry) => entry.threadId),
+              threadIds: detached.flatMap((entry) => entry.threadIds),
             });
           }
         }

@@ -13,6 +13,7 @@ export default Effect.gen(function* () {
       provider_session_id TEXT NOT NULL,
       provider_thread_id TEXT,
       thread_id TEXT NOT NULL,
+      thread_ids_json TEXT NOT NULL DEFAULT '[]',
       driver TEXT NOT NULL,
       socket_path TEXT NOT NULL,
       broker_pid INTEGER,

@@ -7,7 +7,7 @@ import * as NodePath from "node:path";
 // Only drivers whose running turn a new server can adopt run in a session host (docs/internals/server-updates.md).
 export type SessionHostDriver = "codex";
 
-export type SessionHostStatus = "running" | "detached_for_update" | "exited" | "dead";
+export type SessionHostStatus = "running" | "detached_for_update";
 
 export const DEFAULT_ORPHAN_TTL_MS = 15 * 60 * 1000;
 export const DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;

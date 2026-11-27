@@ -485,6 +485,7 @@ const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.l
 const layerSessionHost = SessionHostService.layer.pipe(
   Layer.provide(layerPersistence),
   Layer.provide(ServerSecretStore.layer),
+  Layer.provide(ProcessRunner.layer),
 );
 
 const layerAccountRouting = AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer));

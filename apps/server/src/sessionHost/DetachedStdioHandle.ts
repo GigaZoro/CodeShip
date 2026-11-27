@@ -20,14 +20,13 @@ import {
 } from "./protocol.ts";
 
 const DETACH_ACK_TIMEOUT_MS = 500;
-/**
- * A frame reaches the projection through the Codex client, the adapter and the run's ingestion,
- * and a planned shutdown stops those after it detaches. The replay point for the next server is
- * the newest frame received this long before the detach, so frames that may still have been in
- * flight are sent again rather than lost; the adopting adapter ignores what it already has.
- */
-export const DETACH_REPLAY_OVERLAP_MS = 5_000;
 const ATTACH_TIMEOUT_MS = 10_000;
+/**
+ * Held output waits on a taker that registers its turns; past this the taker is not coming, and
+ * the process is ended rather than buffered without bound.
+ */
+export const MAX_HELD_OUTPUT_BYTES = 64 * 1024 * 1024;
+const MAX_SERVER_LINE_BYTES = 64 * 1024 * 1024;
 
 export interface DetachedAttachedInfo {
   readonly sessionHostId: string;
@@ -47,19 +46,26 @@ export interface DetachedStdioHandleOptions {
   readonly socketPath: string;
   readonly authToken: string;
   readonly initialAfterSeq?: number;
-  readonly onAckSeq?: (seq: number) => void;
   readonly onStderr?: (chunk: string) => void;
-  readonly onExit?: (exitCode: number | null, signal: NodeJS.Signals | null) => void;
-  /** Keep stdout until releaseOutput: an adopted turn must be registered before its frames run. */
+  /** Keep output until releaseOutput: an adopted turn must be registered before its frames run. */
   readonly holdOutput?: boolean;
-  /** Monotonic milliseconds; tests replace it. */
-  readonly now?: () => number;
+  /** Tests lower it. */
+  readonly maxHeldOutputBytes?: number;
 }
 
 type PendingClientAction =
   | { readonly kind: "message"; readonly message: BrokerClientMessage }
-  | { readonly kind: "detach" }
   | { readonly kind: "terminate"; readonly signal?: NodeJS.Signals };
+
+/** Output kept back from the reader, in order; `seq` is undefined for re-sent requests. */
+type HeldOutput =
+  | { readonly kind: "stdout"; readonly seq: number | undefined; readonly chunk: string }
+  | {
+      readonly kind: "exit";
+      readonly seq: number;
+      readonly exitCode: number | null;
+      readonly signal: NodeJS.Signals | null;
+    };
 
 export class DetachedStdioHandle {
   readonly sessionHostId: string;
@@ -76,21 +82,18 @@ export class DetachedStdioHandle {
   private lastAckedSeqValue: number;
   private detachingForUpdateFlag = false;
   private detachedFlag = false;
+  private detachSent: Promise<number> | null = null;
   private killedFlag = false;
   private exitedFlag = false;
   private exitCodeValue: number | null = null;
   private signalCodeValue: NodeJS.Signals | null = null;
   private pendingActions: Array<PendingClientAction> = [];
-  private heldOutput: Array<string> | null;
-  private readonly now: () => number;
-  private readonly recentFrames: Array<{ readonly seq: number; readonly receivedAt: number }> = [];
-  private settledSeqValue: number;
+  private heldOutput: Array<HeldOutput> | null;
+  private heldBytes = 0;
+  private readonly maxHeldOutputBytes: number;
+  private deliveredSeqValue: number;
 
-  private readonly onAckSeq: ((seq: number) => void) | undefined;
   private readonly onStderr: ((chunk: string) => void) | undefined;
-  private readonly onExit:
-    | ((exitCode: number | null, signal: NodeJS.Signals | null) => void)
-    | undefined;
 
   private readonly attachedPromise: Promise<DetachedAttachedInfo>;
   private resolveAttached!: (info: DetachedAttachedInfo) => void;
@@ -118,12 +121,10 @@ export class DetachedStdioHandle {
     this.socketPath = options.socketPath;
     this.authToken = options.authToken;
     this.lastAckedSeqValue = options.initialAfterSeq ?? 0;
-    this.settledSeqValue = this.lastAckedSeqValue;
+    this.deliveredSeqValue = this.lastAckedSeqValue;
     this.heldOutput = options.holdOutput === true ? [] : null;
-    this.now = options.now ?? (() => performance.now());
-    this.onAckSeq = options.onAckSeq;
+    this.maxHeldOutputBytes = options.maxHeldOutputBytes ?? MAX_HELD_OUTPUT_BYTES;
     this.onStderr = options.onStderr;
-    this.onExit = options.onExit;
 
     this.attachedPromise = new Promise<DetachedAttachedInfo>((resolve, reject) => {
       this.resolveAttached = resolve;
@@ -228,34 +229,73 @@ export class DetachedStdioHandle {
     return this.exitPromise;
   }
 
-  /** The replay point for the server after a planned update; see DETACH_REPLAY_OVERLAP_MS. */
-  replayPointForUpdate(): number {
-    this.settleFrames();
-    return this.settledSeqValue;
+  /** The newest frame whose output reached the reader; frames after it are held or unread. */
+  get deliveredSeq(): number {
+    return this.deliveredSeqValue;
+  }
+
+  /**
+   * Stops output at the reader and returns the seq of the last frame it got. A planned update
+   * replays from there, once everything the reader got is persisted.
+   */
+  holdForDetach(): number {
+    if (this.heldOutput === null) this.heldOutput = [];
+    return this.deliveredSeqValue;
+  }
+
+  /** Writes a line to the reader past held output, after everything it already got. */
+  injectStdoutLine(line: string): boolean {
+    if (this.stdout.writableEnded) return false;
+    this.stdout.write(line.endsWith("\n") ? line : `${line}\n`, "utf8");
+    return true;
   }
 
   releaseOutput(): void {
     const held = this.heldOutput;
     if (held === null) return;
     this.heldOutput = null;
-    for (const chunk of held) this.writeStdout(chunk);
-    if (this.exitedFlag && !this.stdout.writableEnded) this.stdout.end();
+    this.heldBytes = 0;
+    for (const item of held) {
+      if (item.kind === "stdout") this.deliverStdout(item.seq, item.chunk);
+      else this.deliverExit(item.seq, item.exitCode, item.signal);
+    }
   }
 
-  private writeStdout(chunk: string): void {
+  private hold(item: HeldOutput): void {
+    const held = this.heldOutput!;
+    held.push(item);
+    this.heldBytes += item.kind === "stdout" ? Buffer.byteLength(item.chunk, "utf8") : 0;
+    if (this.heldBytes > this.maxHeldOutputBytes) {
+      this.emitError(
+        new Error(
+          `Session host ${this.sessionHostId} held more output than its taker can wait for.`,
+        ),
+      );
+      void this.terminate();
+    }
+  }
+
+  private deliverStdout(seq: number | undefined, chunk: string): void {
     if (this.heldOutput !== null) {
-      this.heldOutput.push(chunk);
+      this.hold({ kind: "stdout", seq, chunk });
       return;
     }
+    if (seq !== undefined && seq > this.deliveredSeqValue) this.deliveredSeqValue = seq;
     if (!this.stdout.writableEnded) {
       this.stdout.write(chunk, "utf8");
     }
   }
 
-  private settleFrames(): void {
-    const settledBefore = this.now() - DETACH_REPLAY_OVERLAP_MS;
-    while (this.recentFrames.length > 0 && this.recentFrames[0]!.receivedAt <= settledBefore) {
-      this.settledSeqValue = this.recentFrames.shift()!.seq;
+  private deliverExit(seq: number, exitCode: number | null, signal: NodeJS.Signals | null): void {
+    if (this.heldOutput !== null) {
+      this.hold({ kind: "exit", seq, exitCode, signal });
+      return;
+    }
+    if (seq > this.deliveredSeqValue) this.deliveredSeqValue = seq;
+    this.recordExit(exitCode, signal);
+    // End client socket so broker sees exit was acknowledged and can exit cleanly.
+    if (this.socket !== null && !this.socket.destroyed) {
+      this.socket.end();
     }
   }
 
@@ -325,6 +365,10 @@ export class DetachedStdioHandle {
 
     socket.on("data", (chunk: Buffer) => {
       buffer += decoder.write(chunk);
+      if (buffer.length > MAX_SERVER_LINE_BYTES) {
+        socket.destroy(new Error(`Session host ${this.sessionHostId} sent an oversized line.`));
+        return;
+      }
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex !== -1) {
         const line = buffer.slice(0, newlineIndex).replace(/\r$/, "");
@@ -344,7 +388,7 @@ export class DetachedStdioHandle {
       if (!this.attachedSettled) {
         this.failStartup(error);
       } else if (!this.detachingForUpdateFlag && !this.exitedFlag) {
-        this.events.emit("error", error);
+        this.emitError(error);
       }
     });
 
@@ -396,25 +440,27 @@ export class DetachedStdioHandle {
       this.rejectReplayComplete(error);
     }
     if (!this.detachingForUpdateFlag && !this.exitedFlag) {
-      if (this.events.listenerCount("error") > 0) {
-        this.events.emit("error", error);
-      }
+      this.emitError(error);
       this.recordExit(1, null);
     }
   }
 
   async detach(): Promise<number> {
     this.detachingForUpdateFlag = true;
-    if (this.detachedFlag) return this.lastAckedSeqValue;
-
+    if (this.detachSent !== null) return this.detachSent;
     const socket = this.socket;
-    if (socket === null || socket.destroyed) {
-      this.pendingActions.push({ kind: "detach" });
+    if (socket === null || socket.destroyed || this.attachedInfo === null) {
+      // The broker keeps its child only for a detach; one that is not attached yet gets it from
+      // the attached handler.
       this.finishDetached();
       return this.lastAckedSeqValue;
     }
+    this.detachSent = this.sendDetach(socket);
+    return this.detachSent;
+  }
 
-    return await new Promise<number>((resolve) => {
+  private sendDetach(socket: NodeNet.Socket): Promise<number> {
+    return new Promise<number>((resolve) => {
       const timer = setTimeout(() => {
         if (this.detachResolver !== null) {
           this.detachResolver = null;
@@ -451,6 +497,16 @@ export class DetachedStdioHandle {
       return;
     }
     this.killedFlag = true;
+    // Nobody takes over a process being ended; its held output would keep its exit back.
+    if (this.heldOutput !== null) {
+      const exit = this.heldOutput.find((item) => item.kind === "exit");
+      this.heldOutput = null;
+      this.heldBytes = 0;
+      if (exit !== undefined && exit.kind === "exit") {
+        this.deliverExit(exit.seq, exit.exitCode, exit.signal);
+        return;
+      }
+    }
     const socket = this.socket;
     if (socket === null || socket.destroyed) {
       this.pendingActions.push({ kind: "terminate", ...(signal !== undefined ? { signal } : {}) });
@@ -575,10 +631,6 @@ export class DetachedStdioHandle {
     const actions = this.pendingActions;
     this.pendingActions = [];
     for (const action of actions) {
-      if (action.kind === "detach") {
-        void this.detach();
-        return;
-      }
       if (action.kind === "terminate") {
         void this.terminate(action.signal);
         return;
@@ -628,28 +680,22 @@ export class DetachedStdioHandle {
       case "frame": {
         if (message.seq > this.lastAckedSeqValue) {
           this.lastAckedSeqValue = message.seq;
-          this.recentFrames.push({ seq: message.seq, receivedAt: this.now() });
-          this.settleFrames();
-          this.onAckSeq?.(message.seq);
         }
         if (message.stream === "stdout") {
-          this.writeStdout(message.chunk);
+          this.deliverStdout(message.seq, message.chunk);
         } else if (message.stream === "stderr") {
+          // Stderr is diagnostics only; nothing replays it, so it never waits on the reader.
           this.onStderr?.(message.chunk);
           if (!this.stderr.writableEnded) {
             this.stderr.write(message.chunk, "utf8");
           }
         } else if (message.stream === "exit") {
-          this.recordExit(message.exitCode, message.signal);
-          // End client socket so broker sees exit was acknowledged and can exit cleanly.
-          if (this.socket !== null && !this.socket.destroyed) {
-            this.socket.end();
-          }
+          this.deliverExit(message.seq, message.exitCode, message.signal);
         }
         break;
       }
       case "pending_request": {
-        this.writeStdout(message.chunk);
+        this.deliverStdout(undefined, message.chunk);
         break;
       }
       case "replay_complete": {
@@ -678,7 +724,7 @@ export class DetachedStdioHandle {
         if (!this.attachedSettled) {
           this.failStartup(error);
         } else {
-          this.events.emit("error", error);
+          this.emitError(error);
         }
         break;
       }
@@ -686,6 +732,11 @@ export class DetachedStdioHandle {
         break;
       }
     }
+  }
+
+  // An "error" event with no listener throws from inside the socket's data handler.
+  private emitError(error: Error): void {
+    if (this.events.listenerCount("error") > 0) this.events.emit("error", error);
   }
 
   private recordExit(exitCode: number | null, signal: NodeJS.Signals | null): void {
@@ -697,7 +748,6 @@ export class DetachedStdioHandle {
     if (this.heldOutput === null && !this.stdout.writableEnded) this.stdout.end();
     if (!this.stderr.writableEnded) this.stderr.end();
     this.resolveExit({ exitCode, signal });
-    this.onExit?.(exitCode, signal);
     this.events.emit("exit", exitCode, signal);
   }
 

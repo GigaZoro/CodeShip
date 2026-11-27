@@ -34,13 +34,20 @@ const AUTH_TIMEOUT_MS = 5_000;
 const MAX_UNANSWERED_REQUESTS = 1_000;
 const MAX_CLIENT_LINE_BYTES = 64 * 1024 * 1024;
 const POST_EXIT_IDLE_CAP_MS = 60_000;
+/** Past this a stdin line is not a JSON-RPC reply worth tracking; it is passed on untracked. */
+const MAX_TRACKED_STDIN_LINE_CHARS = 1024 * 1024;
+/** A client that does not read the last frames in this long is not going to. */
+const CLIENT_CLOSE_WAIT_MS = 1_000;
 
 interface BufferedFrameEntry {
   readonly frame: BrokerFrame;
   readonly bytes: number;
 }
 
-function readSelfProcessIdentity(platform: NodeJS.Platform): string | null {
+/** When this process started: what `ps` and Get-Process report, unlike the time it got here. */
+const selfStartedAtMs = () => Math.round(Date.now() - process.uptime() * 1_000);
+
+export function readSelfProcessIdentity(platform: NodeJS.Platform): string | null {
   if (platform === "linux") {
     try {
       const stat = NodeFS.readFileSync("/proc/self/stat", "utf8");
@@ -62,12 +69,12 @@ function readSelfProcessIdentity(platform: NodeJS.Platform): string | null {
           stdio: ["ignore", "pipe", "ignore"],
         },
       );
-      return recordedIdentity(platform, out) ?? timeIdentity(Date.now());
+      return recordedIdentity(platform, out) ?? timeIdentity(selfStartedAtMs());
     } catch {
-      return timeIdentity(Date.now());
+      return timeIdentity(selfStartedAtMs());
     }
   }
-  return timeIdentity(Date.now());
+  return timeIdentity(selfStartedAtMs());
 }
 
 function tokensEqual(expected: string, actual: string): boolean {
@@ -288,9 +295,18 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
   };
 
   let stdinPartialLine = "";
+  let stdinSkippingLine = false;
   const trackClientInput = (text: string) => {
     const lines = (stdinPartialLine + text).split("\n");
     stdinPartialLine = lines.pop() ?? "";
+    if (stdinSkippingLine && lines.length > 0) {
+      lines.shift();
+      stdinSkippingLine = false;
+    }
+    if (stdinPartialLine.length > MAX_TRACKED_STDIN_LINE_CHARS) {
+      stdinPartialLine = "";
+      stdinSkippingLine = true;
+    }
     for (const line of lines) {
       const message = parseJsonRpcLine(line);
       if (message !== undefined && message.method === undefined && message.id !== undefined) {
@@ -323,20 +339,9 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     return frame;
   };
 
-  const captureWindowsRoot = config.platform === "win32" ? windowsTreeRootFromNow() : undefined;
-  const child = NodeChildProcess.spawn(config.command, [...config.args], {
-    cwd: config.cwd,
-    env: config.env,
-    stdio: ["pipe", "pipe", "pipe"],
-    detached: isPosix,
-    windowsHide: true,
-    shell: config.shell,
-  });
-  let windowsChildRoot =
-    captureWindowsRoot !== undefined && child.pid !== undefined
-      ? captureWindowsRoot(child.pid)
-      : undefined;
-
+  // Spawned once the socket listens: a broker that cannot serve must not leave a child behind.
+  let child!: NodeChildProcess.ChildProcessWithoutNullStreams;
+  let windowsChildRoot: WindowsProcessTreeRoot | undefined;
   const stdoutDecoder = new NodeStringDecoder.StringDecoder("utf8");
   const stderrDecoder = new NodeStringDecoder.StringDecoder("utf8");
 
@@ -346,28 +351,6 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     const frame = pushFrame({ type: "frame", stream: "stdout", chunk: text });
     if (config.jsonRpc) trackChildLines(text, frame.seq);
   };
-  child.stdout.on("data", (chunk: Buffer) => {
-    const text = stdoutPartialLine + stdoutDecoder.write(chunk);
-    const lastNewline = text.lastIndexOf("\n");
-    if (lastNewline === -1) {
-      stdoutPartialLine = text;
-      return;
-    }
-    stdoutPartialLine = text.slice(lastNewline + 1);
-    pushStdout(text.slice(0, lastNewline + 1));
-  });
-
-  child.stderr.on("data", (chunk: Buffer) => {
-    const text = stderrDecoder.write(chunk);
-    if (text.length > 0) {
-      pushFrame({ type: "frame", stream: "stderr", chunk: text });
-    }
-  });
-
-  child.stdin.on("error", () => {
-    // Ignore EPIPE when child exits while server writes stdin.
-  });
-
   const finishChildExit = (code: number | null, signal: NodeJS.Signals | null) => {
     if (childExited) return;
     childExited = true;
@@ -399,19 +382,6 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
       armOrphanTimer();
     }
   };
-
-  child.once("error", (error) => {
-    pushFrame({
-      type: "frame",
-      stream: "stderr",
-      chunk: `Session host failed to spawn child process: ${error.message}\n`,
-    });
-    finishChildExit(1, null);
-  });
-
-  child.once("close", (code, signal) => {
-    finishChildExit(code, signal);
-  });
 
   const clearOrphanTimer = () => {
     if (orphanTimer !== null) {
@@ -464,12 +434,22 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     if (activeClient !== null) {
       const client = activeClient;
       activeClient = null;
-      try {
-        client.end();
-        client.destroy();
-      } catch {
-        // Ignore socket teardown errors.
-      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          client.destroy();
+          resolve();
+        }, CLIENT_CLOSE_WAIT_MS);
+        timer.unref();
+        client.once("close", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        try {
+          client.end();
+        } catch {
+          client.destroy();
+        }
+      });
     }
 
     await new Promise<void>((resolve) => {
@@ -675,6 +655,84 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     });
   });
 
+  // The socket is created owner-only, so no other user can connect before the chmod either.
+  const previousUmask = isPosix ? process.umask(0o177) : undefined;
+  const listening = await new Promise<boolean>((resolve) => {
+    server.once("error", () => resolve(false));
+    server.listen(config.socketPath, () => resolve(true));
+  }).finally(() => {
+    if (previousUmask !== undefined) process.umask(previousUmask);
+  });
+  let private_ = listening;
+  if (listening && isPosix) {
+    try {
+      NodeFS.chmodSync(config.socketPath, 0o600);
+    } catch {
+      private_ = false;
+    }
+  }
+  if (!private_) {
+    server.close();
+    if (isPosix && listening) safeUnlink(config.socketPath);
+    process.exitCode = 2;
+    return;
+  }
+
+  const captureWindowsRoot = config.platform === "win32" ? windowsTreeRootFromNow() : undefined;
+  child = NodeChildProcess.spawn(config.command, [...config.args], {
+    cwd: config.cwd,
+    env: config.env,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: isPosix,
+    windowsHide: true,
+    shell: config.shell,
+  });
+  windowsChildRoot =
+    captureWindowsRoot !== undefined && child.pid !== undefined
+      ? captureWindowsRoot(child.pid)
+      : undefined;
+
+  child.stdout.on("data", (chunk: Buffer) => {
+    const text = stdoutPartialLine + stdoutDecoder.write(chunk);
+    const lastNewline = text.lastIndexOf("\n");
+    if (lastNewline === -1) {
+      // A line longer than the whole buffer could never be replayed anyway; pass it on in parts.
+      if (text.length > config.maxBufferBytes) {
+        stdoutPartialLine = "";
+        pushStdout(text);
+      } else {
+        stdoutPartialLine = text;
+      }
+      return;
+    }
+    stdoutPartialLine = text.slice(lastNewline + 1);
+    pushStdout(text.slice(0, lastNewline + 1));
+  });
+
+  child.stderr.on("data", (chunk: Buffer) => {
+    const text = stderrDecoder.write(chunk);
+    if (text.length > 0) {
+      pushFrame({ type: "frame", stream: "stderr", chunk: text });
+    }
+  });
+
+  child.stdin.on("error", () => {
+    // Ignore EPIPE when child exits while server writes stdin.
+  });
+
+  child.once("error", (error) => {
+    pushFrame({
+      type: "frame",
+      stream: "stderr",
+      chunk: `Session host failed to spawn child process: ${error.message}\n`,
+    });
+    finishChildExit(1, null);
+  });
+
+  child.once("close", (code, signal) => {
+    finishChildExit(code, signal);
+  });
+
   server.once("error", () => {
     void shutdown();
   });
@@ -684,21 +742,6 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
   });
   process.once("SIGINT", () => {
     void shutdown("SIGTERM");
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(config.socketPath, () => {
-      server.removeListener("error", reject);
-      if (isPosix) {
-        try {
-          NodeFS.chmodSync(config.socketPath, 0o600);
-        } catch {
-          // Best-effort permission tightening.
-        }
-      }
-      resolve();
-    });
   });
 
   const readyInfo: SessionHostReadyInfo = {
