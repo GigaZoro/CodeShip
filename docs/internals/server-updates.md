@@ -509,7 +509,7 @@ every thread update. The projection writes the `pinned_system_instructions` and
 only from that event, and adapter-facing reads hydrate the pin from those columns.
 Cold-history compaction keeps the latest pin event per provider thread. WebSocket wire
 projections drop the pin, and wire pin events carry an empty `text`. A database that has
-not run migration 117 reads every pin as `null`.
+not run migration 118 reads every pin as `null`.
 
 Pinned instructions survive server restarts, upgrades, native forks, and same-conversation
 account switches (`canResumeAcrossInstances`). A new native session (new thread, provider
