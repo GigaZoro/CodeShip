@@ -497,10 +497,11 @@ stores the instruction block it started with as `pinnedSystemInstructions: { key
 **Storage.** The pin is never part of a `provider-thread.updated` payload: `EventSink`
 strips it from every write, and adapters report a changed pin through a side field on
 their `provider_thread.updated` event. An adapter keeps the pin a native session runs with
-apart from the stored one: the provider threads it returns from ensure, resume, snapshot,
-rollback and fork carry the stored pin unchanged (none for a new provider thread), and
-`startTurn` reports the session's pin when it differs. A returned thread that carried the
-session's pin would make `startTurn` compare the pin with itself and never store it. The ingestor turns that field into a dedicated
+apart from the stored one: the provider threads it returns from ensure (a forced replacement
+too), resume, snapshot, rollback and fork carry the stored pin unchanged (none for a new
+provider thread), and `startTurn` reports the session's pin when it differs. A returned
+thread that carried the session's pin would make `startTurn` compare the pin with itself and
+never store it. The ingestor turns that field into a dedicated
 `provider-thread.pinned-instructions-set` event `{ providerThreadId, key, text }`, emitted
 only when the key or text changed, so the text is stored once per change instead of on
 every thread update. The projection writes the `pinned_system_instructions` and
