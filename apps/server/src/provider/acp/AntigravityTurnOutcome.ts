@@ -5,6 +5,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import type { OrchestrationV2ProviderFailure } from "@t3tools/contracts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { antigravityModelFamily } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -19,6 +20,7 @@ const MAX_ERROR_PAYLOAD_BYTES = 16_384;
 // The Go harness's rendering of a Google API error, as the agent's api_errors.py reads it.
 const API_ERROR = /Error (\d{3}), Message: (.+?), Status: ([A-Z_]+)/s;
 const QUOTA_EXHAUSTED = /\breason:QUOTA_EXHAUSTED\b/;
+const QUOTA_MODEL = /\bmetadata:map\[[^\]]*?\bmodel:([^\s\]]+)/;
 const RESET_TIMESTAMP = /\bquotaResetTimeStamp:([^\s\]]+)/;
 const RESET_DELAY = /\bquotaResetDelay:((?:\d+(?:\.\d+)?(?:ns|us|µs|μs|ms|h|m|s))+)(?=[\s\]])/;
 const GO_DURATION_PART = /(\d+(?:\.\d+)?)(ns|us|µs|μs|ms|h|m|s)/g;
@@ -85,10 +87,23 @@ function resetAtFrom(text: string, now: DateTime.Utc): string | undefined {
   return delayMs > 0 ? DateTime.formatIso(DateTime.add(now, { milliseconds: delayMs })) : undefined;
 }
 
+/**
+ * The quota meter a model draws on, as a scope only that meter's models fall under, so work on
+ * another meter of the account (Claude's third-party quota, Gemini's, Argon's) does not lift a
+ * refusal. Undefined for a model of no known family, which holds the whole account.
+ */
+function quotaMeterScope(model: string): string | undefined {
+  const words = antigravityModelFamily(model)?.split("-");
+  if (words === undefined) return undefined;
+  if (words[0] !== "gemini") return words[0];
+  return words.find((word) => word === "argon" || word === "neon") ?? "gemini";
+}
+
 function turnFailure(
   stopReason: EffectAcpSchema.StopReason,
   step: LastStep | undefined,
   now: DateTime.Utc,
+  model: string,
 ): OrchestrationV2ProviderFailure | undefined {
   const errorText =
     step?.type === ERROR_STEP_TYPE
@@ -98,6 +113,8 @@ function turnFailure(
   if (errorText === undefined && stopReason !== "refusal") return undefined;
   const text = errorText ?? "";
   const apiError = API_ERROR.exec(text);
+  // The error names the refused model; a typed refusal without one is the turn's.
+  const modelScope = quotaMeterScope(QUOTA_MODEL.exec(text)?.[1] ?? model);
   if (stopReason === "refusal" || QUOTA_EXHAUSTED.test(text)) {
     return makeProviderFailure({
       class: "usage_limit",
@@ -105,6 +122,7 @@ function turnFailure(
       code: apiError?.[3] ?? "QUOTA_EXHAUSTED",
       retryable: true,
       resetAt: resetAtFrom(text, now) ?? null,
+      modelScope,
     });
   }
   if (apiError === null) {
@@ -120,6 +138,7 @@ function turnFailure(
     message: message!.trim(),
     code: status ?? null,
     retryable: rateLimited || Number(httpStatus) >= 500,
+    modelScope: rateLimited ? modelScope : undefined,
   });
 }
 
@@ -134,9 +153,10 @@ const conversationSegments = ["antigravity-acp", "conversations"];
 export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.watch")(function* (
   profileDirectory: string,
   sessionId: string,
+  model: string,
 ) {
   const typedOnly = (result: EffectAcpSchema.PromptResponse) =>
-    DateTime.now.pipe(Effect.map((now) => turnFailure(result.stopReason, undefined, now)));
+    DateTime.now.pipe(Effect.map((now) => turnFailure(result.stopReason, undefined, now, model)));
   if (!NATIVE_SESSION_ID.test(sessionId)) return typedOnly;
   const segments = [...conversationSegments, `${sessionId}.db`];
   const before = yield* Effect.tryPromise(async () => {
@@ -189,6 +209,6 @@ export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.w
           Effect.orElseSucceed(() => undefined),
         )
       : undefined;
-    return turnFailure(result.stopReason, step, yield* DateTime.now);
+    return turnFailure(result.stopReason, step, yield* DateTime.now, model);
   });
 });

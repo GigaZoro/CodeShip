@@ -160,5 +160,9 @@ If Google reports `SUBSCRIPTION_REQUIRED`, an account restriction, or a usage li
 follow the provider's message and any retry time. See [Google's account plans][plans]
 for eligibility.
 
+A quota refusal holds only the models that draw on that quota until it resets: Claude
+models, GPT models, Gemini and Gemini Argon are held separately. Other models on the same
+account keep working, and a chat waiting on the quota resumes after the reset.
+
 [registry]: https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json
 [plans]: https://antigravity.google/docs/plans

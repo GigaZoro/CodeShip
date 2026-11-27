@@ -293,8 +293,8 @@ export function makeAntigravityAcpAdapterFlavor(
     ...(profileDirectory === undefined
       ? {}
       : {
-          watchPromptOutcome: (sessionId: string) =>
-            watchAntigravityPromptOutcome(profileDirectory, sessionId),
+          watchPromptOutcome: (sessionId: string, model: string) =>
+            watchAntigravityPromptOutcome(profileDirectory, sessionId, model),
         }),
   };
 }

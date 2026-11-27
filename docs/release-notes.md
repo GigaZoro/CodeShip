@@ -26,6 +26,10 @@
 - **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
 - Applying the preset leaves notification settings untouched, lists each setting it changed, and offers **Undo** (inline in Settings, in the confirmation toast on web and desktop, and as **Undo Calm preset** in the mobile command palette) to restore your prior values.
 
+## 2026-11-27 — Antigravity quota holds wait for their reset
+
+- When Antigravity refuses a turn because a quota ran out, T3.CodeShip holds only the models on that quota (Claude, GPT, Gemini or Gemini Argon) until the reset Google reports. Work on another quota of the same account no longer ends the hold early, so a waiting chat is no longer resumed every few minutes only to be refused again.
+
 ## 2026-11-27 — Pin thread system instructions across server updates
 
 - Resumed Claude and Antigravity chats keep the system instructions stored when their native session started, so a release that only rewords those instructions no longer invalidates their provider prompt cache. A chat rebuilds its instructions when its MCP or device-tool availability changes, or when a release bumps the instruction epoch. Codex chats are unchanged: Codex adds T3's context after the conversation so far, and only when it changes, so its cache already survives an update.
