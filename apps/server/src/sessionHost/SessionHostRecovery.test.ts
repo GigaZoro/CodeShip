@@ -1310,6 +1310,59 @@ it.live("ends hosts a stopped server left running and forgets them with their to
   );
 });
 
+it.live("stops a host instead of detaching it when what was queued for it is not delivered", () => {
+  const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sh-undelivered-"));
+  let childPid: number | null = null;
+  let brokerPid: number | null = null;
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const sessionHost = yield* SessionHostService.SessionHostService;
+    const threadId = ThreadId.make(`thread_${NodePath.basename(tempBaseDir)}`);
+    const handle = yield* sessionHost.spawn({
+      providerSessionId: ProviderSessionId.make(`ps_${NodePath.basename(tempBaseDir)}`),
+      threadId,
+      driver: "codex",
+      command: process.execPath,
+      args: ["-e", ECHO_CHILD_SCRIPT],
+      cwd: tempBaseDir,
+      env: process.env,
+    });
+    childPid = (
+      JSON.parse(yield* Effect.promise(() => readNextLine(handle.stdout))) as { pid: number }
+    ).pid;
+    const rows = yield* sql<{ readonly broker_pid: number }>`
+      SELECT broker_pid FROM session_hosts WHERE id = ${handle.sessionHostId}
+    `;
+    brokerPid = rows[0]?.broker_pid ?? null;
+
+    const detached = yield* sessionHost.detachAllForUpdate({
+      prepare: () =>
+        Effect.succeed({
+          deliver: Effect.never,
+          drain: Effect.void,
+          takenOverThreads: Effect.succeed([threadId]),
+        }),
+    });
+
+    assert.deepEqual(detached, []);
+    assert.isFalse(yield* sessionHost.isThreadDetachedForUpdate(threadId));
+    assert.deepEqual(
+      yield* sql`SELECT id FROM session_hosts WHERE status = 'detached_for_update'`,
+      [],
+    );
+    assert.isFalse(isProcessAlive(childPid), "The undelivered host's process still runs");
+  }).pipe(
+    Effect.provide(sessionHostLayer),
+    Effect.ensuring(
+      Effect.sync(() => {
+        stopSpawned([childPid, brokerPid]);
+        NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
+      }),
+    ),
+    Effect.provide(isolatedBaseLayer(tempBaseDir)),
+  );
+});
+
 const refusesReattach = (
   name: string,
   tamper: (
