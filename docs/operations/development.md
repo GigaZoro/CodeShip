@@ -247,15 +247,19 @@ changed paths. One nobody edited was written inside the checkout by a check or a
 write under the system temp folder or a gitignored folder instead. Test groups run concurrently within the test step's worker
 budget. Server groups run one at a time alongside other packages. If Vite+ interrupts an in-flight
 group after another group fails, the test step runs it again and reports failures across the full
-selection. Each run uses a private copy of the cache kept for its HEAD. When the test step ends,
-even after a timeout or interruption, it publishes passed groups if HEAD and runtime inputs still
-match. A change to either fails the test step. A force-killed run leaves its unpublished results in
-the private copy. A HEAD's cache is removed after three days without a run. Retries across worktrees
-and chats, each with its own install, reuse groups at the same commit with the same file modes
-and execute access, matching inputs, install state, tracked environment, user, umask, and host
-capabilities. A group's inputs are the checkout files its tests read, hashed when the group ends.
-The machine's programs, network interfaces and cgroups, Git state beyond the commit, the read and
-write permissions of checkout files, and files another process rewrites during the run are not
+selection. Each run uses a private copy of a cache that every commit with the same install shares;
+once that cache reaches 256 MiB, runs start a new one, and a cache is removed after three days
+without a run. When the test step ends, even after a timeout or interruption, it publishes passed
+groups if HEAD and runtime inputs still match. A change to either fails the test step. A
+force-killed run leaves its unpublished results in the private copy. Retries and rebases across
+worktrees and chats, each with its own install, reuse a group when the tree's file modes, link
+targets and gitlinks, execute access, the group's inputs, install state, tracked environment, user,
+umask, and host capabilities match, at any commit. A group's inputs are the checkout files its tests
+read, hashed when the group ends. A group in which Git opens this checkout's repository, as Git's
+trace2 events report, also keys on HEAD, so it reruns at every commit; Git run with `GIT_*`
+variables removed or replaced, or a test that reads `.git` itself, escapes that and needs an
+uncached task. The machine's programs, network interfaces and cgroups, the read and write
+permissions of checkout files, and files another process rewrites during the run are not
 inputs, so a pass still replays after a program its tests run
 changes or goes away. A test whose coverage they decide, such as one that skips cases without a
 program or a cgroup it may join, or runs a program a variable names, or that writes a report another

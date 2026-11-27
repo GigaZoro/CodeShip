@@ -120,6 +120,12 @@ const changedTestEnv = "T3_CHECK_CHANGED_TEST_RUNTIME";
 const testInstallEnv = "T3_CHECK_CHANGED_TEST_INSTALL";
 const testWorkersEnv = "T3CODE_TEST_MAX_WORKERS";
 const checkoutEnv = "T3_CHECK_CHANGED_TEST_CHECKOUT";
+/**
+ * The commit a check runs at. No task's key holds it: a group's runner reads it through Vite+'s
+ * runner client, which adds it to that group's key, only when the group's tests read this checkout's
+ * Git state.
+ */
+export const CHECKOUT_HEAD_ENV = "T3_CHECK_CHANGED_TEST_HEAD";
 const searchPathEnv = "T3_CHECK_CHANGED_TEST_PATH";
 const workspaceRoot = NodePath.resolve(import.meta.dirname, "../..");
 // Tests run without the user's global Git config, as on CI. Git for Windows maps /dev/null too.
@@ -310,10 +316,12 @@ export function changedTestRequestEnv(
   workers: number,
   cache: string,
   checkout: string,
+  head: string,
   install = installFingerprint(),
 ) {
   return {
     [requestFile]: file,
+    [CHECKOUT_HEAD_ENV]: head,
     [changedTestEnv]: runtime,
     [testInstallEnv]: install,
     T3_CACHED_TESTS: "",

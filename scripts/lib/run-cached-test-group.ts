@@ -1,4 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - the standalone runner uses Vitest's Node API.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeModule from "node:module";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
   createCLI,
@@ -7,7 +11,62 @@ import {
   type TestModule,
   type TestSpecification,
 } from "vite-plus/test/node";
+import { CHECKOUT_HEAD_ENV } from "./cached-tests.ts";
 import { validateNestedVitestOptions } from "./cached-vitest-options.ts";
+
+const checkout = NodePath.resolve(import.meta.dirname, "../..");
+
+// Git writes a trace2 file per process into the folder, with a def_repo event naming the worktree
+// of each repository it opens. A def_repo it cannot parse counts as a read of this checkout.
+function openedCheckout(traces: string, root: string) {
+  for (const file of NodeFS.readdirSync(traces)) {
+    for (const line of NodeFS.readFileSync(NodePath.join(traces, file), "utf8").split("\n")) {
+      if (!line.includes('"def_repo"')) continue;
+      let worktree: unknown;
+      try {
+        worktree = JSON.parse(line).worktree;
+      } catch {
+        return true;
+      }
+      if (typeof worktree !== "string" || NodePath.resolve(worktree) === root) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Cached groups key on the files their tests read, not on HEAD, so a test that reads this
+ * checkout's Git state keys its group on HEAD through Vite+'s runner client. When Git cannot show
+ * that it traces opening this checkout, every group counts as a reader.
+ */
+function traceCheckoutGit() {
+  // Outside `vp run` no cache records the group.
+  const client = process.env.VP_RUN_NODE_CLIENT_PATH;
+  if (!client) return undefined;
+  const runner = NodeModule.createRequire(import.meta.url)(client).load();
+  if (runner.getEnv(CHECKOUT_HEAD_ENV, { tracked: false }) === undefined) {
+    throw new Error(`Vite+ did not pass ${CHECKOUT_HEAD_ENV} to the cached test group`);
+  }
+  const keyOnHead = () => runner.getEnv(CHECKOUT_HEAD_ENV);
+  const traces = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-git-trace-"));
+  const probe = NodePath.join(traces, "probe");
+  const tests = NodePath.join(traces, "tests");
+  NodeFS.mkdirSync(probe);
+  NodeFS.mkdirSync(tests);
+  const root = NodeFS.realpathSync(checkout);
+  const traced =
+    NodeChildProcess.spawnSync("git", ["rev-parse", "--git-dir"], {
+      cwd: root,
+      env: { ...process.env, GIT_TRACE2_EVENT: probe },
+      stdio: "ignore",
+    }).status === 0 && openedCheckout(probe, root);
+  process.env.GIT_TRACE2_EVENT = tests;
+  return () => {
+    delete process.env.GIT_TRACE2_EVENT;
+    if (!traced || openedCheckout(tests, root)) keyOnHead();
+    NodeFS.rmSync(traces, { recursive: true, force: true });
+  };
+}
 
 async function runCachedTestGroup(args: string[]) {
   // check:changed passes the files its package config leaves out, as `vp test run` would.
@@ -44,6 +103,8 @@ async function runCachedTestGroup(args: string[]) {
   }
   if (filters.some((filter) => filter.includes(":"))) options.includeTaskLocation ??= true;
   if (typeof options.typecheck?.only === "boolean") options.typecheck.enabled ??= true;
+  // Only check:changed passes the commit, which test:cached groups have never keyed on.
+  const finishGitTrace = allowExcluded ? traceCheckoutGit() : undefined;
 
   const identity = (spec: TestSpecification) =>
     JSON.stringify([spec.project.name, spec.moduleId, spec.pool]);
@@ -130,7 +191,11 @@ async function runCachedTestGroup(args: string[]) {
       throw new Error("Vitest did not complete the requested test group: " + files.join(", "));
     }
   } finally {
-    await context.exit();
+    try {
+      finishGitTrace?.();
+    } finally {
+      await context.exit();
+    }
   }
 }
 
