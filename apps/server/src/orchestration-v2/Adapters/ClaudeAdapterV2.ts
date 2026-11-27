@@ -10839,10 +10839,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? "failed"
                 : terminalStatusFromResult(message, failureHint);
             const echoed = claudeEchoedPromptUuids(message);
+            // The CLI echoes a prompt once, in the turn that consumed it. A notification can open
+            // that turn and give it its origin, so the echo alone proves the reply is ours.
             const ownedReply =
-              echoed.length > 0 &&
-              echoed.every((uuid) => claudeOwnsNativePrompt(context, uuid)) &&
-              (message.origin === undefined || message.origin.kind === "human");
+              echoed.length > 0 && echoed.every((uuid) => claudeOwnsNativePrompt(context, uuid));
             const ownsReport =
               ownedReply && wait.report !== null && echoed.includes(wait.report.uuid);
             const latestInputUuid = wait.latestSteerUuid ?? context.promptUuid;

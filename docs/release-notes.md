@@ -1,3 +1,7 @@
+## 2026-11-27 — Claude chats no longer fail after a background task's report
+
+- A Claude chat that waited on its own background command no longer fails with "Claude did not return a verifiable report for the awaited native tasks." when Claude writes the report in the same turn as the command's completion notice.
+
 ## 2026-11-27 — Thread details start closed, with the essentials in the header
 
 - The Details column now starts closed on web and desktop, and opening or closing it with **Details** holds for every thread. A new thread keeps its column open to choose its machine and branch. Needs you keeps its place at the foot of the column either way.
