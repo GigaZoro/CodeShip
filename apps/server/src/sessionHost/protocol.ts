@@ -38,6 +38,8 @@ export interface SessionHostConfig {
    * sent that no client answered, so a server that attaches later can still answer it.
    */
   readonly jsonRpc: boolean;
+  /** Run `command` through the shell, as resolveSpawnCommand asks for Windows `.cmd` shims. */
+  readonly shell: boolean;
 }
 
 export interface SessionHostReadyInfo {

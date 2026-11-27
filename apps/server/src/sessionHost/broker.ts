@@ -197,6 +197,7 @@ function readAndUnlinkConfig(configPath: string): SessionHostConfig {
           : DEFAULT_MAX_BUFFER_FRAMES,
       readyFilePath: parsed.readyFilePath,
       jsonRpc: parsed.jsonRpc === true,
+      shell: parsed.shell === true,
     };
   } finally {
     safeUnlink(configPath);
@@ -328,6 +329,7 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     stdio: ["pipe", "pipe", "pipe"],
     detached: isPosix,
     windowsHide: true,
+    shell: config.shell,
   });
   let windowsChildRoot =
     captureWindowsRoot !== undefined && child.pid !== undefined

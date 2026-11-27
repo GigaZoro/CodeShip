@@ -98,6 +98,8 @@ export interface SpawnSessionHostInput {
   readonly args: ReadonlyArray<string>;
   readonly cwd: string;
   readonly env: Readonly<Record<string, string | undefined>>;
+  /** From resolveSpawnCommand: the command is a shell command line (Windows `.cmd` shims). */
+  readonly shell?: boolean;
   readonly orphanTtlMs?: number;
   readonly maxBufferBytes?: number;
   readonly maxBufferFrames?: number;
@@ -322,14 +324,12 @@ const make = Effect.gen(function* () {
       );
 
   const removeAuthToken = (id: string) =>
-    secretStore
-      .remove(authTokenSecretName(id))
-      .pipe(
-        Effect.ignore({
-          log: "Error",
-          message: `Failed to remove the auth token of session host ${id}`,
-        }),
-      );
+    secretStore.remove(authTokenSecretName(id)).pipe(
+      Effect.ignore({
+        log: "Error",
+        message: `Failed to remove the auth token of session host ${id}`,
+      }),
+    );
 
   const persistAckSeq = (id: string, seq: number) =>
     nowIso().pipe(
@@ -504,22 +504,14 @@ const make = Effect.gen(function* () {
 
       if (!isWindows) {
         const scoped = Option.isSome(agentScopeOption)
-          ? yield* agentScopeOption.value
-              .wrap({
-                command: runtime,
-                args: brokerArgs,
-                name: "session-host",
-                env: brokerEnv,
-                cwd,
-                survivesRestart: true,
-              })
-              .pipe(
-                Effect.orElseSucceed(() => ({
-                  command: runtime,
-                  args: brokerArgs,
-                  unit: undefined,
-                })),
-              )
+          ? yield* agentScopeOption.value.wrap({
+              command: runtime,
+              args: brokerArgs,
+              name: "session-host",
+              env: brokerEnv,
+              cwd,
+              survivesRestart: true,
+            })
           : { command: runtime, args: brokerArgs, unit: undefined };
 
         yield* Effect.tryPromise({
@@ -716,6 +708,7 @@ const make = Effect.gen(function* () {
       maxBufferFrames: input.maxBufferFrames ?? DEFAULT_MAX_BUFFER_FRAMES,
       readyFilePath,
       jsonRpc: input.driver === "codex",
+      shell: input.shell === true,
     };
     NodeFS.writeFileSync(configPath, `${JSON.stringify(config)}\n`, {
       encoding: "utf8",

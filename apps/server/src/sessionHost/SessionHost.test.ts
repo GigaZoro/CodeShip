@@ -179,6 +179,7 @@ const spawnTestBroker = async (
     maxBufferFrames: overrides.maxBufferFrames ?? 1_000,
     readyFilePath,
     jsonRpc: true,
+    shell: false,
   };
   NodeFS.writeFileSync(configPath, `${JSON.stringify(config)}\n`, { mode: 0o600 });
 
