@@ -399,12 +399,35 @@ increasing sequence number (`seq`) in a bounded ring buffer.
 On planned-update shutdown (detected via [`isPlannedUpdateShutdown`](../../apps/server/src/cloud/updateHandoff.ts),
 which checks both the launcher update handoff and the desktop restart marker),
 [`SessionHostService.detachAllForUpdate`](../../apps/server/src/sessionHost/SessionHostService.ts)
-sends `{ type: "detach" }` to each live broker, marks its row `detached_for_update` and
-leaves the broker and provider child running. The row's `last_acked_seq` is the replay
-point: the newest frame received at least `DETACH_REPLAY_OVERLAP_MS` (5 s) before the
-detach, so the frames the old server read but may not have stored yet are delivered again
-(at least once). The stream end a detach causes is not a provider failure: the session
-manager leaves that session and its run to the shutdown. Normal shutdowns, explicit stops,
+keeps a broker only once everything its server read is persisted, so the next server
+replays exactly the rest, with no overlap and no gap. For each live broker it:
+
+1. Holds the output that has not reached the reader yet (`holdForDetach`) and takes the
+   seq of the last frame the reader got. That seq becomes the row's `last_acked_seq`.
+2. Asks `ProviderSessionManagerV2.prepareDetachForUpdate` for the threads the process
+   serves and a drain. Codex's drain writes a `t3/outputBarrier` line past the held output
+   (`injectOutputLine`). The app-server reader handles lines in order, so the barrier
+   arrives after every line it already got. The drain then flushes the buffered text
+   deltas and returns how many events the adapter sent. The session manager waits until
+   its event pump has handled that many events. Then it waits until each run subscriber
+   has read past a barrier signal, or stopped reading.
+3. Sends `{ type: "detach" }` once the drain finishes within `DETACH_DRAIN_TIMEOUT`
+   (2 s). It then marks the row `detached_for_update` with every thread the process
+   serves, and leaves the broker and provider child running.
+
+The process is stopped instead (fail closed) when no session uses it, when its runtime
+cannot drain, or when the drain fails, dies or times out. Its threads then continue as
+after any restart.
+
+The desktop restart sends `SIGTERM` before the shutdown finalizer runs. A broker's child
+is outside the server's process group, so the signal does not reach it, and the event
+pump keeps handling that session's events until the detach. A normal child dies with the
+server, and its events after the signal are dropped. The stream end a detach causes is
+not a provider failure: the session manager leaves that session and its runs to the
+shutdown.
+
+Each kept session costs one extra process: its `__session-host` broker, the server
+binary in broker mode, beside the provider child. Normal shutdowns, explicit stops,
 thread closes, and session evictions send `{ type: "terminate" }`. The broker signals the
 child process group, escalates to `SIGKILL` after `DEFAULT_TERMINATE_GRACE_MS`, and sends
 the exit frame before it closes the connection; `terminate` waits for that frame, so a
@@ -419,16 +442,23 @@ reattached handle holds that output until a taker releases it. If the broker's r
 dropped frames the old server never read, the host is ended: a turn cannot be rebuilt from
 part of its output.
 
-Recovery then hands each reattached host to `ProviderTurnStartService.adopt` for the run
-still running on its thread. The adapter takes the stdio handle over
-(`SessionHostService.takeAdoptable`): Codex skips `initialize` and `thread/start` or
-`thread/resume`, uses prefixed request ids so replies to the old server's requests are
-ignored, rebuilds the turn's state from the projection, and releases the held output into
-the normal event ingestor. Replayed and live notifications finish the same run, and an
-approval Codex asked while no server was attached becomes a pending runtime request that
-can be answered. The adopted process finishes only that turn; the next turn on the thread
-starts a fresh session. If adoption fails, recovery logs the error, terminates the host
-and waits for its exit, and the thread recovers through `RestartContinuation`, as it does
+Recovery then hands each reattached host to `ProviderTurnStartService.adopt` for every
+run still running on the threads its process serves, each under its thread's lock. The
+adapter takes the stdio handle over (`SessionHostService.takeAdoptable`). Codex then:
+
+- skips `initialize` and `thread/start` or `thread/resume`;
+- uses prefixed request ids, so replies to the old server's requests are ignored;
+- rebuilds each turn's state from the projection, seeding active assistant, plan and
+  command items with their persisted text, so replayed deltas extend it.
+
+Once every run is registered, the held output is released into the normal event
+ingestor. Replayed and live notifications finish the same runs, and an approval Codex
+asked while no server was attached becomes a pending runtime request that can be
+answered. The adopted process finishes only the turns it was running; the next turn
+starts a fresh session with this server's MCP credential and instructions. If any
+adoption fails, recovery logs the error, closes the session, terminates the host and
+waits for its exit. Runs already adopted then fail through their live session, and the
+other threads recover through `RestartContinuation`, as they do
 when a broker exited or failed identity verification while the server was down (its row
 is marked `dead`). Any detached broker that is never reattached self-terminates its child
 process group and removes its socket after `orphanTtlMs` (default 15 minutes).
@@ -437,9 +467,7 @@ MCP credential hashes (`mcp_session_credentials`) are saved with the MCP endpoin
 were issued for. After the reattach outcome is known, startup keeps only the credentials
 of threads whose process was taken over and deletes the rest from SQLite and memory. A
 restored credential is refused when the new server's MCP endpoint (host and port) differs
-from the saved one, and an unreadable saved credential counts as unusable. Ack sequence
-numbers are flushed in the background; the service writes the pending ones before its
-database closes.
+from the saved one, and an unreadable saved credential counts as unusable.
 
 ### Which drivers run in a session host
 

@@ -1,7 +1,9 @@
 ## 2026-11-27 — Codex turns keep running through planned server updates
 
 - A running Codex turn keeps going in its app-server process during a planned update. The new server takes that process over and finishes the same run, with no continuation prompt and no lost context. An approval Codex asked while no server was attached can be answered.
-- If the process cannot be taken over (it exited, its output was cut, or adoption failed), the old process is stopped and the thread continues as after any restart. Claude and ACP agents still restart and continue; they do not survive an update.
+- Every thread whose turn shares that app server is taken over too. Output is neither repeated nor lost: the old server stores everything it read before it lets the process go, and the new server replays exactly the rest.
+- If the process cannot be taken over (its output could not be stored in time, it exited, its output was cut, or adoption failed), the old process is stopped and its threads continue as after any restart. Claude and ACP agents still restart and continue; they do not survive an update.
+- Each Codex session costs one extra background process, its session host.
 - MCP credentials survive only for threads whose process was taken over and stop working if the MCP endpoint moved.
 
 ## 2026-11-27 — Capture what annoys you in the app
