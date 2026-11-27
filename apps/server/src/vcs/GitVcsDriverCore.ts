@@ -2236,13 +2236,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   // `--abbrev-ref` prints `remotes/origin/<name>` when a local `origin/<name>` branch exists.
   const readCurrentUpstreamRef = Effect.fn("readCurrentUpstreamRef")(function* (cwd: string) {
-    const upstreamRef = yield* runGitStdout(
+    const upstreamRef = yield* executeGit(
       "GitVcsDriver.resolveCurrentUpstream",
       cwd,
       ["rev-parse", "--symbolic-full-name", "@{upstream}"],
-      true,
+      { allowNonZeroExit: true, env: { LC_ALL: "C" } },
     ).pipe(
-      Effect.map((stdout) => trimAsciiWhitespace(stdout).replace(/^refs\/(?:remotes|heads)\//, "")),
+      Effect.map((result) =>
+        trimAsciiWhitespace(result.stdout).replace(/^refs\/(?:remotes|heads)\//, ""),
+      ),
     );
 
     if (upstreamRef.length === 0 || upstreamRef === "@{upstream}") {
@@ -3987,6 +3989,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       statusArgs,
       {
         allowNonZeroExit: true,
+        // Avoid locale-dependent branch shortening (e.g. Apple Git corrupting UTF-8 NBSP in upstream refs).
+        env: { LC_ALL: "C" },
         maxOutputBytes: REVIEW_METADATA_MAX_OUTPUT_BYTES,
       },
     ).pipe(
@@ -7042,6 +7046,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     cwd: string,
     refName: string,
   ) {
+    if (refName === "HEAD") return refName;
     const local = yield* executeGit(
       "GitVcsDriver.resolveWorktreeStartPoint",
       cwd,

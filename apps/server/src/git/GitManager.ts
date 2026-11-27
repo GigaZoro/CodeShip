@@ -3194,6 +3194,7 @@ export const make = Effect.gen(function* () {
           yield* emit({
             kind: "phase_started",
             phase: "pr",
+            step: "generate_change_request",
             label: `Generating ${terms.shortLabel} content...`,
           });
           const baseRangeRef = yield* resolveBaseRangeRef(cwd, baseRef);

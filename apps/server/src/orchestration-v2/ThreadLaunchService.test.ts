@@ -597,7 +597,7 @@ it.effect.each(
     const history =
       yield* sql`SELECT trigger,scheduled_for,outcome,thread_id FROM scheduled_task_runs WHERE task_id = ${id} ORDER BY rowid`;
     const receipts =
-      yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id LIKE 'scheduled-task:%' AND command_type = 'message.dispatch' AND status = 'accepted'`;
+      yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id LIKE 'scheduled-task:%' AND command_type IN ('thread.create', 'message.dispatch') AND status = 'accepted'`;
     const shells = yield* threads.listProjectThreads({ projectId, includeSubagents: false });
     const projections = yield* Effect.forEach(shells, (shell) =>
       threads.getThreadProjection(shell.id),

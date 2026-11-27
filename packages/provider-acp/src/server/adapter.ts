@@ -6881,11 +6881,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             if (live) {
               yield* applyLateBackgroundMutations(notification.sessionId, lateBackgroundMutations);
             }
-            if (
-              text.trim().length > 0 &&
-              lateBackgroundMutations.length === 0 &&
-              !acpIsMonitorChatter(text)
-            ) {
+            if (lateBackgroundMutations.length === 0 && !acpIsMonitorChatter(text)) {
               yield* appendLoadedHistory(
                 notification,
                 update.sessionUpdate === "user_message_chunk"
@@ -8578,9 +8574,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               const admitted = yield* runRuntimeCallbackAtGeneration(
                 handlerGeneration,
                 Effect.gen(function* () {
-                  const context = followsAgentWorkState
-                    ? yield* Ref.get(activeTurn)
-                    : yield* activeContext;
+                  const context = yield* Ref.get(activeTurn);
                   const disposition = dispositionFor(
                     context?.input.runtimePolicy ?? latestRuntimePolicy,
                     policyRequest(
@@ -11039,11 +11033,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 return;
               }
               if (!context.finalized) {
-                yield* schedulePostSettleHoldExpiry(context);
-                if (hasDeferredBackgroundWork(context)) {
-                  yield* rearmDeferredFinalize(context);
+                if (!defersFinalizeForBackgroundWork) {
+                  yield* finalizeTurn(context, "completed");
                 } else {
-                  yield* scheduleDeferredFinalize(context);
+                  yield* schedulePostSettleHoldExpiry(context);
+                  if (hasDeferredBackgroundWork(context)) {
+                    yield* rearmDeferredFinalize(context);
+                  } else {
+                    yield* scheduleDeferredFinalize(context);
+                  }
                 }
               }
               return;

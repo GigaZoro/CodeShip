@@ -11986,7 +11986,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const threadReports = reports.get(nativeThreadId);
             if (threadReports === undefined) return { userTurns, reports };
             const remaining = new Map(
-              [...threadReports].filter(([taskId]) => !droppedTaskIds.has(taskId)),
+              [...threadReports].filter(([, entry]) => !droppedTaskIds.has(entry.taskId)),
             );
             const updatedReports = new Map(reports);
             if (remaining.size === 0) updatedReports.delete(nativeThreadId);
@@ -12047,7 +12047,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (entry.type === "result" && !isClaudeEmptyTaskNotificationSuccess(entry)) ||
                 (entry.type === "system" &&
                   entry.subtype === "task_notification" &&
-                  reports?.get(entry.task_id)?.report.kind === "subagent"),
+                  reports?.get(claudeTaskNotificationKey(entry))?.report.kind === "subagent"),
             )
           );
         });
@@ -16067,7 +16067,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ...(baseQueryOptions.hooks?.PostToolUse ?? []),
                 { matcher: "Bash|Monitor", hooks: [recordRootNativeTaskLaunch] },
               ],
-              Stop: [{ hooks: [offerNativeTaskWait] }],
+              Stop: [
+                {
+                  hooks: [
+                    (async (hookInput, toolUseId, hookOptions) => {
+                      const goalStop = await onStop(hookInput, toolUseId, hookOptions);
+                      if (Object.keys(goalStop).length > 0) return goalStop;
+                      return offerNativeTaskWait(hookInput, toolUseId, hookOptions);
+                    }) satisfies HookCallback,
+                  ],
+                },
+              ],
             },
           };
           const resolvedTurnCwd = yield* fileSystem
@@ -16698,20 +16708,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   );
             if (userMessage !== null && !turnInput.resume) {
               yield* attachTurn;
-              yield* startUserTurnForWakeReports(nativeThreadId);
-              yield* Effect.uninterruptibleMask((restore) =>
-                restore(
-                  querySession.query.offer(userMessage, () => {
-                    pdfReservation.commit();
-                  }),
-                ).pipe(
-                  Effect.tap(() =>
-                    Effect.sync(() => {
-                      pdfReservation.commit();
-                    }),
-                  ),
-                ),
-              ).pipe(
+              yield* offerUserMessage.pipe(
                 // Only a close shuts the prompt queue, and whoever closed the query settles this turn.
                 Effect.catchTags({
                   ClaudePromptQueueClosedError: () =>

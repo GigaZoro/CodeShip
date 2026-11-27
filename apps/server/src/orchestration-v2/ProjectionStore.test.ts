@@ -3907,7 +3907,7 @@ it.effect("SQL snapshot windows keep cards for requests still pending", () =>
     const query = statements.find(
       (statement) =>
         statement.includes("FROM orchestration_v2_projection_runtime_requests AS request") &&
-        statement.includes("SELECT item.payload_json"),
+        statement.includes("item.payload_json"),
     );
     assert.isDefined(query);
     const plan = (yield* sql.unsafe<{ readonly detail: string }>(
@@ -7637,12 +7637,12 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       for (const lookup of stopRequestLookups) {
         assert.include(lookup, "orchestration_v2_projection_turn_items_stop_request_idx");
       }
-      // The active, activity, and pending-secret lookups; walking the ordinal index instead
-      // reads every run of an idle thread.
+      // The active, activity (status, startedAt, modelSelection), and pending-secret lookups;
+      // walking the ordinal index instead reads every run of an idle thread.
       const activeRunLookups = plan.filter(
         (detail) => detail.startsWith("SEARCH r ") && detail.includes("(thread_id=?"),
       );
-      assert.lengthOf(activeRunLookups, 4);
+      assert.lengthOf(activeRunLookups, 5);
       for (const lookup of activeRunLookups) {
         assert.include(lookup, "orchestration_v2_projection_runs_thread_status_idx");
       }
@@ -10032,10 +10032,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const observe = () =>
         store.getLimitRecoveryCandidates({ ...recoveryOptions, observeStops: true });
       // An upgraded database applied earlier migrations long before this one.
-      yield* sql`UPDATE effect_sql_migrations SET created_at = '1900-01-01' WHERE name <> 'UsageStopDecisions'`;
-      yield* sql`UPDATE effect_sql_migrations SET created_at = '2100-01-01' WHERE name = 'UsageStopDecisions'`;
+      yield* sql`UPDATE codeship_migrations SET created_at = '1900-01-01' WHERE name <> 'UsageStopDecisions'`;
+      yield* sql`UPDATE codeship_migrations SET created_at = '2100-01-01' WHERE name = 'UsageStopDecisions'`;
       assert.isUndefined((yield* observe()).find((row) => row.id === threadId));
-      yield* sql`UPDATE effect_sql_migrations SET created_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))} WHERE name = 'UsageStopDecisions'`;
+      yield* sql`UPDATE codeship_migrations SET created_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))} WHERE name = 'UsageStopDecisions'`;
       assert.isTrue((yield* observe()).find((row) => row.id === threadId)?.observationOnly);
       const reset = DateTime.makeUnsafe(limitItem.failure.resetAt);
       assert.isDefined(

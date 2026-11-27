@@ -1865,6 +1865,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             taskId,
             kind: "command",
             description: shell.command,
+            ...(shell.awaited === true ? { awaited: true } : {}),
             ...(shell.state.subagent === undefined
               ? {}
               : { parentTaskId: shell.state.subagent.call.nativeId }),
@@ -1893,6 +1894,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           (task, index) =>
             task.taskId === allTasks[index]?.taskId &&
             task.description === allTasks[index]?.description &&
+            task.awaited === allTasks[index]?.awaited &&
             (task.kind === "subagent" ? task.childThreadId : undefined) ===
               (allTasks[index]?.kind === "subagent" ? allTasks[index]?.childThreadId : undefined),
         )

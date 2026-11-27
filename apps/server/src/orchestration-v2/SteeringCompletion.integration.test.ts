@@ -866,6 +866,7 @@ it.effect.each([
           notification,
           attachments: [],
           dispatchMode: { type: "queue_after_active" },
+          demandSourceRunId: started[0]!.runId,
           createdBy: "agent",
           creationSource: "server",
         });
@@ -1253,7 +1254,10 @@ it.effect("a busy run takes steering only from its own demand", () =>
           started.map((turn) => turn.runId),
           [first!.id],
         );
-        assert.deepEqual(steered, ["same"]);
+        assert.deepEqual(
+          steered.map((text) => text.split("\n").at(-1)),
+          ["same"],
+        );
         assert.deepEqual(interrupted, []);
         const queued = projection.runs.filter((run) => run.status === "queued");
         assert.deepEqual(
@@ -1903,8 +1907,8 @@ it.effect.each(["complete", "stop-before-end"] as const)(
           assert.deepEqual(
             queued.map((run) => [run.userMessageId, run.queueHeld === true]),
             [
-              [MessageId.make("message:steer"), false],
-              [MessageId.make("message:queued-later"), false],
+              [MessageId.make("message:steer"), true],
+              [MessageId.make("message:queued-later"), true],
             ],
           );
           return;
@@ -2181,12 +2185,12 @@ it.effect("queues a delegated completion wake whose steer the provider declined"
         events: [
           {
             id: EventId.make("event:declined-wake:cohort"),
-            type: "run.updated",
+            type: "run.delegated-completion-updated",
             threadId,
             runId: first.runId,
             occurredAt: now,
             payload: {
-              ...parentRun,
+              runId: first.runId,
               delegatedCompletion: {
                 disposition: "open",
                 nextGeneration: 2,
@@ -2205,6 +2209,7 @@ it.effect("queues a delegated completion wake whose steer the provider declined"
               id: taskId,
               threadId,
               runId: first.runId,
+              demandId: parentRun.demandId ?? null,
               parentNodeId: first.rootNodeId,
               origin: "app_owned",
               createdBy: "agent",
@@ -2381,6 +2386,8 @@ it.effect(
           threadId,
           runtimeMode: "approval-required",
         });
+        const activeDemandId =
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.demandId ?? null;
         const steer = {
           type: "message.dispatch",
           commandId: CommandId.make("steer"),
@@ -2390,6 +2397,7 @@ it.effect(
           attachments: [],
           dispatchMode: { type: "start_immediately" },
           deliveryIntent: "steer",
+          demandId: activeDemandId,
           createdBy: "agent",
           creationSource: "mcp",
         } as const;
@@ -2454,6 +2462,8 @@ it.effect("queues a limited caller's steer into a turn that is not running yet",
           },
         ],
       });
+      const activeDemandId =
+        (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.demandId ?? null;
       const steer = (name: string) =>
         ({
           type: "message.dispatch",
@@ -2463,6 +2473,7 @@ it.effect("queues a limited caller's steer into a turn that is not running yet",
           text: "follow up",
           attachments: [],
           dispatchMode: { type: "steer_active", targetRunId: started[0]!.runId },
+          demandId: activeDemandId,
           createdBy: "agent",
           creationSource: "mcp",
         }) as const;
@@ -2739,6 +2750,7 @@ it.effect("an agent's automatic send steers past another sender's queued message
         attachments: [],
         dispatchMode: { type: "steer_active", targetRunId: active.id },
         deliveryIntent: "auto",
+        demandId: active.demandId ?? null,
         createdBy: "agent",
         creationSource: "mcp",
         senderThreadId: ThreadId.make("thread:sender-c"),
@@ -3431,6 +3443,8 @@ it.effect("steers a promoted scheduled delivery with the thread's current select
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const threadId = yield* startFirstTurn;
+        const activeDemandId =
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.demandId ?? null;
         // Bound scheduled tasks send like ScheduledTaskService: no model of their own.
         yield* orchestrator.dispatch({
           type: "message.dispatch",
@@ -3441,6 +3455,7 @@ it.effect("steers a promoted scheduled delivery with the thread's current select
           text: "scheduled",
           attachments: [],
           dispatchMode: { type: "queue_after_active" },
+          demandId: activeDemandId,
           createdBy: "user",
           creationSource: "web",
         });
@@ -3494,6 +3509,8 @@ it.effect("steers a deferred agent message on a pick made while it waited", () =
             },
           ],
         });
+        const activeDemandId =
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.demandId ?? null;
         yield* orchestrator.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make("agent-steer"),
@@ -3502,6 +3519,7 @@ it.effect("steers a deferred agent message on a pick made while it waited", () =
           text: "agent steer",
           attachments: [],
           dispatchMode: { type: "steer_active", targetRunId: started[0]!.runId },
+          demandId: activeDemandId,
           createdBy: "agent",
           creationSource: "mcp",
         });
@@ -4290,6 +4308,7 @@ it.effect("restarts by stopping the running turn when the provider cannot interr
         attachments: [],
         modelSelection: runSelection,
         dispatchMode: { type: "restart_active", targetRunId: started[0]!.runId },
+        demandSourceRunId: started[0]!.runId,
         createdBy: "agent",
         creationSource: "server",
       });
@@ -4328,6 +4347,7 @@ it.effect("starts a restart that stops the running turn ahead of an older held q
         Stream.runDrain,
         Effect.forkScoped,
       );
+      const sharedDemandId = `demand:${"3".repeat(64)}`;
       yield* orchestrator.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make("second"),
@@ -4336,6 +4356,7 @@ it.effect("starts a restart that stops the running turn ahead of an older held q
         text: "second",
         attachments: [],
         dispatchMode: { type: "start_immediately" },
+        demandId: sharedDemandId,
         createdBy: "agent",
         creationSource: "mcp",
       });
@@ -4349,6 +4370,7 @@ it.effect("starts a restart that stops the running turn ahead of an older held q
         text: "do this instead",
         attachments: [],
         dispatchMode: { type: "restart_active", targetRunId: started[1]!.runId },
+        demandId: sharedDemandId,
         createdBy: "agent",
         creationSource: "mcp",
       });
@@ -4379,6 +4401,8 @@ it.effect("reports a restart that stops the running turn as restarted", () =>
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const threadId = yield* startFirstTurn;
+      const activeDemandId =
+        (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.demandId ?? null;
       const input = {
         projectId: ProjectId.make("project:restart-send-delivery"),
         commandId: CommandId.make("restart"),
@@ -4387,6 +4411,7 @@ it.effect("reports a restart that stops the running turn as restarted", () =>
         text: "do this instead",
         attachments: [],
         mode: "restart",
+        demandId: activeDemandId,
         createdBy: "agent",
         creationSource: "mcp",
       } as const;
@@ -4425,6 +4450,8 @@ it.effect("replays an accepted steer after its target turn completes", () =>
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const threadId = yield* startFirstTurn;
+      const activeDemandId =
+        (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.demandId ?? null;
       const input = {
         projectId: ProjectId.make(`project:${name}`),
         commandId: CommandId.make("steer"),
@@ -4433,6 +4460,7 @@ it.effect("replays an accepted steer after its target turn completes", () =>
         text: "Please report the test result",
         attachments: [],
         mode: "steer",
+        demandId: activeDemandId,
         createdBy: "agent",
         creationSource: "mcp",
       } as const;
@@ -4637,6 +4665,7 @@ it.effect("stops the running turn for a goal an agent steers into it", () =>
         attachments: [],
         modelSelection: runSelection,
         dispatchMode: { type: "steer_active", targetRunId: started[0]!.runId },
+        demandSourceRunId: started[0]!.runId,
         createdBy: "agent",
         creationSource: "server",
       });
@@ -5237,7 +5266,7 @@ it.effect("starts a stop-and-send that arrives after the provider turn completed
             (event) =>
               event.type === "run.updated" &&
               event.payload.id === first.runId &&
-              event.payload.status === "waiting",
+              event.payload.status === "completed",
           ),
           Stream.take(1),
           Stream.runDrain,
@@ -5313,7 +5342,7 @@ it.effect("queues a steer the provider can only run as its own turn behind the r
             (event) =>
               event.type === "run.updated" &&
               event.payload.id === first.runId &&
-              event.payload.status === "waiting",
+              event.payload.status === "completed",
           ),
           Stream.take(1),
           Stream.runDrain,
@@ -5593,6 +5622,8 @@ it.effect("an agent's auto send steers past its own explicitly queued message", 
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       const manager = yield* ThreadManagementService.ThreadManagementService;
       const threadId = yield* startFirstTurn;
+      const activeDemandId =
+        (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.demandId ?? null;
       const send = (text: string, mode: "auto" | "queue") =>
         manager.sendToThread({
           projectId: ProjectId.make(`project:${name}`),
@@ -5602,6 +5633,7 @@ it.effect("an agent's auto send steers past its own explicitly queued message", 
           text,
           attachments: [],
           mode,
+          demandId: activeDemandId,
           createdBy: "agent",
           creationSource: "mcp",
           senderThreadId: ThreadId.make("thread:sender"),

@@ -12100,15 +12100,18 @@ describe("AcpAdapterV2", () => {
           "mutation-only end-notice must not count as post-settle wake evidence",
         );
         yield* sessionUpdateHandler!(bEndNotice);
-        if (ownership === "earlier first" || ownership === "unknown first") {
-          yield* sessionUpdateHandler!({
-            sessionId: "mock-session-1",
-            update: {
-              sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text: "Both monitors have ended." },
-            },
-          });
-        }
+        assert.lengthOf(
+          continuationRequests,
+          0,
+          "a task end notice alone cannot start a wake without native wake output",
+        );
+        yield* sessionUpdateHandler!({
+          sessionId: "mock-session-1",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Both monitors have ended." },
+          },
+        });
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
         assert.lengthOf(

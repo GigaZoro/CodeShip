@@ -923,7 +923,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       models: allModels,
       probe: {
         installed: true,
-        version: parsedVersion,
+        // A failed `--version` run reports no version: its output can be a wrapper's, such as mise's.
+        version: null,
         status: "error",
         auth: { status: "unknown" },
         message: withProviderFailureReason(

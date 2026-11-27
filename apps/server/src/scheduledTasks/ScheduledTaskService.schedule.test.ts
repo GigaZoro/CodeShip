@@ -1486,6 +1486,13 @@ it.effect("separates bound fixed-time runs of tasks recreated in the same clock 
             demands.push(input.demandId);
             return {} as never;
           }),
+        getThreadShell: () =>
+          Effect.succeed({
+            projectId: "project-run-history",
+            deletedAt: null,
+            archivedAt: null,
+          } as never),
+        getThreadRecords: () => Effect.succeed({ runs: [], messages: [] } as never),
       }),
     );
     const due = DateTime.makeZonedUnsafe(

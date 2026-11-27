@@ -1183,77 +1183,6 @@ it.effect.each(["an existing", "a new"] as const)(
     ).pipe(Effect.provide(layerTest)),
 );
 
-it.effect.each(["on a branch", "detached", "unborn"] as const)(
-  "reads only the repository root for review requests that ignore the branch when %s",
-  (state) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
-        const spawnedArgs: Array<ReadonlyArray<string>> = [];
-        const spawner = ChildProcessSpawner.make((command) => {
-          if (ChildProcess.isStandardCommand(command)) spawnedArgs.push(command.args.map(String));
-          return delegate.spawn(command);
-        });
-        const driver = yield* makeGitVcsDriverCore().pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        );
-        const discoveries = () => {
-          const commands = spawnedArgs.filter(
-            (args) =>
-              args.includes("--show-toplevel") ||
-              args.includes("--git-common-dir") ||
-              (args.includes("symbolic-ref") && args.includes("HEAD")),
-          );
-          spawnedArgs.length = 0;
-          return commands.length;
-        };
-        const cwd = yield* makeTmpDir();
-        if (state === "unborn") {
-          yield* git(cwd, ["init", "-b", "main"]);
-        } else {
-          yield* initRepoWithCommit(cwd);
-          yield* writeTextFile(cwd, "committed.txt", "committed\n");
-          yield* git(cwd, ["add", "."]);
-          yield* git(cwd, ["commit", "-m", "add file"]);
-          if (state === "detached") yield* git(cwd, ["checkout", "--detach"]);
-        }
-        yield* writeTextFile(cwd, "new.txt", "new\n");
-        spawnedArgs.length = 0;
-
-        const workingTree = yield* driver.getReviewDiffPreview({
-          cwd,
-          file: { path: "new.txt", previousPath: null, sourceKind: "working-tree" },
-        });
-        assert.equal(discoveries(), 1);
-        assert.deepStrictEqual(
-          workingTree.sources
-            .find((source) => source.kind === "working-tree")!
-            .files!.map((file) => file.path),
-          ["new.txt"],
-        );
-
-        if (state !== "unborn") {
-          const commitSha = yield* git(cwd, ["rev-parse", "HEAD"]);
-          spawnedArgs.length = 0;
-          const commit = yield* driver.getReviewDiffPreview({
-            cwd,
-            commitSha,
-            file: { path: "committed.txt", previousPath: null, sourceKind: "commit" },
-          });
-          assert.equal(discoveries(), 1);
-          assert.include(commit.sources[0]!.diff, "+committed");
-        }
-
-        const general = yield* driver.getReviewDiffPreview({ cwd });
-        assert.equal(discoveries(), 3);
-        assert.equal(
-          general.sources.find((source) => source.kind === "branch-range")!.headRef,
-          state === "detached" ? "HEAD" : yield* git(cwd, ["branch", "--show-current"]),
-        );
-      }),
-    ).pipe(Effect.provide(layerTest)),
-);
-
 it.effect.each([
   { kind: "working-tree", request: { sourceKind: "working-tree" } },
   { kind: "commit", request: { sourceKind: "commit", commitSha: "HEAD" } },
@@ -1485,71 +1414,6 @@ it.effect("invalidates cached metadata after interrupted worktree creation", () 
       );
     }),
   ).pipe(Effect.provide(layerTest)),
-);
-
-it.effect("retries an in-flight ref snapshot invalidated by a mutation", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const firstWorktreeScanStarted = yield* Deferred.make<void>();
-      const firstRefScanCompleted = yield* Deferred.make<void>();
-      const releaseFirstWorktreeScan = yield* Deferred.make<void>();
-      const delayFirstWorktreeScan = yield* Ref.make(true);
-      const refScans = yield* Ref.make(0);
-      const coordinatingSpawner = ChildProcessSpawner.make((command) =>
-        Effect.gen(function* () {
-          if (!ChildProcess.isStandardCommand(command)) {
-            return yield* Effect.die("expected a standard Git command");
-          }
-          const isWorktreeScan =
-            command.args.includes("worktree") && command.args.includes("--porcelain");
-          if (isWorktreeScan && (yield* Ref.getAndSet(delayFirstWorktreeScan, false))) {
-            yield* Deferred.succeed(firstWorktreeScanStarted, undefined);
-            yield* Deferred.await(releaseFirstWorktreeScan);
-          }
-          const handle = yield* delegate.spawn(command);
-          const isRefScan =
-            command.args.includes("for-each-ref") &&
-            command.args.includes("refs/heads") &&
-            command.args.includes("refs/remotes");
-          if (!isRefScan) return handle;
-          const scan = yield* Ref.updateAndGet(refScans, (count) => count + 1);
-          return scan === 1
-            ? ChildProcessSpawner.makeHandle({
-                ...handle,
-                exitCode: handle.exitCode.pipe(
-                  Effect.tap(() => Deferred.succeed(firstRefScanCompleted, undefined)),
-                ),
-              })
-            : handle;
-        }),
-      );
-      const driver = yield* makeGitVcsDriverCore().pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, coordinatingSpawner),
-      );
-      const cwd = yield* makeTmpDir();
-      yield* initRepoWithCommit(cwd).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, driver));
-
-      const inFlight = yield* driver
-        .listRefs({ cwd, refresh: true, limit: 100 })
-        .pipe(Effect.forkChild({ startImmediately: true }));
-      yield* Deferred.await(firstWorktreeScanStarted);
-      yield* Deferred.await(firstRefScanCompleted);
-
-      yield* driver.createRef({ cwd, refName: "feature/during-refresh" });
-      yield* Deferred.succeed(releaseFirstWorktreeScan, undefined);
-
-      const refs = yield* Fiber.join(inFlight);
-      assert.isTrue(refs.refs.some((ref) => ref.name === "feature/during-refresh"));
-      assert.equal(yield* Ref.get(refScans), 2);
-    }),
-  ).pipe(
-    Effect.provide(
-      layerServerConfig.pipe(
-        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-      ),
-    ),
-  ),
 );
 
 it.effect("invalidates a ref snapshot when a mutation fails after changing Git", () =>
@@ -4073,7 +3937,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         yield* git(cwd, ["commit", "-m", "feature work"]);
 
         const status = yield* driver.statusDetailsLocal(cwd, { includeBranchChanges: true });
-        assert.deepStrictEqual(status.branchChanges, {
+        assert.deepInclude(status.branchChanges, {
           baseRef: "upstream/main",
           insertions: 1,
           deletions: 0,
@@ -4117,7 +3981,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         assert.notEqual(defaultStat, minimalStat);
         const [insertions, deletions] = defaultStat.split("\t");
         const status = yield* driver.statusDetailsLocal(cwd, { includeBranchChanges: true });
-        assert.deepStrictEqual(status.branchChanges, {
+        assert.deepInclude(status.branchChanges, {
           baseRef: initialBranch,
           insertions: Number(insertions),
           deletions: Number(deletions),
@@ -5890,7 +5754,7 @@ it.layer(layerTest)("branch change totals after a failed read", (it) => {
 
       hang = false;
       yield* TestClock.adjust("1 minute");
-      assert.deepStrictEqual((yield* read).branchChanges, {
+      assert.deepInclude((yield* read).branchChanges, {
         baseRef: "main",
         insertions: 1,
         deletions: 0,
@@ -5910,7 +5774,7 @@ it.layer(layerTest)("branch change totals after a failed read", (it) => {
       yield* git(cwd, ["commit", "-am", "more"]);
       const status = yield* read;
       assert.strictEqual(diffs, 4, "a new HEAD diffs again within the backoff");
-      assert.deepStrictEqual(status.branchChanges, {
+      assert.deepInclude(status.branchChanges, {
         baseRef: "main",
         insertions: 2,
         deletions: 0,

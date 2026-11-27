@@ -4347,7 +4347,7 @@ it.effect.each(["completed", "failed"] as const)(
           Ref.update(ingested, (all) => [...all, input.event]).pipe(
             Effect.as(
               input.event.type === "provider_thread.updated"
-                ? [{} as OrchestrationV2StoredEvent]
+                ? [{ event: { type: "provider-thread.updated" } } as OrchestrationV2StoredEvent]
                 : [],
             ),
           ),

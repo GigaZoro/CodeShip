@@ -923,7 +923,11 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
             config !== undefined && codexRoutesSpendNativeQuota(accountResponse, config.config);
           const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> =
             nativeUsage ||
-            (input.homeLoginUsage === true && !isMeteredCodexAccount(accountResponse.account))
+            (input.homeLoginUsage === true && !isMeteredCodexAccount(accountResponse.account)) ||
+            (accountResponse.account === null &&
+              !accountResponse.requiresOpenaiAuth &&
+              config !== undefined &&
+              routesToNativeOpenai(config.config))
               ? readCodexRateLimits(client, deadlineMs)
               : Effect.undefined;
           return readUsage.pipe(

@@ -571,8 +571,9 @@ const make = Effect.gen(function* () {
       if (!(yield* git.hasCommit({ cwd, refName: "HEAD" }))) return undefined;
       return {
         project,
-        lookup: remote === null ? "no-remote" : "checkout",
-        remoteNames: [],
+        lookup:
+          remote === null ? "no-remote" : remote !== undefined ? "remotes-lack-commit" : "checkout",
+        remoteNames: remote ? [remote.remoteName] : [],
       } satisfies BaseRefRefusal & { project: typeof project };
     }).pipe(
       // The launch reads the base again and reports inside the thread what fails then.

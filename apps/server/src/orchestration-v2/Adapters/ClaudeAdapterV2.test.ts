@@ -18631,10 +18631,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const rosterBAfterFail = providerThreadRosterEvents(events).findLast(
             (event) => event.providerThread.id === providerThreadB.id,
           )?.providerThread.pendingBackgroundTasks;
-          assert.deepEqual(rosterBAfterFail ?? [], []);
+          assert.deepEqual(rosterBAfterFail ?? [], [
+            {
+              taskId: taskB,
+              description: "work on B",
+              kind: "command",
+              nativeItemId: "toolu-roster-b",
+            },
+          ]);
           assert.isFalse(yield* hasPendingBackgroundWorkForThread(providerThreadA));
-          assert.isFalse(yield* hasPendingBackgroundWorkForThread(providerThreadB));
-          assert.isFalse(yield* hasPendingBackgroundWork);
+          assert.isTrue(yield* hasPendingBackgroundWorkForThread(providerThreadB));
+          assert.isTrue(yield* hasPendingBackgroundWork);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
@@ -20517,7 +20524,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             });
           if (steered) {
             yield* steerAwait("awaited-task-before-receipt");
-            assert.equal(harness.offeredMessages[1]?.priority, "now");
+            assert.equal(harness.offeredMessages[1]?.priority, "next");
             yield* harness.offerAndWait(
               claudeSdkFrame({
                 type: "command_lifecycle",
@@ -20573,7 +20580,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           if (steered) {
             yield* steerAwait("awaited-task-replace-report");
             const replacement = harness.offeredMessages[3];
-            assert.equal(replacement?.priority, "now");
+            assert.equal(replacement?.priority, "next");
             assert.include(replacement?.message.content, WAKE_TASK_ID);
             const replacementUuid = harness.promptUuid(3);
             assert.notEqual(replacementUuid, reportUuid);

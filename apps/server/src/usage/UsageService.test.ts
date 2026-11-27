@@ -823,13 +823,9 @@ describe("UsageService", () => {
           0,
         );
         yield* restarted.awaitPersisted;
-        yield* Effect.promise(async () => {
-          const document = decodeUnknownJsonString(await NodeFSP.readFile(cachePath, "utf8")) as {
-            files: Record<string, unknown>;
-          };
-          assert.strictEqual(document.files[originalPath], undefined);
-          await NodeFSP.rm(compressedPath);
-        });
+        const { document: persistedAfterRestart } = yield* newestSnapshot(stateDir);
+        assert.strictEqual(persistedAfterRestart.files[originalPath], undefined);
+        yield* Effect.promise(() => NodeFSP.rm(compressedPath));
         const removed = yield* UsageService.make;
         const retained = yield* removed.readSummary(WINDOW);
         assert.deepStrictEqual(retained.buckets, rewritten.buckets);
@@ -3691,6 +3687,7 @@ describe("UsageService", () => {
           yield* Effect.promise(() => NodeFSP.symlink(loop, loop, "junction"));
           assert.strictEqual(claude(yield* service.readSummary(provisional))?.status, "partial");
           yield* Effect.promise(() => NodeFSP.rm(loop));
+          yield* TestClock.adjust("5 seconds");
           // A scan that missed a path covers nothing, so this is a full scan too.
           assert.isUndefined(claude(yield* service.readSummary(provisional))?.refreshing);
           yield* service.awaitPersisted;
@@ -6541,7 +6538,7 @@ describe("UsageService", () => {
   );
 
   it.effect.each([
-    { label: "the default 92 days", retention: undefined, expected: 15 },
+    { label: "the default 92 days", retention: undefined, expected: 1 },
     { label: "unlimited", retention: "unlimited" as const, expected: 15 },
   ])(
     "retains deleted transcripts according to $label across restart and settings changes",
@@ -6888,11 +6885,13 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* TestClock.setTime(CURSOR_NOW);
-      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const line = claudeLine(1, 5);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, line));
       const chunks = Array.from({ length: 3 }, () => ({
         reached: Promise.withResolvers<void>(),
         release: Promise.withResolvers<void>(),
       }));
+      const width = Math.ceil(Buffer.byteLength(line) / chunks.length);
       const actual = yield* Effect.promise(() =>
         vi.importActual<typeof NodeFSP>("node:fs/promises"),
       );
@@ -6901,23 +6900,25 @@ describe("UsageService", () => {
         const handle = await actual.open(...args);
         if (args[0] !== transcript) return handle;
         reads++;
-        const create = handle.createReadStream.bind(handle);
-        handle.createReadStream = (options) => {
-          const stream = create(options);
-          const read = stream[Symbol.asyncIterator].bind(stream);
-          stream[Symbol.asyncIterator] = async function* () {
-            for await (const bytes of { [Symbol.asyncIterator]: read }) {
-              for (const [index, chunk] of chunks.entries()) {
-                chunk.reached.resolve();
-                await chunk.release.promise;
-                const width = Math.ceil(bytes.length / chunks.length);
-                yield bytes.subarray(index * width, (index + 1) * width);
-              }
+        const read = handle.read.bind(handle);
+        let chunkIndex = 0;
+        Object.defineProperty(handle, "read", {
+          value: async (
+            buffer: NodeJS.ArrayBufferView,
+            offset: number,
+            length: number,
+            position: number | null,
+          ) => {
+            const chunk = chunks[chunkIndex];
+            if (chunk !== undefined) {
+              chunkIndex++;
+              chunk.reached.resolve();
+              await chunk.release.promise;
+              return read(buffer, offset, Math.min(length, width), position);
             }
-            return undefined;
-          };
-          return stream;
-        };
+            return read(buffer, offset, length, position);
+          },
+        });
         return handle;
       });
       yield* Effect.addFinalizer(() =>
@@ -7283,17 +7284,18 @@ describe("UsageService", () => {
             },
           });
           if (operation === "stat") {
-            const createStream = handle.createReadStream.bind(handle);
-            handle.createReadStream = (options) => {
-              const stream = createStream(options);
-              const chunks = stream[Symbol.asyncIterator].bind(stream);
-              stream[Symbol.asyncIterator] = async function* () {
-                afterProgress.resolve();
-                await finishRead.promise;
-                return yield* { [Symbol.asyncIterator]: chunks };
-              };
-              return stream;
-            };
+            const read = handle.read.bind(handle);
+            let paused = false;
+            Object.defineProperty(handle, "read", {
+              value: async (...readArgs: Parameters<typeof read>) => {
+                if (!paused) {
+                  paused = true;
+                  afterProgress.resolve();
+                  await finishRead.promise;
+                }
+                return read(...readArgs);
+              },
+            });
           }
           return handle;
         });

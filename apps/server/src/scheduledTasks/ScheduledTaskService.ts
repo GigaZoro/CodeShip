@@ -2594,17 +2594,33 @@ export const layer = Layer.effect(
     const queuedOccurrence = Effect.fn("ScheduledTaskService.queuedOccurrence")(function* (
       taskId: ScheduledTaskId,
       threadId: ThreadId,
+      currentDemandId: string | null = null,
     ) {
       const { runs } = yield* threadManagement.getThreadRecords(threadId, ["runs"]);
-      const queued = runs.filter((run) => run.status === "queued");
+      const queued = runs.filter(
+        (run) =>
+          run.status === "queued" && (currentDemandId === null || run.demandId !== currentDemandId),
+      );
       if (queued.length === 0) return null;
       const queuedMessageIds = new Set(queued.map((run) => run.userMessageId));
       const { messages } = yield* threadManagement.getThreadRecords(threadId, ["messages"], {
         messageIds: [...queuedMessageIds],
       });
+      const incarnationRuns = yield* sql<{ run_id: string }>`
+        SELECT run_id FROM scheduled_task_runs WHERE task_id = ${taskId}
+      `.pipe(NodeSqliteClient.readOnly);
+      const incarnationMessageIds = new Set<string>(
+        incarnationRuns.map((row) => promptMessageId(launchKey(row.run_id))),
+      );
       const taskMessageIds = new Set(
         messages
-          .filter((message) => message.scheduledTaskId === taskId)
+          .filter(
+            (message) =>
+              message.scheduledTaskId === taskId &&
+              (!message.id.startsWith("scheduled-task-message:") ||
+                message.id.includes(":webhook:") ||
+                incarnationMessageIds.has(message.id)),
+          )
           .map((message) => message.id),
       );
       const occurrences = queued.filter((run) => taskMessageIds.has(run.userMessageId));
@@ -2757,9 +2773,26 @@ export const layer = Layer.effect(
           active.schedule.type !== "once" &&
           active.threadId !== null
         ) {
+          const fixed = fire?.localFixedTime;
+          const currentDemandId =
+            fixed !== undefined &&
+            fixed.origin !== null &&
+            active.nextRunAt === task.nextRunAt &&
+            active.shared?.runOn !== "one" &&
+            isSameSchedule(fixed.origin.schedule, active.schedule)
+              ? originalDemandId(
+                  "scheduled-task",
+                  hereEnvironmentId,
+                  active.id,
+                  fixed.incarnation,
+                  "scheduled",
+                  fixed.origin.at,
+                )
+              : null;
           const occurrence = yield* queuedOccurrence(
             active.id,
             ThreadId.make(active.threadId),
+            currentDemandId,
           ).pipe(Effect.orElseSucceed(() => null));
           if (occurrence !== null) {
             yield* rescheduleMissedRun(

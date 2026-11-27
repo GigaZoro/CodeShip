@@ -64,7 +64,6 @@ import * as EventSink from "./EventSink.ts";
 import {
   awaitingProviderThreadId,
   cancelledTurnItemWork,
-  latestStartedRun,
   mergeRestartCancelledBackgroundWork,
 } from "./RestartBackgroundNote.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
@@ -1546,7 +1545,7 @@ export const layerWithOptions = (
           ];
           const workByRun = new Map<RunId, { run: OrchestrationV2Run; work: Array<Work> }>();
           for (const { providerThreadId, work } of lost) {
-            const run = latestStartedRun(runs, providerThreadId);
+            const run = lostWorkRecordRun(runs, providerThreadId);
             if (run === undefined) continue;
             const entry = workByRun.get(run.id) ?? { run, work: [] };
             entry.work.push(work);

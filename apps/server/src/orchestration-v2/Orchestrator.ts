@@ -19202,6 +19202,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (stored.event.type !== "run.updated") return;
       const threadId = stored.event.threadId;
       const run = stored.event.payload;
+      // Final checkpoint-capture failure commits the uncaptured run.updated just before the
+      // worker marks the effect failed; wait for that settle so awaitsCheckpointCapture clears.
+      if (
+        delegatedTaskTerminalStatus(run.status) !== null &&
+        String(stored.commandId) === `command:effect:checkpoint.capture:${run.id}:uncaptured`
+      ) {
+        yield* effectOutbox.awaitSettled(`effect:checkpoint.capture:${run.id}`).pipe(Effect.ignore);
+      }
       // Take parent and child locks sequentially, never nested: delegation holds the parent
       // while writing child events, so nesting parent inside child would invert the order.
       // The keyed semaphores are neither reentrant nor deadlock-aware.

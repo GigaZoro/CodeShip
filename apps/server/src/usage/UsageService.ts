@@ -1656,6 +1656,7 @@ export const make = Effect.gen(function* () {
     readonly initial: Deferred.Deferred<UsageSummary, UsageReadError>;
     readonly refreshed: Deferred.Deferred<UsageSummary, UsageReadError>;
     snapshot?: UsageSummary;
+    hadInitialCaller: boolean;
     needsFollowUp: boolean;
   }
 
@@ -1809,7 +1810,7 @@ export const make = Effect.gen(function* () {
     if (refreshing.size === 0 && pending.length === 0) return initial;
 
     yield* schedulePersist;
-    flight.needsFollowUp = true;
+    if (flight.hadInitialCaller) flight.needsFollowUp = true;
     yield* Deferred.succeed(flight.saved, initial);
     yield* Deferred.succeed(flight.initial, initial);
     const refreshedProviders = collectProviderDirs(
@@ -2248,6 +2249,7 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const existing = flights.get(key);
           if (existing !== undefined) {
+            if (!input.awaitRefresh) existing.hadInitialCaller = true;
             admitted = existing;
             return existing;
           }
@@ -2264,6 +2266,7 @@ export const make = Effect.gen(function* () {
             saved: Deferred.makeUnsafe(),
             initial: Deferred.makeUnsafe(),
             refreshed: Deferred.makeUnsafe(),
+            hadInitialCaller: !input.awaitRefresh,
             needsFollowUp: false,
           };
           flights.set(key, created);

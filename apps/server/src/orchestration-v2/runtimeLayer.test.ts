@@ -4238,7 +4238,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         threadId,
         visitedAt: DateTime.formatIso(yield* DateTime.now),
       });
-      assert.equal(visit.storedEvents[0]?.event.type, "thread.visited");
+      assert.equal(visit.storedEvents[0]?.event.type, "thread.visit-recorded");
       assert.notProperty(visit.storedEvents[0]!.event.payload, "starredMessageIds");
       const rows = yield* sql<{ payload_json: string }>`
         SELECT payload_json FROM orchestration_events WHERE command_id = ${visitId}
@@ -4246,7 +4246,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.lengthOf(rows, 1);
       assert.notProperty(JSON.parse(rows[0]!.payload_json), "starredMessageIds");
       const sent = yield* eventSink
-        .stream({ threadId, eventType: "thread.visited", bounded: true })
+        .stream({ threadId, eventType: "thread.visit-recorded", bounded: true })
         .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
       assert.equal(sent.sequence, visit.storedEvents[0]?.sequence);
       assert.notProperty(sent.event.payload, "starredMessageIds");
@@ -11736,6 +11736,9 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           creationSource: "web",
         });
       }
+      const activeDemandId = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.userMessageId === MessageId.make(`${threadId}:active`),
+      )?.demandId;
       const sendGoal = (key: string, text: string, deliveryIntent?: "auto") =>
         orchestrator.dispatch({
           type: "message.dispatch",
@@ -11746,6 +11749,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           attachments: [],
           dispatchMode: { type: "queue_after_active" },
           ...(deliveryIntent === undefined ? {} : { deliveryIntent }),
+          ...(activeDemandId === undefined ? {} : { demandId: activeDemandId }),
           createdBy: "agent",
           creationSource: "mcp",
         });
@@ -12748,9 +12752,13 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           [[run.id, "starting"]],
         );
         assert.deepEqual(child.messages, before.messages);
-        const start = yield* outbox.get(
-          `effect:command:restart-retry:${run.id}:1:provider-turn.start:${run.id}`,
+        // The automatic retry waits for memory, then starts once the queue lets it go.
+        assert.deepEqual(
+          yield* outbox.listByCommandId(CommandId.make(`command:restart-retry:${run.id}:1`)),
+          [],
         );
+        const admittedBy = yield* admitHeldRun(threadId, run.id, "restart-retry");
+        const start = yield* outbox.get(`effect:${admittedBy}:provider-turn.start:${run.id}`);
         assert.equal(Option.getOrUndefined(start)?.status, "pending");
       }),
   );
@@ -17363,6 +17371,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
 
   it.effect.each([
     "resume",
+    "resume-failover",
     "resume-started",
     "resume-untagged",
     "queued-resume",
@@ -17405,7 +17414,9 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         projectId,
         title: "Limited thread",
         modelSelection:
-          scenario === "resume" ? { ...modelSelection, autoAccount: true } : modelSelection,
+          scenario === "resume-failover"
+            ? { ...modelSelection, autoAccount: true }
+            : modelSelection,
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
@@ -18078,7 +18089,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
       }
       const before = yield* orchestrator.getThreadProjection(threadId);
-      if (scenario === "resume" && resume?.type === "message.dispatch") {
+      if (scenario === "resume-failover" && resume?.type === "message.dispatch") {
         assert.isUndefined(resume.modelSelection);
         const sql = yield* SqlClient.SqlClient;
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
@@ -18197,8 +18208,13 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           createdBy: "agent",
           creationSource: "server",
         });
-        const continuation = after.runs.at(-1)!;
+        let continuation = after.runs.at(-1)!;
         assert.equal(continuation.status, "starting");
+        // Automatic resumes hold in memory admission until admitted; admit so startup cuts it.
+        if (scenario === "resume" || scenario === "resume-untagged") {
+          yield* admitHeldRun(threadId, continuation.id, scenario);
+          continuation = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        }
         if (scenario === "resume-started") {
           const startedAt = yield* DateTime.now;
           yield* events.write({
@@ -18300,6 +18316,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         after.runs,
         before.runs.length +
           (scenario === "resume" ||
+          scenario === "resume-failover" ||
           scenario === "resume-started" ||
           scenario === "resume-untagged" ||
           stopBeforeArm ||
@@ -18313,6 +18330,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         after.messages,
         before.messages.length +
           (scenario === "resume" ||
+          scenario === "resume-failover" ||
           scenario === "resume-started" ||
           scenario === "resume-untagged" ||
           stopBeforeArm ||
@@ -18375,7 +18393,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.equal(resumed.runs[2]?.status, "starting");
         assert.isFalse(resumed.runs[2]?.queueHeld);
       }
-      if (scenario === "resume") {
+      if (scenario === "resume-failover") {
         // The stop replays from its persisted decisions: a refused route and the accepted retry.
         const sql = yield* SqlClient.SqlClient;
         const replay = (classification: string) =>

@@ -437,14 +437,19 @@ export const layer: Layer.Layer<
           input.threadId,
           input,
         );
-        if (run?.status !== "waiting") return;
-        const completedAt = yield* DateTime.now;
+        if (
+          run === undefined ||
+          (run.status !== "waiting" && !(run.status === "completed" && run.checkpointId === null))
+        )
+          return;
+        const now = yield* DateTime.now;
+        const completedAt = run.completedAt ?? now;
         const commandId = CommandId.make(`command:effect:checkpoint.capture:${run.id}:uncaptured`);
         yield* eventSink.commitCommand({
           commandId,
           threadId: input.threadId,
           commandType: "checkpoint.capture",
-          acceptedAt: completedAt,
+          acceptedAt: now,
           effects: [],
           events: [
             {
@@ -454,10 +459,10 @@ export const layer: Layer.Layer<
               runId: run.id,
               ...(rootNode === undefined ? {} : { nodeId: rootNode.id }),
               providerInstanceId: run.providerInstanceId,
-              occurredAt: completedAt,
+              occurredAt: now,
               payload: { ...run, status: "completed", completedAt },
             },
-            ...(rootNode === undefined
+            ...(rootNode === undefined || rootNode.status === "completed"
               ? []
               : [
                   {
@@ -467,7 +472,7 @@ export const layer: Layer.Layer<
                     runId: run.id,
                     nodeId: rootNode.id,
                     providerInstanceId: run.providerInstanceId,
-                    occurredAt: completedAt,
+                    occurredAt: now,
                     payload: { ...rootNode, status: "completed" as const, completedAt },
                   },
                 ]),

@@ -4001,7 +4001,7 @@ it.effect.each<ReleasedWorkCase>([
         const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const outbox = yield* EffectOutbox.EffectOutboxV2;
-        const { threadId, providerSessionId, writeRun, rosters } =
+        const { threadId, providerSessionId, seededToolCalls, writeRun, rosters } =
           yield* openSessionWithBackgroundCommand(
             `provider-session-manager-released-work:${name}`,
             [
@@ -4042,6 +4042,15 @@ it.effect.each<ReleasedWorkCase>([
             label: "vp run build (id build)",
             id: "build",
           },
+          ...(reason === "runtime_error"
+            ? [
+                {
+                  kind: "task" as const,
+                  label: "mcp__t3-code__t3_worktree_handoff",
+                  id: seededToolCalls.cutOff.id,
+                },
+              ]
+            : []),
         ]);
         assert.isUndefined(work(replacing.id));
         const notice = projection.turnItems.find(
@@ -4294,9 +4303,10 @@ it.effect.each(["stream failure", "detach"] as const)(
           });
         }
         const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
+        // CodeShip intentionally records stopped roster work on manual detach without waking.
         assert.deepStrictEqual(
           runs.find((run) => run.id === runId)?.restartCancelledBackgroundWork,
-          release === "detach" ? undefined : expectedWork,
+          release === "detach" ? [expectedWork[0]!] : expectedWork,
         );
       });
 

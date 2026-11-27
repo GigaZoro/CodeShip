@@ -415,7 +415,7 @@ export const mergeProviderSnapshot = (
   const savedAccount = carrySavedAntigravityAccount(previousProvider, nextProvider);
   const sameAccount = Equal.equals(
     usageAccountIdentity(previousProvider),
-    usageAccountIdentity(nextProvider),
+    usageAccountIdentity(savedAccount ? { ...nextProvider, ...savedAccount } : nextProvider),
   );
   const { message: _uncheckedMessage, ...nextWithoutMessage } = nextProvider;
   const models = mergeProviderModels(
