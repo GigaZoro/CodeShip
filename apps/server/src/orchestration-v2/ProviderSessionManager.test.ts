@@ -4138,6 +4138,60 @@ it.effect(
 );
 
 it.effect(
+  "ProviderSessionManagerV2 shutdown waits for a session close its release stopped waiting for",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const scopeCloseReached = yield* Deferred.make<void>();
+      const scopeCloseMayEnd = yield* Deferred.make<void>();
+      // The close ends half a second of real time after the release gives up on it, long after an
+      // unwaited shutdown would have finished.
+      yield* Deferred.await(scopeCloseReached).pipe(
+        Effect.andThen(TestClock.withLive(Effect.sleep("500 millis"))),
+        Effect.andThen(Deferred.succeed(scopeCloseMayEnd, undefined)),
+        Effect.forkChild,
+      );
+      const closeCount = yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-late-close");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const release = yield* manager
+          .release({ providerSessionId, reason: "idle_timeout" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(scopeCloseReached);
+        // At its deadline the release stops waiting for the close, which goes on.
+        yield* TestClock.adjust("30 seconds");
+        yield* Fiber.join(release);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            hangSessionScopeClose: true,
+            scopeCloseReached,
+            scopeCloseMayEnd,
+          }),
+        ),
+        Effect.andThen(Ref.get(state)),
+        Effect.map((current) => current.closeCount),
+      );
+
+      assert.equal(closeCount, 1);
+    }),
+);
+
+it.effect(
   "ProviderSessionManagerV2 records the roster a replaced session runs for a thread a new turn moved",
   () =>
     Effect.gen(function* () {

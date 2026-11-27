@@ -35,6 +35,7 @@ import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
 import { makeProcessProbe, processProbeSource } from "../testUtils/processProbe.ts";
+import * as TextGenerationUsageRepository from "../persistence/TextGenerationUsage.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import * as TextGenerators from "./TextGenerators.ts";
 import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
@@ -1305,6 +1306,9 @@ it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (prima
             resolveLink: () => Effect.die("unused"),
           }),
           ProviderInstallationGate.layer,
+          Layer.succeed(TextGenerationUsageRepository.TextGenerationUsageRepository, {
+            record: () => Effect.void,
+          }),
         ),
       ),
     );
@@ -1385,6 +1389,7 @@ it.effect(
         } as ProviderInstance["snapshot"],
         orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
         textGeneration: TextGeneration.TextGeneration.of({
+          supportsInvestigation: true,
           generateCommitMessage: () => Effect.die("unused"),
           generatePrContent: () => Effect.die("unused"),
           generateBranchName: () => Effect.die("unused"),
@@ -1420,6 +1425,9 @@ it.effect(
                 resolveLink: () => Effect.die("unused"),
               }),
               ProviderInstallationGate.layer,
+              Layer.succeed(TextGenerationUsageRepository.TextGenerationUsageRepository, {
+                record: () => Effect.void,
+              }),
             ),
           ),
         );

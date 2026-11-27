@@ -1861,6 +1861,11 @@ export const layerWithOptions = (
         },
       );
 
+      // A close that outlives its deadline goes on, and shutdown waits for it: Effect detaches a
+      // closing scope from its parent, so closing sessionScopes alone would let a session's processes
+      // outlive the server's teardown.
+      const lateScopeCloses = new Set<Fiber.Fiber<Exit.Exit<void>>>();
+
       // Scope close can wedge on a misbehaving adapter finalizer (e.g. a
       // provider process that never yields its message stream).
       const closeScopeWithin = Effect.fn("ProviderSessionManager.closeScopeWithin")(function* (
@@ -1880,6 +1885,7 @@ export const layerWithOptions = (
             ...annotations,
             timeoutMs: RELEASE_SCOPE_CLOSE_TIMEOUT_MS,
           });
+          lateScopeCloses.add(closeFiber);
           yield* Fiber.join(closeFiber).pipe(
             Effect.flatMap((exit) =>
               Exit.isFailure(exit)
@@ -1892,6 +1898,7 @@ export const layerWithOptions = (
                     annotations,
                   ),
             ),
+            Effect.ensuring(Effect.sync(() => lateScopeCloses.delete(closeFiber))),
             Effect.forkDetach,
           );
         }
@@ -3625,7 +3632,10 @@ export const layerWithOptions = (
       const sessionScopes = yield* Scope.make("parallel");
       const shutdown = Effect.gen(function* () {
         const activeSessions = [...(yield* Ref.get(sessions)).values()];
-        yield* Effect.forEach(
+        // A close that ran late before shutdown shares the releases' deadline; one a shutdown release
+        // gives up on has had its deadline already.
+        const earlierLateCloses = [...lateScopeCloses];
+        const releaseActiveSessions = Effect.forEach(
           activeSessions,
           (entry) =>
             releaseEntry({
@@ -3641,6 +3651,21 @@ export const layerWithOptions = (
             ),
           { concurrency: "unbounded", discard: true },
         );
+        const awaitEarlierLateCloses = Fiber.awaitAll(earlierLateCloses).pipe(
+          Effect.timeoutOption(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
+          Effect.flatMap((done) =>
+            Option.isNone(done)
+              ? Effect.logWarning("orchestration-v2.provider-session-late-scope-closes-timeout", {
+                  count: earlierLateCloses.length,
+                  timeoutMs: RELEASE_SCOPE_CLOSE_TIMEOUT_MS,
+                })
+              : Effect.void,
+          ),
+        );
+        yield* Effect.all([releaseActiveSessions, awaitEarlierLateCloses], {
+          concurrency: "unbounded",
+          discard: true,
+        }).pipe(Effect.withSpan("ProviderSessionManager.shutdown"));
       }).pipe(Effect.withSpan("ProviderSessionManager.shutdown"));
       yield* Effect.addFinalizer(() =>
         shutdown.pipe(

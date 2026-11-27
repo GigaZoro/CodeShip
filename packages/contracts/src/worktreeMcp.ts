@@ -22,9 +22,11 @@ export const WorktreeMcpHandoffInput = Schema.Struct({
     }),
   ),
   continuationPrompt: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
-      description: "Work to resume in the worktree next turn. Omitted: thread waits.",
-    }),
+    TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).pipe(
+      Schema.annotateEncoded({
+        description: "Work to resume in the worktree next turn. Omitted: thread waits.",
+      }),
+    ),
   ),
 });
 export type WorktreeMcpHandoffInput = typeof WorktreeMcpHandoffInput.Type;

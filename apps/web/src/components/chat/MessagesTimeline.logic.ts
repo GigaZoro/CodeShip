@@ -1605,6 +1605,185 @@ function runningSubagentsAtRunTail(entries: ReadonlyArray<TimelineEntry>, runId:
   return running;
 }
 
+function timelineEntryAnyRunId(entry: TimelineEntry): RunId | null {
+  if (entry.kind === "message") return entry.message.runId ?? null;
+  if (entry.kind === "proposed-plan") return entry.proposedPlan.runId;
+  if (entry.kind === "html-render" || entry.kind === "mcp-app" || entry.kind === "sent-message")
+    return entry.runId;
+  if (entry.kind === "work") return entry.entry.runId ?? null;
+  return entry.projectedItem.item.runId ?? null;
+}
+
+type UsageLimitFilterRun = Pick<HandoffTimelineRun, "id" | "ordinal" | "status">;
+
+function withoutSupersededUsageLimitErrors(
+  entries: ReadonlyArray<TimelineEntry>,
+  latestRun: TimelineLatestRun | null,
+  runningRunId: RunId | null,
+  runs: ReadonlyArray<UsageLimitFilterRun> | undefined,
+): ReadonlyArray<TimelineEntry> {
+  const latestRunStarted =
+    latestRun !== null &&
+    latestRun.status !== "queued" &&
+    latestRun.status !== "rolled_back" &&
+    !(latestRun.status === "cancelled" && latestRun.startedAt === null);
+
+  const excludedRunIds = new Set<RunId>();
+  const runOrdinalById = new Map<RunId, number>();
+  if (runs !== undefined) {
+    for (const run of runs) {
+      if (run.status === "queued" || run.status === "rolled_back") {
+        excludedRunIds.add(run.id);
+      } else {
+        runOrdinalById.set(run.id, run.ordinal);
+      }
+    }
+  }
+  if (latestRun !== null && !latestRunStarted) {
+    excludedRunIds.add(latestRun.runId);
+  }
+
+  const firstSeenIndexByRunId = new Map<RunId, number>();
+  for (let index = 0; index < entries.length; index += 1) {
+    const entryRunId = timelineEntryAnyRunId(entries[index]!);
+    if (entryRunId !== null && !firstSeenIndexByRunId.has(entryRunId)) {
+      firstSeenIndexByRunId.set(entryRunId, index);
+    }
+  }
+
+  const isGenuinelyNewerRun = (candidateRunId: RunId, errorRunId: RunId): boolean => {
+    if (candidateRunId === errorRunId || excludedRunIds.has(candidateRunId)) {
+      return false;
+    }
+    const candidateOrdinal = runOrdinalById.get(candidateRunId);
+    const errorOrdinal = runOrdinalById.get(errorRunId);
+    if (candidateOrdinal !== undefined && errorOrdinal !== undefined) {
+      return candidateOrdinal > errorOrdinal;
+    }
+    const candidateFirstSeen = firstSeenIndexByRunId.get(candidateRunId);
+    const errorFirstSeen = firstSeenIndexByRunId.get(errorRunId);
+    if (candidateFirstSeen !== undefined && errorFirstSeen !== undefined) {
+      return candidateFirstSeen > errorFirstSeen;
+    }
+    // A started run with no timeline entries yet (e.g. latestRun / runningRunId) is newer
+    // than a run that already emitted this error.
+    return candidateFirstSeen === undefined && errorFirstSeen !== undefined;
+  };
+
+  const laterAttemptByRun = new Map<RunId, { first: RunAttemptId; hasMultiple: boolean }>();
+  let maxLaterOrdinal = -Infinity;
+  let maxLaterFirstSeenIndex = -1;
+  let maxLaterUnindexedFirstSeenIndex = -1;
+  let seenLaterResponseStart = false;
+  let suppressed: Set<number> | null = null;
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    const failedItem = timelineEntryFailedItem(entry);
+    if (failedItem !== null && failedItem.failure.class === "usage_limit") {
+      const runId = failedItem.runId;
+      let isSuperseded = false;
+      if (runId !== null) {
+        const laterAttempt = laterAttemptByRun.get(runId);
+        const hasLaterDifferentAttempt =
+          entry.attempt !== undefined &&
+          laterAttempt !== undefined &&
+          (laterAttempt.hasMultiple || laterAttempt.first !== entry.attempt.id);
+        const isSupersededAttempt = entry.attempt?.status === "superseded";
+
+        if (latestRun !== null && latestRun.runId === runId && latestRun.status === "failed") {
+          // Never hide a usage_limit error belonging to the latest failed run unless a later
+          // attempt within that same run replaced it.
+          isSuperseded = isSupersededAttempt || hasLaterDifferentAttempt;
+        } else {
+          const errorOrdinal = runOrdinalById.get(runId);
+          const errorFirstSeen = firstSeenIndexByRunId.get(runId);
+          const hasLaterNewerRun =
+            (errorOrdinal !== undefined && maxLaterOrdinal > errorOrdinal) ||
+            (errorFirstSeen !== undefined &&
+              (errorOrdinal === undefined
+                ? maxLaterFirstSeenIndex > errorFirstSeen
+                : maxLaterUnindexedFirstSeenIndex > errorFirstSeen));
+          const supersededByRunningRun =
+            runningRunId !== null && isGenuinelyNewerRun(runningRunId, runId);
+          const supersededByLatestRun =
+            (latestRunStarted && isGenuinelyNewerRun(latestRun.runId, runId)) ||
+            (latestRun !== null &&
+              latestRun.runId === runId &&
+              (latestRun.status === "completed" ||
+                latestRun.status === "running" ||
+                latestRun.status === "starting" ||
+                latestRun.status === "waiting"));
+          isSuperseded =
+            hasLaterNewerRun ||
+            hasLaterDifferentAttempt ||
+            isSupersededAttempt ||
+            supersededByRunningRun ||
+            supersededByLatestRun;
+        }
+      } else {
+        const hasLaterNewerRunEntry = maxLaterFirstSeenIndex > index;
+        const newerRunningRun =
+          runningRunId !== null &&
+          !excludedRunIds.has(runningRunId) &&
+          (firstSeenIndexByRunId.get(runningRunId) ?? Infinity) > index;
+        const newerLatestRun =
+          latestRunStarted &&
+          latestRun.status !== "failed" &&
+          (firstSeenIndexByRunId.get(latestRun.runId) ?? Infinity) > index;
+        if (latestRun?.status === "failed" && !seenLaterResponseStart && !hasLaterNewerRunEntry) {
+          isSuperseded = false;
+        } else {
+          isSuperseded =
+            seenLaterResponseStart || hasLaterNewerRunEntry || newerRunningRun || newerLatestRun;
+        }
+      }
+      if (isSuperseded) {
+        suppressed ??= new Set<number>();
+        suppressed.add(index);
+      }
+    }
+
+    const entryRunId = timelineEntryAnyRunId(entry);
+    if (entryRunId !== null) {
+      if (!excludedRunIds.has(entryRunId)) {
+        const entryOrdinal = runOrdinalById.get(entryRunId);
+        const entryFirstSeen = firstSeenIndexByRunId.get(entryRunId);
+        if (entryOrdinal !== undefined) {
+          if (entryOrdinal > maxLaterOrdinal) {
+            maxLaterOrdinal = entryOrdinal;
+          }
+        } else if (
+          entryFirstSeen !== undefined &&
+          entryFirstSeen > maxLaterUnindexedFirstSeenIndex
+        ) {
+          maxLaterUnindexedFirstSeenIndex = entryFirstSeen;
+        }
+        if (entryFirstSeen !== undefined && entryFirstSeen > maxLaterFirstSeenIndex) {
+          maxLaterFirstSeenIndex = entryFirstSeen;
+        }
+      }
+      if (entry.attempt !== undefined) {
+        const seen = laterAttemptByRun.get(entryRunId);
+        if (seen === undefined) {
+          laterAttemptByRun.set(entryRunId, { first: entry.attempt.id, hasMultiple: false });
+        } else if (!seen.hasMultiple && seen.first !== entry.attempt.id) {
+          seen.hasMultiple = true;
+        }
+      }
+    }
+    if (
+      timelineEntryStartsResponse(entry) &&
+      (entryRunId === null || !excludedRunIds.has(entryRunId))
+    ) {
+      seenLaterResponseStart = true;
+    }
+  }
+
+  if (suppressed === null) return entries;
+  return entries.filter((_, index) => !suppressed.has(index));
+}
+
 function timelineRowEntries(
   input: Pick<
     MessagesTimelineRowsInput,
@@ -1614,6 +1793,7 @@ function timelineRowEntries(
     | "isWorking"
     | "latestRun"
     | "runningRunId"
+    | "runs"
     | "pendingApprovalRequestIds"
   >,
 ) {
@@ -1650,7 +1830,14 @@ function timelineRowEntries(
         entry.kind !== "work" || !workEntryHiddenByToolCallVisibility(entry.entry, visibility),
     );
   }
-  return withoutSubagentDelegationRows(settleSupersededReasoning(shown));
+  return withoutSubagentDelegationRows(
+    withoutSupersededUsageLimitErrors(
+      settleSupersededReasoning(shown),
+      input.latestRun ?? null,
+      input.runningRunId ?? null,
+      input.runs,
+    ),
+  );
 }
 
 function deriveTimelineTurnFolds(
@@ -1661,6 +1848,7 @@ function deriveTimelineTurnFolds(
     | "isWorking"
     | "runlessWorkActive"
     | "runningRunId"
+    | "runs"
     | "toolCallVisibility"
     | "revealedMessageId"
     | "foldFinishedWork"
@@ -1696,6 +1884,7 @@ export function deriveMessagesTimelineRows(
     /** The usage-limited run whose failure row the recovery notice replaces. */
     usageLimitRunId?: RunId | null;
     runningRunId?: RunId | null;
+    runs?: ReadonlyArray<UsageLimitFilterRun> | undefined;
     expandedRunIds?: ReadonlySet<RunId>;
     expandedAttemptIds?: ReadonlySet<RunAttemptId>;
     expandedWorkGroupIds?: ReadonlySet<string>;
@@ -2644,6 +2833,7 @@ export function timelineTurnFoldRunIdsByEntryId(
     | "isWorking"
     | "runlessWorkActive"
     | "runningRunId"
+    | "runs"
     | "toolCallVisibility"
     | "revealedMessageId"
     | "foldFinishedWork"
@@ -3044,11 +3234,15 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   }
 }
 
+function handoffRunStatusKey(status: HandoffTimelineRun["status"]): "queued" | "rolled_back" | "" {
+  return status === "queued" || status === "rolled_back" ? status : "";
+}
+
 export function handoffRunsSignature(runs: ReadonlyArray<HandoffTimelineRun>): string {
   return runs
     .map(
       (run) =>
-        `${run.id}\0${run.providerInstanceId}\0${run.ordinal}\0${run.modelSelection.instanceId}\0${run.modelSelection.model}`,
+        `${run.id}\0${run.providerInstanceId}\0${run.ordinal}\0${run.modelSelection.instanceId}\0${run.modelSelection.model}\0${handoffRunStatusKey(run.status)}\0${run.userMessageId ?? ""}`,
     )
     .join("\n");
 }

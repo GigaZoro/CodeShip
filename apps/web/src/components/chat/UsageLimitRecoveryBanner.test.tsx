@@ -2,7 +2,10 @@ import { RunId } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { usageLimitRecoveryBannerItem } from "./UsageLimitRecoveryBanner";
+import {
+  isActiveUsageLimitRecoveryState,
+  usageLimitRecoveryBannerItem,
+} from "./UsageLimitRecoveryBanner";
 
 const stoppedAt = new Date(2026, 9, 20, 12, 0);
 
@@ -20,6 +23,50 @@ function bannerItem(resetAt: Date, timestampFormat: TimestampFormat = "24-hour")
     onChange: async () => {},
   });
 }
+
+describe("isActiveUsageLimitRecoveryState", () => {
+  it("is true only while the latest run is still failed with usage_limit", () => {
+    expect(
+      isActiveUsageLimitRecoveryState({
+        runtimeStatus: "failed",
+        lastErrorClass: "usage_limit",
+        latestRun: { status: "failed" },
+      }),
+    ).toBe(true);
+
+    for (const status of ["starting", "running", "waiting", "completed", "cancelled"] as const) {
+      expect(
+        isActiveUsageLimitRecoveryState({
+          runtimeStatus: "failed",
+          lastErrorClass: "usage_limit",
+          latestRun: { status },
+        }),
+      ).toBe(false);
+    }
+
+    expect(
+      isActiveUsageLimitRecoveryState({
+        runtimeStatus: "failed",
+        lastErrorClass: "provider_error",
+        latestRun: { status: "failed" },
+      }),
+    ).toBe(false);
+    expect(
+      isActiveUsageLimitRecoveryState({
+        runtimeStatus: "running",
+        lastErrorClass: "usage_limit",
+        latestRun: { status: "failed" },
+      }),
+    ).toBe(false);
+    expect(
+      isActiveUsageLimitRecoveryState({
+        runtimeStatus: "failed",
+        lastErrorClass: "usage_limit",
+        latestRun: null,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("usageLimitRecoveryBannerItem", () => {
   it.each([

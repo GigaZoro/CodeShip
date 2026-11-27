@@ -1,5 +1,6 @@
 import * as SharedTaskTestLayers from "../scheduledTasks/sharedTaskTestLayers.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -104,6 +105,7 @@ it.effect("an MCP edit cannot recreate a concurrently deleted schedule", () =>
               ServerSettings.layerTest(),
             ),
             Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(false) }),
+            Layer.mock(CommandRunner.CommandRunner)({}),
           ),
         ),
       ),

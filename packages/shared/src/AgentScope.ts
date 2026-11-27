@@ -23,6 +23,8 @@ export interface AgentScopeShape {
    * descendants outside its process group. Preserves systemd OOM diagnosis.
    */
   readonly stop: (unit: string) => Effect.Effect<void>;
+  /** True only when a command scope is verified empty, inactive or unloaded. */
+  readonly stopCommand: (unit: string) => Effect.Effect<boolean>;
   /**
    * SIGKILLs every process in the thread's own scope, which works even while
    * the kernel throttles them. Shared scopes serve other threads and are never
@@ -49,6 +51,7 @@ export const AgentScope = Context.Reference<AgentScopeShape>("@t3tools/shared/Ag
     wrap: ({ command, args }) => Effect.succeed({ command, args }),
     oomKilled: () => Effect.succeed(false),
     stop: () => Effect.void,
+    stopCommand: () => Effect.succeed(false),
     kill: () => Effect.succeed(false),
     clear: () => Effect.void,
   }),

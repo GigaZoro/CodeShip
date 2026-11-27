@@ -1,3 +1,4 @@
+import { makePiProtocolSpawner } from "./rpc.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -55,7 +56,7 @@ const makeFakePi = (
           }
         }
       });
-    const spawner = ChildProcessSpawner.make((command) => {
+    const spawner = makePiProtocolSpawner((command) => {
       const versionProbe =
         ChildProcess.isStandardCommand(command) && command.args.includes("--version");
       return Effect.succeed(

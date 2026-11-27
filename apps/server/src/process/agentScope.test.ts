@@ -36,6 +36,7 @@ const running: ScopeState = {
   result: "success",
   oomKills: 0,
   populated: true,
+  controlGroup: "/user.slice/t3code-agent.scope",
 };
 
 describe("classifyScope", () => {
@@ -71,6 +72,8 @@ const withFakeSystemd = <A, E>(
   {
     oomPolicy = true,
     stopFails = false,
+    showFails = false,
+    runtimeDir = "/run/user/1",
     memoryPolicy,
     leftovers = false,
     liveOwner = false,
@@ -79,6 +82,8 @@ const withFakeSystemd = <A, E>(
   }: {
     readonly oomPolicy?: boolean;
     readonly stopFails?: boolean;
+    readonly showFails?: boolean;
+    readonly runtimeDir?: string;
     readonly memoryPolicy?: string;
     readonly leftovers?: boolean;
     readonly liveOwner?: boolean;
@@ -123,6 +128,7 @@ const withFakeSystemd = <A, E>(
           }
           const [, verb, unit = ""] = args;
           if (failingVerbs.has(verb!)) return output("", 1);
+          if (showFails && verb === "show") return output("", 1);
           if (stopFails && verb === "stop") {
             return {
               ...output(""),
@@ -158,7 +164,7 @@ const withFakeSystemd = <A, E>(
           ? { PATH: bin }
           : {
               PATH: bin,
-              XDG_RUNTIME_DIR: "/run/user/1",
+              XDG_RUNTIME_DIR: runtimeDir,
               ...(memoryPolicy === undefined
                 ? {}
                 : { T3CODE_AGENT_SLICE_MEMORY_POLICY: memoryPolicy }),
@@ -543,6 +549,73 @@ describe("AgentScope service", () => {
       leftovers: true,
       liveOwner: true,
     }),
+  );
+
+  it.effect.each([
+    "populated",
+    "unreadable",
+    "stop failed",
+    "manager unavailable",
+    "failed populated",
+    "inactive populated",
+    "failed with unreadable events",
+    "inactive with unreadable events",
+  ] as const)("keeps command cleanup pending when its scope is %s", (failure) =>
+    withFakeSystemd(
+      ({ scope, units, cgroupRoot, calls }) =>
+        Effect.gen(function* () {
+          const unit = "t3code-command-owned.scope";
+          exitedAgent(units, cgroupRoot, unit, { populated: true, oomKills: undefined });
+          if (failure === "failed populated") units.get(unit)!.activeState = "failed";
+          if (failure === "inactive populated") units.get(unit)!.activeState = "inactive";
+          if (failure.endsWith("with unreadable events")) {
+            units.get(unit)!.activeState = failure.split(" ")[0]!;
+            NodeFS.unlinkSync(NodePath.join(cgroupRoot, unit, "cgroup.events"));
+          }
+          expect(yield* scope.stopCommand(unit)).toBe(false);
+          expect(calls.filter(([, verb]) => verb === "reset-failed")).toEqual([]);
+          if (failure === "failed populated" || failure === "inactive populated") {
+            NodeFS.writeFileSync(NodePath.join(cgroupRoot, unit, "cgroup.events"), "populated 0\n");
+            expect(yield* scope.stopCommand(unit)).toBe(true);
+          }
+          if (failure === "populated") {
+            expect(stopsOf(calls)).toEqual([["--user", "stop", "--no-block", unit]]);
+            exitedAgent(units, cgroupRoot, unit, { populated: false, oomKills: undefined });
+            expect(yield* scope.stopCommand(unit)).toBe(true);
+            units.get(unit)!.activeState = "inactive";
+            expect(yield* scope.stopCommand(unit)).toBe(true);
+            units.delete(unit);
+            expect(yield* scope.stopCommand(unit)).toBe(true);
+          }
+        }),
+      {
+        showFails: failure === "unreadable",
+        stopFails: failure === "stop failed",
+        runtimeDir: failure === "manager unavailable" ? "" : "/run/user/1",
+      },
+    ),
+  );
+
+  it.effect.each(["without a control group", "with an empty control group"] as const)(
+    "counts a failed command scope %s as stopped and resets it",
+    (shape) =>
+      withFakeSystemd(({ scope, units, cgroupRoot, calls }) =>
+        Effect.gen(function* () {
+          const unit = "t3code-command-owned.scope";
+          if (shape === "without a control group") {
+            units.set(unit, { activeState: "failed", result: "timeout" });
+          } else {
+            exitedAgent(units, cgroupRoot, unit, { populated: false, oomKills: undefined });
+            units.get(unit)!.activeState = "failed";
+          }
+          expect(yield* scope.stopCommand(unit)).toBe(true);
+          expect(stopsOf(calls)).toEqual([]);
+          expect(calls.filter(([, verb]) => verb === "reset-failed")).toEqual([
+            ["--user", "reset-failed", unit],
+          ]);
+          expect(units.has(unit)).toBe(false);
+        }),
+      ),
   );
 
   it.effect("stops leftover processes only in an active agent scope", () =>

@@ -3,6 +3,7 @@ import {
   assistantCitationsToPlainText,
   splitsSurrogatePair,
 } from "@t3tools/shared/assistantCitations";
+import { isAutomaticServerContinuationMessage } from "@t3tools/client-runtime/user-message";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 import {
   isAttachmentOnlyBootstrapPrompt,
@@ -41,6 +42,13 @@ export function deriveTimelineMinimapItems(
     if (message.role !== "user" && message.role !== "assistant") return;
     const starredMessageId = starred.has(message.id) ? message.id : null;
     if (message.role === "assistant" && starredMessageId === null) return;
+    if (
+      message.role === "user" &&
+      starredMessageId === null &&
+      isAutomaticServerContinuationMessage(message)
+    ) {
+      return;
+    }
     const item = {
       id,
       rowIndex,
@@ -67,7 +75,9 @@ export function deriveTimelineMinimapItems(
           : undefined;
       const marker = addMessage(row.message, row.id, index, streamingItemId);
       if (row.message.role === "user") {
-        prompt = marker;
+        if (marker !== undefined) {
+          prompt = marker;
+        }
       } else if (row.message.role === "assistant" && prompt) {
         prompt.assistantText = row.message.text;
         prompt.streamingItemId = streamingItemId;

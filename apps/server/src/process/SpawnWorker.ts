@@ -13,7 +13,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   type WindowsProcessTreeRoot,
   windowsStopTreeArgs,
-} from "@t3tools/shared/windowsProcessTree";
+} from "@t3tools/shared/windowsProcessTreeScript";
 import { windowsPowerShellPath } from "@t3tools/shared/windowsSystem";
 
 // Windows runs CreateProcess synchronously on the calling thread, and antivirus or a busy disk can

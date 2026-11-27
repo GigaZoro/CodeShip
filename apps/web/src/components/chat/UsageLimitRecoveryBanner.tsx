@@ -49,6 +49,18 @@ type RecoveryProps = {
   signInSettings?: { environmentId: EnvironmentId; instanceId: ProviderInstanceId };
 };
 
+export function isActiveUsageLimitRecoveryState(input: {
+  readonly runtimeStatus: string | null | undefined;
+  readonly lastErrorClass: string | null | undefined;
+  readonly latestRun: { readonly status: string } | null | undefined;
+}): boolean {
+  return (
+    input.runtimeStatus === "failed" &&
+    input.lastErrorClass === "usage_limit" &&
+    input.latestRun?.status === "failed"
+  );
+}
+
 function parseEpochMs(isoDate: string | null): number | null {
   if (isoDate === null) return null;
   const parsed = Date.parse(isoDate);

@@ -181,7 +181,11 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
         yield* gitWorkflow.createWorktree(
           { cwd, refName: branch, path: worktreePath },
           {
-            releasedBranch: { previousHead: released.request.head, baseRef: base.refName },
+            releasedBranch: {
+              previousHead: released.request.head,
+              baseRef: base.refName,
+              durableRefs: [released.request.durableRef, ...(released.request.alsoDurable ?? [])],
+            },
           },
         );
       } else {

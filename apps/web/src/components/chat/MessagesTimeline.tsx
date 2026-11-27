@@ -27,6 +27,7 @@ import {
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import { isAutomaticServerContinuationMessage } from "@t3tools/client-runtime/user-message";
 import {
   firstUnseenThreadRowIndex,
   type UnseenThreadWindow,
@@ -706,10 +707,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const toolCallVisibility =
     findActive && preferredToolCallVisibility === "zen" ? "hideAll" : preferredToolCallVisibility;
   const revealedMessageId = citationRequest?.citation.messageId ?? null;
+  // Run status/timestamps change per stream event; keep them out of shared row context.
+  const runs = useStableHandoffRuns(runsProp);
   const foldInput = {
     timelineEntries,
     latestRun,
     runningRunId,
+    runs,
     isWorking,
     runlessWorkActive,
     toolCallVisibility,
@@ -799,6 +803,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     latestRun,
     usageLimitRunId,
     runningRunId,
+    runs,
     expandedRunIds: visibleExpandedRunIds,
     expandedAttemptIds: visibleExpandedAttemptIds,
     expandedWorkGroupIds,
@@ -846,8 +851,6 @@ const ConversationTimeline = memo(function ConversationTimeline({
     (approval) =>
       isVisiblePendingApproval(approval) && !matchedApprovalRequestIds.has(approval.requestId),
   );
-  // Run status/timestamps change per stream event; keep them out of shared row context.
-  const runs = useStableHandoffRuns(runsProp);
   const minimapItems = deriveTimelineMinimapItems(rows, starredIds);
   const minimapPrompts = minimapItems.filter((item) => item.role === "user");
   const minimapPromptRowIndices = minimapPrompts.map((item) => item.rowIndex);
@@ -1602,6 +1605,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     timelineEntries,
     latestRun,
     runningRunId,
+    runs,
     isWorking,
     runlessWorkActive,
     toolCallVisibility,
@@ -1855,7 +1859,11 @@ function TimelineHistoryControl(props: MessagesTimelineHistoryControls) {
 }
 
 function isMessageRow(row: MessagesTimelineRow) {
-  return row.kind === "message" && row.message.role !== "system";
+  return (
+    row.kind === "message" &&
+    row.message.role !== "system" &&
+    !isAutomaticServerContinuationMessage(row.message)
+  );
 }
 
 // LegendList recycles a row's container once it leaves the draw buffer, which
@@ -1912,6 +1920,9 @@ function keyExtractor(item: MessagesTimelineRow) {
 // can differ in height by orders of magnitude, so each gets its own type to avoid nested-update loops.
 function getItemType(item: MessagesTimelineRow) {
   if (item.kind !== "message") return item.kind;
+  if (isAutomaticServerContinuationMessage(item.message)) {
+    return "message:continuation";
+  }
   const lengthBucket = Math.max(0, Math.floor(Math.log2(item.message.text.length / 1000)));
   return lengthBucket < 2
     ? `message:${item.message.role}:${lengthBucket}`
@@ -1921,6 +1932,8 @@ function getItemType(item: MessagesTimelineRow) {
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
   const isExpandedToolGroup = row.kind === "work" && row.isExpandedToolGroup;
   const isSubagentGroup = row.kind === "event" && row.projectedItem.item.type === "subagent";
+  const isContinuationMessage =
+    row.kind === "message" && isAutomaticServerContinuationMessage(row.message);
   const isWorkLogRow =
     row.kind === "work" ||
     row.kind === "work-live" ||
@@ -1939,7 +1952,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
             ? "pb-(--timeline-gap-tight)"
             : row.kind === "message" && row.groupedWithNext
               ? "pb-(--timeline-gap-grouped)"
-              : (row.kind === "message" &&
+              : isContinuationMessage ||
+                  (row.kind === "message" &&
                     row.message.role === "assistant" &&
                     !row.showAssistantMeta) ||
                   row.kind === "worktree-setup" ||

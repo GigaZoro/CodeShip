@@ -1,3 +1,5 @@
+import { WindowsJobHost, windowsJobOf } from "@t3tools/shared/windowsJob";
+import { windowsJobSpawn } from "@t3tools/shared/windowsJobNode";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import {
   compactDynamicToolOutput,
@@ -90,7 +92,6 @@ import {
   mcpAppToolResourceUri,
 } from "@t3tools/shared/mcpApp";
 import * as ProviderProcesses from "../../process/providerProcesses.ts";
-import * as SpawnWorker from "../../process/SpawnWorker.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   type WindowsProcessTreeRoot,
@@ -607,28 +608,27 @@ function claudeDescendants(
 function spawnClaudeProcessTree(
   options: ClaudeSpawnOptions,
   stopTree: (root: WindowsProcessTreeRoot) => Promise<void>,
+  host: string,
   onStderr?: (text: string) => void,
 ) {
-  const child = SpawnWorker.spawnPiped(options.command, options.args, {
+  const child = windowsJobSpawn(host)(options.command, options.args, {
     cwd: options.cwd,
     env: options.env,
     signal: options.signal,
-    windowsHide: true,
-    stopTreeOnKill: false,
+    stdio: ["pipe", "pipe", "pipe"],
   });
-  // The launcher thread reports the pid once the process exists; a failed launch reports none.
-  const root = new Promise<WindowsProcessTreeRoot | undefined>((resolve) => {
-    child.once("spawn", () => resolve(child.treeRoot));
-    child.once("error", () => resolve(undefined));
-  });
+  const root = child.pid === undefined ? undefined : { pid: child.pid, job: windowsJobOf(child)! };
   child.stderr.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+    child.once("error", () => {
+      if (child.pid === undefined) resolve();
+    });
+  });
   return {
     child,
     exited,
-    ended: root.then((tree) =>
-      tree === undefined ? undefined : exited.then(() => stopTree(child.treeRoot ?? tree)),
-    ),
+    ended: root === undefined ? Promise.resolve() : exited.then(() => stopTree(root)),
   };
 }
 
@@ -2030,6 +2030,12 @@ export const layerQueryRunner: Layer.Layer<
         if (answered) return;
         stderrTail = (stderrTail + text).slice(-CLAUDE_STDERR_TAIL_LENGTH);
       };
+      const jobHost =
+        platform === "win32" && options.spawnClaudeCodeProcess === undefined
+          ? yield* (yield* WindowsJobHost).pipe(
+              Effect.mapError((cause) => queryRunnerError(cause, "spawn")),
+            )
+          : undefined;
       let descendants: ReturnType<typeof trackDescendants> | undefined;
       let windowsCli: ClaudeWindowsCli | undefined;
       const spawnProcess =
@@ -2054,7 +2060,7 @@ export const layerQueryRunner: Layer.Layer<
             }
             return child;
           }
-          const cli = spawnClaudeProcessTree(spawnOptions, stopWindowsTree, (chunk) => {
+          const cli = spawnClaudeProcessTree(spawnOptions, stopWindowsTree, jobHost!, (chunk) => {
             appendStderr(chunk);
             options.stderr?.(chunk);
           });

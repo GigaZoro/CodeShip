@@ -1,6 +1,9 @@
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import type { ModelSelection, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import {
   isProviderAvailable,
@@ -12,6 +15,7 @@ import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
 import { fallbackTextGenerationModelSelection } from "@t3tools/shared/serverSettings";
 import * as ServerSettings from "../serverSettings.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import { TextGenerationError } from "@t3tools/contracts";
 
 import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
@@ -20,7 +24,28 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 import * as TextGenerators from "./TextGenerators.ts";
-import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
+import * as TextGenerationUsageRepository from "../persistence/TextGenerationUsage.ts";
+import {
+  TextGenerationAttribution,
+  type TextGenerationCallUsage,
+  TextGenerationUsageSink,
+  unknownCallUsage,
+} from "./TextGenerationUsage.ts";
+
+type UsageOutcome = Pick<
+  TextGenerationUsageRepository.TextGenerationUsageRow,
+  "outcome" | "errorDetail"
+>;
+
+const usageOutcome = (exit: Exit.Exit<unknown, TextGenerationError>): UsageOutcome =>
+  Exit.isSuccess(exit)
+    ? { outcome: "succeeded", errorDetail: null }
+    : Cause.hasInterruptsOnly(exit.cause)
+      ? { outcome: "interrupted", errorDetail: null }
+      : {
+          outcome: "failed",
+          errorDetail: Option.getOrUndefined(Cause.findErrorOption(exit.cause))?.detail ?? null,
+        };
 
 export type {
   BranchNameGenerationInput,
@@ -56,18 +81,16 @@ const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
   operation: TextGenerationOp,
   instanceId: ProviderInstanceId,
-): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
+): Effect.Effect<ProviderInstance, TextGenerationError> =>
   registry.getInstance(instanceId).pipe(
-    Effect.flatMap((instance) =>
-      instance
-        ? Effect.succeed(instance.textGeneration)
-        : Effect.fail(
-            new TextGenerationError({
-              operation,
-              detail: `No provider instance registered for id '${instanceId}'.`,
-              retryable: false,
-            }),
-          ),
+    Effect.filterOrFail(
+      (instance): instance is ProviderInstance => instance !== undefined,
+      () =>
+        new TextGenerationError({
+          operation,
+          detail: `No provider instance registered for id '${instanceId}'.`,
+          retryable: false,
+        }),
     ),
   );
 
@@ -78,6 +101,36 @@ export const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const installationGate = yield* ProviderInstallationGate.ProviderInstallationGate;
   const textGenerators = yield* TextGenerators.TextGenerators;
+  const usageRepository = yield* TextGenerationUsageRepository.TextGenerationUsageRepository;
+  const recordUsage = Effect.fn("TextGeneration.recordUsage")(function* (
+    operation: TextGenerationOp,
+    instance: ProviderInstance,
+    calls: ReadonlyArray<TextGenerationCallUsage>,
+    { outcome, errorDetail }: UsageOutcome,
+  ) {
+    const { threadId, demandId } = yield* TextGenerationAttribution;
+    const occurredAt = DateTime.formatIso(yield* DateTime.now);
+    yield* usageRepository
+      .record(
+        calls.map((call) => ({
+          ...call,
+          driver: instance.driverKind,
+          providerInstanceId: instance.instanceId,
+          operation,
+          threadId,
+          demandId,
+          outcome,
+          errorDetail,
+          occurredAt,
+        })),
+      )
+      .pipe(
+        // The ledger runs as the generation's finalizer, so a defect would replace its result.
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not record text generation usage", { operation, cause }),
+        ),
+      );
+  });
   const generate = Effect.fn("TextGeneration.generate")(function* <A>(
     operation: TextGenerationOp,
     selection: ModelSelection,
@@ -175,9 +228,40 @@ export const make = Effect.gen(function* () {
     }
     return yield* installationGate.execute(
       selection.instanceId,
-      resolveInstance(registry, operation, selection.instanceId).pipe(
-        Effect.flatMap((service) => invoke(service, selection)),
-      ),
+      Effect.gen(function* () {
+        const instance = yield* resolveInstance(registry, operation, selection.instanceId);
+        const services = yield* Effect.context<never>();
+        const unknownCalls = (count: number) =>
+          Array.from({ length: count }, () => unknownCallUsage(selection.model));
+        // One writer per call: the usage the runner reported, else one unknown-count row per send the
+        // provider accepted. A success proves one even from a runner that does not signal dispatch.
+        const reported: Array<TextGenerationCallUsage> = [];
+        let dispatched = 0;
+        let written = 0;
+        let settled: UsageOutcome | undefined;
+        return yield* invoke(instance.textGeneration, selection).pipe(
+          Effect.provideService(TextGenerationUsageSink, (calls) => {
+            reported.push(...calls);
+          }),
+          Effect.provideService(TextGenerationOperations.OnDispatch, () => {
+            dispatched += 1;
+            if (settled === undefined || reported.length > 0 || dispatched <= written) return;
+            // The provider accepted a send after the generation ended, so nothing awaits this row.
+            written = dispatched;
+            Effect.runForkWith(services)(
+              recordUsage(operation, instance, unknownCalls(1), settled),
+            );
+          }),
+          Effect.onExit((exit) => {
+            settled = usageOutcome(exit);
+            if (reported.length > 0) return recordUsage(operation, instance, reported, settled);
+            written = Math.max(dispatched, Exit.isSuccess(exit) ? 1 : 0);
+            return written === 0
+              ? Effect.void
+              : recordUsage(operation, instance, unknownCalls(written), settled);
+          }),
+        );
+      }),
     );
   });
   return TextGeneration.of({
@@ -263,4 +347,5 @@ export const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(TextGeneration, make).pipe(
   Layer.provideMerge(TextGenerators.layer),
+  Layer.provide(TextGenerationUsageRepository.layer),
 );

@@ -1,3 +1,4 @@
+import { makePiProtocolSpawner } from "./rpc.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -437,7 +438,7 @@ const makeFakePiWithResponses = Effect.fnUntraced(function* (
     args: [],
     env: {},
   };
-  const spawner = ChildProcessSpawner.make((command) =>
+  const spawner = makePiProtocolSpawner((command) =>
     Effect.sync(() => {
       if (ChildProcess.isStandardCommand(command)) {
         lastSpawn = {
@@ -562,7 +563,7 @@ const makeAdapter = Effect.fnUntraced(function* (
   const spawner =
     forkFake === undefined
       ? fake.spawner
-      : ChildProcessSpawner.make((command) =>
+      : makePiProtocolSpawner((command) =>
           ChildProcess.isStandardCommand(command) && command.args.includes("--fork")
             ? forkFake.spawner.spawn(command)
             : fake.spawner.spawn(command),
@@ -2107,7 +2108,7 @@ describe("PiAdapterV2", () => {
       yield* Effect.gen(function* () {
         yield* openRuntime({
           ...fake,
-          spawner: ChildProcessSpawner.make((command) =>
+          spawner: makePiProtocolSpawner((command) =>
             Effect.acquireRelease(
               fake.spawner
                 .spawn(command)
@@ -7689,7 +7690,7 @@ describe("PiRpc framing", () => {
     });
     return Effect.gen(function* () {
       const stdout = yield* Queue.unbounded<Uint8Array>();
-      const spawner = ChildProcessSpawner.make(() =>
+      const spawner = makePiProtocolSpawner(() =>
         Effect.succeed(
           ChildProcessSpawner.makeHandle({
             pid: ChildProcessSpawner.ProcessId(FAKE_PID),
@@ -7770,7 +7771,7 @@ describe("PiRpc early process exit", () => {
   it.effect("reports a nonzero exit code instead of an unexplained stdout close", () =>
     Effect.gen(function* () {
       const secret = "API_KEY=super-secret\n";
-      const spawner = ChildProcessSpawner.make(() =>
+      const spawner = makePiProtocolSpawner(() =>
         Effect.succeed(
           makeHandle({
             exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),

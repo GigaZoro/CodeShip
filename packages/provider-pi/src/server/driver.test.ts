@@ -1,3 +1,4 @@
+import { makePiProtocolSpawner } from "./rpc.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
@@ -49,7 +50,7 @@ const makePiSpawner = Effect.fnUntraced(function* (
 ) {
   const pendingCommand = yield* Deferred.make<void>();
   const launches: Array<ChildProcess.StandardCommand> = [];
-  const spawner = ChildProcessSpawner.make((command) =>
+  const spawner = makePiProtocolSpawner((command) =>
     Effect.gen(function* () {
       assert.isTrue(ChildProcess.isStandardCommand(command));
       if (!ChildProcess.isStandardCommand(command)) return yield* Effect.die("Unexpected pipeline");
@@ -192,7 +193,7 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
       const instance = yield* create({}, false).pipe(
         Effect.provideService(
           ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("Disabled Pi must not spawn")),
+          makePiProtocolSpawner(() => Effect.die("Disabled Pi must not spawn")),
         ),
       );
       assert.isDefined(instance.snapshotForCwd);

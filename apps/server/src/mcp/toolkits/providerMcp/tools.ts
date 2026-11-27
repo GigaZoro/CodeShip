@@ -26,11 +26,15 @@ const ProviderMcpServersTool = Tool.make("t3_provider_mcp_servers", {
     'MCP servers a provider loads here; new sessions get changes. `add` needs a full `server`. `edit`: "" keeps a stored header/env value, no `url` keeps the address; values are never returned. `disable` keeps config; `remove` deletes it and its keys, so prefer `disable`. Changes need a full-access caller.',
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
-    instanceId: ProviderInstanceId.annotate({
-      description: "Provider instance, such as `claudeAgent` or `codex`.",
-    }),
+    instanceId: ProviderInstanceId.pipe(
+      Schema.annotateEncoded({
+        description: "Provider instance, such as `claudeAgent` or `codex`.",
+      }),
+    ),
     action: Schema.Literals(["list", "add", "edit", "enable", "disable", "remove"]),
-    name: Schema.optional(ProviderMcpServerName.annotate({ description: "All but `list`." })),
+    name: Schema.optional(
+      ProviderMcpServerName.pipe(Schema.annotateEncoded({ description: "All but `list`." })),
+    ),
     server: Schema.optional(ProviderMcpServerEdit),
   }),
   success: Schema.Struct({

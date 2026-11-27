@@ -14,6 +14,8 @@ import * as Option from "effect/Option";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { probeProcess } from "@t3tools/shared/processProbe";
+import { attachWindowsJob, type WindowsJob } from "@t3tools/shared/windowsJob";
+import { markWindowsJobSpawner } from "@t3tools/shared/windowsJobSpawner";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Deferred from "effect/Deferred";
@@ -901,17 +903,31 @@ describe("check:changed", () => {
     }),
   );
 
-  // Each walk of a Windows process tree starts PowerShell, which takes seconds on a loaded machine, and
+  // Each walk of a Windows process tree spawns the Windows job host, which adds overhead on a loaded machine, and
   // a run makes many git calls, one after another.
   it.effect("walks the tree of each step on Windows, and of no git call that exited", () =>
     Effect.gen(function* () {
       const spawned: Array<string> = [];
       const fake = fakeGit(() => ({ exitCode: exited(0), stdout: "a.ts\n" }));
+      const job: WindowsJob = {
+        host: "job-host.exe",
+        name: "Global\\CodeShip.Job.fake",
+        child: { pid: 1, created: "134395200001234567" },
+      };
       const spawner = runSpawner(
-        ChildProcessSpawner.make((command) => {
-          if (ChildProcess.isStandardCommand(command)) spawned.push(command.command);
-          return fake.spawn(command);
-        }),
+        markWindowsJobSpawner(
+          ChildProcessSpawner.make((command) => {
+            const name = ChildProcess.isStandardCommand(command) ? command.command : undefined;
+            if (name !== undefined) spawned.push(name);
+            return fake.spawn(command).pipe(
+              Effect.tap((handle) =>
+                Effect.sync(() => {
+                  if (name !== job.host) attachWindowsJob(handle, job);
+                }),
+              ),
+            );
+          }),
+        ),
         "win32",
       );
       const listed = yield* gitLines("/repo", ["ls-files"]).pipe(
@@ -920,7 +936,7 @@ describe("check:changed", () => {
       assert.deepStrictEqual(listed, ["a.ts"]);
       assert.deepStrictEqual(spawned, ["git"]);
       yield* spawnVp(spawner, "win32", ["lint"], "/repo", {}, () => {});
-      assert.deepStrictEqual(spawned, ["git", process.execPath, "powershell.exe"]);
+      assert.deepStrictEqual(spawned, ["git", process.execPath, job.host]);
     }),
   );
 

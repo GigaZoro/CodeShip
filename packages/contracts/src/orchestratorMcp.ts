@@ -83,14 +83,15 @@ export const OrchestratorMcpClientRequestId = TrimmedNonEmptyString.check(Schema
         : "clientRequestId must contain valid paired Unicode surrogates.",
     ),
   )
-  .annotate({ description: "Reuse it to retry the same call. A new call gets a new key." });
+  // A trimmed string advertises its encoded side, so its description goes there.
+  .pipe(
+    Schema.annotateEncoded({
+      description: "Reuse it to retry the same call. A new call gets a new key.",
+    }),
+  );
 
 // OpenCode 1.15 serializes nested MCP union objects as JSON strings; decode that form at the boundary.
-const OrchestratorMcpScheduleFromJsonString = Schema.fromJsonString(
-  ScheduledTaskUpsertSchedule,
-).annotate({
-  description: "JSON-text schedule. Prefer the object form.",
-});
+const OrchestratorMcpScheduleFromJsonString = Schema.fromJsonString(ScheduledTaskUpsertSchedule);
 
 const OrchestratorMcpSchedule = Schema.Union([
   ScheduledTaskUpsertSchedule,
@@ -123,16 +124,20 @@ export const OrchestratorMcpTargetOptions = Schema.Union([
 ]);
 export type OrchestratorMcpTargetOptions = typeof OrchestratorMcpTargetOptions.Type;
 
-export const OrchestratorMcpTarget = Schema.Struct({
+const OrchestratorMcpModelTargetFields = {
   providerInstanceId: Schema.optional(
-    ProviderInstanceId.annotate({
-      description: "Provider instance id from `orchestrator_capabilities`.",
-    }),
+    ProviderInstanceId.pipe(
+      Schema.annotateEncoded({
+        description: "Provider instance id from `orchestrator_capabilities`.",
+      }),
+    ),
   ),
   driverKind: Schema.optional(
-    ProviderDriverKind.annotate({
-      description: "Prefer `providerInstanceId`.",
-    }),
+    ProviderDriverKind.pipe(
+      Schema.annotateEncoded({
+        description: "Prefer `providerInstanceId`.",
+      }),
+    ),
   ),
   model: Schema.optional(TrimmedNonEmptyString),
   options: Schema.optional(
@@ -141,17 +146,30 @@ export const OrchestratorMcpTarget = Schema.Struct({
         "Ids vary by provider; see `orchestrator_capabilities`. Given values override inherited. [] or {} clears.",
     }),
   ),
+};
+
+/** The provider and model a new thread runs on; it runs in this checkout. */
+const OrchestratorMcpModelTarget = Schema.Struct(OrchestratorMcpModelTargetFields);
+export type OrchestratorMcpModelTarget = typeof OrchestratorMcpModelTarget.Type;
+
+/** A delegated task's provider and model, and the environment and project it runs in. */
+export const OrchestratorMcpTarget = Schema.Struct({
+  ...OrchestratorMcpModelTargetFields,
   environmentId: Schema.optional(
-    EnvironmentId.annotate({
-      description:
-        "Linked environment to run in. Provider and model default to yours; others come from `orchestrator_capabilities` with this `environmentId`.",
-    }),
+    EnvironmentId.pipe(
+      Schema.annotateEncoded({
+        description:
+          "Linked environment to run in. Provider and model default to yours; others come from `orchestrator_capabilities` with this `environmentId`.",
+      }),
+    ),
   ),
   projectId: Schema.optional(
-    ProjectId.annotate({
-      description:
-        "With `environmentId`: its project to run in. Default: the one with this project's repository. Without it, another project of this environment, only with `isolation: 'worktree'`: the child gets a new worktree of that project's repository.",
-    }),
+    ProjectId.pipe(
+      Schema.annotateEncoded({
+        description:
+          "With `environmentId`: its project to run in. Default: the one with this project's repository. Without it, another project of this environment, only with `isolation: 'worktree'`: the child gets a new worktree of that project's repository.",
+      }),
+    ),
   ),
 });
 export type OrchestratorMcpTarget = typeof OrchestratorMcpTarget.Type;
@@ -332,9 +350,22 @@ export const OrchestratorMcpTaskCancelInput = Schema.Struct({
 });
 export type OrchestratorMcpTaskCancelInput = typeof OrchestratorMcpTaskCancelInput.Type;
 
+/** What cancelling a `t3_command_run` task did to its command. */
+export const OrchestratorMcpCommandCleanup = Schema.Literals([
+  "stopped",
+  "pending",
+  "never-started",
+  "unproven",
+]).annotate({
+  description:
+    "What this cancel did to a command task's processes: `stopped` (none is left), `pending` (stopping them takes longer; CodeShip keeps trying), `never-started` (cancelled before the command started, so it never ran; CodeShip still stops any process its launcher left) or `unproven` (CodeShip could not prove the process was this command's, so it stopped nothing and the command may still be running). Absent when the task is not a command or its command had already ended.",
+});
+export type OrchestratorMcpCommandCleanup = typeof OrchestratorMcpCommandCleanup.Type;
+
 export const OrchestratorMcpTaskCancelResult = Schema.Struct({
   taskId: NodeId,
   status: Schema.Literals(["cancel_requested", "completed", "failed", "cancelled", "interrupted"]),
+  cleanup: Schema.optional(OrchestratorMcpCommandCleanup),
 });
 export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelResult.Type;
 
@@ -344,9 +375,11 @@ const ORCHESTRATOR_MCP_COMMAND_MAX_TIMEOUT_MINUTES = 720;
 export const OrchestratorMcpRunCommandInput = Schema.Struct({
   command: TrimmedNonEmptyString.check(Schema.isMaxLength(32_000)),
   cwd: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)).annotate({
-      description: "Absolute, or relative to this thread's checkout (the default).",
-    }),
+    TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)).pipe(
+      Schema.annotateEncoded({
+        description: "Absolute, or relative to this thread's checkout (the default).",
+      }),
+    ),
   ),
   label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
   timeoutMinutes: Schema.optional(
@@ -361,7 +394,13 @@ export const OrchestratorMcpRunCommandInput = Schema.Struct({
       description: "Runs the command, unchanged, in bash on every OS: Git Bash on Windows.",
     }),
   ),
-  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  // A transport or agent retry is a new tool call, so only this key tells it from a second run.
+  clientRequestId: OrchestratorMcpClientRequestId.pipe(
+    Schema.annotateEncoded({
+      description:
+        "A retry of a call reuses it and gets the command that call started instead of running it again. A new command gets a new key.",
+    }),
+  ),
 });
 export type OrchestratorMcpRunCommandInput = typeof OrchestratorMcpRunCommandInput.Type;
 
@@ -381,7 +420,7 @@ export type OrchestratorMcpRunCommandResult = typeof OrchestratorMcpRunCommandRe
 export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
-  target: Schema.optional(OrchestratorMcpTarget),
+  target: Schema.optional(OrchestratorMcpModelTarget),
   auto: Schema.optional(OrchestratorMcpAuto),
   runtimeMode: Schema.optional(OrchestratorMcpRuntimeMode),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
@@ -430,22 +469,19 @@ export const OrchestratorMcpThreadStatus = Schema.Union([
 export type OrchestratorMcpThreadStatus = typeof OrchestratorMcpThreadStatus.Type;
 
 const OrchestratorMcpProjectTarget = Schema.optional(
-  ProjectId.annotate({
-    description: "Project to use. Default: your thread's project. Required outside a thread.",
-  }),
+  ProjectId.pipe(
+    Schema.annotateEncoded({
+      description: "Project to use. Default: your thread's project. Required outside a thread.",
+    }),
+  ),
 );
 
 /**
- * A linked environment to act in instead of this one. The tools that take it
- * forward the call there, where the link's access and the caller's own modes
- * both apply.
+ * A linked environment to act in; the call is forwarded there, under the link's access and the
+ * caller's own modes. No description: over forty tools take it, and the orchestration
+ * instructions every provider with T3 tools gets explain it once.
  */
-export const OrchestratorMcpEnvironmentTarget = Schema.optional(
-  EnvironmentId.annotate({
-    description:
-      "Linked environment to act in. Omit for this one. Ids are then that environment's.",
-  }),
-);
+export const OrchestratorMcpEnvironmentTarget = Schema.optional(EnvironmentId);
 
 // Codex hides `minimum` and `maximum` from the model, so a value above the maximum clamps on
 // decode instead of failing the call; pagination returns the rest. Values below 1 still fail:
@@ -677,10 +713,12 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
   continuationOfRunId: Schema.optional(
-    RunId.annotate({
-      description:
-        "To resume a stopped run: the send fails unless that run is still the thread's latest and it stopped on a usage limit, a network error or an interrupt.",
-    }),
+    RunId.pipe(
+      Schema.annotateEncoded({
+        description:
+          "To resume a stopped run: the send fails unless that run is still the thread's latest and it stopped on a usage limit, a network error or an interrupt.",
+      }),
+    ),
   ),
 });
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
@@ -758,9 +796,11 @@ export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadI
 export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   search: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
-      description: "Match model ids and labels. Replaces the short list.",
-    }),
+    TrimmedNonEmptyString.check(Schema.isMaxLength(200)).pipe(
+      Schema.annotateEncoded({
+        description: "Match model ids and labels. Replaces the short list.",
+      }),
+    ),
   ),
   usage: Schema.optional(
     Schema.Boolean.annotate({
@@ -1215,9 +1255,11 @@ export type OrchestratorMcpScheduleTaskResult = typeof OrchestratorMcpScheduleTa
 export const OrchestratorMcpListScheduledTasksInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: Schema.optional(
-    ProjectId.annotate({
-      description: "Default: your thread's project, or all outside a thread.",
-    }),
+    ProjectId.pipe(
+      Schema.annotateEncoded({
+        description: "Default: your thread's project, or all outside a thread.",
+      }),
+    ),
   ),
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   includePrompt: Schema.optional(Schema.Boolean),
@@ -1419,9 +1461,11 @@ export type OrchestratorMcpRequestSecretResult = typeof OrchestratorMcpRequestSe
 export const OrchestratorMcpAskUserInput = Schema.Struct({
   questions: Schema.Array(
     Schema.Struct({
-      question: TrimmedNonEmptyString.annotate({
-        description: "The money decision, with its cost or risk.",
-      }),
+      question: TrimmedNonEmptyString.pipe(
+        Schema.annotateEncoded({
+          description: "The money decision, with its cost or risk.",
+        }),
+      ),
       header: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(24))).annotate({
         description: "Short label, e.g. 'Approve'.",
       }),
@@ -1436,9 +1480,11 @@ export const OrchestratorMcpAskUserInput = Schema.Struct({
       multiSelect: Schema.optional(Schema.Boolean),
     }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
-  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId).annotate({
-    description: "Retry key for this ask.",
-  }),
+  clientRequestId: Schema.optional(
+    OrchestratorMcpClientRequestId.pipe(
+      Schema.annotateEncoded({ description: "Retry key for this ask." }),
+    ),
+  ),
 });
 export type OrchestratorMcpAskUserInput = typeof OrchestratorMcpAskUserInput.Type;
 
@@ -1508,9 +1554,11 @@ export const OrchestratorMcpEnvironmentLinkResult = Schema.Union([
 export type OrchestratorMcpEnvironmentLinkResult = typeof OrchestratorMcpEnvironmentLinkResult.Type;
 
 export const OrchestratorMcpEnvironmentUnlinkInput = Schema.Struct({
-  environmentId: EnvironmentId.annotate({
-    description: "The linked environment to forget, from t3_environment_links.",
-  }),
+  environmentId: EnvironmentId.pipe(
+    Schema.annotateEncoded({
+      description: "The linked environment to forget, from t3_environment_links.",
+    }),
+  ),
 });
 export type OrchestratorMcpEnvironmentUnlinkInput =
   typeof OrchestratorMcpEnvironmentUnlinkInput.Type;
@@ -1528,18 +1576,22 @@ export type OrchestratorMcpEnvironmentUnlinkResult =
  * one made a pairing code of its own for it; the code travels only over that link.
  */
 export const OrchestratorMcpLinkBackInput = Schema.Struct({
-  environmentId: EnvironmentId.annotate({
-    description: "The environment that linked this one, and the one to link back to.",
-  }),
+  environmentId: EnvironmentId.pipe(
+    Schema.annotateEncoded({
+      description: "The environment that linked this one, and the one to link back to.",
+    }),
+  ),
   label: Schema.optional(TrimmedNonEmptyString).annotate({
     description: "What the user calls it, to name it when it cannot be reached.",
   }),
   urls: Schema.NonEmptyArray(TrimmedNonEmptyString).annotate({
     description: "Where it answers, most preferred first. Only those that prove to be it are used.",
   }),
-  pairingCode: TrimmedNonEmptyString.annotate({
-    description: "A one-use pairing code from that environment.",
-  }),
+  pairingCode: TrimmedNonEmptyString.pipe(
+    Schema.annotateEncoded({
+      description: "A one-use pairing code from that environment.",
+    }),
+  ),
   access: AuthMcpClientAccess.annotate({
     description: "What agents here may do there.",
   }),

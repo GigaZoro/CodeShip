@@ -299,6 +299,7 @@ describe("CursorAgentSdkProcessRunner", () => {
               }),
           }).pipe(
             Effect.provideService(AgentScope, {
+              ...AgentScope.defaultValue(),
               wrap: ({ command, args, name }) =>
                 Effect.succeed({ command, args, unit: `unit-${name}` }),
               oomKilled: () => Effect.succeed(false),

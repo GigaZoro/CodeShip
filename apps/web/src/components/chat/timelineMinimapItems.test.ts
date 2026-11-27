@@ -106,6 +106,107 @@ describe("deriveTimelineMinimapItems", () => {
       expect(resolveTimelineMinimapPreview(items[0]!)?.userText).toBeNull();
     },
   );
+
+  it("skips automatic server continuation rows and pairs the continued reply with the real prompt", () => {
+    const at = "2026-10-01T00:00:00Z";
+    const items = deriveTimelineMinimapItems(
+      [
+        {
+          kind: "message",
+          id: "entry:user-1",
+          createdAt: at,
+          showAssistantMeta: false,
+          showAssistantCopyButton: false,
+          assistantCopyStreaming: false,
+          message: {
+            id: MessageId.make("user-1"),
+            role: "user",
+            createdBy: "user",
+            creationSource: "web",
+            text: "Finish the migration",
+            runId: null,
+            streaming: false,
+            createdAt: at,
+            updatedAt: at,
+          },
+        },
+        {
+          kind: "message",
+          id: "entry:limit-failover:run-1",
+          createdAt: at,
+          showAssistantMeta: false,
+          showAssistantCopyButton: false,
+          assistantCopyStreaming: false,
+          message: {
+            id: MessageId.make("limit-failover:run-1"),
+            role: "user",
+            createdBy: "user",
+            creationSource: "server",
+            text: "Continue where you left off.",
+            runId: null,
+            streaming: false,
+            createdAt: at,
+            updatedAt: at,
+          },
+        },
+        {
+          kind: "message",
+          id: "entry:reply-1",
+          createdAt: at,
+          showAssistantMeta: true,
+          showAssistantCopyButton: true,
+          assistantCopyStreaming: false,
+          message: {
+            id: MessageId.make("reply-1"),
+            role: "assistant",
+            text: "Migration finished.",
+            runId: null,
+            streaming: false,
+            createdAt: at,
+            updatedAt: at,
+          },
+        },
+        {
+          kind: "message",
+          id: "entry:user-2",
+          createdAt: at,
+          showAssistantMeta: false,
+          showAssistantCopyButton: false,
+          assistantCopyStreaming: false,
+          message: {
+            id: MessageId.make("user-2"),
+            role: "user",
+            createdBy: "user",
+            creationSource: "web",
+            text: "Continue where you left off.",
+            runId: null,
+            streaming: false,
+            createdAt: at,
+            updatedAt: at,
+          },
+        },
+      ],
+      [],
+    );
+    expect(items).toEqual([
+      {
+        id: "entry:user-1",
+        rowIndex: 0,
+        role: "user",
+        starredMessageId: null,
+        userText: "Finish the migration",
+        assistantText: "Migration finished.",
+      },
+      {
+        id: "entry:user-2",
+        rowIndex: 3,
+        role: "user",
+        starredMessageId: null,
+        userText: "Continue where you left off.",
+        assistantText: null,
+      },
+    ]);
+  });
 });
 
 describe("resolveTimelineMinimapPreview", () => {

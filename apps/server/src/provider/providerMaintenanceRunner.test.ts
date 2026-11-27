@@ -35,6 +35,7 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as TextGenerationUsageRepository from "../persistence/TextGenerationUsage.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as TextGenerators from "../textGeneration/TextGenerators.ts";
 import * as ProviderInstallationGate from "./ProviderInstallationGate.ts";
@@ -1158,6 +1159,9 @@ describe("providerMaintenanceRunner", () => {
             Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
             Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
               resolveLink: () => Effect.die("unused"),
+            }),
+            Layer.succeed(TextGenerationUsageRepository.TextGenerationUsageRepository, {
+              record: () => Effect.void,
             }),
           ),
         ),

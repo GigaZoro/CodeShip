@@ -48,7 +48,10 @@ import {
   type UnseenThreadWindow,
 } from "@t3tools/client-runtime/state/thread-visits";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
-import { useUsageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
+import {
+  isActiveUsageLimitRecoveryState,
+  useUsageLimitRecoveryBannerItem,
+} from "./chat/UsageLimitRecoveryBanner";
 import {
   isThreadEnvironmentLocked,
   resolveDraftHeroState,
@@ -1150,10 +1153,13 @@ export default function ChatView(props: ChatViewProps) {
   );
   const browserAvailable = isPreviewSupportedInRuntime() || activeEnvironmentServerBrowser;
   const activeThreadShell = serverThread;
-  const limitRecoveryRun =
-    serverRuntime?.status === "failed" && serverRuntime.lastErrorClass === "usage_limit"
-      ? (activeThreadShell?.latestRun ?? null)
-      : null;
+  const latestUsageLimitRun = activeLatestRun ?? activeThreadShell?.latestRun ?? null;
+  const isActiveUsageLimitRecovery = isActiveUsageLimitRecoveryState({
+    runtimeStatus: serverRuntime?.status,
+    lastErrorClass: serverRuntime?.lastErrorClass,
+    latestRun: latestUsageLimitRun,
+  });
+  const limitRecoveryRun = isActiveUsageLimitRecovery ? latestUsageLimitRun : null;
   // The recovery banner offers Wake now for a snooze it set.
   const limitRecoveryHoldsSnooze = limitRecoveryOwnsSnooze({
     runId: limitRecoveryRun?.runId,
@@ -1162,10 +1168,9 @@ export default function ChatView(props: ChatViewProps) {
     snoozedUntil: activeThreadShell?.snoozedUntil,
   });
   // The run whose limit rows client-runtime hides (deriveUsageLimitNoticeRows).
-  const usageLimitRunId =
-    serverRuntime?.status === "failed" && serverRuntime.lastErrorClass === "usage_limit"
-      ? (serverLatestRun?.runId ?? null)
-      : null;
+  const usageLimitRunId = isActiveUsageLimitRecovery
+    ? (limitRecoveryRun?.runId ?? serverLatestRun?.runId ?? null)
+    : null;
   const timelineThreadError =
     limitRecoveryRun !== null && visibleThreadError === serverRuntime?.lastError
       ? null

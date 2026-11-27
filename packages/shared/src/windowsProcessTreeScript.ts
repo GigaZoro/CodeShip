@@ -10,7 +10,7 @@
  * system's by as much. More would let a process that took the root's pid soon after pass for it, or
  * a child the pid's last holder started just before the spawn pass for an ended root's.
  */
-export const WINDOWS_PROCESS_CLOCK_SKEW_MS = 100;
+const WINDOWS_PROCESS_CLOCK_SKEW_MS = 100;
 
 /**
  * A child older than the parent it names, or the root's child created before from, is an earlier
@@ -18,7 +18,7 @@ export const WINDOWS_PROCESS_CLOCK_SKEW_MS = 100;
  * process. A recorded later holder bounds the root's children even after that holder exits.
  * Later passes walk only from processes the stop holds open, whose pids stay theirs.
  */
-export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
+const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
   "function Ticks($d) { ([DateTimeOffset]$d).UtcTicks }",
   "function Get-T3Descendants($all, $starts) {",
@@ -42,7 +42,7 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "function Get-T3ProcessTree($all, $root, $since, $from, $to, $ended = [double]::PositiveInfinity, $running = $false, $later = [double]::PositiveInfinity) {",
   "  $earliest = if ($from -gt $since) { $from } else { $since }",
   "  $after = [DateTimeOffset]::FromUnixTimeMilliseconds($earliest).UtcTicks; $mine = $null",
-  "  $limit = [math]::Min($ended, $later)",
+  "  $limit = if ($later -lt $ended) { $later } else { $ended }",
   "  $before = if ([double]::IsInfinity($limit)) { [long]::MaxValue } else { [DateTimeOffset]::FromUnixTimeMilliseconds($limit).UtcTicks }",
   "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
   "  if ($holder) {",
@@ -174,7 +174,7 @@ export interface WindowsProcessTreeRoot {
  * ` <pid> <since> [<from> <to>] [-ended <ended>] [-later <later>]`, for code that cannot import this module. They
  * hold no double quote, which Node would escape.
  */
-export const WINDOWS_STOP_TREE_ARGS: ReadonlyArray<string> = [
+const WINDOWS_STOP_TREE_ARGS: ReadonlyArray<string> = [
   "-NoProfile",
   "-NonInteractive",
   "-Command",
@@ -183,7 +183,7 @@ export const WINDOWS_STOP_TREE_ARGS: ReadonlyArray<string> = [
   ),
 ];
 
-export const stopTreeCall = (root: WindowsProcessTreeRoot): Array<string | number> => [
+const stopTreeCall = (root: WindowsProcessTreeRoot): Array<string | number> => [
   root.pid,
   root.since,
   ...(root.created === "unknown" ? [] : [root.created.from, root.created.to]),
@@ -191,7 +191,7 @@ export const stopTreeCall = (root: WindowsProcessTreeRoot): Array<string | numbe
   ...(root.later === undefined ? [] : ["-later", root.later]),
 ];
 
-export const stopTreeArgs = (call: ReadonlyArray<string | number>): Array<string> =>
+const stopTreeArgs = (call: ReadonlyArray<string | number>): Array<string> =>
   WINDOWS_STOP_TREE_ARGS.map((arg, index) =>
     index === WINDOWS_STOP_TREE_ARGS.length - 1 ? `${arg} ${call.join(" ")}` : arg,
   );

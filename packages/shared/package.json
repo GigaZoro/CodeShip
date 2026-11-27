@@ -7,6 +7,14 @@
       "types": "./src/png.ts",
       "import": "./src/png.ts"
     },
+    "./windowsJobNode": {
+      "types": "./src/windowsJobNode.ts",
+      "import": "./src/windowsJobNode.ts"
+    },
+    "./providerLoginExpiry": {
+      "types": "./src/providerLoginExpiry.ts",
+      "import": "./src/providerLoginExpiry.ts"
+    },
     "./pullRequestAnchor": {
       "types": "./src/pullRequestAnchor.ts",
       "import": "./src/pullRequestAnchor.ts"
@@ -411,6 +419,14 @@
       "types": "./src/windowsProcessTreeScript.ts",
       "import": "./src/windowsProcessTreeScript.ts"
     },
+    "./windowsJobSpawner": {
+      "types": "./src/windowsJobSpawner.ts",
+      "import": "./src/windowsJobSpawner.ts"
+    },
+    "./windowsJob": {
+      "types": "./src/windowsJob.ts",
+      "import": "./src/windowsJob.ts"
+    },
     "./testing/longTempDir": {
       "types": "./src/testing/longTempDir.ts",
       "import": "./src/testing/longTempDir.ts"
@@ -690,10 +706,6 @@
     "./assistantInsights": {
       "types": "./src/assistantInsights.ts",
       "import": "./src/assistantInsights.ts"
-    },
-    "./providerLoginExpiry": {
-      "types": "./src/providerLoginExpiry.ts",
-      "import": "./src/providerLoginExpiry.ts"
     },
     "./formatBytes": {
       "types": "./src/formatBytes.ts",

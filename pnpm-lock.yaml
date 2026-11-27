@@ -374,7 +374,7 @@ patchedDependencies:
   '@expo/ui@58.0.29': 2346ac02073363a401e85357e541055e9737bcbc1cdcb63e056cda9368fa79f6
   '@ff-labs/fff-node@0.11.0': 93f62a76399b435a76588b2bef237db0a1e85880c1ac0d0759c416e9cc579252
   '@legendapp/list@3.9.0': 2af8c3d6f2a427389b9e36e7bd69bb426025a43891baddfc09de6739cd806dce
-  '@muse-code/sdk@1.4.6': 7287b19280e04659a4bdd91d38f9ba5ceccbbac000e8b2c02a9afd6c8cf4f268
+  '@muse-code/sdk@1.4.6': b30fccb442ee8ebd8204ad0a5d2b6558f7f0b1ac8900fb1c7186181433bb55da
   '@pierre/diffs@1.7.0-beta.4': 7edcdd484a99c7ec0b2667499c4cb21d113ec9bea1f8570c0b0a030d33bbf1cd
   '@react-native-menu/menu@2.0.0': 6872ba71b9847c5a0210b1b896923dadc3860faedfe28d9f062bcedfe786ef1d
   '@react-navigation/native-stack@7.21.0': 990d575444c4af2ce8218b3b7a8280fe244c03abbdb32b822a2e862f791dbf42
@@ -850,7 +850,7 @@ importers:
         version: 0.11.0(patch_hash=93f62a76399b435a76588b2bef237db0a1e85880c1ac0d0759c416e9cc579252)
       '@muse-code/sdk':
         specifier: 1.4.6
-        version: 1.4.6(patch_hash=7287b19280e04659a4bdd91d38f9ba5ceccbbac000e8b2c02a9afd6c8cf4f268)(@types/node@24.12.4)
+        version: 1.4.6(patch_hash=b30fccb442ee8ebd8204ad0a5d2b6558f7f0b1ac8900fb1c7186181433bb55da)(@types/node@24.12.4)
       '@t3tools/issue-tracker-linear':
         specifier: workspace:*
         version: link:../../packages/issue-tracker-linear
@@ -1897,7 +1897,7 @@ importers:
     dependencies:
       '@muse-code/sdk':
         specifier: 1.4.6
-        version: 1.4.6(patch_hash=7287b19280e04659a4bdd91d38f9ba5ceccbbac000e8b2c02a9afd6c8cf4f268)(@types/node@24.12.4)
+        version: 1.4.6(patch_hash=b30fccb442ee8ebd8204ad0a5d2b6558f7f0b1ac8900fb1c7186181433bb55da)(@types/node@24.12.4)
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -15399,7 +15399,7 @@ snapshots:
       '@modelcontextprotocol/core': 2.4.0
       zod: 4.6.7
 
-  '@muse-code/sdk@1.4.6(patch_hash=7287b19280e04659a4bdd91d38f9ba5ceccbbac000e8b2c02a9afd6c8cf4f268)(@types/node@24.12.4)':
+  '@muse-code/sdk@1.4.6(patch_hash=b30fccb442ee8ebd8204ad0a5d2b6558f7f0b1ac8900fb1c7186181433bb55da)(@types/node@24.12.4)':
     optionalDependencies:
       '@types/node': 24.12.4
 

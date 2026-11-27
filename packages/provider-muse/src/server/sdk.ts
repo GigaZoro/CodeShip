@@ -1,3 +1,5 @@
+import { WindowsJobHost, windowsJobOf } from "@t3tools/shared/windowsJob";
+import { windowsJobSpawn } from "@t3tools/shared/windowsJobNode";
 // @effect-diagnostics globalTimers:off
 // The SDK owns process shutdown; native deadlines cover initialize before an Effect resource exists.
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- FileSystem.realPath is Node's JS realpath; museCanonicalPath needs the native one.
@@ -13,12 +15,10 @@ import type { RuntimeMode } from "@t3tools/contracts";
 import { envTrampoline, supportsEnvChdir } from "@t3tools/shared/envTrampoline";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
-import { windowsTreeStopper } from "@t3tools/shared/windowsProcessTree";
 import {
-  endedWindowsTreeRoot,
   type WindowsProcessTreeRoot,
-  windowsTreeRootFromNow,
-} from "@t3tools/shared/windowsProcessTreeScript";
+  windowsTreeStopper,
+} from "@t3tools/shared/windowsProcessTree";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -56,6 +56,7 @@ export interface MuseLaunch {
 
 export interface MuseSdkHostOptions {
   readonly binaryPath: string;
+  readonly windowsJobHost?: string;
   readonly launchArgs?: ReadonlyArray<string>;
   readonly launch?: MuseLaunch;
   readonly cwd?: string;
@@ -202,10 +203,20 @@ export async function createMuseSdkHost(
   options.signal?.throwIfAborted();
   const launch = options.launch ?? { command: options.binaryPath, args: [] };
   const { onProcessExit, stopTree } = options;
-  const rootOf = windowsTreeRootFromNow();
   let root: WindowsProcessTreeRoot | undefined;
   let treeStopped = Promise.resolve();
+  const ownedSpawn =
+    options.windowsJobHost === undefined ? undefined : windowsJobSpawn(options.windowsJobHost);
   const handshake = spawn({
+    ...(ownedSpawn === undefined
+      ? {}
+      : {
+          spawnFn: ((...args: Parameters<typeof ownedSpawn>) => {
+            const child = ownedSpawn(...args);
+            if (child.pid !== undefined) root = { pid: child.pid, job: windowsJobOf(child)! };
+            return child;
+          }) as typeof ownedSpawn,
+        }),
     command: launch.command,
     args: [...launch.args, ...(options.launchArgs ?? []), ...museServeArgs(options)],
     ...(options.cwd ? { cwd: options.cwd } : {}),
@@ -214,7 +225,7 @@ export async function createMuseSdkHost(
     ...(onProcessExit || stopTree
       ? {
           onProcessExit: (exit: ProcessExit) => {
-            const tree = root === undefined ? undefined : endedWindowsTreeRoot(root);
+            const tree = root;
             if (tree !== undefined && stopTree) {
               const stop = options.readOnly
                 ? leftSomethingBehind(exit, handshake.exited)
@@ -226,7 +237,8 @@ export async function createMuseSdkHost(
         }
       : {}),
   });
-  if (stopTree && handshake.child.pid !== undefined) root = rootOf(handshake.child.pid);
+  if (root === undefined && stopTree && handshake.child.pid !== undefined)
+    root = { pid: handshake.child.pid };
   let closePromise: Promise<void> | undefined;
   const close = () => {
     options.signal?.removeEventListener("abort", onAbort);
@@ -290,6 +302,7 @@ export const createMuseSdkHostEffect = Effect.fn("createMuseSdkHostEffect")(func
       ? envTrampoline(native.command, native.args, options.cwd)
       : undefined;
   const stopTree = platform === "win32" ? yield* windowsTreeStopper : undefined;
+  const windowsJobHost = platform === "win32" ? yield* yield* WindowsJobHost : undefined;
   const { cwd: _enteredByEnv, ...withoutCwd } = options;
   const hostOptions =
     throughEnv === undefined
@@ -298,7 +311,12 @@ export const createMuseSdkHostEffect = Effect.fn("createMuseSdkHostEffect")(func
   let startup: Promise<MuseSdkHost> | undefined;
   return yield* Effect.tryPromise({
     try: (signal) => {
-      startup = createHost({ ...hostOptions, signal, ...(stopTree ? { stopTree } : {}) });
+      startup = createHost({
+        ...hostOptions,
+        signal,
+        ...(windowsJobHost === undefined ? {} : { windowsJobHost }),
+        ...(stopTree ? { stopTree } : {}),
+      });
       return startup;
     },
     catch: (cause) => new MuseSdkError({ operation: "start", cause }),

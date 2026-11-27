@@ -144,7 +144,7 @@ describe("buildComposerPromptHistoryEntries", () => {
     });
   });
 
-  it("skips messages sent by automations, agents, and T3.CodeShip", () => {
+  it("skips messages sent by automations, agents, T3.CodeShip, and automatic server continuations", () => {
     const typed = buildComposerPromptHistoryEntries([
       { id: "m1", role: "user", text: "typed" },
       { id: "m2", role: "user", text: "scheduled", scheduledTaskId: ScheduledTaskId.make("task") },
@@ -155,8 +155,33 @@ describe("buildComposerPromptHistoryEntries", () => {
       },
       { id: "m3", role: "user", text: "from agent", createdBy: "agent", creationSource: "mcp" },
       { id: "m4", role: "user", text: "from server", createdBy: "agent", creationSource: "server" },
+      {
+        id: "limit-failover:run-1",
+        role: "user",
+        text: "Continue where you left off.",
+        createdBy: "user",
+        creationSource: "server",
+      },
+      {
+        id: "m5",
+        role: "user",
+        text: "Continue where you left off.",
+        createdBy: "user",
+        creationSource: "web",
+      },
     ]);
-    expect(typed.map((entry) => entry.id)).toEqual(["m1"]);
+    expect(typed).toEqual([
+      {
+        id: "m1",
+        prompt: "typed",
+        mentions: { threadContexts: [], environmentContexts: [] },
+      },
+      {
+        id: "m5",
+        prompt: "Continue where you left off.",
+        mentions: { threadContexts: [], environmentContexts: [] },
+      },
+    ]);
   });
 });
 

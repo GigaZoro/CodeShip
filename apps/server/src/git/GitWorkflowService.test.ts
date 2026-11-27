@@ -359,6 +359,113 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
     }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
   );
 
+  it.effect(
+    "moves a released branch to the base only while a durable ref still holds its head",
+    () => {
+      const created: string[] = [];
+      return Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const workflow = yield* GitWorkflowService.GitWorkflowService;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-released-" });
+        const cwd = `${root}/repo`;
+        yield* fileSystem.makeDirectory(cwd);
+        const git = (...args: ReadonlyArray<string>) =>
+          driver
+            .execute({ operation: "test.setupRepo", cwd, args: [...args] })
+            .pipe(Effect.map((result) => result.stdout.trim()));
+        const commit = (name: string) =>
+          Effect.gen(function* () {
+            yield* fileSystem.writeFileString(`${cwd}/${name}.txt`, name);
+            yield* git("add", `${name}.txt`);
+            yield* git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", name);
+            return yield* git("rev-parse", "HEAD");
+          });
+        const tip = (branch: string) => git("rev-parse", `refs/heads/${branch}`);
+        yield* git("init", "-b", "main");
+        yield* commit("init");
+        const branchWith = (branch: string, file: string) =>
+          git("switch", "-c", branch, "main").pipe(
+            Effect.andThen(commit(file)),
+            Effect.tap(() => git("switch", "main")),
+          );
+        const rebased = yield* branchWith("rebased", "landed");
+        const unlanded = yield* branchWith("archived", "unlanded");
+        const forgotten = yield* branchWith("forgotten", "lost");
+        const busy = yield* branchWith("busy", "busy");
+        const moved = yield* branchWith("moved", "moved");
+        yield* git("update-ref", "refs/remotes/origin/rebased", rebased);
+        yield* git("update-ref", "refs/archive/archived", unlanded);
+        yield* git("update-ref", "refs/archive/busy", busy);
+        yield* git("-c", "user.email=t@t", "-c", "user.name=t", "cherry-pick", rebased);
+        yield* fileSystem.writeFileString(`${cwd}/busy.txt`, "conflict");
+        yield* git("add", "busy.txt");
+        yield* git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "conflict");
+        const base = yield* git("rev-parse", "main");
+        yield* git("switch", "moved");
+        const movedTip = yield* commit("after-release");
+        yield* git("switch", "main");
+        yield* git("worktree", "add", `${root}/busy`, "busy");
+        // A rebase stopped on a conflict detaches HEAD but still holds the branch.
+        yield* driver.execute({
+          operation: "test.setupRepo",
+          cwd: `${root}/busy`,
+          args: ["-c", "user.email=t@t", "-c", "user.name=t", "rebase", "main"],
+          allowNonZeroExit: true,
+        });
+
+        const recreate = (branch: string, previousHead: string, durableRefs: string[]) =>
+          workflow.createWorktree(
+            { cwd, refName: branch, path: `${root}/${branch}-new` },
+            { releasedBranch: { previousHead, baseRef: "refs/heads/main", durableRefs } },
+          );
+        yield* recreate("rebased", rebased, ["refs/remotes/origin/rebased"]);
+        yield* recreate("archived", unlanded, ["refs/heads/main", "refs/archive/archived"]);
+        yield* recreate("forgotten", forgotten, ["refs/heads/main", "refs/archive/deleted"]);
+        yield* recreate("moved", moved, ["refs/heads/main"]);
+        const refused = yield* Effect.flip(recreate("busy", busy, ["refs/archive/busy"]));
+
+        assert.deepEqual(
+          {
+            rebased: yield* tip("rebased"),
+            archived: yield* tip("archived"),
+            forgotten: yield* tip("forgotten"),
+            moved: yield* tip("moved"),
+            busy: yield* tip("busy"),
+          },
+          { rebased: base, archived: base, forgotten, moved: movedTip, busy },
+        );
+        assert.deepEqual(created, ["rebased", "archived", "forgotten", "moved"]);
+        assert.include(refused.message, "another worktree");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          GitWorkflowService.layer.pipe(
+            Layer.provide(layerActiveTurns()),
+            Layer.provide(VcsDriverRegistry.layer),
+            Layer.provide(
+              Layer.mock(GitManager.GitManager)({
+                createWorktree: (input) =>
+                  Effect.sync(() => {
+                    created.push(input.refName);
+                    return { worktree: { path: input.path ?? "", refName: input.refName } };
+                  }),
+              }),
+            ),
+            Layer.provideMerge(GitVcsDriver.layer),
+            Layer.provideMerge(VcsProcess.layer),
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), { prefix: "t3-released-" }).pipe(
+                Layer.provide(NodeServices.layer),
+              ),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      );
+    },
+  );
+
   it.effect("refuses to move a checkout while a turn is running in it", () => {
     let active: ActiveTurnWorkspaces = [];
     let projectRoot = "";

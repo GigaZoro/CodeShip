@@ -178,8 +178,14 @@ import CodeShipMigration0037 from "./CodeShipMigrations/037_UsageStopReplay.ts";
 import CodeShipMigration0038 from "./CodeShipMigrations/038_UsageStopSteerTargets.ts";
 import CodeShipMigration0039 from "./CodeShipMigrations/039_CommandRunLaterPidHolder.ts";
 import CodeShipMigration0040 from "./CodeShipMigrations/040_UsageLimitRefusals.ts";
-import CodeShipMigration0041 from "./CodeShipMigrations/041_PayloadIndexesJsonValid.ts";
-import CodeShipMigration0042 from "./CodeShipMigrations/042_RunDemandIndex.ts";
+import CodeShipMigration0041 from "./CodeShipMigrations/041_CommandLaunchError.ts";
+import CodeShipMigration0042 from "./CodeShipMigrations/042_CommandResultReported.ts";
+import CodeShipMigration0043 from "./CodeShipMigrations/043_CommandWindowsIdentity.ts";
+import CodeShipMigration0044 from "./CodeShipMigrations/044_CommandExitStatusError.ts";
+import CodeShipMigration0045 from "./CodeShipMigrations/045_CommandStopLeftovers.ts";
+import CodeShipMigration0046 from "./CodeShipMigrations/046_TextGenerationUsage.ts";
+import CodeShipMigration0047 from "./CodeShipMigrations/047_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0048 from "./CodeShipMigrations/048_RunDemandIndex.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -345,8 +351,14 @@ const codeShipMigrationEntries = [
   [38, "UsageStopSteerTargets", CodeShipMigration0038],
   [39, "CommandRunLaterPidHolder", CodeShipMigration0039],
   [40, "UsageLimitRefusals", CodeShipMigration0040],
-  [41, "PayloadIndexesJsonValid", CodeShipMigration0041],
-  [42, "RunDemandIndex", CodeShipMigration0042],
+  [41, "CommandLaunchError", CodeShipMigration0041],
+  [42, "CommandResultReported", CodeShipMigration0042],
+  [43, "CommandWindowsIdentity", CodeShipMigration0043],
+  [44, "CommandExitStatusError", CodeShipMigration0044],
+  [45, "CommandStopLeftovers", CodeShipMigration0045],
+  [46, "TextGenerationUsage", CodeShipMigration0046],
+  [47, "PayloadIndexesJsonValid", CodeShipMigration0047],
+  [48, "RunDemandIndex", CodeShipMigration0048],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

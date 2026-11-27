@@ -43,6 +43,13 @@ import { gitFailureFacts } from "../vcs/GitVcsDriverCore.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 
+export interface ReleasedBranch {
+  readonly previousHead: string;
+  readonly baseRef: string;
+  /** The receipt's refs that held the head when the worktree was released. */
+  readonly durableRefs: ReadonlyArray<string>;
+}
+
 export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
   {
@@ -112,7 +119,7 @@ export class GitWorkflowService extends Context.Service<
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
       options?: GitVcsDriver.CreateWorktreeOptions & {
-        readonly releasedBranch?: { readonly previousHead: string; readonly baseRef: string };
+        readonly releasedBranch?: ReleasedBranch;
       },
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
     readonly listLocalBranchNames: (cwd: string) => Effect.Effect<string[], GitCommandError>;
@@ -403,6 +410,89 @@ export const make = Effect.gen(function* () {
     (input: Input) =>
       ensureGit(operation, input.cwd).pipe(Effect.andThen(run(input)));
 
+  // A Git error (a deleted durable ref, exit 128) answers no, which only keeps the branch.
+  const isAncestor = (cwd: string, commit: string, ref: string) =>
+    git
+      .execute({
+        operation: "GitWorkflowService.isAncestor",
+        cwd,
+        args: ["merge-base", "--is-ancestor", commit, ref],
+        allowNonZeroExit: true,
+      })
+      .pipe(Effect.map((result) => result.exitCode === 0));
+
+  // A released branch whose tip is still the receipt head carries nothing new, so it restarts
+  // from the base. Rebased, squashed and archived work is not an ancestor of the base.
+  const advanceReleasedBranch = Effect.fn("GitWorkflowService.advanceReleasedBranch")(function* (
+    cwd: string,
+    branch: string,
+    released: ReleasedBranch,
+  ) {
+    const operation = "GitWorkflowService.advanceReleasedBranch";
+    const ref = "refs/heads/" + branch;
+    const { commitSha } = yield* git.resolveCommit({ cwd, revision: ref });
+    if (commitSha !== released.previousHead) return;
+    // Local fetch refuses a branch another worktree has checked out, rebases or bisects.
+    const fetchIntoBranch = (refspec: string, options: ReadonlyArray<string>, detail: string) =>
+      git.executeRemote({
+        cwd,
+        operation,
+        timeoutMs: 30_000,
+        fallbackErrorDetail: detail,
+        args: [
+          "fetch",
+          ...options,
+          "--quiet",
+          "--no-tags",
+          "--no-recurse-submodules",
+          "--no-write-fetch-head",
+          "--no-auto-maintenance",
+          "--",
+          ".",
+          refspec,
+        ],
+      });
+    if (yield* isAncestor(cwd, released.previousHead, released.baseRef)) {
+      yield* fetchIntoBranch(
+        released.baseRef + ":" + ref,
+        [],
+        "Git could not fast-forward the released branch to the project's current base.",
+      );
+      return;
+    }
+    let durable = false;
+    for (const durableRef of released.durableRefs) {
+      durable = yield* isAncestor(cwd, released.previousHead, durableRef);
+      if (durable) break;
+    }
+    if (!durable) {
+      // Moving the branch would lose the head; keeping it costs only a stale starting point.
+      yield* Effect.logWarning("released branch head is no longer durable; keeping its tip", {
+        branch,
+        head: released.previousHead,
+      });
+      return;
+    }
+    const { commitSha: baseSha } = yield* git.resolveCommit({ cwd, revision: released.baseRef });
+    yield* fetchIntoBranch(
+      "+" + baseSha + ":" + ref,
+      ["--dry-run"],
+      "Git would not move the released branch; another worktree may be using it.",
+    );
+    yield* git.execute({
+      operation,
+      cwd,
+      args: [
+        "update-ref",
+        "-m",
+        "t3: restart released branch",
+        ref,
+        baseSha,
+        released.previousHead,
+      ],
+    });
+  });
+
   return GitWorkflowService.of({
     repositoryRoot: Effect.fn("GitWorkflowService.repositoryRoot")(function (cwd) {
       return registry.detect({ cwd }).pipe(
@@ -666,29 +756,7 @@ export const make = Effect.gen(function* () {
     createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function* (input, options) {
       yield* ensureGitCommand("GitWorkflowService.createWorktree", input.cwd);
       if (options?.releasedBranch) {
-        const ref = "refs/heads/" + input.refName;
-        const { commitSha } = yield* git.resolveCommit({ cwd: input.cwd, revision: ref });
-        if (commitSha === options.releasedBranch.previousHead) {
-          // Local fetch fast-forwards only and refuses to update a branch checked out elsewhere.
-          yield* git.executeRemote({
-            cwd: input.cwd,
-            operation: "GitWorkflowService.advanceReleasedBranch",
-            timeoutMs: 30_000,
-            fallbackErrorDetail:
-              "Git could not fast-forward the released branch to the project's current base.",
-            args: [
-              "fetch",
-              "--quiet",
-              "--no-tags",
-              "--no-recurse-submodules",
-              "--no-write-fetch-head",
-              "--no-auto-maintenance",
-              "--",
-              ".",
-              options.releasedBranch.baseRef + ":" + ref,
-            ],
-          });
-        }
+        yield* advanceReleasedBranch(input.cwd, input.refName, options.releasedBranch);
       }
       return yield* gitManager.createWorktree(input, options);
     }),

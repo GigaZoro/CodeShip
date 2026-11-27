@@ -24,6 +24,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { WindowsJobHost } from "@t3tools/shared/windowsJob";
 import { MuseSettings } from "../settings.ts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -589,6 +590,7 @@ describe("MuseAdapterV2", () => {
       assert.strictEqual(hostCwd, "C:\\work\\repo");
     }).pipe(
       Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(WindowsJobHost, Effect.succeed("job-host.exe")),
       Effect.scoped,
       Effect.provide(testLayer),
     ),

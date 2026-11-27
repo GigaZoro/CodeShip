@@ -9,7 +9,7 @@ import * as Tracer from "effect/Tracer";
 import { nodePayloadSql } from "../../orchestration-v2/NodePayloadColumns.ts";
 import { MigrationProgress } from "../MigrationProgress.ts";
 import { seedLegacyCodeShipDatabase } from "../codeShipMigration.testkit.ts";
-import { runMigrations } from "../Migrations.ts";
+import { codeShipMigrationManifest, runMigrations } from "../Migrations.ts";
 
 const layer = it.layer(NodeSqliteClient.layer({ filename: ":memory:" }));
 const freshDatabase = NodeSqliteClient.layer({ filename: ":memory:" });
@@ -107,34 +107,10 @@ it.effect("a restart resumes 091 after its last committed step instead of starti
       node: LEGACY_ROOT,
       recorded: false,
     });
-    assert.deepStrictEqual(resumed, [
-      [14, "CompactOrchestrationIds"],
-      [15, "CommandRuns"],
-      [16, "ManualStepReviewLanguages"],
-      [17, "PullRequestReviewGuideLanguages"],
-      [18, "CommandRunLossEvidence"],
-      [19, "MonitoringThreadAnalyses"],
-      [20, "NodePayloadWithoutColumnKeys"],
-      [21, "CommandRunProcessIdentity"],
-      [22, "ScheduledTaskDescriptions"],
-      [23, "TurnItemPayloadWithoutColumnKeys"],
-      [24, "CommandRunShell"],
-      [25, "MonitoringSettledThreadIndex"],
-      [26, "MonitoringAnalysesWithoutProject"],
-      [27, "MonitoringAnalysesSettleStamp"],
-      [28, "MonitoringStoredDetailsAndRetries"],
-      [29, "ColdThreadHistoryCompaction"],
-      [30, "DatabaseSizeSamples"],
-      [31, "ScheduledTaskRunReportedResult"],
-      [32, "ThreadPreferences"],
-      [33, "ScheduledTaskLastRunId"],
-      [34, "UsageStopDecisions"],
-      [35, "TurnItemMessageIndex"],
-      [36, "IncrementalEventStoreCompaction"],
-      [37, "UsageStopReplay"],
-      [38, "UsageStopSteerTargets"],
-      [39, "PayloadIndexesJsonValid"],
-    ]);
+    assert.deepStrictEqual(
+      resumed,
+      codeShipMigrationManifest.filter(([id]) => id >= 14),
+    );
     assert.deepStrictEqual(yield* eventPayloadIds, {
       "event:first": ROOT,
       "event:after-kill": LEGACY_ROOT,

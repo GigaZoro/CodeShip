@@ -44,6 +44,12 @@ export const legacyCodeShipMigrationNames = [
   "UsageStopSteerTargets",
   "CommandRunLaterPidHolder",
   "UsageLimitRefusals",
+  "CommandLaunchError",
+  "CommandResultReported",
+  "CommandWindowsIdentity",
+  "CommandExitStatusError",
+  "CommandStopLeftovers",
+  "TextGenerationUsage",
 ] as const;
 
 /** Resumable fork migrations whose cursor released builds kept in `migration_progress`. */

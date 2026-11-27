@@ -1,5 +1,6 @@
 import { useLayoutEffect } from "react";
 import type { FoldFinishedWork, RunId } from "@t3tools/contracts";
+import type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
 import type { ToolCallVisibility } from "@t3tools/contracts/settings";
 import type { TimelineEntry } from "../../session-logic";
 import {
@@ -20,6 +21,7 @@ export function useThreadFindPositionReader({
   timelineEntries,
   latestRun,
   runningRunId,
+  runs,
   isWorking,
   runlessWorkActive,
   toolCallVisibility,
@@ -34,6 +36,7 @@ export function useThreadFindPositionReader({
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly latestRun: TimelineLatestRun | null;
   readonly runningRunId: RunId | null;
+  readonly runs?: ReadonlyArray<HandoffTimelineRun> | undefined;
   readonly isWorking: boolean;
   readonly runlessWorkActive: boolean;
   readonly toolCallVisibility: ToolCallVisibility;
@@ -52,6 +55,7 @@ export function useThreadFindPositionReader({
           timelineEntries,
           latestRun,
           runningRunId,
+          runs,
           isWorking,
           runlessWorkActive,
           toolCallVisibility,
@@ -105,6 +109,7 @@ export function useThreadFindPositionReader({
     rows,
     runlessWorkActive,
     runningRunId,
+    runs,
     timelineEntries,
     timelineViewportElement,
     toolCallVisibility,

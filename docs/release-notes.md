@@ -1,3 +1,23 @@
+## 2026-11-27 — One-shot text generation keeps one usage row per accepted call
+
+- Titles, branch names, commit messages, PR text, review guides and manual-step reviews now leave one usage record per provider call the provider accepted, kept in the local database with its driver, account, operation, demand, outcome and the provider error. A request that fails before it is sent leaves no record, an accepted Cursor request that returns an invalid reply leaves one with unknown token counts, and measured counts (including zero) are kept as reported.
+
+## 2026-11-27 — Released worktrees reopen after a rebased or archived landing
+
+- A chat whose worktree was released after its branch landed by rebase or squash, or whose unlanded work was kept under an archive ref, reopens on the project's current base again instead of failing every turn with "could not fast-forward the released branch". If no saved ref holds the branch's work any more, the worktree reopens at that work instead of moving the branch.
+
+## 2026-11-27 — Stop repeated usage-limit resumes after zero progress
+
+- When a thread resumes from a usage limit via a banked reset and immediately hits a usage limit again on the same account and model without making progress, CodeShip stops retrying that account automatically instead of looping.
+
+## 2026-11-27 — Landing turns establish the final queued SHA before finalization
+
+- Maintainers: `landing-turn.cjs land` now accepts a post-rebase finalization hook (`--finalize <command>` or programmatic `finalize`) that runs under the landing turn once the final candidate SHA and base are fixed, before changed-file checks and push. If the candidate commit or remote `main` drifts after finalization, the lander aborts without attempting a push and releases its lease.
+
+## 2026-11-27 — Cleaner timelines after automatic usage-limit recovery
+
+- Automatic server continuations after account failover or usage-limit recovery now render as compact dividers ("Switched account & continued" or "Resumed automatically") instead of user chat bubbles in the web and desktop chat timeline, and superseded usage-limit errors and recovery banners collapse automatically once a continuation run starts or completes.
+
 ## 2026-11-27 — Tighter wake-up measurement bounds in wake-usage
 
 - The daily repeated-wake measurement report (`scripts/wake-usage.mjs`) now isolates overlapping prior turns using turn-item evidence, detects complete or end-of-file post-completion log reads, and accounts for usage-limit failed turns in start evidence and top-five chat ranking while keeping its conservative decision bounds.
@@ -78,6 +98,14 @@
 ## 2026-11-27 — Claude turns survive a slow settings read
 
 - When a busy machine delays the worker that reads another Claude account's settings past its 30-second deadline, CodeShip reads them once more. If that read also runs out of time, the turn is retried as one whose message was never sent, instead of failing with "Claude's settings could not be resolved (account-worker: timeout)".
+
+## 2026-11-26 — Windows commands recover from launcher timeouts
+
+- Windows command launches allow two minutes for PowerShell and WMI. Slow startup and identity checks leave cancellation, deadlines and other commands' completion delivery responsive. A launch whose command host ends early fails at once. POSIX and Windows cancellation close the start gate before an unstarted command can execute, including during restart recovery, and then stop any wrapper or job host the launch left running.
+- A launcher failure returns a task ID and reports the outcome through normal task completion. Unreadable evidence stays under reconciliation across server restarts. A deadline reports while cleanup remains pending, even when stopping the command fails. A command whose exit status cannot be read is still stopped at its deadline or cancellation, and its result says why the status could not be read. `task_cancel` waits up to 15 seconds for the command to stop, then its result says what happened: the command was stopped, its cleanup is still pending, or it was cancelled before it started. The result includes the cancel's reason. `t3_command_run` requires a `clientRequestId`, so a retried call gets the command it started instead of running it again.
+- Windows keeps each new command and provider process family in an operating-system Job Object, including descendants whose parents exit. Commands survive server restarts; stopping verifies the recorded child's identity and job membership so a reused job name cannot target another process family. Provider streams finish when the child closes them. A process whose job host never reports it fails to start, and the host is stopped. A Windows command keeps running across a server restart when the clock changes after it starts. A command started by an older version is stopped, with the processes it started, when its live process started in the millisecond it recorded. Any of those processes CodeShip cannot stop keep its cleanup pending, and its result names them. One CodeShip cannot identify keeps running, and its deadline or cancellation result says so. A command, or the Git that starts it, runs from a folder whose name contains `%` or `!` as written instead of failing to find its path. When an ACP agent's connection ends, closing its session waits for the agent's processes to stop, so they no longer hold its working folder open after the session closes. When a provider session's close outlasts its 30-second deadline, server shutdown still waits up to 30 seconds for it, so the session's processes no longer outlive the server.
+- Agents see every description written for a CodeShip tool's parameters, such as which linked environment or project a task runs in, which device, terminal or thread a call acts on, and what a webhook schedule's prompt can use. `create_threads` no longer offers a `target` environment or project it ignored: its threads run in this checkout.
+- For people who work on T3.CodeShip: the lint rule `t3code/no-wow64-binary-path` refuses a string that names a 32-bit Windows binary location: `SysWOW64`, `Program Files (x86)` or the `Microsoft.NET` `Framework` directory. A process started from one runs under WOW64, and the file tracing of cached `vp run` tasks hangs on it.
 
 ## 2026-11-26 — Multi-provider support across Auto mode, usage, and mobile
 

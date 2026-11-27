@@ -43,6 +43,56 @@ export const IDLE_COMPACTING_LABELS = {
 const LEGACY_AUTOMATION_PREFIX = /^\[Triggered by schedule task: [^\r\n]+\]\r?\n\r?\n/;
 const LEGACY_AUTOMATION_MESSAGE_ID = /^scheduled-task-message:(.+):\d+:(?:scheduled|manual)$/;
 
+/**
+ * Prompts the server dispatches under `createdBy: "user"` / `creationSource: "server"` when
+ * automatically resuming or failing over a thread after a usage limit or transient cut-off.
+ */
+const AUTOMATIC_SERVER_CONTINUATION_PROMPTS: ReadonlySet<string> = new Set([
+  "Continue where you left off.",
+  "Continue where you left off. Your last turn was cut short, so a command or other action it started may have finished or may still be running. Before you repeat one that changes state, confirm it did not take effect and is not still running; if you cannot tell, say so instead of repeating it.",
+]);
+
+const NON_CONTINUATION_SERVER_USER_MESSAGE_PREFIXES = [
+  "async-answer:",
+  "approval-feedback:",
+  "signed-out-failover:",
+] as const;
+
+export function isAutomaticServerContinuationMessage(message: {
+  readonly id?: string | undefined;
+  readonly role: string;
+  readonly text: string;
+  readonly createdBy?: OrchestrationV2Actor;
+  readonly creationSource?: OrchestrationV2CreationSource;
+  readonly scheduledTaskId?: ScheduledTaskId | undefined;
+  readonly attachments?: ReadonlyArray<unknown> | undefined;
+  readonly context?:
+    | {
+        readonly guest?: GuestMessageAttribution | undefined;
+        readonly records?: ReadonlyArray<unknown> | undefined;
+      }
+    | undefined;
+}): boolean {
+  if (
+    message.role !== "user" ||
+    message.createdBy !== "user" ||
+    message.creationSource !== "server" ||
+    message.scheduledTaskId !== undefined ||
+    message.context?.guest !== undefined ||
+    (message.context?.records?.length ?? 0) > 0 ||
+    (message.attachments?.length ?? 0) > 0
+  ) {
+    return false;
+  }
+  if (
+    message.id !== undefined &&
+    NON_CONTINUATION_SERVER_USER_MESSAGE_PREFIXES.some((prefix) => message.id!.startsWith(prefix))
+  ) {
+    return false;
+  }
+  return AUTOMATIC_SERVER_CONTINUATION_PROMPTS.has(message.text.trim());
+}
+
 export function resolveUserMessageFileCards(message: {
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -76,10 +126,16 @@ export function resolveUserMessagePresentation(message: {
   readonly createdBy?: OrchestrationV2Actor;
   readonly creationSource?: OrchestrationV2CreationSource;
   readonly scheduledTaskId?: ScheduledTaskId | undefined;
-  readonly context?: { readonly guest?: GuestMessageAttribution | undefined } | undefined;
+  readonly attachments?: ReadonlyArray<unknown> | undefined;
+  readonly context?:
+    | {
+        readonly guest?: GuestMessageAttribution | undefined;
+        readonly records?: ReadonlyArray<unknown> | undefined;
+      }
+    | undefined;
 }): {
   readonly text: string;
-  readonly attribution: "automation" | "agent" | "t3code" | "guest" | null;
+  readonly attribution: "automation" | "agent" | "t3code" | "guest" | "continuation" | null;
   readonly scheduledTaskId: ScheduledTaskId | undefined;
   /** Set when `attribution` is "guest". */
   readonly guestName?: string;
@@ -102,6 +158,13 @@ export function resolveUserMessagePresentation(message: {
       text: message.text,
       attribution: "automation",
       scheduledTaskId: message.scheduledTaskId,
+    };
+  }
+  if (isAutomaticServerContinuationMessage(message)) {
+    return {
+      text: message.text,
+      attribution: "continuation",
+      scheduledTaskId: undefined,
     };
   }
   const legacyPrefix = LEGACY_AUTOMATION_PREFIX.exec(message.text);

@@ -37,6 +37,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -46,6 +47,7 @@ const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+  Layer.provide(Layer.mock(CommandRunner.CommandRunner)({})),
   Layer.provide(MemoryAdmission.layerTest()),
 );
 
@@ -236,6 +238,7 @@ it("readThread preserves caller access errors and prefers activity-run status ov
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -412,6 +415,7 @@ it("readThread pages cut-off text without splitting an emoji across pages", asyn
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -956,6 +960,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () => Effect.succeed({ tasks: [] }),
         } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
@@ -1088,6 +1093,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           list: () =>
             Effect.succeed({

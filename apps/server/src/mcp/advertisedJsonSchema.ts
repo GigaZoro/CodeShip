@@ -47,8 +47,18 @@ const mergeTaggedObjects = (branches: ReadonlyArray<Json>): JsonObject | undefin
     return values.every((value) => value !== undefined) && new Set(values).size === values.length;
   });
   if (tag === undefined) return undefined;
+  // The merged object has no branch of its own, so the tag carries what each branch says it does.
+  const branchDescriptions = objects.flatMap((object) =>
+    typeof object.description === "string"
+      ? [`'${String(tagOf(object, tag))}': ${object.description}`]
+      : [],
+  );
   const properties: JsonObject = {
-    [tag]: { type: "string", enum: objects.map((object) => tagOf(object, tag)) },
+    [tag]: {
+      type: "string",
+      enum: objects.map((object) => tagOf(object, tag)),
+      ...(branchDescriptions.length > 0 ? { description: branchDescriptions.join(" ") } : {}),
+    },
   };
   for (const object of objects) {
     for (const [name, property] of Object.entries(object.properties)) {

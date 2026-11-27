@@ -5,3 +5,4 @@ export {
   makeCursorAgentOptions,
   makeCursorAdapterV2,
 } from "./server/adapter.ts";
+export { makeCursorTextGeneration } from "./server/textGeneration.ts";

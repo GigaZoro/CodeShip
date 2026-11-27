@@ -941,6 +941,15 @@ async function fetchMain(cwd, remote, branch, name, call) {
   return base;
 }
 
+/** Remote commit of `refs/heads/${branch}`, keeping the event loop free for lease renewals. */
+async function remoteBranchSha(cwd, remote, branch, call) {
+  const listing = (
+    await fetchAwake(cwd, ["ls-remote", "--refs", remote, `refs/heads/${branch}`], call)
+  ).stdout;
+  const sha = listing ? listing.split(/\s+/)[0] : null;
+  return sha && OBJECT_ID.test(sha) ? sha : null;
+}
+
 function holds(cwd, base) {
   return git(cwd, ["merge-base", "--is-ancestor", base, "HEAD"], { allowFailure: true }).ok;
 }
@@ -1066,15 +1075,15 @@ async function withPrivateCheckout({ cwd, commit }, run) {
 }
 
 /**
- * Lands HEAD on main: checks before the wait, again under the turn only if main moved. `check(turn, base,
- * budgetSeconds, directory, signal)` resolves to true when the checks passed in `directory`, a private checkout of the
- * commit, against `base`; `budgetSeconds` is what the turn leaves the longest step, and `signal` aborts once the turn
- * is lost, which pushes nothing. `rebased` continues a `rebased` landing without a fetch.
+ * Lands HEAD on main: checks before the wait, again under the turn only if main moved.
+ * Optional `finalize` runs under the turn on the final candidate SHA before checks or push;
+ * any candidate or base drift afterwards aborts without attempting a push.
  */
 async function land({
   cwd,
   remote,
   check,
+  finalize,
   rebased,
   branch = "main",
   mainCallMs = MAIN_CALL_MS,
@@ -1129,15 +1138,57 @@ async function land({
       const lostTurn = () => ({ status: "lost-turn", reason: signal.reason.message });
       const base = await fetchMain(cwd, remote, branch, turn, mainCall);
       // The checks passed for this commit, not for one checked out during the wait or this fetch.
-      if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
-      if (base !== checked) {
+      const headAfterFetch = git(cwd, ["rev-parse", "HEAD"]).stdout;
+      if (headAfterFetch !== tip) {
+        return { status: "head-moved", expected: tip, actual: headAfterFetch };
+      }
+      const rebasedUnderTurn = base !== checked;
+      if (rebasedUnderTurn) {
         await rebaseOnto(cwd, base);
         tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+      }
+      if (signal.aborted) return lostTurn();
+      const verifyUnchanged = async (expectedTip, expectedBase) => {
+        const currentHead = git(cwd, ["rev-parse", "HEAD"]).stdout;
+        if (currentHead !== expectedTip) {
+          return { status: "head-moved", expected: expectedTip, actual: currentHead };
+        }
+        const currentBase = await remoteBranchSha(cwd, remote, branch, mainCall);
         if (signal.aborted) return lostTurn();
+        if (currentBase !== expectedBase) {
+          return { status: "base-moved", expected: expectedBase, actual: currentBase };
+        }
+        return null;
+      };
+      if (finalize) {
+        const finalizedTip = tip;
+        const finalizedBase = base;
+        const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
+        const approved = await withPrivateCheckout({ cwd, commit: finalizedTip }, (directory) =>
+          finalize({
+            turn,
+            commit: finalizedTip,
+            base: finalizedBase,
+            rebased: rebasedUnderTurn,
+            budgetSeconds: budget,
+            directory,
+            signal,
+          }),
+        );
+        if (signal.aborted) return lostTurn();
+        if (!approved) {
+          return { status: "finalize-failed", commit: finalizedTip, base: finalizedBase };
+        }
+        const drift = await verifyUnchanged(finalizedTip, finalizedBase);
+        if (drift) return drift;
+      }
+      if (rebasedUnderTurn) {
         const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
         const passed = await checkTip(turn, base, budget, signal);
         if (signal.aborted) return lostTurn();
         if (!passed) return { status: "check-failed" };
+        const drift = await verifyUnchanged(tip, base);
+        if (drift) return drift;
       }
       if (!(await pushMain(branch, tip))) return lostTurn();
       return { status: "landed", commit: tip };
@@ -1145,6 +1196,10 @@ async function land({
   );
   return releaseConfirmed ? result : { ...result, releaseConfirmed };
 }
+
+const FINAL_COMMIT_ENV = "T3_LANDING_FINAL_COMMIT";
+const FINAL_BASE_ENV = "T3_LANDING_FINAL_BASE";
+const FINAL_REBASED_ENV = "T3_LANDING_REBASED";
 
 /**
  * Installs and runs `vp run check:changed` against `base` in the private checkout `directory`, under the turn when
@@ -1187,14 +1242,121 @@ async function runCheck(
   }
 }
 
+/**
+ * Runs a user-supplied finalization command (such as exact-SHA review and build) in the private checkout `directory`
+ * once the final candidate commit and base are established under the turn. A lost turn stops its whole process tree.
+ */
+async function runFinalize(
+  directory,
+  { turn, commit, base, rebased, budgetSeconds, signal },
+  { command, stdio = "inherit", onSpawn = () => {} },
+) {
+  const { child, stop, done } = spawnTree(command, [], {
+    cwd: directory,
+    shell: true,
+    stdio,
+    env: {
+      ...process.env,
+      [TURN_ENV]: turn,
+      [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
+      [FINAL_COMMIT_ENV]: commit,
+      [FINAL_BASE_ENV]: base,
+      [FINAL_REBASED_ENV]: rebased ? "1" : "0",
+    },
+  });
+  onSpawn(child);
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
+  try {
+    const { code, stopped } = await done;
+    return !stopped && code === 0;
+  } finally {
+    signal?.removeEventListener("abort", stop);
+  }
+}
+
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
 // a real landing.
 const USAGE =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs>";
-const ARGUMENTS = { land: 0, "land-rebased": 4, push: 1, holder: 0, verify: 1, "merge-budget": 3 };
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs> | land --finalize <command>";
+const ARGUMENTS = { push: 1, holder: 0, verify: 1, "merge-budget": 3 };
 
-async function main(argv, { cwd = process.cwd(), failingMs, check } = {}) {
+function parseLandArgs(command, rest) {
+  if (command === "land") {
+    if (rest.length === 0) return { rebased: undefined, finalizeCommand: undefined };
+    if (rest.length === 2 && rest[0] === "--finalize" && rest[1].trim().length > 0) {
+      return { rebased: undefined, finalizeCommand: rest[1] };
+    }
+    return null;
+  }
+  if (command === "land-rebased") {
+    if (rest.length !== 4 && rest.length !== 6) return null;
+    const [baseFlag, base, headFlag, head, finalizeFlag, finalizeCommand] = rest;
+    if (
+      baseFlag !== "--base" ||
+      headFlag !== "--head" ||
+      !OBJECT_ID.test(base) ||
+      !OBJECT_ID.test(head)
+    ) {
+      return null;
+    }
+    if (rest.length === 6) {
+      if (finalizeFlag !== "--finalize" || finalizeCommand.trim().length === 0) return null;
+      return { rebased: { base, head }, finalizeCommand };
+    }
+    return { rebased: { base, head }, finalizeCommand: undefined };
+  }
+  return null;
+}
+
+async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = {}) {
   const [command, ...rest] = argv;
+  if (command === "land" || command === "land-rebased") {
+    const parsed = parseLandArgs(command, rest);
+    if (!parsed) {
+      console.error(USAGE);
+      return 2;
+    }
+    keepAwake();
+    const { rebased, finalizeCommand } = parsed;
+    const result = await land({
+      cwd,
+      remote: "origin",
+      ...(failingMs === undefined ? {} : { failingMs }),
+      rebased,
+      finalize:
+        finalize ??
+        (finalizeCommand
+          ? (details) => runFinalize(details.directory, details, { command: finalizeCommand })
+          : undefined),
+      check:
+        check ??
+        ((turn, base, budgetSeconds, directory, signal) =>
+          runCheck(directory, turn, base, budgetSeconds, signal)),
+    });
+    if (result.status === "rebased") {
+      return (
+        spawnSync(
+          process.execPath,
+          [
+            __filename,
+            "land-rebased",
+            "--base",
+            result.base,
+            "--head",
+            result.head,
+            ...(finalizeCommand ? ["--finalize", finalizeCommand] : []),
+          ],
+          {
+            cwd,
+            stdio: "inherit",
+          },
+        ).status ?? 1
+      );
+    }
+    console.log(JSON.stringify(result));
+    return result.status === "landed" && result.releaseConfirmed !== false ? 0 : 1;
+  }
   if (!Object.hasOwn(ARGUMENTS, command) || rest.length !== ARGUMENTS[command]) {
     console.error(USAGE);
     return 2;
@@ -1216,46 +1378,6 @@ async function main(argv, { cwd = process.cwd(), failingMs, check } = {}) {
       });
     verifyPush({ cwd, remote: rest[0], updates });
     return 0;
-  }
-  // `land-rebased` is the run a `land` relaunches from its rebased tree, after it fetched main and listed the overlaps.
-  // A command of its own, so a copy of this script that cannot continue such a landing refuses it.
-  if (command === "land" || command === "land-rebased") {
-    const [baseFlag, base, headFlag, head] = rest;
-    if (
-      command === "land-rebased" &&
-      (baseFlag !== "--base" ||
-        headFlag !== "--head" ||
-        !OBJECT_ID.test(base) ||
-        !OBJECT_ID.test(head))
-    ) {
-      console.error(USAGE);
-      return 2;
-    }
-    keepAwake();
-    const result = await land({
-      cwd,
-      remote: "origin",
-      ...(failingMs === undefined ? {} : { failingMs }),
-      rebased: command === "land-rebased" ? { base, head } : undefined,
-      check:
-        check ??
-        ((turn, base, budgetSeconds, directory, signal) =>
-          runCheck(directory, turn, base, budgetSeconds, signal)),
-    });
-    if (result.status === "rebased") {
-      return (
-        spawnSync(
-          process.execPath,
-          [__filename, "land-rebased", "--base", result.base, "--head", result.head],
-          {
-            cwd,
-            stdio: "inherit",
-          },
-        ).status ?? 1
-      );
-    }
-    console.log(JSON.stringify(result));
-    return result.status === "landed" && result.releaseConfirmed !== false ? 0 : 1;
   }
   if (command === "push") {
     // A full id, never a ref: the commit is fixed before the wait, so nothing the checkout does meanwhile can land.
@@ -1302,6 +1424,9 @@ module.exports = {
   BOOT_ID,
   LEASE_REF,
   TURN_ENV,
+  FINAL_COMMIT_ENV,
+  FINAL_BASE_ENV,
+  FINAL_REBASED_ENV,
   TURN_MAX_MS,
   LEASE_TTL_MS,
   LEASE_RENEW_MS,
@@ -1318,5 +1443,5 @@ module.exports = {
   main,
   processHost,
   // For tests alone: a turn taken outside withTurn is never renewed, and outlives a process that leaves it held.
-  testing: { tryAcquire, acquire, release, runCheck },
+  testing: { tryAcquire, acquire, release, runCheck, runFinalize },
 };

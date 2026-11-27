@@ -13532,6 +13532,7 @@ const catalog: MessageCatalog = {
   "Resume threads stopped by a lost connection once it is back.":
     "Відновлювати чати, зупинені через втрату з’єднання, коли воно повернеться.",
   "Resume when the limit resets": "Продовжити після скидання ліміту",
+  "Resumed automatically": "Відновлено автоматично",
   "Resumed {count} held queues": {
     one: "Відновлено {count} призупинену чергу",
     few: "Відновлено {count} призупинені черги",
@@ -15754,6 +15755,7 @@ const catalog: MessageCatalog = {
   "Switch tracks in About → Update track":
     "Змінити канал можна в розділі Про програму → Канал оновлень",
   "Switch WSL distro?": "Змінити дистрибутив WSL?",
+  "Switched account & continued": "Перемкнено обліковий запис і продовжено",
   "Switched off": "Вимкнено",
   "Switches the branch you are working in.": "Перемикає гілку, у якій ви працюєте.",
   "Switches the hosted app release channel.": "Перемикає канал випусків розміщеного застосунку.",

@@ -12,6 +12,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
+import { resolveSelectableModel } from "@t3tools/shared/model";
 import { canAccountRun } from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -212,9 +213,11 @@ function waitingRunId(
   return thread.latestRunId;
 }
 
+const LIMIT_RESET_RESUME = "limit-reset-resume";
+
 /** Continues a limited thread's run, restarting it when its provider holds it, optionally on another account. */
 function continueLimitedRun(
-  kind: "limit-failover" | "limit-reset-resume",
+  kind: "limit-failover" | typeof LIMIT_RESET_RESUME,
   thread: ProjectionStore.ProjectionLimitRecoveryCandidate,
   runId: RunId,
   target?: { readonly instanceId: ProviderInstanceId; readonly model: string },
@@ -353,21 +356,35 @@ function resetCreditAccount({ thread, ...input }: FailoverInput) {
 
 /**
  * Continues a limited thread on its own account once that account has room again before the
- * reset, as after a redeemed banked reset, when this machine redeems them.
+ * reset, as after a redeemed banked reset, when this machine redeems them. A reset-credit resume
+ * that hits a usage limit again on the same account and model without doing work stops here, so a
+ * model-locked account cannot loop.
  */
 export function resetCreditResumeCommand(input: FailoverInput): DispatchCommand | null {
   const { thread } = input;
   const account = resetCreditAccount(input);
+  if (account === null) return null;
+  const model = modelWithRoom(account.provider, {
+    ...input,
+    projectId: thread.projectId,
+    model: nextTurnModel(input, thread),
+  });
+  if (model === null) return null;
   if (
-    account === null ||
-    modelWithRoom(account.provider, {
-      ...input,
-      projectId: thread.projectId,
-      model: nextTurnModel(input, thread),
-    }) === null
-  )
-    return null;
-  return continueLimitedRun("limit-reset-resume", thread, account.runId);
+    !thread.latestRunWorkDone &&
+    thread.latestRunUserMessageId?.startsWith(`${LIMIT_RESET_RESUME}:`)
+  ) {
+    const latestRunModel =
+      thread.latestRunModel == null
+        ? null
+        : (resolveSelectableModel(
+            account.provider.driver,
+            thread.latestRunModel,
+            account.provider.models,
+          ) ?? thread.latestRunModel);
+    if (latestRunModel === null || latestRunModel === model) return null;
+  }
+  return continueLimitedRun(LIMIT_RESET_RESUME, thread, account.runId);
 }
 
 // A stop older than this is left to the person, as a lost connection's is.

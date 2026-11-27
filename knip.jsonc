@@ -169,6 +169,11 @@
       // These workspace packages are private to this monorepo.
       "includeEntryExports": true,
     },
+    "packages/shared": {
+      "includeEntryExports": true,
+      // Loaded directly by .github/scripts/process-tree.cjs outside the --workspace exports scope.
+      "ignoreIssues": { "src/windowsProcessTreeScript.ts": ["exports"] },
+    },
     "packages/effect-acp": {
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],
