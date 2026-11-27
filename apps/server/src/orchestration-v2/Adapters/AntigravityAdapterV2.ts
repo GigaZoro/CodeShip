@@ -23,6 +23,7 @@ import {
   antigravityAppendsSystemPrompt,
   antigravityPermissionMode,
   antigravityRuntimeModeForSessionMode,
+  antigravitySessionMeta,
   applyAntigravityAcpModelSelection,
   buildAntigravityPrompt,
   type AntigravityAcpRuntimeInput,
@@ -145,7 +146,8 @@ export function makeAntigravityAcpAdapterFlavor(
           options.makeRuntime({
             ...input,
             clientFileReads: true,
-            sessionSystemPromptAppend: PULL_REQUEST_LINKING_INSTRUCTIONS,
+            sessionSystemPromptAppend:
+              input.pinnedSystemInstructions ?? PULL_REQUEST_LINKING_INSTRUCTIONS,
             additionalDirectories: [options.host.paths.attachmentsDir],
           }),
         )
@@ -211,6 +213,14 @@ export function makeAntigravityAcpAdapterFlavor(
     // Agents that advertise HTTP MCP skip the stdio bridge process; others keep stdio.
     mcpOverHttp: true,
     sessionCarriesPullRequestLinking: antigravityAppendsSystemPrompt,
+    sessionSystemPrompt: {
+      resolve: (initializeResult, pinned) =>
+        antigravityAppendsSystemPrompt(initializeResult)
+          ? (pinned ?? PULL_REQUEST_LINKING_INSTRUCTIONS)
+          : null,
+      activationSessionMeta: (pinned) => (initializeResult) =>
+        antigravitySessionMeta(initializeResult, pinned ?? PULL_REQUEST_LINKING_INSTRUCTIONS),
+    },
     makeRuntime,
     buildPrompt: ({
       text,

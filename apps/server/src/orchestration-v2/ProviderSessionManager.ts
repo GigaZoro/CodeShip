@@ -180,6 +180,7 @@ export interface ProviderSessionManagerV2Shape {
     readonly resumeFromSession?: OrchestrationV2ProviderSession;
     readonly initialNativeThreadId?: string;
     readonly initialProviderItemIdentityVersion?: 2;
+    readonly initialPinnedSystemInstructions?: string;
   }) => Effect.Effect<
     ProviderAdapter.ProviderAdapterV2SessionRuntime,
     ProviderSessionManagerV2Error
@@ -2803,6 +2804,12 @@ export const layerWithOptions = (
                             : {
                                 initialProviderItemIdentityVersion:
                                   input.initialProviderItemIdentityVersion,
+                              }),
+                          ...(input.initialPinnedSystemInstructions === undefined
+                            ? {}
+                            : {
+                                initialPinnedSystemInstructions:
+                                  input.initialPinnedSystemInstructions,
                               }),
                         })
                         .pipe(Effect.provideService(Scope.Scope, sessionScope)),

@@ -9276,4 +9276,118 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         );
       }),
   );
+
+  it.effect(
+    "persists pinnedSystemInstructions in its dedicated column and reloads it across queries",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const sql = yield* SqlClient.SqlClient;
+        const now = DateTime.makeUnsafe("2026-11-27T00:00:00.000Z");
+        const later = DateTime.makeUnsafe("2026-11-27T00:05:00.000Z");
+        const threadId = ThreadId.make("thread:pinned-instructions");
+        const providerThreadId = ProviderThreadId.make("provider-thread:pinned-instructions");
+        const pinnedText = "<runtime_info>Pinned system instructions v1</runtime_info>";
+
+        yield* store.apply({
+          id: EventId.make("event:pinned-instructions:thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId: ProjectId.make("project:pinned-instructions"),
+            title: "Pinned instructions thread",
+            providerInstanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            lineage: {
+              parentThreadId: null,
+              relationshipToParent: null,
+              rootThreadId: threadId,
+            },
+            forkedFrom: null,
+            activeProviderThreadId: providerThreadId,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+
+        const providerThread: OrchestrationV2ProviderThread = {
+          id: providerThreadId,
+          driver,
+          providerInstanceId,
+          providerSessionId: null,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: {
+            driver,
+            nativeId: "native-pinned-1",
+            strength: "strong",
+          },
+          nativeConversationHeadRef: null,
+          pinnedSystemInstructions: pinnedText,
+          status: "active",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        yield* store.apply({
+          id: EventId.make("event:pinned-instructions:pt-pin"),
+          type: "provider-thread.updated",
+          threadId,
+          driver,
+          providerInstanceId,
+          occurredAt: now,
+          payload: providerThread,
+        });
+
+        const rawRows = yield* sql<{
+          readonly payload_json: string;
+          readonly pinned_system_instructions: string | null;
+        }>`
+        SELECT payload_json, pinned_system_instructions
+        FROM orchestration_v2_projection_provider_threads
+        WHERE provider_thread_id = ${providerThreadId}
+      `;
+        assert.equal(rawRows.length, 1);
+        assert.equal(rawRows[0]!.pinned_system_instructions, pinnedText);
+        assert.notInclude(rawRows[0]!.payload_json, pinnedText);
+
+        const projection = yield* store.getThreadProjection(threadId);
+        assert.equal(projection.providerThreads[0]?.pinnedSystemInstructions, pinnedText);
+
+        const providerContext = yield* store.getThreadProviderContext(threadId, providerInstanceId);
+        assert.equal(providerContext.providerThreads[0]?.pinnedSystemInstructions, pinnedText);
+
+        const recovery = yield* store.getRuntimeRecoveryProjection(threadId);
+        assert.equal(recovery.providerThreads[0]?.pinnedSystemInstructions, pinnedText);
+
+        yield* store.apply({
+          id: EventId.make("event:pinned-instructions:pt-clear"),
+          type: "provider-thread.updated",
+          threadId,
+          driver,
+          providerInstanceId,
+          occurredAt: later,
+          payload: { ...providerThread, pinnedSystemInstructions: null, updatedAt: later },
+        });
+
+        const cleared = yield* store.getThreadProjection(threadId);
+        assert.isNull(cleared.providerThreads[0]?.pinnedSystemInstructions);
+      }),
+  );
 });

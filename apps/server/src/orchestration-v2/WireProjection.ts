@@ -6,6 +6,7 @@ import type {
   OrchestrationV2DomainEvent,
   OrchestrationV2ContextHandoff,
   OrchestrationV2GetTurnItemResult,
+  OrchestrationV2ProviderThread,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadStreamItem,
@@ -318,6 +319,14 @@ export function projectContextHandoffForWire(
   return { ...projected, summaryText: "" };
 }
 
+function projectProviderThreadForWire(
+  providerThread: OrchestrationV2ProviderThread,
+): OrchestrationV2ProviderThread {
+  if (providerThread.pinnedSystemInstructions === undefined) return providerThread;
+  const { pinnedSystemInstructions: _pinned, ...projected } = providerThread;
+  return projected;
+}
+
 export function projectThreadProjectionForWire(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadProjection {
@@ -334,6 +343,7 @@ export function projectThreadProjectionForWire(
     ...projection,
     checkpoints: projection.checkpoints.map(capCheckpointFiles),
     contextHandoffs: projection.contextHandoffs.map(projectContextHandoffForWire),
+    providerThreads: projection.providerThreads.map(projectProviderThreadForWire),
     turnItems: projection.turnItems.map(project),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
       ...row,
@@ -349,9 +359,11 @@ export function projectDomainEventForWire(
     ? { ...event, payload: projectTurnItemForWire(event.payload) }
     : event.type === "context-handoff.updated"
       ? { ...event, payload: projectContextHandoffForWire(event.payload) }
-      : event.type === "checkpoint.captured"
-        ? { ...event, payload: capCheckpointFiles(event.payload) }
-        : event;
+      : event.type === "provider-thread.updated"
+        ? { ...event, payload: projectProviderThreadForWire(event.payload) }
+        : event.type === "checkpoint.captured"
+          ? { ...event, payload: capCheckpointFiles(event.payload) }
+          : event;
 }
 
 const LIVE_DEDUPE_MEMORY = 32;

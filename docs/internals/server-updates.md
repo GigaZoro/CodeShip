@@ -463,3 +463,35 @@ listener ignores reconciliation's cancellations. A cancelled child whose restart
 continuation is still pending in the outbox is not a result yet; the continuation's run
 settles it, or the handler settles it when it declines to continue. Schedulers wait for
 activation so they cannot start runs that reconciliation would then cancel.
+
+## Pinning thread system instructions
+
+Resuming a native provider conversation after a server update would invalidate the
+provider's prompt cache if the newer binary sent edited runtime, orchestration, or
+PR-linking instructions as part of the system prompt prefix. Each provider thread
+therefore pins its static instruction block in `pinnedSystemInstructions` (stored in a
+dedicated `pinned_system_instructions` column on
+`orchestration_v2_projection_provider_threads` and stripped from WebSocket wire
+projections so clients never receive the payload).
+
+- **Claude** pins the static `systemPrompt.append` block (`buildRuntimeInstructions`,
+  `T3_CODE_ORCHESTRATION_INSTRUCTIONS`, and device-tool instructions when tool search is
+  enabled) when the native thread starts its first turn. Dynamic inputs—`permissionMode`,
+  CLI `--append-system-prompt`, `SubagentStart` hooks, and post-compaction state—remain
+  computed per turn.
+- **Codex** pins the serialized `t3Context` block passed in `developerInstructions` when
+  T3 MCP is attached to a native thread, while dynamic per-turn fields (`appContext`,
+  `autoModeInstructions`, `collaborationMode`, approval/sandbox policies, model, effort,
+  and service tier) are still recomputed on every turn.
+- **Antigravity (ACP)** pins the session-level `_meta.antigravity.systemPrompt.append`
+  string (currently `PULL_REQUEST_LINKING_INSTRUCTIONS` on Antigravity >= 1.4.5) when the
+  session is created or first resumed after upgrading, and replays it on `session/load`,
+  `session/resume`, and `session/fork`.
+
+Pinned instructions stay attached across server restarts, upgrades, native forks, and
+same-conversation account switches (`canResumeAcrossInstances`). Creating a new native
+session—new thread, provider switch, resume-failure fallback, forced replacement, or
+rollback to `thread_start`—clears the pin so the fresh conversation picks up the running
+binary's current instructions. Legacy provider threads created before pinning keep
+`pinnedSystemInstructions: null` until their next resumed turn pins the current binary's
+instructions.

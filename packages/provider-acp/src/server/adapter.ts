@@ -157,6 +157,7 @@ export interface AcpAdapterV2RuntimeInput {
   readonly httpMcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly resumeSessionId?: string;
+  readonly pinnedSystemInstructions?: string;
   readonly interruptPromptOnCancel?: boolean;
   readonly clientCapabilities: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   readonly clientInfo: AcpSessionRuntime.AcpSessionRuntimeOptions["clientInfo"];
@@ -465,6 +466,19 @@ export interface AcpAdapterV2Flavor {
   readonly sessionCarriesPullRequestLinking?: (
     initializeResult: EffectAcpSchema.InitializeResponse,
   ) => boolean;
+  /**
+   * Resolves the session-level system prompt append to pin on provider threads and builds
+   * per-activation `_meta` when loading, resuming, or forking a session on a live runtime.
+   */
+  readonly sessionSystemPrompt?: {
+    readonly resolve: (
+      initializeResult: EffectAcpSchema.InitializeResponse,
+      pinned?: string | null,
+    ) => string | null;
+    readonly activationSessionMeta?: (
+      pinned?: string | null,
+    ) => AcpSessionRuntime.AcpSessionRuntimeOptions["sessionMeta"];
+  };
 }
 
 function acpSupportsImagePrompts(input: {
@@ -776,6 +790,7 @@ function makeProviderThread(input: {
   readonly ownerNodeId?: OrchestrationV2ProviderThread["ownerNodeId"];
   readonly forkedFrom?: OrchestrationV2ProviderThread["forkedFrom"];
   readonly itemIdentityVersion?: 2;
+  readonly pinnedSystemInstructions?: OrchestrationV2ProviderThread["pinnedSystemInstructions"];
   readonly now: DateTime.Utc;
 }): OrchestrationV2ProviderThread {
   return {
@@ -805,6 +820,9 @@ function makeProviderThread(input: {
       input.itemIdentityVersion === undefined
         ? null
         : { itemIdentityVersion: input.itemIdentityVersion },
+    ...(input.pinnedSystemInstructions === undefined
+      ? {}
+      : { pinnedSystemInstructions: input.pinnedSystemInstructions }),
     createdAt: input.now,
     updatedAt: input.now,
   };
@@ -2325,6 +2343,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           resumeSessionId?: string,
           onTermination: AcpAdapterV2RuntimeInput["onTermination"] = (error) =>
             handleRuntimeTerminationAtGeneration(runtimeGeneration, error),
+          pinnedSystemInstructions?: string,
         ): AcpAdapterV2RuntimeInput => {
           return {
             cwd: input.runtimePolicy.cwd ?? process.cwd(),
@@ -2336,6 +2355,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               ? {}
               : { processEnvironment: mcpContext.processEnvironment }),
             ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
+            ...(pinnedSystemInstructions === undefined ? {} : { pinnedSystemInstructions }),
             interruptPromptOnCancel: flavor.interruptPromptOnCancel ?? false,
             clientCapabilities: {
               fs: {
@@ -6842,6 +6862,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const spawnAcpRuntime = Effect.fnUntraced(function* (
           threadId: ThreadId | null,
           resumeSessionId?: string,
+          pinnedSystemInstructions?: string,
         ) {
           if (runtimeScope !== undefined) {
             yield* runtimeCallbackPermit.withPermit(
@@ -6860,7 +6881,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, runtimeScope);
           const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
           runtime = yield* flavor
-            .makeRuntime(makeRuntimeInput(runtimeGeneration, mcpContext, resumeSessionId))
+            .makeRuntime(
+              makeRuntimeInput(
+                runtimeGeneration,
+                mcpContext,
+                resumeSessionId,
+                undefined,
+                pinnedSystemInstructions,
+              ),
+            )
             .pipe(
               Effect.provideService(Scope.Scope, runtimeScope),
               Effect.provideService(Crypto.Crypto, crypto),
@@ -6874,9 +6903,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const startAcpRuntime = Effect.fnUntraced(function* (
           threadId: ThreadId | null,
           resumeSessionId?: string,
+          pinnedSystemInstructions?: string,
         ) {
           const startup = Effect.gen(function* () {
-            const generation = yield* spawnAcpRuntime(threadId, resumeSessionId);
+            const generation = yield* spawnAcpRuntime(
+              threadId,
+              resumeSessionId,
+              pinnedSystemInstructions,
+            );
             yield* wireAcpRuntimeHandlers(runtime, generation);
             return yield* runtime.start();
           });
@@ -7055,11 +7089,31 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return replacementExit.value.started;
         });
 
+        const pinnedSystemInstructionsByNativeSessionId = new Map<string, string | null>();
+        const resolveSessionPinnedSystemInstructions = (
+          initializeResult: EffectAcpSchema.InitializeResponse,
+          pinned?: string | null,
+        ): string | null =>
+          flavor.sessionSystemPrompt?.resolve(initializeResult, pinned) ?? pinned ?? null;
+        const activationOptionsWithSessionMeta = (
+          mcpContext: AcpMcpContext,
+          pinned?: string | null,
+        ): AcpSessionRuntime.AcpSessionActivationOptions => ({
+          ...acpMcpActivation(mcpContext),
+          ...(flavor.sessionSystemPrompt?.activationSessionMeta === undefined
+            ? {}
+            : { sessionMeta: flavor.sessionSystemPrompt.activationSessionMeta(pinned) }),
+        });
+
         const commitReplacementSession = Effect.fn("AcpAdapterV2.commitReplacementSession")(
           function* (
             threadId: ThreadId | null,
             candidate: AcpSessionRuntime.AcpSessionRuntimeStartResult,
           ) {
+            pinnedSystemInstructionsByNativeSessionId.set(
+              candidate.sessionId,
+              resolveSessionPinnedSystemInstructions(candidate.initializeResult, null),
+            );
             rememberTerminalEnvironment(candidate.sessionId, yield* readMcpContext(threadId));
             yield* Ref.set(runtimeRestartRequired, false);
             yield* Ref.set(activeSessionId, candidate.sessionId);
@@ -7081,8 +7135,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           },
         );
 
+        const initialPinnedSystemInstructions =
+          input.initialNativeThreadId === undefined
+            ? undefined
+            : input.initialPinnedSystemInstructions;
         const initialStart = yield* Effect.result(
-          startAcpRuntime(input.threadId, input.initialNativeThreadId),
+          startAcpRuntime(
+            input.threadId,
+            input.initialNativeThreadId,
+            initialPinnedSystemInstructions,
+          ),
         );
         const started = Result.isSuccess(initialStart)
           ? initialStart.success
@@ -7104,6 +7166,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               prepareClaimableTerminalEnvironment(yield* readMcpContext(input.threadId));
               return yield* startAcpRuntime(input.threadId);
             });
+        pinnedSystemInstructionsByNativeSessionId.set(
+          started.sessionId,
+          resolveSessionPinnedSystemInstructions(
+            started.initializeResult,
+            Result.isSuccess(initialStart) ? initialPinnedSystemInstructions : null,
+          ),
+        );
         yield* Ref.set(activeSessionId, started.sessionId);
         yield* setActiveSessionSetup(started);
         rememberTerminalEnvironment(started.sessionId, yield* readMcpContext(input.threadId));
@@ -7120,6 +7189,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const activateSession = Effect.fnUntraced(function* (
           sessionId: string,
           threadId: ThreadId | null,
+          pinnedSystemInstructions?: string | null,
         ) {
           const initialFailure = yield* Ref.modify(initialSessionActivationFailure, (failure) =>
             failure?.sessionId === sessionId ? [failure.error, null] : [undefined, failure],
@@ -7128,7 +7198,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             return yield* initialFailure;
           }
           const mcpContext = yield* readMcpContext(threadId);
-          const activationOptions = acpMcpActivation(mcpContext);
+          const activationOptions = activationOptionsWithSessionMeta(
+            mcpContext,
+            pinnedSystemInstructions,
+          );
           prepareTerminalEnvironment(mcpContext, sessionId);
           const activated = canLoadSession
             ? yield* runtime.loadSession(sessionId, activationOptions)
@@ -7138,6 +7211,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   driver,
                   detail: `ACP driver cannot load or resume session ${sessionId}`,
                 });
+          pinnedSystemInstructionsByNativeSessionId.set(
+            activated.sessionId,
+            resolveSessionPinnedSystemInstructions(
+              activated.initializeResult,
+              pinnedSystemInstructions,
+            ),
+          );
           rememberTerminalEnvironment(activated.sessionId, yield* readMcpContext(threadId));
           return activated;
         });
@@ -7611,6 +7691,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               context.input.providerThread.firstRunOrdinal ?? context.input.runOrdinal,
             contextUsage: context.contextUsage,
             nativeMetadata: context.nativeMetadata,
+            pinnedSystemInstructions:
+              pinnedSystemInstructionsByNativeSessionId.get(context.nativeThreadId) ??
+              context.input.providerThread.pinnedSystemInstructions ??
+              null,
             updatedAt: now,
           };
           yield* Ref.update(providerThreadByNativeSessionId, (current) =>
@@ -7905,6 +7989,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               const activated = yield* activateSession(
                 requestedSessionId,
                 requestedTurnInput.threadId,
+                requestedTurnInput.providerThread.pinnedSystemInstructions,
               );
               yield* Ref.set(activeSessionId, activated.sessionId);
               yield* setActiveSessionSetup(activated);
@@ -8102,6 +8187,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               status: "active",
               contextUsage: context.contextUsage,
               nativeMetadata: context.nativeMetadata,
+              pinnedSystemInstructions:
+                pinnedSystemInstructionsByNativeSessionId.get(requestedSessionId) ??
+                turnInput.providerThread.pinnedSystemInstructions ??
+                null,
               updatedAt: startedAt,
             };
             yield* Ref.update(providerThreadByNativeSessionId, (current) =>
@@ -8483,6 +8572,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       detail: "ACP runtime did not produce a session id",
                     });
                   }
+                  const pinnedSystemInstructions =
+                    pinnedSystemInstructionsByNativeSessionId.get(sessionId) ?? null;
                   const created = makeProviderThread({
                     driver,
                     providerInstanceId: options.instanceId,
@@ -8491,6 +8582,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     providerSessionId: input.providerSessionId,
                     nativeThreadId: sessionId,
                     ...(itemIdentityVersion === undefined ? {} : { itemIdentityVersion }),
+                    pinnedSystemInstructions,
                     now,
                   });
                   const providerThread =
@@ -8548,6 +8640,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     const activated = yield* activateSession(
                       sessionId,
                       threadInput.providerThread.appThreadId,
+                      threadInput.providerThread.pinnedSystemInstructions,
                     ).pipe(Effect.tapError(() => restorePreviousItemIdentity));
                     yield* Ref.set(activeSessionId, activated.sessionId);
                     yield* setActiveSessionSetup(activated);
@@ -8561,6 +8654,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   return {
                     ...threadInput.providerThread,
                     providerSessionId: input.providerSessionId,
+                    pinnedSystemInstructions:
+                      pinnedSystemInstructionsByNativeSessionId.get(sessionId) ??
+                      threadInput.providerThread.pinnedSystemInstructions ??
+                      null,
                     status: "idle" as const,
                     updatedAt: now,
                   };
@@ -8999,7 +9096,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     prepareTerminalEnvironment(mcpContext, sessionId);
                     const activated = yield* runtime.loadSession(
                       sessionId,
-                      acpMcpActivation(mcpContext),
+                      activationOptionsWithSessionMeta(
+                        mcpContext,
+                        snapshotInput.providerThread.pinnedSystemInstructions,
+                      ),
+                    );
+                    pinnedSystemInstructionsByNativeSessionId.set(
+                      activated.sessionId,
+                      resolveSessionPinnedSystemInstructions(
+                        activated.initializeResult,
+                        snapshotInput.providerThread.pinnedSystemInstructions,
+                      ),
                     );
                     rememberTerminalEnvironment(
                       activated.sessionId,
@@ -9016,6 +9123,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     providerThread: {
                       ...snapshotInput.providerThread,
                       providerSessionId: input.providerSessionId,
+                      pinnedSystemInstructions:
+                        pinnedSystemInstructionsByNativeSessionId.get(sessionId) ??
+                        snapshotInput.providerThread.pinnedSystemInstructions ??
+                        null,
                       status: "idle" as const,
                       updatedAt: now,
                     },
@@ -9077,6 +9188,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                         ...rollbackInput.providerThread.nativeMetadata,
                         itemIdentityVersion: 2 as const,
                       },
+                      pinnedSystemInstructions:
+                        pinnedSystemInstructionsByNativeSessionId.get(replacement.sessionId) ??
+                        null,
                       status: "idle" as const,
                       updatedAt: now,
                     },
@@ -9126,7 +9240,18 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   prepareTerminalEnvironment(mcpContext);
                   const forked = yield* runtime.forkSession(
                     sourceSessionId,
-                    acpMcpActivation(mcpContext),
+                    activationOptionsWithSessionMeta(
+                      mcpContext,
+                      forkInput.sourceProviderThread.pinnedSystemInstructions,
+                    ),
+                  );
+                  const inheritedPinnedSystemInstructions = resolveSessionPinnedSystemInstructions(
+                    forked.initializeResult,
+                    forkInput.sourceProviderThread.pinnedSystemInstructions,
+                  );
+                  pinnedSystemInstructionsByNativeSessionId.set(
+                    forked.sessionId,
+                    inheritedPinnedSystemInstructions,
                   );
                   rememberTerminalEnvironment(
                     forked.sessionId,
@@ -9146,6 +9271,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     providerSessionId: input.providerSessionId,
                     nativeThreadId: forked.sessionId,
                     itemIdentityVersion: 2,
+                    pinnedSystemInstructions: inheritedPinnedSystemInstructions,
                     ...(forkInput.ownerNodeId === undefined
                       ? {}
                       : { ownerNodeId: forkInput.ownerNodeId }),

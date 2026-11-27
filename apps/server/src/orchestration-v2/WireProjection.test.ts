@@ -25,6 +25,7 @@ import * as Schema from "effect/Schema";
 import { coalesceLiveUpdatedEvents } from "./ThreadLiveEventCoalescer.ts";
 import {
   makeLiveBodyDeduper,
+  projectThreadProjectionForWire,
   projectTurnItemForWire,
   projectTurnItemForDetail,
   turnItemDetailResult,
@@ -100,6 +101,51 @@ describe("orchestration V2 wire projection", () => {
     expect(decoded).toMatchObject({ viewedImagePath: "/workspace/reference.png" });
     expect(decoded).not.toHaveProperty("output");
     expect(item.output.data).toBe("private-image-data");
+  });
+
+  it("strips pinnedSystemInstructions from provider threads in wire projections and events", () => {
+    const providerThread = {
+      id: ProviderThreadId.make("pt-pinned"),
+      driver: ProviderDriverKind.make("claude"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      providerSessionId: null,
+      appThreadId: base.threadId,
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      pinnedSystemInstructions: "PRIVATE_PINNED_SYSTEM_INSTRUCTIONS_V1",
+      status: "idle" as const,
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: base.updatedAt,
+      updatedAt: base.updatedAt,
+    };
+    const event: OrchestrationV2DomainEvent = {
+      id: EventId.make("pt:pinned"),
+      type: "provider-thread.updated",
+      threadId: base.threadId,
+      occurredAt: base.updatedAt,
+      payload: providerThread,
+    };
+    const wireEvent = projectDomainEventForWire(event);
+    expect(JSON.stringify(wireEvent)).not.toContain("PRIVATE_PINNED_SYSTEM_INSTRUCTIONS_V1");
+    expect(wireEvent.type).toBe("provider-thread.updated");
+    if (wireEvent.type === "provider-thread.updated") {
+      expect(wireEvent.payload).not.toHaveProperty("pinnedSystemInstructions");
+    }
+    const wireProjection = projectThreadProjectionForWire({
+      providerThreads: [providerThread],
+      contextHandoffs: [],
+      turnItems: [],
+      visibleTurnItems: [],
+      checkpoints: [],
+      messages: [],
+    } as unknown as OrchestrationV2ThreadProjection);
+    expect(JSON.stringify(wireProjection)).not.toContain("PRIVATE_PINNED_SYSTEM_INSTRUCTIONS_V1");
+    expect(wireProjection.providerThreads[0]).not.toHaveProperty("pinnedSystemInstructions");
+    expect(providerThread.pinnedSystemInstructions).toBe("PRIVATE_PINNED_SYSTEM_INSTRUCTIONS_V1");
   });
 
   it("keeps transcript bodies out of shell rows", () => {

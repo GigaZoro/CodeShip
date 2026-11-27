@@ -1378,6 +1378,9 @@ export const OrchestrationV2ProviderThread = Schema.Struct({
   goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  pinnedSystemInstructions: Schema.optional(Schema.NullOr(Schema.String)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
 });
