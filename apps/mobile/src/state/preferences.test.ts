@@ -195,4 +195,42 @@ describe("mobile preferences state", () => {
       registry.dispose();
     }),
   );
+
+  it("plans and undoes the mobile Calm preset without touching notifications", () => {
+    const presetKeys = Object.keys(MobilePreferences.CALM_PRESET_PREFERENCES);
+    expect(presetKeys).toEqual(["interfaceDensity", "statusColors"]);
+    expect(presetKeys).not.toContain("notifyOnApproval");
+    expect(presetKeys).not.toContain("notifyOnInput");
+    expect(presetKeys).not.toContain("notifyOnCompletion");
+    expect(presetKeys).not.toContain("notifyOnFailure");
+
+    const fromVivid = MobilePreferences.planMobileCalmPreset({
+      interfaceDensity: "comfortable",
+      statusColors: "vivid",
+    });
+    expect(fromVivid.isActive).toBe(false);
+    expect(fromVivid.changes).toEqual([
+      { key: "interfaceDensity", from: "comfortable", to: "compact" },
+      { key: "statusColors", from: "vivid", to: "calm" },
+    ]);
+    expect(fromVivid.patch).toEqual({ interfaceDensity: "compact", statusColors: "calm" });
+    expect(fromVivid.undoPatch).toEqual({ interfaceDensity: "comfortable", statusColors: "vivid" });
+
+    const fromUnset = MobilePreferences.planMobileCalmPreset({});
+    expect(fromUnset.isActive).toBe(false);
+    expect(fromUnset.changes).toEqual([
+      { key: "interfaceDensity", from: "comfortable", to: "compact" },
+    ]);
+    expect(fromUnset.patch).toEqual({ interfaceDensity: "compact" });
+    expect(fromUnset.undoPatch).toEqual({ interfaceDensity: "comfortable" });
+
+    const alreadyCalm = MobilePreferences.planMobileCalmPreset({
+      interfaceDensity: "compact",
+      statusColors: "calm",
+    });
+    expect(alreadyCalm.isActive).toBe(true);
+    expect(alreadyCalm.changes).toEqual([]);
+    expect(alreadyCalm.patch).toEqual({});
+    expect(alreadyCalm.undoPatch).toEqual({});
+  });
 });

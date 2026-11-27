@@ -597,7 +597,8 @@ function OpenCommandPaletteDialog(props: {
   );
   const activeThreadLifecycleItems = useActiveThreadPaletteItems(activeThread);
   const providersByEnvironment = useEnvironmentProviders();
-  const { changeThemeItem, changeAppearanceItem, themeEditorItem } = useCommandPaletteThemeItems();
+  const { changeThemeItem, changeAppearanceItem, calmPresetItem, themeEditorItem } =
+    useCommandPaletteThemeItems();
   const currentView = viewStack.at(-1)?.view ?? null;
   const threadSearchQuery = currentView === null && !isActionsOnly ? deferredQuery : "";
   const [browseGeneration, setBrowseGeneration] = useState(0);
@@ -1813,6 +1814,7 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push(changeThemeItem);
   actionItems.push(changeAppearanceItem);
+  actionItems.push(calmPresetItem);
 
   actionItems.push(themeEditorItem);
 

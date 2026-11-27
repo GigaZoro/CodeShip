@@ -1,3 +1,8 @@
+## 2026-11-28 — Calm preset in Appearance
+
+- **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
+- Applying the preset leaves notification settings untouched, lists each setting it changed, and offers **Undo** (inline in Settings, in the confirmation toast on web and desktop, and as **Undo Calm preset** in the mobile command palette) to restore your prior values.
+
 ## 2026-11-27 — At most one marker per sidebar row
 
 - Sidebar thread rows on web, desktop, and mobile now show at most one marker at a time, chosen by priority (**Needs you** > **Failed** > **PR state** > **Machine offline**, then draft, queued, terminal, scheduled, pinned, machine, project, tags, color, notifications, and provider). Any additional markers move to the row's hover card in the same priority order.

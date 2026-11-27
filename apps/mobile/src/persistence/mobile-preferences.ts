@@ -165,6 +165,73 @@ export interface Preferences {
   readonly workspaceSelections?: WorkspaceSelections;
 }
 
+/**
+ * Mobile mirror of the Calm preset: compact spacing and calm status colors.
+ * Never touches notification preferences.
+ */
+export const CALM_PRESET_PREFERENCES = {
+  interfaceDensity: "compact",
+  statusColors: "calm",
+} as const satisfies Partial<Preferences>;
+
+export type CalmPresetPreferenceKey = keyof typeof CALM_PRESET_PREFERENCES;
+
+export type MobileCalmPresetChange =
+  | {
+      readonly key: "interfaceDensity";
+      readonly from: InterfaceDensity;
+      readonly to: InterfaceDensity;
+    }
+  | {
+      readonly key: "statusColors";
+      readonly from: StatusColors;
+      readonly to: StatusColors;
+    };
+
+export interface MobileCalmPresetPlan {
+  readonly isActive: boolean;
+  readonly changes: ReadonlyArray<MobileCalmPresetChange>;
+  readonly patch: Partial<Pick<Preferences, CalmPresetPreferenceKey>>;
+  readonly undoPatch: Partial<Pick<Preferences, CalmPresetPreferenceKey>>;
+}
+
+export function planMobileCalmPreset(
+  current: Pick<Preferences, CalmPresetPreferenceKey>,
+): MobileCalmPresetPlan {
+  const changes: MobileCalmPresetChange[] = [];
+  const patch: { interfaceDensity?: InterfaceDensity; statusColors?: StatusColors } = {};
+  const undoPatch: { interfaceDensity?: InterfaceDensity; statusColors?: StatusColors } = {};
+
+  const currentDensity = current.interfaceDensity ?? "comfortable";
+  if (currentDensity !== CALM_PRESET_PREFERENCES.interfaceDensity) {
+    changes.push({
+      key: "interfaceDensity",
+      from: currentDensity,
+      to: CALM_PRESET_PREFERENCES.interfaceDensity,
+    });
+    patch.interfaceDensity = CALM_PRESET_PREFERENCES.interfaceDensity;
+    undoPatch.interfaceDensity = currentDensity;
+  }
+
+  const currentStatusColors = current.statusColors ?? "calm";
+  if (currentStatusColors !== CALM_PRESET_PREFERENCES.statusColors) {
+    changes.push({
+      key: "statusColors",
+      from: currentStatusColors,
+      to: CALM_PRESET_PREFERENCES.statusColors,
+    });
+    patch.statusColors = CALM_PRESET_PREFERENCES.statusColors;
+    undoPatch.statusColors = currentStatusColors;
+  }
+
+  return {
+    isActive: changes.length === 0,
+    changes,
+    patch,
+    undoPatch,
+  };
+}
+
 export class MobilePreferencesLoadError extends Schema.TaggedError<MobilePreferencesLoadError>()(
   "MobilePreferencesLoadError",
   { cause: Schema.Defect() },

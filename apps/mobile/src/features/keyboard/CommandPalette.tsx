@@ -80,6 +80,7 @@ import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import { useSelectWorkspaceTab } from "../workspace/useSelectWorkspaceTab";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 import { t } from "../../lib/i18n";
+import { planMobileCalmPreset } from "../../persistence/mobile-preferences";
 
 const PALETTE_COMMANDS: ReadonlyArray<HardwareKeyboardCommand> = [
   "commandPalette",
@@ -98,6 +99,8 @@ const ACTION_ICONS: Record<string, AppSymbolName> = {
   addProject: "folder.badge.plus",
   settings: "gearshape",
   appearance: "paintbrush",
+  calmPreset: "slider.horizontal.3",
+  undoCalmPreset: "arrow.uturn.backward",
   environments: "desktopcomputer",
   usage: "chart.bar.xaxis",
   archive: "archivebox",
@@ -232,7 +235,14 @@ export function CommandPalette(props: {
   const openScheduledTasks = useOpenScheduledTasks();
   const openArchivedThreads = useOpenArchivedThreads();
   const openArtifacts = useOpenArtifacts();
-  const { themeVariables } = useAppearancePreferences();
+  const {
+    themeVariables,
+    interfaceDensity,
+    statusColors,
+    lastAppliedCalmPreset,
+    applyCalmPreset,
+    undoCalmPreset,
+  } = useAppearancePreferences();
   const selectDetail = useSelectWorkspaceDetail();
   const runCommand = props.onCommand;
   const projects = useProjects();
@@ -333,6 +343,39 @@ export function CommandPalette(props: {
         searchTerms: ["theme", "colors", "dark", "light"],
         run: () => openSettings(navigation, "SettingsAppearance"),
       },
+      {
+        key: "calmPreset",
+        kind: "action",
+        title: t("Apply Calm preset"),
+        detail: planMobileCalmPreset({ interfaceDensity, statusColors }).isActive
+          ? t("Already active")
+          : t("Compact spacing · Calm status colors"),
+        searchTerms: [
+          "calm",
+          "preset",
+          "quiet",
+          "appearance",
+          "compact",
+          "density",
+          "status colors",
+        ],
+        run: () => {
+          applyCalmPreset();
+        },
+      },
+      ...(lastAppliedCalmPreset !== null
+        ? [
+            {
+              key: "undoCalmPreset",
+              kind: "action" as const,
+              title: t("Undo Calm preset"),
+              searchTerms: ["undo", "calm", "preset", "appearance", "revert"],
+              run: () => {
+                undoCalmPreset();
+              },
+            },
+          ]
+        : []),
       {
         key: "environments",
         kind: "action",
@@ -534,9 +577,12 @@ export function CommandPalette(props: {
     openArtifacts,
     activeThread,
     activeThreadRef,
+    applyCalmPreset,
     environments.length,
     canTriage,
     canShareWithGuest,
+    interfaceDensity,
+    lastAppliedCalmPreset,
     navigation,
     nextNeedsYou,
     projects,
@@ -544,8 +590,10 @@ export function CommandPalette(props: {
     savedConnectionsById,
     selectDetail,
     startTriage,
+    statusColors,
     threads,
     triageEnvironmentId,
+    undoCalmPreset,
   ]);
   const rankedMessageKeys = useMemo(() => {
     const subjectByKey = new Map(

@@ -1,9 +1,10 @@
 import { msg, t } from "~/i18n";
 import { BUILT_IN_THEMES } from "@t3tools/shared/themePalettes";
-import { MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "lucide-react";
+import { MonitorIcon, MoonIcon, PaletteIcon, SlidersHorizontalIcon, SunIcon } from "lucide-react";
 
 import { useCustomThemes } from "../hooks/useCustomThemes";
 import { useEnvironmentThemeDefinitions } from "../hooks/useEnvironmentTheme";
+import { useClientSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { getThemeDefinition } from "../themePalette";
 import {
@@ -12,6 +13,11 @@ import {
   type CommandPaletteActionItem,
   type CommandPaletteSubmenuItem,
 } from "./CommandPalette.logic";
+import {
+  applyCalmPresetWithToast,
+  planCalmPreset,
+  selectCalmPresetSettings,
+} from "./settings/calmPreset";
 import { toggleThemeEditorForTheme } from "./settings/themeEditorStore";
 import {
   STANDARD_THEME_CARDS,
@@ -161,5 +167,35 @@ export function useCommandPaletteThemeItems() {
     },
   };
 
-  return { changeThemeItem, changeAppearanceItem, themeEditorItem };
+  const calmSettings = useClientSettings(selectCalmPresetSettings);
+  const calmPlan = planCalmPreset(calmSettings);
+  const calmPresetItem: CommandPaletteActionItem = {
+    kind: "action",
+    value: "action:apply-calm-preset",
+    searchTerms: [
+      "calm",
+      "preset",
+      "quiet",
+      "appearance",
+      "compact",
+      "density",
+      "essentials",
+      "thread details",
+      "fold",
+      "status colors",
+    ],
+    title: t("Apply Calm preset"),
+    description: calmPlan.isActive
+      ? t("Already active")
+      : t("Compact spacing, Essentials details, fold older turns, calm status colors"),
+    icon: <SlidersHorizontalIcon className={ITEM_ICON_CLASS} />,
+    titleTrailingContent: calmPlan.isActive ? (
+      <span className="text-xs text-muted-foreground/70">{t("Current")}</span>
+    ) : undefined,
+    run: async () => {
+      applyCalmPresetWithToast();
+    },
+  };
+
+  return { changeThemeItem, changeAppearanceItem, calmPresetItem, themeEditorItem };
 }

@@ -23,6 +23,7 @@ of the selected theme.
 
 ## Density, status colors and accent color
 
+- **Calm preset** (web, desktop and mobile): apply a single quiet setup from **Settings → Appearance** or the **Apply Calm preset** command palette action. On web and desktop it sets **Compact spacing**, **Essentials** thread details, **Older turns** for folding finished work, and **Calm** status colors; on mobile it sets **Compact spacing** and **Calm** status colors. Notifications stay unchanged, and the diff list lets you **Undo** back to your prior values.
 - **Interface density**: **Compact spacing** tightens thread rows, folder headers, chat message gaps and settings rows on web and desktop, and the home thread list on mobile. Every button and row stays easy to hit. **Comfortable** is the default.
 - **Status colors** (web, desktop and mobile): **Calm**, the default, shows healthy statuses such as Working, Waiting and Done in gray, each with its own icon, and keeps color for what needs you: amber when you need to answer and red when something failed. On web and desktop it also stops the pulsing status dots and the shimmer on running tools, and quiets borders and long lines of text in chat. **Vivid** gives every status its own color, as before.
 - **Accent color** (web, desktop and mobile): pick a color for buttons, selection and focus rings. It applies over any theme, and **Theme** goes back to the theme's own color.
