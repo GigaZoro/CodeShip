@@ -1,3 +1,7 @@
+## 2026-11-27 — The weekly dependency upgrade runs while Codex is out of usage
+
+- Maintainers: the "CodeShip: weekly dependency upgrade" scheduled task now lists only its own provider (Claude) in `delegate_providers`. Listing Codex made CodeShip skip every run while all Codex accounts were out of usage, although the task only needs a second reviewer from any provider that has usage. Machines pick up the change with `schedule_task` and `delegateProviders`, as `machine-config.mjs check` reports.
+
 ## 2026-11-27 — Each landing leaves a timing record
 
 - Maintainers: every `landing-turn.cjs land` run, failed ones included, appends one JSON line to `t3-landing/landings.jsonl` in the clone's common Git folder with its outcome, the stage it ended in and its per-phase timings, so slow or failing landings can be measured.
