@@ -709,6 +709,48 @@ describe("check:changed", () => {
       }),
   );
 
+  it.effect("starts no other run's step until the run holding the landing turn ends", () =>
+    Effect.gen(function* () {
+      const landingStarted = yield* Deferred.make<void>();
+      const finishLanding = yield* Deferred.make<void>();
+      const started: Array<string> = [];
+      const options = { concurrency: 2, timeoutSeconds: 60, slotDirectory: yield* slotDirectory };
+      const landing = yield* runSteps(
+        [
+          {
+            name: "landing",
+            run: () =>
+              Deferred.succeed(landingStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(finishLanding)),
+                Effect.as({ ok: true, output: "" }),
+              ),
+          },
+        ],
+        { ...options, landing: true },
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(landingStarted);
+      const other = yield* runSteps(
+        [
+          {
+            name: "other",
+            run: () =>
+              Effect.sync(() => started.push("other")).pipe(Effect.as({ ok: true, output: "" })),
+          },
+        ],
+        options,
+      ).pipe(Effect.forkChild);
+      // A slot is free all along; the landing's marker alone keeps the other run waiting.
+      for (let second = 0; second < 5; second++) yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(started, []);
+
+      yield* Deferred.succeed(finishLanding, undefined);
+      yield* Fiber.join(landing);
+      yield* TestClock.adjust("1 second");
+      yield* Fiber.join(other);
+      assert.deepStrictEqual(started, ["other"]);
+    }),
+  );
+
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
     Effect.gen(function* () {
       let interrupted = false;
