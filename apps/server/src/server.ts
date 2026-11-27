@@ -482,7 +482,10 @@ export const layerPlatformServices = DocumentText.layer.pipe(
 
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 
-const layerSessionHost = SessionHostService.layer.pipe(Layer.provide(layerPersistence));
+const layerSessionHost = SessionHostService.layer.pipe(
+  Layer.provide(layerPersistence),
+  Layer.provide(ServerSecretStore.layer),
+);
 
 const layerAccountRouting = AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer));
 

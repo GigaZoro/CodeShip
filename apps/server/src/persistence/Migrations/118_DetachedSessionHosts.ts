@@ -6,6 +6,7 @@ export default Effect.gen(function* () {
 
   // Detached provider brokers (`__session-host`) outlive planned server updates so a restarting
   // server can verify process identity, reattach over local IPC, and replay buffered frames.
+  // The broker's auth token is kept in the server secret store, never in this table.
   yield* sql`
     CREATE TABLE session_hosts (
       id TEXT PRIMARY KEY,
@@ -14,7 +15,6 @@ export default Effect.gen(function* () {
       thread_id TEXT NOT NULL,
       driver TEXT NOT NULL,
       socket_path TEXT NOT NULL,
-      auth_token TEXT NOT NULL,
       broker_pid INTEGER,
       broker_identity_json TEXT,
       child_pid INTEGER,

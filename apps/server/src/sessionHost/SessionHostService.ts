@@ -30,6 +30,7 @@ import {
   linuxIdentity,
   timeIdentity,
 } from "../commandRunner/processIdentity.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import { escapePowerShellStringLiteral } from "../process/externalLauncher.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -63,7 +64,6 @@ interface SessionHostRow {
   readonly thread_id: string;
   readonly driver: string;
   readonly socket_path: string;
-  readonly auth_token: string;
   readonly broker_pid: number | null;
   readonly broker_identity_json: string | null;
   readonly child_pid: number | null;
@@ -80,7 +80,6 @@ export interface SessionHostRecord {
   readonly threadId: ThreadId;
   readonly driver: SessionHostDriver;
   readonly socketPath: string;
-  readonly authToken: string;
   readonly brokerPid: number | null;
   readonly brokerIdentity: string | null;
   readonly childPid: number | null;
@@ -217,7 +216,6 @@ function rowToRecord(row: SessionHostRow): SessionHostRecord {
     threadId: ThreadId.make(row.thread_id),
     driver: row.driver as SessionHostDriver,
     socketPath: row.socket_path,
-    authToken: row.auth_token,
     brokerPid: row.broker_pid,
     brokerIdentity,
     childPid: row.child_pid,
@@ -254,6 +252,7 @@ function safeUnlinkSync(filePath: string): void {
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -279,6 +278,59 @@ const make = Effect.gen(function* () {
 
   const nowIso = () => Effect.map(DateTime.now, DateTime.formatIso);
 
+  // Whoever holds a broker's token can drive the provider's stdio. SQLite is copied into backups
+  // and diagnostics bundles, so the token lives in the secret store and the row only names it.
+  const authTokenSecretName = (id: string) => `session-host-${id}`;
+
+  const storeAuthToken = (id: string, authToken: string) =>
+    secretStore.set(authTokenSecretName(id), new TextEncoder().encode(authToken)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new SessionHostError({
+            detail: `Failed to store the auth token of session host ${id}: ${cause.message}`,
+            cause,
+          }),
+      ),
+    );
+
+  const readAuthToken = (id: string) =>
+    secretStore.get(authTokenSecretName(id)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new SessionHostError({
+            detail: `Failed to read the auth token of session host ${id}: ${cause.message}`,
+            cause,
+          }),
+      ),
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.fail(new SessionHostError({ detail: `Session host ${id} has no auth token.` })),
+          onSome: (bytes) => Effect.succeed(new TextDecoder().decode(bytes)),
+        }),
+      ),
+    );
+
+  // Reads that feed a best-effort sweep keep going with nothing found, but never silently.
+  const orEmptyLogged =
+    (what: string) =>
+    <A, E>(effect: Effect.Effect<ReadonlyArray<A>, E>) =>
+      effect.pipe(
+        Effect.catch((cause) =>
+          Effect.logError(`Failed to read ${what}`, cause).pipe(Effect.as([] as ReadonlyArray<A>)),
+        ),
+      );
+
+  const removeAuthToken = (id: string) =>
+    secretStore
+      .remove(authTokenSecretName(id))
+      .pipe(
+        Effect.ignore({
+          log: "Error",
+          message: `Failed to remove the auth token of session host ${id}`,
+        }),
+      );
+
   const persistAckSeq = (id: string, seq: number) =>
     nowIso().pipe(
       Effect.flatMap(
@@ -290,7 +342,10 @@ const make = Effect.gen(function* () {
           `,
       ),
       Effect.asVoid,
-      Effect.ignore({ log: true }),
+      Effect.ignore({
+        log: "Error",
+        message: `Failed to persist the acked seq of session host ${id}`,
+      }),
     );
 
   const updateRowStatus = (id: string, status: SessionHostStatus, lastAckedSeq?: number) =>
@@ -311,7 +366,8 @@ const make = Effect.gen(function* () {
             `,
       ),
       Effect.asVoid,
-      Effect.ignore({ log: true }),
+      Effect.ignore({ log: "Error", message: `Failed to mark session host ${id} ${status}` }),
+      Effect.andThen(status === "exited" || status === "dead" ? removeAuthToken(id) : Effect.void),
     );
 
   const clearTrackedHost = (tracked: ActiveTrackedHost) => {
@@ -350,7 +406,8 @@ const make = Effect.gen(function* () {
     activeByProviderSession.set(providerSessionId, tracked);
 
     handle.events.once("exit", () => {
-      if (handle.detachingForUpdate) return;
+      // Whoever cleared the host first (terminate, a failed reattach) already wrote its status.
+      if (handle.detachingForUpdate || activeById.get(id) !== tracked) return;
       clearTrackedHost(tracked);
       runFork(updateRowStatus(id, "exited", handle.lastAckedSeq));
       if (unit !== null && Option.isSome(agentScopeOption)) {
@@ -592,7 +649,6 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly driver: SessionHostDriver;
     readonly socketPath: string;
-    readonly authToken: string;
     readonly brokerPid: number | null;
     readonly brokerIdentity: string | null;
     readonly childPid: number | null;
@@ -610,8 +666,7 @@ const make = Effect.gen(function* () {
             thread_id,
             driver,
             socket_path,
-            auth_token,
-            broker_pid,
+              broker_pid,
             broker_identity_json,
             child_pid,
             last_acked_seq,
@@ -625,7 +680,6 @@ const make = Effect.gen(function* () {
             ${input.threadId},
             ${input.driver},
             ${input.socketPath},
-            ${input.authToken},
             ${input.brokerPid},
             ${identityJson},
             ${input.childPid},
@@ -686,8 +740,13 @@ const make = Effect.gen(function* () {
         }),
     });
 
-    const { unit } = yield* launchDetachedBrokerProcess(configPath, input.cwd).pipe(
+    yield* storeAuthToken(id, authToken).pipe(
       Effect.tapError(() => Effect.sync(() => safeUnlinkSync(configPath))),
+    );
+    const { unit } = yield* launchDetachedBrokerProcess(configPath, input.cwd).pipe(
+      Effect.tapError(() =>
+        Effect.sync(() => safeUnlinkSync(configPath)).pipe(Effect.andThen(removeAuthToken(id))),
+      ),
     );
 
     let trackedRef: ActiveTrackedHost | undefined;
@@ -719,7 +778,7 @@ const make = Effect.gen(function* () {
           clearTrackedHost(trackedRef!);
           safeUnlinkSync(configPath);
           safeUnlinkSync(readyFilePath);
-        }),
+        }).pipe(Effect.andThen(removeAuthToken(id))),
       ),
     );
 
@@ -730,7 +789,6 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       driver: input.driver,
       socketPath,
-      authToken,
       brokerPid: attached.brokerPid,
       brokerIdentity: attached.brokerIdentity,
       childPid: attached.childPid,
@@ -769,7 +827,6 @@ const make = Effect.gen(function* () {
         thread_id,
         driver,
         socket_path,
-        auth_token,
         broker_pid,
         broker_identity_json,
         child_pid,
@@ -780,7 +837,7 @@ const make = Effect.gen(function* () {
       FROM session_hosts
       WHERE status = 'detached_for_update'
       ORDER BY created_at ASC
-    `.pipe(Effect.orElseSucceed(() => [] as Array<SessionHostRow>));
+    `.pipe(orEmptyLogged("detached session hosts"));
     return rows.map(rowToRecord);
   });
 
@@ -811,7 +868,6 @@ const make = Effect.gen(function* () {
           thread_id,
           driver,
           socket_path,
-          auth_token,
           broker_pid,
           broker_identity_json,
           child_pid,
@@ -859,11 +915,15 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.tapError(() => updateRowStatus(record.id, "dead")));
       }
 
+      const authToken = yield* readAuthToken(record.id).pipe(
+        Effect.tapError(() => updateRowStatus(record.id, "dead")),
+      );
+
       let trackedRef: ActiveTrackedHost | undefined;
       const handle = DetachedStdioHandle.createPending({
         sessionHostId: record.id,
         socketPath: record.socketPath,
-        authToken: record.authToken,
+        authToken,
         initialAfterSeq: record.lastAckedSeq,
         onAckSeq: (seq) => {
           if (trackedRef !== undefined) {
@@ -901,8 +961,8 @@ const make = Effect.gen(function* () {
       // output; adopting the process anyway would leave the run waiting on it forever.
       const missedFrames = attachedInfo.oldestSeq - (record.lastAckedSeq + 1);
       if (missedFrames > 0) {
-        yield* Effect.promise(() => handle.terminate());
         clearTrackedHost(trackedRef);
+        yield* Effect.promise(() => handle.terminate());
         yield* updateRowStatus(record.id, "dead");
         return yield* new SessionHostError({
           detail: `Session host ${record.id} dropped ${missedFrames} unread output frames while detached.`,
@@ -1000,7 +1060,13 @@ const make = Effect.gen(function* () {
       UPDATE session_hosts
       SET provider_thread_id = ${providerThreadId}, updated_at = ${updatedAt}
       WHERE provider_session_id = ${providerSessionId}
-    `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+    `.pipe(
+      Effect.asVoid,
+      Effect.ignore({
+        log: "Error",
+        message: `Failed to record the provider thread of session ${providerSessionId}`,
+      }),
+    );
   });
 
   const markDead: SessionHostServiceShape["markDead"] = (sessionHostId) =>
@@ -1030,7 +1096,6 @@ const make = Effect.gen(function* () {
         thread_id,
         driver,
         socket_path,
-        auth_token,
         broker_pid,
         broker_identity_json,
         child_pid,
@@ -1041,21 +1106,26 @@ const make = Effect.gen(function* () {
       FROM session_hosts
       WHERE id = ${sessionHostId}
       LIMIT 1
-    `.pipe(Effect.orElseSucceed(() => [] as Array<SessionHostRow>));
+    `.pipe(orEmptyLogged(`session host ${sessionHostId}`));
       const row = rows[0];
       if (row === undefined) return;
       const record = rowToRecord(row);
       const verdict = yield* verifyBrokerIdentity(record);
       if (verdict.alive) {
-        yield* Effect.tryPromise(async () => {
-          const handle = await DetachedStdioHandle.connect({
-            sessionHostId: record.id,
-            socketPath: record.socketPath,
-            authToken: record.authToken,
-            initialAfterSeq: record.lastAckedSeq,
-          });
-          await handle.terminate(signal);
-        }).pipe(Effect.ignore);
+        yield* readAuthToken(record.id).pipe(
+          Effect.flatMap((authToken) =>
+            Effect.tryPromise(async () => {
+              const handle = await DetachedStdioHandle.connect({
+                sessionHostId: record.id,
+                socketPath: record.socketPath,
+                authToken,
+                initialAfterSeq: record.lastAckedSeq,
+              });
+              await handle.terminate(signal);
+            }),
+          ),
+          Effect.ignore({ log: "Error", message: `Failed to terminate session host ${record.id}` }),
+        );
       }
       yield* updateRowStatus(sessionHostId, "exited");
     },
@@ -1075,7 +1145,7 @@ const make = Effect.gen(function* () {
         SELECT id FROM session_hosts
         WHERE provider_session_id = ${providerSessionId}
           AND status IN ('running', 'detached_for_update')
-      `.pipe(Effect.orElseSucceed(() => [] as Array<{ readonly id: string }>));
+      `.pipe(orEmptyLogged(`session hosts of provider session ${providerSessionId}`));
       for (const row of rows) {
         yield* terminate(row.id, signal);
       }
@@ -1094,7 +1164,7 @@ const make = Effect.gen(function* () {
       SELECT id FROM session_hosts
       WHERE thread_id = ${threadId}
         AND status IN ('running', 'detached_for_update')
-    `.pipe(Effect.orElseSucceed(() => [] as Array<{ readonly id: string }>));
+    `.pipe(orEmptyLogged(`session hosts of thread ${threadId}`));
     for (const row of rows) {
       ids.add(row.id);
     }

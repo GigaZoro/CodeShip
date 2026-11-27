@@ -23,6 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
@@ -32,6 +33,8 @@ import * as ProviderRuntimeRecovery from "../orchestration-v2/ProviderRuntimeRec
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SessionHostService from "./SessionHostService.ts";
+
+const sessionHostLayer = SessionHostService.layer.pipe(Layer.provide(ServerSecretStore.layer));
 
 const ECHO_CHILD_SCRIPT = `
 const readline = require("node:readline");
@@ -243,7 +246,7 @@ it.live(
       > = [];
 
       // Server instance 1: spawn a detached provider session and detach for planned update.
-      const firstHostLayer = SessionHostService.layer;
+      const firstHostLayer = sessionHostLayer;
       let originalChildPid = 0;
 
       yield* Effect.gen(function* () {
@@ -315,7 +318,7 @@ it.live(
         Effect.provide(
           buildRecoveryLayer(threadId, projection, (input) =>
             commitsDuringStartup.push(input),
-          ).pipe(Layer.provideMerge(SessionHostService.layer)),
+          ).pipe(Layer.provideMerge(sessionHostLayer)),
         ),
       );
     }).pipe(
@@ -408,7 +411,7 @@ it.live(
         if (!isWindowsHost && NodeFS.existsSync(socketPath)) {
           NodeFS.rmSync(socketPath, { force: true });
         }
-      }).pipe(Effect.provide(SessionHostService.layer));
+      }).pipe(Effect.provide(sessionHostLayer));
 
       // Server instance 2: startup recovery sees the dead broker and falls back to RestartContinuation.
       const commits: Array<Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]> = [];
@@ -435,7 +438,7 @@ it.live(
       }).pipe(
         Effect.provide(
           buildRecoveryLayer(threadId, projection, (input) => commits.push(input)).pipe(
-            Layer.provideMerge(SessionHostService.layer),
+            Layer.provideMerge(sessionHostLayer),
           ),
         ),
       );
@@ -500,7 +503,7 @@ it.live(
         yield* sessionHost.detachAllForUpdate();
         yield* Effect.promise(() => sendBurst(ready.port));
         yield* Effect.promise(() => sendBurst(ready.port));
-      }).pipe(Effect.provide(SessionHostService.layer));
+      }).pipe(Effect.provide(sessionHostLayer));
 
       const commits: Array<Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]> = [];
       yield* Effect.gen(function* () {
@@ -521,7 +524,7 @@ it.live(
       }).pipe(
         Effect.provide(
           buildRecoveryLayer(threadId, projection, (input) => commits.push(input)).pipe(
-            Layer.provideMerge(SessionHostService.layer),
+            Layer.provideMerge(sessionHostLayer),
           ),
         ),
       );
@@ -542,3 +545,43 @@ it.live(
     );
   },
 );
+
+it.live("keeps the broker auth token in the secret store and removes it when the host ends", () => {
+  const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-session-host-token-"));
+  const baseLayer = Layer.mergeAll(
+    Sqlite.layerMemory,
+    ServerConfig.layerTest(tempBaseDir, tempBaseDir),
+  ).pipe(Layer.provideMerge(NodeServices.layer));
+  const providerSessionId = ProviderSessionId.make("ps_token");
+
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const config = yield* ServerConfig.ServerConfig;
+    const sessionHost = yield* SessionHostService.SessionHostService;
+    const handle = yield* sessionHost.spawn({
+      providerSessionId,
+      threadId: ThreadId.make("thread_token"),
+      driver: "codex",
+      command: process.execPath,
+      args: ["-e", ECHO_CHILD_SCRIPT],
+      cwd: tempBaseDir,
+      env: process.env,
+    });
+    yield* Effect.promise(() => readNextLine(handle.stdout));
+
+    const rows = yield* sql`SELECT * FROM session_hosts`;
+    assert.equal(rows.length, 1);
+    assert.notInclude(JSON.stringify(rows), handle.authToken);
+    const secretPath = NodePath.join(config.secretsDir, `session-host-${handle.sessionHostId}.bin`);
+    assert.equal(NodeFS.readFileSync(secretPath, "utf8"), handle.authToken);
+
+    yield* sessionHost.terminateByProviderSession(providerSessionId);
+    assert.isFalse(NodeFS.existsSync(secretPath));
+  }).pipe(
+    Effect.provide(sessionHostLayer),
+    Effect.ensuring(
+      Effect.sync(() => NodeFS.rmSync(tempBaseDir, { recursive: true, force: true })),
+    ),
+    Effect.provide(baseLayer),
+  );
+});
