@@ -398,33 +398,49 @@ increasing sequence number (`seq`) in a bounded ring buffer.
 
 On planned-update shutdown (detected via [`isPlannedUpdateShutdown`](../../apps/server/src/cloud/updateHandoff.ts),
 which checks both the launcher update handoff and the desktop restart marker),
+[`ProviderRuntimeRecoveryService.detachForUpdate`](../../apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts)
+runs before the effect worker stops. It first restricts the worker to the effects a kept
+process must get (`runtime-request.respond`, `provider-turn.interrupt` and
+`provider-turn.steer`, `DELIVERED_BEFORE_DETACH_EFFECT_TYPES`), so an answer the user gave
+just before the update is still written to the process and nothing new starts. Then
 [`SessionHostService.detachAllForUpdate`](../../apps/server/src/sessionHost/SessionHostService.ts)
 keeps a broker only once everything its server read is persisted, so the next server
 replays exactly the rest, with no overlap and no gap. For each live broker it:
 
-1. Holds the output that has not reached the reader yet (`holdForDetach`) and takes the
-   seq of the last frame the reader got. That seq becomes the row's `last_acked_seq`.
+1. Stops a broker that never attached: it keeps its child only for a detach it got while
+   attached.
 2. Asks `ProviderSessionManagerV2.prepareDetachForUpdate` for the threads the process
-   serves and a drain. Codex's drain writes a `t3/outputBarrier` line past the held output
-   (`injectOutputLine`). The app-server reader handles lines in order, so the barrier
-   arrives after every line it already got. The drain then flushes the buffered text
-   deltas and returns how many events the adapter sent. The session manager waits until
-   its event pump has handled that many events. Then it waits until each run subscriber
-   has read past a barrier signal, or stopped reading.
-3. Sends `{ type: "detach" }` once the drain finishes within `DETACH_DRAIN_TIMEOUT`
-   (2 s). It then marks the row `detached_for_update` with every thread the process
-   serves, and leaves the broker and provider child running.
+   serves, and waits within `DETACH_DELIVER_TIMEOUT` (1 s) until every effect of those
+   types queued for those threads has settled.
+3. Holds the output that has not reached the reader yet (`holdForDetach`) and takes the
+   seq of the last frame the reader got. That seq becomes the row's `last_acked_seq`.
+4. Drains within `DETACH_DRAIN_TIMEOUT` (2 s). Codex's drain waits until every server
+   request handler has reached its waitpoint (registered its pending request), flushes
+   what the client still has to write, and writes a `t3/outputBarrier` line past the held
+   output (`injectOutputLine`). The app-server reader handles lines in order, so the
+   barrier arrives after every line it already got. The drain then flushes the buffered
+   text deltas and returns how many events the adapter sent. The session manager waits
+   until its event pump has handled that many events. Each run subscriber then flushes its
+   assistant streaming filter in both modes, so the whole text up to the replay point is
+   stored, and reads past a barrier signal or stops reading.
+5. Asks which threads the next server takes over. A process is kept only when every
+   nonterminal run of every thread on it is `running` with a running native turn on this
+   provider session, and nothing is still queued for it. It sends `{ type: "detach" }`,
+   marks the row `detached_for_update` with those threads, and leaves the broker and
+   provider child running.
 
-The process is stopped instead (fail closed) when no session uses it, when its runtime
-cannot drain, or when the drain fails, dies or times out. Its threads then continue as
-after any restart.
+The process is stopped instead (fail closed) when no session uses it, when a queued answer
+is not delivered in time, when its runtime cannot drain, when the drain fails, dies or
+times out, or when any run on it cannot be taken over. Its threads then continue as after
+any restart. Only the threads of a kept process are preserved; reconciling any other thread
+never stops or releases a kept shared session.
 
 The desktop restart sends `SIGTERM` before the shutdown finalizer runs. A broker's child
-is outside the server's process group, so the signal does not reach it, and the event
-pump keeps handling that session's events until the detach. A normal child dies with the
-server, and its events after the signal are dropped. The stream end a detach causes is
-not a provider failure: the session manager leaves that session and its runs to the
-shutdown.
+is outside the server's process group, so the signal does not reach it, and during a
+planned update the event pump keeps handling that session's events until the detach.
+After an ordinary `SIGTERM`, or for a normal child, which dies with the server, events
+after the signal are dropped. The stream end a detach causes is not a provider failure:
+the session manager leaves that session and its runs to the shutdown.
 
 Each kept session costs one extra process: its `__session-host` broker, the server
 binary in broker mode, beside the provider child. Normal shutdowns, explicit stops,
@@ -437,31 +453,43 @@ On startup, [`ProviderRuntimeRecoveryService`](../../apps/server/src/orchestrati
 calls `reattachAllDetachedForUpdate()`. Each `detached_for_update` row is verified against
 its stored process identity before reconnecting with `{ type: "attach", afterSeq, authToken }`.
 The broker first sends each request the child asked at or before `afterSeq` that is still
-unanswered, then every buffered frame after `afterSeq` in order, then live output. The
-reattached handle holds that output until a taker releases it. If the broker's ring buffer
-dropped frames the old server never read, the host is ended: a turn cannot be rebuilt from
-part of its output.
+unanswered (`pending_request`, with its original JSON-RPC id), then every buffered frame
+after `afterSeq` in order, then `replay_complete`, then live output. The reattached handle
+holds that output until a taker releases it. If the broker's ring buffer dropped frames
+the old server never read, the host is ended: a turn cannot be rebuilt from part of its
+output.
 
-Recovery then hands each reattached host to `ProviderTurnStartService.adopt` for every
-run still running on the threads its process serves, each under its thread's lock. The
-adapter takes the stdio handle over (`SessionHostService.takeAdoptable`). Codex then:
+Recovery gives a reattached host up when any thread on it has a nonterminal run it cannot
+take over. Otherwise it hands the host to `ProviderTurnStartService.adopt` for each
+running run on the threads its process serves, each under its thread's lock. The adapter
+takes the stdio handle over (`SessionHostService.takeAdoptable`). Codex then:
 
 - skips `initialize` and `thread/start` or `thread/resume`;
 - uses prefixed request ids, so replies to the old server's requests are ignored;
 - rebuilds each turn's state from the projection, seeding active assistant, plan and
-  command items with their persisted text, so replayed deltas extend it.
+  command items with their persisted text, so replayed deltas extend it;
+- numbers new items after the highest stored ordinal of the turn (`nextItemOrdinal`), so
+  several stored items that share one native id never collide with a new one;
+- gives a request the broker asks again the id and item of the stored pending request,
+  so the answer given after the update reaches the request the user saw.
 
 Once every run is registered, the held output is released into the normal event
 ingestor. Replayed and live notifications finish the same runs, and an approval Codex
 asked while no server was attached becomes a pending runtime request that can be
-answered. The adopted process finishes only the turns it was running; the next turn
-starts a fresh session with this server's MCP credential and instructions. If any
-adoption fails, recovery logs the error, closes the session, terminates the host and
-waits for its exit. Runs already adopted then fail through their live session, and the
-other threads recover through `RestartContinuation`, as they do
-when a broker exited or failed identity verification while the server was down (its row
-is marked `dead`). Any detached broker that is never reattached self-terminates its child
-process group and removes its socket after `orphanTtlMs` (default 15 minutes).
+answered. The effect worker starts only once each taken-over process finished its replay
+(`replay_complete` plus an output barrier, within 10 s), so a queued answer never reaches
+the adapter before its request is registered. A replayed request never moves a stored
+request back to `pending`: the projection keeps a terminal status. The adopted process
+finishes only the turns it was running; the next turn starts a fresh session with this
+server's MCP credential and instructions.
+
+If any adoption fails, recovery releases the session the way a server shutdown does: it
+interrupts the session's subscribers without writing `run.failed`, terminates the host
+and waits for its exit. Every thread on that process, including those already adopted,
+then recovers through `RestartContinuation`, as they do when a broker exited or failed
+identity verification while the server was down (its row is marked `dead`). Any detached
+broker that is never reattached self-terminates its child process group and removes its
+socket after `orphanTtlMs` (default 15 minutes).
 
 MCP credential hashes (`mcp_session_credentials`) are saved with the MCP endpoint they
 were issued for. After the reattach outcome is known, startup keeps only the credentials
