@@ -3,7 +3,7 @@
 // LEASE_TTL_MS; under the turn it checks again only if main moved. Main moves only in the atomic push that gives back
 // the lander's lease commit. Others wait in a first-come, first-served queue; the pre-push hook (`verify`) checks too.
 const { spawn, spawnSync } = require("node:child_process");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -1040,7 +1040,7 @@ function overlappingWorktrees({ cwd, base }) {
     if (!fields.worktree || fields.bare !== undefined || fields.prunable !== undefined) continue;
     // Git for Windows lists `C:/…`: the lander reads the path as this system writes it.
     const worktree = path.resolve(fields.worktree);
-    if (worktree === self) continue;
+    if (worktree === self || landingCheckout(worktree)) continue;
     if (!fields.HEAD) continue;
     const shared = changed(fields.HEAD).filter((file) => mine.has(file));
     if (shared.length > 0) {
@@ -1067,21 +1067,171 @@ function formatOverlaps(overlaps) {
   return lines.join("\n");
 }
 
+// How many checkouts a clone keeps between landings, so their node_modules, and with them Vite+'s task cache and
+// Vitest's module cache, outlive a check. More checks at once get a checkout each that is removed after the check.
+const KEPT_CHECKOUTS = 2;
+const CHECKOUTS_FOLDER = "t3-landing-checkouts";
+// A temp-folder checkout of a landing from before the pool; a killed one stayed on disk and in `git worktree list`.
+const OLD_CHECKOUT = /^t3-landing-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SQLITE_BUSY = 5;
+// Node exits on these without running `finally`.
+const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
+
 /**
- * Runs `run(directory)` in a private detached checkout of `commit`. The lander's own worktree stays writable by
- * editors and other agents while the checks run, and an edit made and undone in it would leave no trace; nothing
- * outside the landing knows this directory, so the checks read exactly the commit. Its git calls leave the event loop
- * free, so the lease's renewals go on meanwhile.
+ * Takes checkout `index` when no other process holds it, and returns the connection that holds it, else null. A
+ * holder is an open exclusive transaction on the slot's file, which the OS releases when its process exits, killed or
+ * not. Open the file only through SQLite: closing any other handle to it drops this process's lock.
  */
-async function withPrivateCheckout({ cwd, commit }, run) {
-  const directory = path.join(os.tmpdir(), `t3-landing-${randomUUID()}`);
-  await gitAsync(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit]);
+function lockCheckout(folder, index) {
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(path.join(folder, `${index}.lock`));
   try {
+    db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+    return db;
+  } catch (error) {
+    db.close();
+    if (error.errcode === SQLITE_BUSY) return null;
+    throw error;
+  }
+}
+
+/**
+ * Where the clone whose Git folder is `common` keeps its checkouts: the user's cache folder, outside the clone, since
+ * Node and TypeScript look for packages in every parent folder's node_modules, and the clone's own would hide a
+ * dependency the commit lacks.
+ */
+function checkoutsFolder(common) {
+  const home = os.homedir();
+  const platformCache = {
+    darwin: path.join(home, "Library", "Caches"),
+    win32: process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"),
+  };
+  const cache =
+    process.env.XDG_CACHE_HOME ||
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests set XDG_CACHE_HOME.
+    platformCache[process.platform] ||
+    path.join(home, ".cache");
+  const clone = createHash("sha256").update(common).digest("hex").slice(0, 16);
+  return path.join(cache, CHECKOUTS_FOLDER, clone);
+}
+
+/** Whether `worktree` is a checkout a landing checks a commit in, not one holding work. */
+function landingCheckout(worktree) {
+  const pooled = path.basename(path.dirname(path.dirname(worktree))) === CHECKOUTS_FOLDER;
+  return pooled || OLD_CHECKOUT.test(path.basename(worktree));
+}
+
+async function removeCheckout(cwd, directory) {
+  await fs.promises.rm(directory, { recursive: true, force: true });
+  await gitAsync(cwd, ["worktree", "prune"], { allowFailure: true });
+}
+
+/** Whether `directory` is a working checkout of the clone whose Git folder is `common`. */
+async function checkoutOf(directory, common) {
+  if (!fs.existsSync(path.join(directory, ".git"))) return false;
+  const args = ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"];
+  const shown = await gitAsync(directory, args, { allowFailure: true });
+  if (!shown.ok) return false;
+  const [top, own] = shown.stdout.split("\n").map((entry) => fs.realpathSync.native(entry));
+  return top === fs.realpathSync.native(directory) && own === common;
+}
+
+/**
+ * Moves a kept checkout to `commit` and deletes every file the commit lacks but each package's node_modules. A holder
+ * killed in a git call leaves git's lock files; holding the slot, this landing is the only one using them.
+ */
+async function resetCheckout(directory, commit) {
+  const lockFiles = ["--git-path", "index.lock", "--git-path", "HEAD.lock"];
+  const locks = await gitAsync(directory, ["rev-parse", "--path-format=absolute", ...lockFiles]);
+  for (const file of locks.stdout.split("\n")) await fs.promises.rm(file, { force: true });
+  await gitAsync(directory, ["checkout", "--quiet", "--detach", "--force", commit]);
+  // A package the commit removed leaves its node_modules alone in its folder; that goes too.
+  const listed = await gitAsync(directory, ["-c", "core.quotePath=false", "clean", "-ffdxn"]);
+  const kept = listed.stdout
+    .split("\n")
+    .map((line) => line.replace(/^Would remove /, "").replace(/\/$/, ""))
+    .filter(
+      (entry) =>
+        path.posix.basename(entry) === "node_modules" &&
+        fs.existsSync(path.join(directory, path.posix.dirname(entry), "package.json")),
+    );
+  await gitAsync(directory, ["clean", "-ffdxq", ...kept.flatMap((entry) => ["-e", `/${entry}/`])]);
+}
+
+async function prepareCheckout(cwd, directory, commit, common) {
+  if (await checkoutOf(directory, common)) {
+    try {
+      return await resetCheckout(directory, commit);
+    } catch (error) {
+      console.error(`landing: rebuilding ${directory}, which did not reset: ${error.message}`);
+    }
+  }
+  await removeCheckout(cwd, directory);
+  await gitAsync(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit]);
+}
+
+/** Removes the extra checkouts whose landing is gone, and old temp-folder ones older than any turn. */
+async function sweepCheckouts(cwd, folder, now) {
+  for (const name of fs.readdirSync(folder)) {
+    if (!/^\d+$/.test(name) || Number(name) < KEPT_CHECKOUTS) continue;
+    const slot = lockCheckout(folder, name);
+    if (!slot) continue;
+    try {
+      await removeCheckout(cwd, path.join(folder, name));
+    } finally {
+      slot.close();
+    }
+  }
+  const listed = await gitAsync(cwd, ["worktree", "list", "--porcelain"]);
+  for (const block of listed.stdout.split("\n\n")) {
+    const worktree = block.match(/^worktree (.+)$/m)?.[1];
+    if (!worktree || !OLD_CHECKOUT.test(path.basename(worktree))) continue;
+    const added = fs.statSync(path.join(worktree, ".git"), { throwIfNoEntry: false });
+    if (!added || added.mtimeMs < now() - TURN_MAX_MS) await removeCheckout(cwd, worktree);
+  }
+}
+
+/**
+ * Runs `run(directory)` in a private detached checkout of `commit`, so the checks read exactly the commit while editors
+ * and agents go on writing to the lander's worktree: a kept one, reset to the commit but for its node_modules, or while
+ * all are busy one of its own, removed after the check or when its process is stopped. Its git calls leave the event
+ * loop free, so the lease's renewals go on meanwhile.
+ */
+async function withPrivateCheckout({ cwd, commit, now = Date.now }, run) {
+  const common = fs.realpathSync.native(
+    git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout,
+  );
+  const folder = checkoutsFolder(common);
+  fs.mkdirSync(folder, { recursive: true });
+  await sweepCheckouts(cwd, folder, now);
+  let index = 0;
+  let slot;
+  while (!(slot = lockCheckout(folder, index))) index += 1;
+  const directory = path.join(folder, String(index));
+  const extra = index >= KEPT_CHECKOUTS;
+  const stopListening = () => {
+    for (const signal of STOP_SIGNALS) process.removeListener(signal, onStop);
+  };
+  function onStop(signal) {
+    stopListening();
+    try {
+      fs.rmSync(directory, { recursive: true, force: true });
+      git(cwd, ["worktree", "prune"], { allowFailure: true });
+    } catch (error) {
+      console.error(`landing: cannot remove ${directory}: ${error.message}`);
+    }
+    process.kill(process.pid, signal);
+  }
+  if (extra) for (const signal of STOP_SIGNALS) process.on(signal, onStop);
+  try {
+    await prepareCheckout(cwd, directory, commit, common);
     return await run(directory);
   } finally {
-    await gitAsync(cwd, ["worktree", "remove", "--force", directory], { allowFailure: true });
-    await fs.promises.rm(directory, { recursive: true, force: true });
-    await gitAsync(cwd, ["worktree", "prune"], { allowFailure: true });
+    if (extra) {
+      await removeCheckout(cwd, directory);
+      stopListening();
+    }
+    slot.close();
   }
 }
 
@@ -1266,8 +1416,8 @@ async function runCheck(
   budgetSeconds,
   signal,
   {
-    // The private checkout has no node_modules; the store's hardlinks make this install cheap. A package the store
-    // lacks, as after a rebase across a lockfile change, is fetched.
+    // A kept checkout's node_modules needs only what the commit changed, and the store's hardlinks make a new one
+    // cheap. A package the store lacks, as after a rebase across a lockfile change, is fetched.
     command = `vp i --frozen-lockfile --prefer-offline && vp run check:changed ${base}`,
     stdio = "inherit",
     onSpawn = () => {},
@@ -1504,5 +1654,13 @@ module.exports = {
   main,
   processHost,
   // For tests alone: a turn taken outside withTurn is never renewed, and outlives a process that leaves it held.
-  testing: { tryAcquire, acquire, release, runCheck, runFinalize },
+  testing: {
+    tryAcquire,
+    acquire,
+    release,
+    runCheck,
+    runFinalize,
+    withPrivateCheckout,
+    KEPT_CHECKOUTS,
+  },
 };

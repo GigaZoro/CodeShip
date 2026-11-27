@@ -17,7 +17,7 @@ const {
   overlappingWorktrees,
   main,
   pushChecked,
-  testing: { acquire, release, tryAcquire },
+  testing: { acquire, release, tryAcquire, withPrivateCheckout },
   verifyPush,
 } = require("./landing-turn.cjs");
 const { startLandingRecord } = require("./landing-record.cjs");
@@ -648,13 +648,11 @@ test("the checks read a private checkout of the landed commit, not the lander's 
     commit(dir, "change.txt");
     const landed = git(dir, "rev-parse", "HEAD");
     let seen;
-    let checkout;
 
     const result = await land({
       cwd: dir,
       remote: origin,
       check: (_turn, _base, _budget, directory) => {
-        checkout = directory;
         // An edit made and undone while the checks run leaves the worktree clean again.
         fs.writeFileSync(path.join(dir, "base.txt"), "transient\n");
         seen = fs.readFileSync(path.join(directory, "base.txt"), "utf8");
@@ -668,8 +666,6 @@ test("the checks read a private checkout of the landed commit, not the lander's 
     assert.equal(seen, "base\n");
     assert.equal(result.status, "landed");
     assert.equal(git(origin, "rev-parse", "main"), landed);
-    assert.equal(fs.existsSync(checkout), false);
-    assert.equal(git(dir, "worktree", "list", "--porcelain").includes(checkout), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1043,6 +1039,9 @@ test("a landing lists other worktrees with unmerged work on the same files, and 
       encoding: "utf8",
     }).trim();
     git(bulk, "update-ref", "HEAD", git(bulk, "commit-tree", tree, "-p", base, "-m", "bulk"), base);
+    // A landing's checkout is left on the commit it checked, which is no parked work.
+    const checked = git(path.join(root, "overlapping"), "rev-parse", "HEAD");
+    await withPrivateCheckout({ cwd: mine, commit: checked }, () => {});
     const found = overlappingWorktrees({ cwd: mine, base });
     assert.deepEqual(
       found.map(({ branch, files }) => ({ branch, files })),

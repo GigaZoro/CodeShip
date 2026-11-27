@@ -10,7 +10,11 @@ const { LEASE_REF } = require("./landing-turn.cjs");
 // `land` runs git itself, so its rebase needs an identity on a runner without one. A hook exports GIT_DIR
 // and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
 for (const name of Object.keys(process.env)) if (/^GIT_/i.test(name)) delete process.env[name];
+// A landing keeps its checkouts in the user's cache folder; the tests' go to one of their own, gone with the process.
+const cache = fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-cache-"));
+process.on("exit", () => fs.rmSync(cache, { recursive: true, force: true }));
 Object.assign(process.env, {
+  XDG_CACHE_HOME: cache,
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_AUTHOR_NAME: "Fixture",
