@@ -454,6 +454,68 @@ describe("awaitFile", () => {
   );
 });
 
+describe("stripAnsi and decodeTail", () => {
+  it("strips CSI, OSC, and 2-byte ESC sequences without altering plain text", () => {
+    const input = [
+      "\u001b[1;38;5;208mWARN\u001b[0m: \u001b[?25lcheck\u001b[?25h",
+      "\u001b]0;window title\u0007title stripped",
+      "\u001b]8;;https://example.test/docs\u001b\\docs link\u001b]8;;\u001b\\",
+      "\u001b7saved\u001b8 \u001bMup \u001bcreset \u001b(Bascii",
+    ].join("\n");
+    assert.equal(
+      CommandRunner.stripAnsi(input),
+      "WARN: check\ntitle stripped\ndocs link\nsaved up reset ascii",
+    );
+  });
+
+  it("normalizes CRLF and collapses in-place carriage-return progress bars", () => {
+    assert.equal(CommandRunner.stripAnsi("one\r\ntwo\r\n"), "one\ntwo\n");
+    assert.equal(
+      CommandRunner.stripAnsi("step 1\rstep 2\rstep 3\nnext\r\ndone 10%\rdone 100%\r"),
+      "step 3\nnext\ndone 100%",
+    );
+    assert.equal(
+      CommandRunner.stripAnsi("\u001b[33m10%\u001b[0m\r\u001b[2K\u001b[32m100%\u001b[0m\r\n"),
+      "100%\n",
+    );
+  });
+
+  it("recovers clean text from a dense ANSI tail within maxChars", () => {
+    const lines = Array.from(
+      { length: 60 },
+      (_, index) =>
+        `\u001b[38;2;100;200;255m\u001b[1mPASS\u001b[0m \u001b[2mtest-${String(index).padStart(2, "0")}\u001b[0m`,
+    ).join("\n");
+    const bytes = new TextEncoder().encode(`partial-before-seek\n${lines}\n`);
+    const tail = CommandRunner.decodeTail(bytes, true, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+    assert.isAtMost(tail.length, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+    assert.notInclude(tail, "\u001b");
+    assert.include(tail, "PASS test-00");
+    assert.include(tail, "PASS test-59");
+  });
+
+  it("avoids broken UTF-8 sequences and lone UTF-16 surrogates when slicing", () => {
+    const encoder = new TextEncoder();
+    for (const sample of ["é", "✓", "🚀"]) {
+      const repeated = encoder.encode(sample.repeat(20));
+      for (let cutOffset = 1; cutOffset < 5; cutOffset += 1) {
+        const sliced = CommandRunner.decodeTail(repeated.subarray(cutOffset), true, 100);
+        assert.notInclude(sliced, "\uFFFD");
+        assert.isTrue(sliced.length > 0);
+        assert.equal(Buffer.from(sliced, "utf8").toString("utf8"), sliced);
+      }
+    }
+    const astral = encoder.encode(`a${"🚀".repeat(1000)}z`);
+    for (const limit of [1535, 1536, 4095, 4096]) {
+      const sliced = CommandRunner.decodeTail(astral, false, limit);
+      assert.isAtMost(sliced.length, limit);
+      assert.notInclude(sliced, "\uFFFD");
+      assert.equal(Buffer.from(sliced, "utf8").toString("utf8"), sliced);
+      assert.isTrue(sliced.endsWith("🚀z"));
+    }
+  });
+});
+
 const commandRow = (taskId: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -788,6 +850,107 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const task = yield* taskOf(chat.threadId, started.taskId);
         assert.equal(task?.status, "completed");
         assert.include(task?.result ?? "", `last-line\nFull output: ${started.logPath}`);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "strips ANSI sequences and collapses carriage-return progress in Last output while keeping raw disk logs",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-ansi-tail");
+        const raw = [
+          "\u001b]0;build-title\u0007\u001b[32mPASS\u001b[0m suite-a",
+          "\u001b[33mDownloading 10%\u001b[0m\r\u001b[2K\u001b[33mDownloading 50%\u001b[0m\r\u001b[2K\u001b[32mDownloading 100%\u001b[0m",
+          "\u001b]8;;https://example.test\u001b\\report\u001b]8;;\u001b\\ \u001b7saved\u001b8\u001b(B",
+        ].join("\n");
+        const fixture = NodePath.join(chat.workspace, "raw.log");
+        NodeFS.writeFileSync(fixture, `${raw}\n`, "utf8");
+        const started = yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), { command: "cat raw.log" })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        );
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "completed");
+        const result = task?.result ?? "";
+        assert.match(
+          result,
+          /^Exited with code 0 after .+\.\nLast output:\nPASS suite-a\nDownloading 100%\nreport saved\nFull output: /,
+        );
+        assert.notInclude(result, "\u001b");
+        assert.notInclude(result, "Downloading 10%");
+        assert.equal(NodeFS.readFileSync(started.logPath, "utf8"), `${raw}\n`);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "caps clean exit 0 tails to 1536 chars while preserving up to 4096 chars on non-zero failure",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-tail-caps");
+        const lines = Array.from(
+          { length: 120 },
+          (_, index) =>
+            `\u001b[36mline-${String(index).padStart(3, "0")}\u001b[0m ${"x".repeat(40)}`,
+        ).join("\n");
+        NodeFS.writeFileSync(NodePath.join(chat.workspace, "many.log"), `${lines}\n`, "utf8");
+        const [passed, failed] = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const ok = yield* runner.run(callerOf(chat.threadId), { command: "cat many.log" });
+            yield* nextWake(chat.threadId);
+            const bad = yield* runner.run(callerOf(chat.threadId), {
+              command: "cat many.log; exit 2",
+            });
+            yield* nextWake(chat.threadId);
+            return [ok, bad] as const;
+          }),
+        );
+        const extractTail = (result: string) => {
+          const match = /\nLast output:\n([\s\S]*)\nFull output: /.exec(result);
+          assert.isNotNull(match);
+          return match[1]!;
+        };
+        const okTask = yield* taskOf(chat.threadId, passed.taskId);
+        assert.equal(okTask?.status, "completed");
+        const okTail = extractTail(okTask?.result ?? "");
+        assert.isAtMost(okTail.length, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+        assert.isAbove(okTail.length, 1000);
+        assert.include(okTail, "line-119 ");
+        assert.notInclude(okTail, "\u001b");
+
+        const badTask = yield* taskOf(chat.threadId, failed.taskId);
+        assert.equal(badTask?.status, "failed");
+        const badTail = extractTail(badTask?.result ?? "");
+        assert.isAbove(badTail.length, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+        assert.isAtMost(badTail.length, CommandRunner.RESULT_FAILURE_TAIL_CHARS);
+        assert.isAbove(badTail.length, 3500);
+        assert.include(badTail, "line-119 ");
+        assert.notInclude(badTail, "\u001b");
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "keeps valid UTF-8 in Last output when a large multi-byte log is sliced",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-utf8-tail");
+        // Leading ASCII offsets the 8 KB seek into the middle of a 4-byte UTF-8 character.
+        const payload = `a${"🚀".repeat(3000)}`;
+        NodeFS.writeFileSync(NodePath.join(chat.workspace, "utf8.log"), payload, "utf8");
+        const started = yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), { command: "cat utf8.log" })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        );
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "completed");
+        const match = /\nLast output:\n([\s\S]*)\nFull output: /.exec(task?.result ?? "");
+        assert.isNotNull(match);
+        const tail = match[1]!;
+        assert.isAtMost(tail.length, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+        assert.notInclude(tail, "\uFFFD");
+        assert.equal(Buffer.from(tail, "utf8").toString("utf8"), tail);
+        assert.isTrue(tail.endsWith("🚀🚀🚀"));
       }),
   );
 

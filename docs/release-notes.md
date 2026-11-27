@@ -1,3 +1,8 @@
+## 2026-11-27 — Background command wakeups strip ANSI and cap success output
+
+- Completed `t3_command_run` wakeups strip ANSI escape codes and collapse carriage-return progress updates in the injected `Last output:` tail while keeping raw output intact in the on-disk log file.
+- Clean exit-0 wakeups cap the injected tail to 1,536 characters, while failures, timeouts, lost runs, and unreadable exit statuses keep up to 4,096 characters of stripped diagnostic output.
+
 ## 2026-11-27 — Saved usage stays bounded over long histories
 
 - Usage's saved scan cache no longer grows without limit. It forgets deleted or expired transcripts about six months after it last read them, and drops other peers' records of a transcript once those records pass the 92-day window. Two CodeShip instances that share a data folder now save the same usage whichever order they read each other's saves in, at any time.

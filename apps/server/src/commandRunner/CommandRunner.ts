@@ -93,7 +93,10 @@ const STATUS_FILE = "exit-status";
 const PID_FILE = "pid";
 const IDENTITY_FILE = "identity";
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
-const RESULT_TAIL_BYTES = 4 * 1024;
+// Read double the diagnostic tail so dense ANSI sequences do not crowd out final lines.
+const RESULT_TAIL_READ_BYTES = 8 * 1024;
+export const RESULT_SUCCESS_TAIL_CHARS = 1536;
+export const RESULT_FAILURE_TAIL_CHARS = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
 const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
@@ -501,12 +504,54 @@ const runInGitBash = (scriptPath: string) => [
   "exit $t3Bash.ExitCode",
 ];
 
-/** The last lines of a log, starting at a whole line when the start was cut. */
-const decodeTail = (bytes: Uint8Array, cut: boolean) => {
-  const text = new TextDecoder().decode(bytes);
-  if (!cut) return text;
-  const newline = text.indexOf("\n");
-  return newline < 0 ? text : text.slice(newline + 1);
+// Matches OSC, CSI, and ECMA-48 ESC sequences without overlapping character classes.
+const ANSI_ESCAPE_PATTERN =
+  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-Z\\^-~]/g;
+
+/** Removes ANSI escape codes and keeps the final in-place carriage-return segment per line. */
+export const stripAnsi = (text: string): string => {
+  const cleaned = text.replaceAll("\r\n", "\n").replace(ANSI_ESCAPE_PATTERN, "");
+  if (!cleaned.includes("\r")) return cleaned;
+  return cleaned
+    .split("\n")
+    .map((line) => {
+      if (!line.includes("\r")) return line;
+      const trimmed = line.replace(/\r+$/, "");
+      const cr = trimmed.lastIndexOf("\r");
+      return cr < 0 ? trimmed : trimmed.slice(cr + 1);
+    })
+    .join("\n");
+};
+
+/** Decodes a log tail cleanly across UTF-8, UTF-16, and line boundaries, capped to `maxChars`. */
+export const decodeTail = (
+  bytes: Uint8Array,
+  cut: boolean,
+  maxChars: number = RESULT_FAILURE_TAIL_CHARS,
+): string => {
+  let offset = 0;
+  if (cut) {
+    // Skip continuation bytes from a multi-byte UTF-8 sequence split at the seek offset.
+    while (offset < bytes.length && offset < 3 && (bytes[offset]! & 0xc0) === 0x80) {
+      offset += 1;
+    }
+  }
+  const decoded = new TextDecoder().decode(offset === 0 ? bytes : bytes.subarray(offset));
+  const stripped = stripAnsi(decoded).trimEnd();
+  const whole = cut
+    ? (() => {
+        const newline = stripped.indexOf("\n");
+        return newline < 0 ? stripped : stripped.slice(newline + 1);
+      })()
+    : stripped;
+  if (whole.length <= maxChars) return whole;
+  let start = whole.length - maxChars;
+  const code = whole.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff) start += 1;
+  const sliced = whole.slice(start);
+  if (whole.charCodeAt(start - 1) === 10) return sliced;
+  const newline = sliced.indexOf("\n");
+  return newline < 0 ? sliced : sliced.slice(newline + 1);
 };
 
 const make = Effect.gen(function* () {
@@ -725,23 +770,20 @@ const make = Effect.gen(function* () {
     remember(row);
   });
 
-  const readTail = (row: CommandRunRow) =>
+  const readTail = (row: CommandRunRow, maxChars: number = RESULT_FAILURE_TAIL_CHARS) =>
     Effect.scoped(
       Effect.gen(function* () {
         const file = yield* fs.open(logPathOf(row), { flag: "r" });
         const size = Number((yield* file.stat).size);
-        const start = Math.max(0, size - RESULT_TAIL_BYTES);
+        const start = Math.max(0, size - RESULT_TAIL_READ_BYTES);
         yield* file.seek(BigInt(start), "start");
         const bytes = yield* file.readAlloc(size - start);
         return Option.match(bytes, {
           onNone: () => "",
-          onSome: (read) => decodeTail(read, start > 0),
+          onSome: (read) => decodeTail(read, start > 0, maxChars),
         });
       }),
-    ).pipe(
-      Effect.map((tail) => tail.trimEnd()),
-      Effect.orElseSucceed(() => ""),
-    );
+    ).pipe(Effect.orElseSucceed(() => ""));
 
   const resultText = Effect.fn("CommandRunner.resultText")(function* (row: CommandRunRow) {
     const elapsed = formatDuration(
@@ -756,7 +798,11 @@ const make = Effect.gen(function* () {
             ? `Ended after ${elapsed} with an unreadable exit status.`
             : `Exited with code ${row.exit_code} after ${elapsed}.`;
     const logPath = logPathOf(row);
-    const output = yield* readTail(row);
+    const maxChars =
+      row.status === "exited" && row.exit_code === 0
+        ? RESULT_SUCCESS_TAIL_CHARS
+        : RESULT_FAILURE_TAIL_CHARS;
+    const output = yield* readTail(row, maxChars);
     return [
       ending,
       output === "" ? "No output." : `Last output:\n${output}`,
