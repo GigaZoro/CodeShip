@@ -1,25 +1,26 @@
 import type { ClientSettings } from "@t3tools/contracts";
 import { msg } from "~/i18n";
 
-// Ids are stored in client settings, so never rename one.
+// Ids are stored in client settings, so never rename one. Settings keep only choices that differ
+// from these defaults, so a changed default reaches everyone who never touched that item.
 export const THREAD_DETAILS_ITEMS = [
   { id: "environment", label: msg("Environment and worktree"), defaultVisible: true },
-  { id: "openIn", label: msg("Open in editor"), defaultVisible: true },
-  { id: "scripts", label: msg("Project scripts"), defaultVisible: true },
-  { id: "assistants", label: msg("Web assistants"), defaultVisible: true },
+  { id: "openIn", label: msg("Open in editor"), defaultVisible: false },
+  { id: "scripts", label: msg("Project scripts"), defaultVisible: false },
+  { id: "assistants", label: msg("Web assistants"), defaultVisible: false },
   { id: "branch", label: msg("Branch and pull request"), defaultVisible: true },
   { id: "gitActions", label: msg("Git actions"), defaultVisible: false },
   { id: "changes", label: msg("Changes"), defaultVisible: true },
   { id: "status", label: msg("Agent status"), defaultVisible: true },
   { id: "context", label: msg("Context window"), defaultVisible: true },
-  { id: "usage", label: msg("Usage limits"), defaultVisible: true },
+  { id: "usage", label: msg("Usage limits"), defaultVisible: false },
   { id: "tasks", label: msg("Tasks"), defaultVisible: true },
   { id: "lineage", label: msg("Lineage"), defaultVisible: true },
-  { id: "sideChats", label: msg("Side chats"), defaultVisible: true },
-  { id: "outline", label: msg("Your prompts"), defaultVisible: true },
-  { id: "machineLoad", label: msg("Machine load"), defaultVisible: true },
-  { id: "servers", label: msg("Servers"), defaultVisible: true },
-  { id: "automations", label: msg("Automations"), defaultVisible: true },
+  { id: "sideChats", label: msg("Side chats"), defaultVisible: false },
+  { id: "outline", label: msg("Your prompts"), defaultVisible: false },
+  { id: "machineLoad", label: msg("Machine load"), defaultVisible: false },
+  { id: "servers", label: msg("Servers"), defaultVisible: false },
+  { id: "automations", label: msg("Automations"), defaultVisible: false },
   { id: "agentActions", label: msg("Ask the agent"), defaultVisible: false },
 ] as const;
 
@@ -77,3 +78,46 @@ export function isDefaultThreadDetailsVisibility(visibility: ThreadDetailsVisibi
 export const RESET_THREAD_DETAILS_ITEMS = {
   threadDetailsItems: {},
 } satisfies Partial<ClientSettings>;
+
+export const THREAD_DETAILS_PRESETS = [
+  {
+    id: "essentials",
+    label: msg("Essentials"),
+    items: THREAD_DETAILS_ITEMS.filter((item) => item.defaultVisible).map((item) => item.id),
+  },
+  {
+    id: "review",
+    label: msg("Review"),
+    items: ["branch", "changes", "gitActions"] satisfies ThreadDetailsItemId[],
+  },
+  { id: "debug", label: msg("Debug"), items: THREAD_DETAILS_ITEMS.map((item) => item.id) },
+] as const satisfies ReadonlyArray<{
+  id: string;
+  label: unknown;
+  items: ReadonlyArray<ThreadDetailsItemId>;
+}>;
+
+export type ThreadDetailsPreset = (typeof THREAD_DETAILS_PRESETS)[number];
+
+/** The stored choices that make the card show exactly the preset's items. */
+export function threadDetailsItemsForPreset(
+  preset: ThreadDetailsPreset,
+): ClientSettings["threadDetailsItems"] {
+  const shown = new Set<ThreadDetailsItemId>(preset.items);
+  return Object.fromEntries(
+    THREAD_DETAILS_ITEMS.flatMap((item) =>
+      shown.has(item.id) === item.defaultVisible ? [] : [[item.id, shown.has(item.id)]],
+    ),
+  );
+}
+
+export function matchingThreadDetailsPreset(
+  visibility: ThreadDetailsVisibility,
+): ThreadDetailsPreset | null {
+  return (
+    THREAD_DETAILS_PRESETS.find((preset) => {
+      const shown = new Set<ThreadDetailsItemId>(preset.items);
+      return THREAD_DETAILS_ITEMS.every((item) => visibility[item.id] === shown.has(item.id));
+    }) ?? null
+  );
+}

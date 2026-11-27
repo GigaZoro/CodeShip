@@ -310,6 +310,7 @@ import {
 } from "./chat/PanelLayoutControls";
 import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
+import { ThreadVitalsStrip } from "./chat/ThreadVitalsStrip";
 import { publishAgentActionsTarget } from "./chat/agentActions";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { DraftRecentThreads } from "./chat/DraftRecentThreads";
@@ -1995,7 +1996,7 @@ export default function ChatView(props: ChatViewProps) {
       : null;
   const canvasPreview = useThreadPreviewCanvasSource(activeThreadRef, shownPreviewMiniPlayer);
   const threadPanelInlineOpen = useRightPanelStore((state) =>
-    selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, activeThreadRef, "inline"),
+    selectThreadPanelOpen(state, activeThreadRef, "inline", draftId !== null),
   );
   // Selects only the mode, so canvas resizes rerender the chat view only when the
   // card switches presentation.
@@ -2011,11 +2012,7 @@ export default function ChatView(props: ChatViewProps) {
       }).detailsCardMode,
   );
   const threadPanelOpen = useRightPanelStore((state) =>
-    selectThreadPanelOpen(
-      state.threadPanelVisibilityByThreadKey,
-      activeThreadRef,
-      threadPanelPresentation,
-    ),
+    selectThreadPanelOpen(state, activeThreadRef, threadPanelPresentation, draftId !== null),
   );
   const supportsThreadPullRequests = serverConfig !== null;
   const visiblePullRequests = visibleThreadPullRequests(
@@ -2430,6 +2427,7 @@ export default function ChatView(props: ChatViewProps) {
     deviceStateLoaded,
     pullRequestPanelTarget,
     threadPanelPresentation,
+    isDraft: draftId !== null,
     isServerThread,
     embedded,
     isGitRepo,
@@ -3595,6 +3593,18 @@ export default function ChatView(props: ChatViewProps) {
                 ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
                 : {})}
               {...(threadFindEnabled ? { onFindInThread: openThreadFindStable } : {})}
+              trailing={
+                threadPanelPresentation === "inline" && threadPanelInlineOpen ? null : (
+                  <ThreadVitalsStrip
+                    environmentId={activeThread.environmentId}
+                    gitCwd={gitCwd}
+                    isGitRepo={isGitRepo}
+                    pullRequests={visiblePullRequests}
+                    contextUsedPercentage={activeContextWindow?.usedPercentage ?? null}
+                    handle={threadPanelPopoverHandle}
+                  />
+                )
+              }
             />
           </header>
         )}
@@ -3612,6 +3622,7 @@ export default function ChatView(props: ChatViewProps) {
             preview={canvasPreview}
             detailsCardTopInset={isThreadFindActive ? THREAD_FIND_BAR_RESERVED_HEIGHT : 0}
             hostsNeedsYou={!embedded}
+            detailsCardInlineOpen={threadPanelInlineOpen}
             composerOverlayElement={isDraftHeroState ? null : composerOverlayElement}
             data-chat-workspace-drop-target="true"
             onDragEnter={workspaceFileDropHandlers.onDragEnter}

@@ -787,6 +787,12 @@ account in **Settings → Browser & devices → Browser profiles** and sign in t
 Claude there. Then pair each assistant with its profile under **Web assistants**
 on the same page. Duet opens at claude.ai, where Anthropic hosts it.
 
+The Details column is closed until you open it with **Details** in the chat header; that choice
+holds for every thread. While it is closed, the header shows the thread in one line: the machine,
+the branch, how much changed and the pull request, plus failing checks and the context window once
+it passes 60%. Select that line to open the details over the chat; Esc closes them. A new thread
+keeps its column open to choose where it runs.
+
 The thread details card shows what is going on rather than a set of buttons. At the top, once a
 thread has started, a summary names the machine, the branch and its pull request, and how much
 changed; select it to show the workspace and Git controls, and again to fold them. They are folded
@@ -794,13 +800,13 @@ whenever you open a thread. **Agent status** shows whether the agent is working,
 (its own request or a subagent's approval), waiting on another thread or a background task,
 stopped, reverted or idle, how long the run has taken, the model
 it uses, and what it is doing now, with the full command it runs. Below it
-sit the context window, usage limits, the agent's to-do list for the turn it is on, lineage and side
-chats, **Your prompts**, and **Machine load**: CPU, memory and disk of the machine the chat runs
-on. **Your prompts** lists the messages you sent, as far back as the conversation has loaded; the
+sit the context window, the agent's to-do list for the turn it is on, and lineage. Usage limits,
+side chats, **Your prompts**, **Machine load** (CPU, memory and disk of the machine the chat runs
+on), servers, automations, editor and script buttons are there to turn on. **Your prompts** lists the messages you sent, as far back as the conversation has loaded; the
 one on screen is marked, and selecting one scrolls back to it. A new thread shows only the controls
 for choosing where it runs: the environment and the branch.
 
-**Git actions** and **Ask the agent** are off by default. **Ask the agent** sends a common request
+**Ask the agent** sends a common request
 as your message: commit and open a pull request, run the tests, or review the changes. Add your own
 requests, and set their order, in **Settings → Chat & diffs → Ask the agent**; the command palette
 lists them all as **Ask the agent** items for the open thread. While the agent is working, the
@@ -808,9 +814,9 @@ request waits until it finishes. If you are writing a message, the request is ad
 for you to send.
 
 To choose what the thread details card shows, right-click the card or open
-**Settings → Chat & diffs → Thread details**. Hidden rows keep their keyboard
-shortcuts, such as Open in editor and project scripts. **Reset to default** brings
-back the standard rows.
+**Settings → Chat & diffs → Thread details**. **Essentials** is the standard set, **Review** keeps
+the branch, changes and Git actions, and **Debug** shows everything. Hidden rows keep their keyboard
+shortcuts, such as Open in editor and project scripts.
 
 ## Side chats
 

@@ -9,7 +9,8 @@ import {
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
-import { Popover, PopoverPopup, PopoverCreateHandle } from "../ui/popover";
+import { Button } from "../ui/button";
+import { Popover, PopoverClose, PopoverPopup, PopoverCreateHandle } from "../ui/popover";
 import { selectThreadPanelOpen, useRightPanelStore } from "../../rightPanelStore";
 import { useChatCanvas } from "./ChatCanvasContext";
 import {
@@ -22,6 +23,7 @@ import { t } from "~/i18n";
 
 export function ThreadDetailsCard({
   threadRef,
+  isDraft,
   anchor,
   handle,
   contentKey,
@@ -29,6 +31,7 @@ export function ThreadDetailsCard({
   children,
 }: {
   threadRef: ScopedThreadRef;
+  isDraft: boolean;
   anchor: RefObject<Element | null>;
   handle: ReturnType<typeof PopoverCreateHandle>;
   /** Changes when the set of rendered items changes, so cached heights are measured again. */
@@ -40,14 +43,15 @@ export function ThreadDetailsCard({
   const canvas = useChatCanvas();
   const preferredPlacement = canvas?.preferredDetailsCard ?? null;
   const placement = canvas?.detailsCardPlacement ?? null;
-  const mode = placement ? "inline" : "popover";
   const topInset = canvas?.detailsCardTopInset ?? 0;
   const inlineOpen = useRightPanelStore((state) =>
-    selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "inline"),
+    selectThreadPanelOpen(state, threadRef, "inline", isDraft),
   );
   const popoverOpen = useRightPanelStore((state) =>
-    selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "popover"),
+    selectThreadPanelOpen(state, threadRef, "popover", isDraft),
   );
+  // With its column closed, the card floats over the chat as it does where no column fits.
+  const mode = placement && inlineOpen ? "inline" : "popover";
   const measurementKey = `${threadRef.environmentId}:${threadRef.threadId}:${preferredPlacement?.width ?? "popup"}:${contentKey}`;
   const [measurements, setMeasurements] = useState({
     key: measurementKey,
@@ -60,13 +64,13 @@ export function ThreadDetailsCard({
   const measureDetailsCard = canvas?.measureDetailsCard;
   const cardWidth = preferredPlacement?.width;
   // The mode derives from canvas measurements, the preview frame and the
-  // inline flag, which live in three stores, so no single write site sees the
+  // column choice, which live in three stores, so no single write site sees the
   // card leave popover mode. A flag left set would reopen the popover unasked
   // when the card returns to popover mode.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- closes the popover flag in the right panel store when the derived mode turns inline
   useLayoutEffect(() => {
     if (mode === "inline" && popoverOpen)
-      useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", false);
+      useRightPanelStore.getState().setThreadPanelPopoverOpen(threadRef, false);
   }, [mode, popoverOpen, threadRef]);
   const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null);
   const { environmentId, threadId } = threadRef;
@@ -133,6 +137,7 @@ export function ThreadDetailsCard({
   return (
     <Popover
       handle={handle}
+      modal="trap-focus"
       open={mode === "popover" && popoverOpen}
       onOpenChange={(open, details) => {
         const target =
@@ -145,10 +150,10 @@ export function ThreadDetailsCard({
           details.cancel();
           return;
         }
-        useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", open);
+        useRightPanelStore.getState().setThreadPanelPopoverOpen(threadRef, open);
       }}
     >
-      {placement && inlineOpen ? (
+      {mode === "inline" && placement ? (
         <aside
           {...detailsArea}
           data-workspace-focus-key={`details:${threadRef.environmentId}:${threadRef.threadId}`}
@@ -191,8 +196,15 @@ export function ThreadDetailsCard({
         padding="none"
       >
         {mode === "popover" ? (
-          <div data-density={density} data-thread-details-panel="popover">
+          <div className="relative" data-density={density} data-thread-details-panel="popover">
             {card}
+            {/* Focus stays inside while it floats, so keyboard and touch screen reader users need a
+                way out. It shows on the card's own surface only while focused. */}
+            <span className="pointer-events-none absolute end-2 bottom-2 rounded-md bg-popover opacity-0 shadow-md focus-within:pointer-events-auto focus-within:opacity-100">
+              <PopoverClose render={<Button variant="outline" size="sm" />}>
+                {t("Close thread details")}
+              </PopoverClose>
+            </span>
           </div>
         ) : null}
       </PopoverPopup>

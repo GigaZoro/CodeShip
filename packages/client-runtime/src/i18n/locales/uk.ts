@@ -1622,6 +1622,7 @@ const catalog: MessageCatalog = {
   "{path}:{start}–{end} is not in the loaded diff.":
     "{path}:{start}–{end} немає в завантажених змінах.",
   "{percent} from cache": "{percent} з кешу",
+  "{percent}% context": "{percent}% контексту",
   "{percent}% done": "Виконано {percent}%",
   "{percent}% left": "Залишилось {percent}%",
   "{percent}% left · {elapsed}% of the window left":
@@ -3712,6 +3713,7 @@ const catalog: MessageCatalog = {
   "Close this {term} without merging its changes?": "Закрити цей {term} без злиття змін?",
   "Close this page and start the sign-in again from your agent.":
     "Закрийте цю сторінку й почніть вхід знову зі свого агента.",
+  "Close thread details": "Закрити подробиці чату",
   "Close thread preview": "Закрити попередній перегляд чату",
   "Close to the right": "Закрити праворуч",
   "Close tools": "Закрити інструменти",
@@ -5741,6 +5743,7 @@ const catalog: MessageCatalog = {
   "Error report": "Звіт про помилку",
   "Error text": "Текст помилки",
   "error-message": "error-message",
+  Essentials: "Основне",
   "Estimated API-equivalent cost of the turns scheduled task runs started.":
     "Орієнтовна вартість за цінами API для ходів, які почали запуски запланованих завдань.",
   "Even pace": "Рівномірний темп",
@@ -9199,6 +9202,7 @@ const catalog: MessageCatalog = {
   "Preparing...": "Підготовка...",
   "Presentation template": "Шаблон презентації",
   "Preset…": "Набір…",
+  Presets: "Набори",
   "Press {modifier} + Enter for single-line prompts or {modifier} + Shift + Enter for multiline prompts to {alternate} instead for one message.":
     "Натисніть {modifier} + Enter для однорядкових запитів або {modifier} + Shift + Enter для багаторядкових, щоб для одного повідомлення {alternate}.",
   "Press {modifier} + Enter to {alternate} instead for one message.":
@@ -13539,6 +13543,7 @@ const catalog: MessageCatalog = {
   "Thread deleted, but navigation failed": "Чат видалено, але перехід не вдався",
   "thread details": "відомості про чат",
   "Thread details": "Подробиці чату",
+  "Thread details:": "Подробиці чату:",
   "Thread details: {enabled} of {total} on": "Відомості про чат: увімкнено {enabled} із {total}",
   "Thread exported": "Чат експортовано",
   "Thread failed": "Помилка в чаті",

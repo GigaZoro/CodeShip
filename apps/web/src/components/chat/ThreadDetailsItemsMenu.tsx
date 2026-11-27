@@ -3,13 +3,22 @@ import {
   updateClientSettings,
   useClientSettings,
 } from "../../hooks/useSettings";
-import { MenuCheckboxItem, MenuGroup, MenuGroupLabel, MenuItem, MenuSeparator } from "../ui/menu";
 import {
-  isDefaultThreadDetailsVisibility,
+  MenuCheckboxItem,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuRadioItemIndicator,
+  MenuSeparator,
+} from "../ui/menu";
+import {
+  matchingThreadDetailsPreset,
   resolveThreadDetailsVisibility,
-  RESET_THREAD_DETAILS_ITEMS,
   setThreadDetailsItem,
   THREAD_DETAILS_ITEMS,
+  THREAD_DETAILS_PRESETS,
+  threadDetailsItemsForPreset,
 } from "./threadDetailsItems";
 import { t } from "~/i18n";
 
@@ -18,6 +27,27 @@ export function ThreadDetailsItemsMenuItems() {
   const visibility = useClientSettings(resolveThreadDetailsVisibility);
   return (
     <>
+      <MenuGroup>
+        <MenuGroupLabel>{t("Presets")}</MenuGroupLabel>
+        <MenuRadioGroup
+          value={matchingThreadDetailsPreset(visibility)?.id ?? null}
+          onValueChange={(id) => {
+            const preset = THREAD_DETAILS_PRESETS.find((candidate) => candidate.id === id);
+            if (preset)
+              updateClientSettings({ threadDetailsItems: threadDetailsItemsForPreset(preset) });
+          }}
+        >
+          {THREAD_DETAILS_PRESETS.map((preset) => (
+            <MenuRadioItem key={preset.id} value={preset.id}>
+              <span className="flex items-center justify-between gap-3">
+                {t(preset.label)}
+                <MenuRadioItemIndicator />
+              </span>
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuGroup>
+      <MenuSeparator />
       <MenuGroup>
         <MenuGroupLabel>{t("Show in thread details")}</MenuGroupLabel>
         {THREAD_DETAILS_ITEMS.map((item) => (
@@ -34,13 +64,6 @@ export function ThreadDetailsItemsMenuItems() {
           </MenuCheckboxItem>
         ))}
       </MenuGroup>
-      <MenuSeparator />
-      <MenuItem
-        disabled={isDefaultThreadDetailsVisibility(visibility)}
-        onClick={() => updateClientSettings(RESET_THREAD_DETAILS_ITEMS)}
-      >
-        {t("Reset to default")}
-      </MenuItem>
     </>
   );
 }

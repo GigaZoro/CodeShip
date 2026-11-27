@@ -13,6 +13,7 @@ import {
   rightPanelHostRef,
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
+  selectThreadPanelOpen,
   selectThreadPanelVisibility,
   selectThreadRightPanelState,
   useRightPanelStore,
@@ -29,6 +30,7 @@ beforeEach(() => {
   useRightPanelStore.setState({
     byThreadKey: {},
     threadPanelVisibilityByThreadKey: {},
+    threadPanelInlineOpen: false,
     userActionRevisionByThreadKey: {},
     closeRevisionByThreadKey: {},
     pendingThreadReveal: null,
@@ -730,6 +732,7 @@ describe("rightPanelStore", () => {
         },
       },
       threadPanelVisibilityByThreadKey: {},
+      threadPanelInlineOpen: false,
     });
   });
 
@@ -780,6 +783,7 @@ describe("rightPanelStore", () => {
         },
       },
       threadPanelVisibilityByThreadKey: {},
+      threadPanelInlineOpen: false,
     });
   });
 
@@ -824,6 +828,7 @@ describe("rightPanelStore", () => {
         },
       },
       threadPanelVisibilityByThreadKey: {},
+      threadPanelInlineOpen: false,
     });
   });
 
@@ -856,6 +861,7 @@ describe("rightPanelStore", () => {
     ).toEqual({
       byThreadKey: { "env-1:thread-A": panelState },
       threadPanelVisibilityByThreadKey: {},
+      threadPanelInlineOpen: false,
     });
   });
 
@@ -896,6 +902,7 @@ describe("rightPanelStore", () => {
         },
       },
       threadPanelVisibilityByThreadKey: {},
+      threadPanelInlineOpen: false,
     });
   });
 
@@ -906,17 +913,34 @@ describe("rightPanelStore", () => {
           "env-1:thread-A": { inlineOpen: false, popoverOpen: true },
           "env-1:thread-B": { inlineOpen: true, popoverOpen: true },
         },
+        threadPanelInlineOpen: true,
       }),
     ).toEqual({
       byThreadKey: {},
       threadPanelVisibilityByThreadKey: {
         "env-1:thread-A": { inlineOpen: false, popoverOpen: false },
       },
+      threadPanelInlineOpen: true,
     });
   });
 
+  it("closes the details column for sent threads and keeps a draft's open", () => {
+    const state = () => useRightPanelStore.getState();
+    // Saved before the one choice existed: every thread used to open its column.
+    expect(migratePersistedRightPanelState({ byThreadKey: {} }).threadPanelInlineOpen).toBe(false);
+    expect(selectThreadPanelOpen(state(), refA, "inline", false)).toBe(false);
+    expect(selectThreadPanelOpen(state(), refB, "inline", true)).toBe(true);
+
+    state().toggleThreadPanel(refA, "inline", false);
+    // One choice opens the column on every sent thread, and a draft's stays its own.
+    expect(selectThreadPanelOpen(state(), refB, "inline", false)).toBe(true);
+    state().toggleThreadPanel(refB, "inline", true);
+    expect(selectThreadPanelOpen(state(), refB, "inline", true)).toBe(false);
+    expect(selectThreadPanelOpen(state(), refA, "inline", false)).toBe(true);
+  });
+
   it("closes the popover atomically when the real right panel opens", () => {
-    useRightPanelStore.getState().setThreadPanelOpen(refA, "popover", true);
+    useRightPanelStore.getState().setThreadPanelPopoverOpen(refA, true);
     useRightPanelStore.getState().open(refA, "diff");
 
     expect(
@@ -927,19 +951,14 @@ describe("rightPanelStore", () => {
     ).toEqual({ inlineOpen: true, popoverOpen: false });
   });
 
-  it("keeps an open popover visible by promoting it to inline when the real panel closes", () => {
+  it("keeps open details floating over the chat when the real panel closes", () => {
     const store = useRightPanelStore.getState();
     store.open(refA, "diff");
-    store.setThreadPanelOpen(refA, "inline", false);
-    store.setThreadPanelOpen(refA, "popover", true);
+    store.setThreadPanelPopoverOpen(refA, true);
     store.close(refA);
 
-    expect(
-      selectThreadPanelVisibility(
-        useRightPanelStore.getState().threadPanelVisibilityByThreadKey,
-        refA,
-      ),
-    ).toEqual({ inlineOpen: true, popoverOpen: true });
+    expect(selectThreadPanelOpen(useRightPanelStore.getState(), refA, "popover", false)).toBe(true);
+    expect(selectThreadPanelOpen(useRightPanelStore.getState(), refA, "inline", false)).toBe(false);
   });
 
   it("opens workspace-root links as the singleton files explorer", () => {

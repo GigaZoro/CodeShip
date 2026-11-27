@@ -1,3 +1,9 @@
+## 2026-11-27 — Thread details start closed, with the essentials in the header
+
+- The Details column now starts closed on web and desktop, and opening or closing it with **Details** holds for every thread. A new thread keeps its column open to choose its machine and branch. Needs you keeps its place at the foot of the column either way.
+- While the column is closed, the chat header shows the thread in one line, such as "Mac · feat/auth · +142 −18 · PR #88". Failing checks and context use above 60% join it, with an icon above 80%. Select it to open the details over the chat; focus stays inside and Esc closes them.
+- The details card shows seven essential rows by default. Right-click it, or use **Settings → Chat & diffs → Thread details**, to pick the **Essentials**, **Review** or **Debug** preset. Rows you turned on or off yourself keep your choice.
+
 ## 2026-11-27 — Faster landing-turn tests and release-notes-only changes
 
 - Maintainers: the landing-turn tests now run as six files in parallel, so their `node --test` step takes about a minute instead of five, within the check budget's free slots. A new lint rule keeps each `.github/scripts` test file under 1,500 lines.
