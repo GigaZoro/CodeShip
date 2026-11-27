@@ -25,7 +25,7 @@ const ATTACH_TIMEOUT_MS = 10_000;
  * Held output waits on a taker that registers its turns; past this the taker is not coming, and
  * the process is ended rather than buffered without bound.
  */
-export const MAX_HELD_OUTPUT_BYTES = 64 * 1024 * 1024;
+const MAX_HELD_OUTPUT_BYTES = 64 * 1024 * 1024;
 const MAX_SERVER_LINE_BYTES = 64 * 1024 * 1024;
 
 export interface DetachedAttachedInfo {
