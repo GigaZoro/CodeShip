@@ -1519,6 +1519,12 @@ export const OrchestrationV2RuntimeRequest = Schema.Struct({
 });
 export type OrchestrationV2RuntimeRequest = typeof OrchestrationV2RuntimeRequest.Type;
 
+/** An answered or ended request stays so when its question is asked again. */
+export const orchestrationV2RuntimeRequestUpdateApplies = (
+  current: Pick<OrchestrationV2RuntimeRequest, "status"> | undefined,
+  next: Pick<OrchestrationV2RuntimeRequest, "status">,
+): boolean => current === undefined || current.status === "pending" || next.status !== "pending";
+
 const SubagentNotificationSource = Schema.Struct({
   kind: Schema.Literal("subagent"),
   childThreadId: Schema.optional(ThreadId),

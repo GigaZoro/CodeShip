@@ -10,6 +10,8 @@ import {
   isAppOwnedTaskWork,
   isOrchestrationV2WorkActive,
   orchestrationV2RunAwaitsMemory,
+  ProviderSessionId,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -18,6 +20,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -29,6 +32,10 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SessionHostService from "../sessionHost/SessionHostService.ts";
+import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
+import type { SessionDetachPreparation } from "./ProviderSessionManager.ts";
 import {
   answerableAfterRestart,
   continuesAfterRestart,
@@ -74,6 +81,7 @@ export interface ProviderRuntimeRecoverySummary {
   readonly closedRequests: number;
   readonly retiredEffects: number;
   readonly requeuedEffects: number;
+  readonly reattachedSessionHosts?: number;
 }
 
 export interface ProviderRuntimeReconciliationSummary {
@@ -82,6 +90,7 @@ export interface ProviderRuntimeReconciliationSummary {
   readonly closedRequests: number;
   readonly retiredEffects: number;
   readonly requeuedEffects: number;
+  readonly reattachedSessionHosts?: number;
 }
 
 export class ProviderRuntimeRecoveryService extends Context.Service<
@@ -91,6 +100,15 @@ export class ProviderRuntimeRecoveryService extends Context.Service<
       trigger: "startup" | "shutdown",
     ) => Effect.Effect<ProviderRuntimeReconciliationSummary, ProviderRuntimeRecoveryError>;
     readonly prepareForShutdown: Effect.Effect<void, ProviderRuntimeRecoveryError>;
+    /**
+     * Detaches every provider process a planned update can keep, once what is queued for its
+     * threads was delivered to it; stops the rest. Runs before the effect worker stops.
+     */
+    readonly detachForUpdate: (
+      prepareSession: (
+        providerSessionId: string,
+      ) => Effect.Effect<SessionDetachPreparation | undefined>,
+    ) => Effect.Effect<ReadonlyArray<SessionHostService.DetachedHostSummary>>;
     readonly recover: Effect.Effect<ProviderRuntimeRecoverySummary, ProviderRuntimeRecoveryError>;
     /** Work chats wait on that a restart would stop now, as its restart note would list it. */
     readonly restartHold: Effect.Effect<OrchestrationV2RestartHold, ProviderRuntimeRecoveryError>;
@@ -114,6 +132,59 @@ function nonterminalRuns(projection: ProjectionStore.ProjectionRuntimeRecoverySt
       !orchestrationV2RunAwaitsMemory(run)
     );
   });
+}
+
+type KeptProcessThread =
+  | { readonly kind: "idle" }
+  | { readonly kind: "takeover"; readonly runId: RunId }
+  | { readonly kind: "blocked"; readonly reason: string };
+
+/**
+ * How a planned update treats one thread of a provider process it would keep. A process is kept
+ * only when every thread on it is idle on it or has one run the next server takes over: running,
+ * on this session, with a native turn. A run on another session is not on this process: restart
+ * recovery continues it there.
+ */
+function classifyKeptProcessThread(
+  projection: ProjectionStore.ProjectionRuntimeRecoveryState,
+  providerSessionId: string,
+): KeptProcessThread {
+  const runs = nonterminalRuns(projection).filter((candidate) => {
+    const runsOn = projection.providerThreads.find(
+      (providerThread) => providerThread.id === candidate.providerThreadId,
+    );
+    return runsOn === undefined || runsOn.providerSessionId === providerSessionId;
+  });
+  const run = runs[0];
+  if (run === undefined) return { kind: "idle" };
+  if (runs.length > 1 || run.status !== "running") {
+    return { kind: "blocked", reason: `Run ${run.id} is ${run.status}.` };
+  }
+  const providerThread = projection.providerThreads.find(
+    (candidate) => candidate.id === run.providerThreadId,
+  );
+  if (providerThread === undefined) {
+    return { kind: "blocked", reason: `Run ${run.id} has no provider thread.` };
+  }
+  const providerTurn = projection.providerTurns.find(
+    (turn) =>
+      turn.runAttemptId === run.activeAttemptId &&
+      turn.providerThreadId === providerThread.id &&
+      turn.status === "running" &&
+      turn.nativeTurnRef != null,
+  );
+  return providerTurn === undefined
+    ? { kind: "blocked", reason: `Run ${run.id} has no running provider turn.` }
+    : { kind: "takeover", runId: run.id };
+}
+
+function servesSession(
+  projection: ProjectionStore.ProjectionRuntimeRecoveryState,
+  providerSessionId: string,
+): boolean {
+  return projection.providerThreads.some(
+    (providerThread) => providerThread.providerSessionId === providerSessionId,
+  );
 }
 
 function isBackgroundCapableTurnItemType(type: string): boolean {
@@ -394,6 +465,148 @@ export const make = Effect.gen(function* () {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+  const turnStartOption = yield* Effect.serviceOption(
+    ProviderTurnStartService.ProviderTurnStartServiceV2,
+  );
+  const mcpRegistryOption = yield* Effect.serviceOption(McpSessionRegistry.McpSessionRegistry);
+  /**
+   * Hands a host reattached after a planned update to every run its process is still working on.
+   * `preserved` are the threads whose runs were taken over. Any failure ends the process the way a
+   * server shutdown ends a session, so every run on it recovers as after any restart.
+   */
+  const adoptReattachedHost = Effect.fn("ProviderRuntimeRecovery.adoptReattachedHost")(function* (
+    sessionHost: SessionHostService.SessionHostServiceShape,
+    record: SessionHostService.SessionHostRecord,
+    recoveryThreadIds: ReadonlyArray<ThreadId>,
+  ): Effect.fn.Return<{
+    readonly preserved: ReadonlyArray<ThreadId>;
+    readonly liveProviderSessionId?: string;
+  }> {
+    const providerSessionId = ProviderSessionId.make(record.providerSessionId);
+    const threadIds = record.threadIds;
+    const giveUp = (reason: string, cause?: unknown) =>
+      Effect.logError("Could not take over a provider process kept running through the update", {
+        sessionHostId: record.id,
+        threadIds,
+        providerSessionId: record.providerSessionId,
+        reason,
+        ...(cause === undefined ? {} : { cause }),
+      }).pipe(
+        Effect.andThen(
+          Option.isSome(turnStartOption)
+            ? turnStartOption.value.abandonAdoption(providerSessionId)
+            : Effect.void,
+        ),
+        Effect.andThen(sessionHost.terminate(record.id)),
+        Effect.as({ preserved: [] }),
+      );
+    if (Option.isNone(turnStartOption)) {
+      return yield* giveUp("This server cannot start provider turns.");
+    }
+    const turnStart = turnStartOption.value;
+    const runs: Array<{ readonly threadId: ThreadId; readonly runId: RunId }> = [];
+    for (const threadId of new Set([...threadIds, ...recoveryThreadIds])) {
+      const projection = yield* projections
+        .getRuntimeRecoveryProjection(threadId)
+        .pipe(Effect.result);
+      if (projection._tag === "Failure") {
+        return yield* giveUp(`Thread ${threadId} could not be read.`, projection.failure);
+      }
+      if (!servesSession(projection.success, record.providerSessionId)) continue;
+      const thread = classifyKeptProcessThread(projection.success, record.providerSessionId);
+      if (thread.kind === "blocked") {
+        return yield* giveUp(`Thread ${threadId} cannot be taken over: ${thread.reason}`);
+      }
+      if (thread.kind === "takeover") runs.push({ threadId, runId: thread.runId });
+    }
+    if (runs.length === 0) {
+      return yield* giveUp("No thread has a running run on this provider session.");
+    }
+    for (const run of runs) {
+      const adopted = yield* threadDispatch
+        .withLock(run.threadId, turnStart.adopt(run))
+        .pipe(Effect.result);
+      if (adopted._tag === "Failure") {
+        return yield* giveUp(`Run ${run.runId} could not be taken over.`, adopted.failure);
+      }
+    }
+    if (!(yield* turnStart.releaseAdoptedOutput(providerSessionId))) {
+      return yield* giveUp("The taken-over session could not receive its output.");
+    }
+    yield* Effect.logInfo("Took over a provider process kept running through the update", {
+      sessionHostId: record.id,
+      threadIds: runs.map((run) => run.threadId),
+      runIds: runs.map((run) => run.runId),
+    });
+    return {
+      preserved: runs.map((run) => run.threadId),
+      liveProviderSessionId: record.providerSessionId,
+    };
+  });
+
+  /** The threads whose runs the next server takes over from the process; none when it stops it. */
+  const takenOverThreads = Effect.fn("ProviderRuntimeRecovery.takenOverThreads")(function* (
+    providerSessionId: string,
+    threadIds: ReadonlyArray<ThreadId>,
+  ) {
+    const undelivered = yield* outbox.listUnsettled({
+      threadIds,
+      effectTypes: EffectOutbox.DELIVERED_BEFORE_DETACH_EFFECT_TYPES,
+    });
+    if (undelivered.length > 0) return [];
+    const takenOver: Array<ThreadId> = [];
+    for (const threadId of threadIds) {
+      const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
+      const thread = classifyKeptProcessThread(projection, providerSessionId);
+      if (thread.kind === "blocked") {
+        yield* Effect.logInfo("A provider process is not kept through the update", {
+          providerSessionId,
+          threadId,
+          reason: thread.reason,
+        });
+        return [];
+      }
+      if (thread.kind === "takeover") takenOver.push(threadId);
+    }
+    return takenOver;
+  });
+
+  const detachForUpdate = Effect.fn("ProviderRuntimeRecoveryService.detachForUpdate")(function* (
+    prepareSession: (
+      providerSessionId: string,
+    ) => Effect.Effect<SessionDetachPreparation | undefined>,
+  ) {
+    if (Option.isNone(sessionHostOption)) return [];
+    // A kept process must get every answer, interrupt and steer queued for it; nothing else starts.
+    yield* outbox.restrictClaimsTo(EffectOutbox.DELIVERED_BEFORE_DETACH_EFFECT_TYPES);
+    return yield* sessionHostOption.value.detachAllForUpdate({
+      prepare: (providerSessionId) =>
+        prepareSession(providerSessionId).pipe(
+          Effect.map((session) =>
+            session === undefined
+              ? undefined
+              : {
+                  deliver: outbox
+                    .listUnsettled({
+                      threadIds: session.threadIds,
+                      effectTypes: EffectOutbox.DELIVERED_BEFORE_DETACH_EFFECT_TYPES,
+                    })
+                    .pipe(
+                      Effect.flatMap((effectIds) =>
+                        Effect.forEach(effectIds, outbox.awaitSettled, { discard: true }),
+                      ),
+                      Effect.orDie,
+                    ),
+                  drain: session.drain.pipe(Effect.orDie),
+                  takenOverThreads: takenOverThreads(providerSessionId, session.threadIds).pipe(
+                    Effect.orDie,
+                  ),
+                },
+          ),
+        ),
+    });
+  });
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -449,8 +662,16 @@ export const make = Effect.gen(function* () {
       continueAfterRestart: boolean,
       lastCommittedAt: DateTime.Utc | null,
       stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
+      keptSessionIds: ReadonlySet<string> = new Set(),
     ) {
       const now = yield* DateTime.now;
+      // A process kept through the update stays live for the threads it serves.
+      const stoppableSessions = projection.providerSessions.filter(
+        (candidate) =>
+          candidate.status !== "stopped" &&
+          candidate.status !== "error" &&
+          !keptSessionIds.has(candidate.id),
+      );
       // Cut work stopped with the server, not when this pass noticed; scheduled recovery reads it.
       const stoppedAt = lastCommittedAt === null ? now : DateTime.min(lastCommittedAt, now);
       const runs = yield* cutRuns(projection);
@@ -835,9 +1056,7 @@ export const make = Effect.gen(function* () {
           },
         });
       }
-      for (const session of projection.providerSessions.filter(
-        (candidate) => candidate.status !== "stopped" && candidate.status !== "error",
-      )) {
+      for (const session of stoppableSessions) {
         events.push({
           id: yield* allocateEventId(),
           type: "provider-session.updated",
@@ -898,9 +1117,7 @@ export const make = Effect.gen(function* () {
             }),
           ]
         : [];
-      const stoppedSessions = projection.providerSessions.filter(
-        (candidate) => candidate.status !== "stopped" && candidate.status !== "error",
-      ).length;
+      const stoppedSessions = stoppableSessions.length;
       let retiredEffects: number;
       if (events.length === 0) {
         const retiredEffectIds = yield* outbox
@@ -978,12 +1195,75 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
+    const reconcileOutbox = outbox.reconcileAfterProcessLoss.pipe(
+      Effect.mapError(
+        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+      ),
+    );
+    // Startup sweeps what the old process left before a taken-over process replays its output,
+    // since what that output queues is this server's. Shutdown sweeps after the per-thread passes,
+    // which signal the running effects they cancel.
+    const startupOutboxReconciliation = trigger === "startup" ? yield* reconcileOutbox : undefined;
+    const preservedThreadIds = new Set<ThreadId>();
+    const keptSessionIds = new Set<string>();
+    let reattachedSessionHosts = 0;
+    if (Option.isSome(sessionHostOption)) {
+      const sessionHost = sessionHostOption.value;
+      if (trigger === "startup") {
+        const reattached = yield* sessionHost.reattachAllDetachedForUpdate();
+        for (const entry of reattached) {
+          if (entry.status === "reattached") {
+            reattachedSessionHosts += 1;
+            yield* Effect.logInfo("Reattached detached provider session host after restart", {
+              sessionHostId: entry.record.id,
+              threadId: entry.record.threadId,
+              providerSessionId: entry.record.providerSessionId,
+              driver: entry.record.driver,
+              replayedFromSeq: entry.record.lastAckedSeq,
+              latestSeq: entry.attachedInfo.latestSeq,
+              droppedFrames: entry.attachedInfo.droppedFrames,
+            });
+          } else {
+            yield* Effect.logWarning(
+              "Detached provider session host did not survive restart; falling back to recovery",
+              {
+                sessionHostId: entry.record.id,
+                threadId: entry.record.threadId,
+                providerSessionId: entry.record.providerSessionId,
+                reason: entry.reason,
+              },
+            );
+          }
+        }
+        for (const entry of reattached) {
+          if (entry.status !== "reattached") continue;
+          const outcome = yield* adoptReattachedHost(sessionHost, entry.record, threadIds);
+          for (const threadId of outcome.preserved) preservedThreadIds.add(threadId);
+          if (outcome.liveProviderSessionId !== undefined) {
+            keptSessionIds.add(outcome.liveProviderSessionId);
+          }
+        }
+      } else {
+        for (const threadId of threadIds) {
+          if (yield* sessionHost.isThreadDetachedForUpdate(threadId)) {
+            preservedThreadIds.add(threadId);
+          }
+        }
+      }
+    }
+    // Credentials restored from before the restart stay only for processes taken over above.
+    if (trigger === "startup" && Option.isSome(mcpRegistryOption)) {
+      yield* mcpRegistryOption.value.pruneRestored(preservedThreadIds);
+    }
     let terminalizedRuns = 0;
     let stoppedSessions = 0;
     let closedRequests = 0;
     let retiredEffects = 0;
     const stoppedThisPass = new Map<string, RecoverySession>();
     for (const threadId of threadIds) {
+      if (preservedThreadIds.has(threadId)) {
+        continue;
+      }
       // Shutdown does not drain admitted commands, so read and commit under the lock they plan under.
       const { projection, result } = yield* threadDispatch.withLock(
         threadId,
@@ -998,6 +1278,13 @@ export const make = Effect.gen(function* () {
                 }),
             ),
           );
+          if (trigger === "shutdown" && Option.isSome(sessionHostOption)) {
+            for (const session of projection.providerSessions) {
+              if (yield* sessionHostOption.value.isProviderSessionDetachedForUpdate(session.id)) {
+                keptSessionIds.add(session.id);
+              }
+            }
+          }
           const enabled = continuesAfterRestart(
             resumeRequested,
             continueAfterRestart,
@@ -1009,12 +1296,17 @@ export const make = Effect.gen(function* () {
             enabled,
             lastCommittedAt,
             stoppedThisPass,
+            keptSessionIds,
           );
           return { projection, result };
         }),
       );
       for (const session of projection.providerSessions) {
-        if (session.status !== "stopped" && session.status !== "error") {
+        if (
+          session.status !== "stopped" &&
+          session.status !== "error" &&
+          !keptSessionIds.has(session.id)
+        ) {
           stoppedThisPass.set(session.id, session);
         }
       }
@@ -1023,17 +1315,14 @@ export const make = Effect.gen(function* () {
       closedRequests += result.closedRequests;
       retiredEffects += result.retiredEffects;
     }
-    const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
-      Effect.mapError(
-        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
-      ),
-    );
+    const outboxReconciliation = startupOutboxReconciliation ?? (yield* reconcileOutbox);
     return {
       terminalizedRuns,
       stoppedSessions,
       closedRequests,
       retiredEffects: retiredEffects + outboxReconciliation.cancelled,
       requeuedEffects: outboxReconciliation.requeued,
+      ...(reattachedSessionHosts > 0 ? { reattachedSessionHosts } : {}),
     } satisfies ProviderRuntimeReconciliationSummary;
   });
 
@@ -1043,6 +1332,12 @@ export const make = Effect.gen(function* () {
     if (!enabled && !resumeRequested) return;
     const threadIds = yield* projections.getRecoveryThreadIds("runtime");
     for (const threadId of threadIds) {
+      if (
+        Option.isSome(sessionHostOption) &&
+        (yield* sessionHostOption.value.isThreadDetachedForUpdate(threadId))
+      ) {
+        continue;
+      }
       yield* Effect.gen(function* () {
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (!continuesAfterRestart(resumeRequested, enabled, projection.thread.projectId)) return;
@@ -1196,6 +1491,7 @@ export const make = Effect.gen(function* () {
   return ProviderRuntimeRecoveryService.of({
     reconcile,
     prepareForShutdown,
+    detachForUpdate,
     recover,
     restartHold,
     watchRestartHold,

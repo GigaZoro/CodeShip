@@ -171,7 +171,8 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
   | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | CommandOutputRecorder.CommandOutputRecorder
-  | ProviderSessionManager.ProviderSessionManagerV2,
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService,
   Error | MigrationError | PlatformError.PlatformError | SqlError
 > {
   const layerRegistry = harness.makeProviderAdapterRegistryLayer(
@@ -213,6 +214,7 @@ export function layerWithRegistry<Error>(
   | EventSink.EventSinkV2
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
+  | ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService
   | CommandOutputRecorder.CommandOutputRecorder,
   Error | MigrationError | PlatformError.PlatformError | SqlError
 > {
@@ -472,8 +474,22 @@ export function layerWithRegistry<Error>(
   const layerEffectWorkerProvided = EffectWorker.layer.pipe(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
+  // As in production, recovery hands a process that survived an update to the turn start
+  // service, and the same session manager then serves the rest of the runtime.
+  const layerRecoveryProvided = ProviderRuntimeRecoveryService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerStores,
+        layerEventSinkProvided,
+        IdAllocator.layer,
+        layerServerSettings,
+        layerProviderTurnStartServiceProvided,
+      ),
+    ),
+  );
   const layerReplayRuntime = Layer.mergeAll(
     layerOrchestratorProvided,
+    layerRecoveryProvided,
     layerProviderSessionManagerProvided,
     layerEffectWorkerProvided,
     layerEventSinkProvided,
@@ -488,7 +504,7 @@ export function layerWithRegistry<Error>(
   // Build recovery before runtime so it commits before the effect worker claims work.
   const layerStartupRecovery: Layer.Layer<
     never,
-    MigrationError | PlatformError.PlatformError | SqlError
+    Error | MigrationError | PlatformError.PlatformError | SqlError
   > =
     options.recoverOnStartup === true
       ? Layer.effectDiscard(
@@ -496,15 +512,9 @@ export function layerWithRegistry<Error>(
             (recovery) => recovery.recover,
           ).pipe(Effect.orDie),
         ).pipe(
-          Layer.provide(ProviderRuntimeRecoveryService.layer),
-          Layer.provide(
-            Layer.mergeAll(
-              layerStores,
-              layerEventSinkProvided,
-              IdAllocator.layer,
-              layerServerSettings,
-            ),
-          ),
+          Layer.provide(layerRecoveryProvided),
+          Layer.provide(ProviderTurnStartServiceTestkit.layer),
+          Layer.provide(NodeServices.layer),
         )
       : Layer.empty;
   const layerOrchestrator = Layer.effect(

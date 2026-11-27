@@ -46,6 +46,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
+import { UpdateShutdownState } from "./cloud/updateHandoff.ts";
 
 it.effect.each([
   "disabled-codex",
@@ -69,6 +70,7 @@ it.effect.each([
       };
       const imports = { importedThreadCount: 0, importedMessageCount: 0 };
       const dependencies = Layer.mergeAll(
+        Layer.succeed(UpdateShutdownState, { isPlannedUpdateShutdown: Effect.succeed(false) }),
         NodeCrypto.layer,
         Path.layer,
         Layer.mock(ServerConfig.ServerConfig)({
@@ -254,6 +256,7 @@ it.effect("interrupts the effect worker when awareness relay startup fails", () 
           Effect.andThen(Effect.die("awareness relay startup failed")),
         ),
         workerFiberRef,
+        workerScope: yield* ServerRuntimeStartup.addShutdownFinalizerBeforeWorkerStops(Effect.void),
       }).pipe(Effect.exit);
 
       assert.isTrue(Exit.isFailure(exit));
@@ -261,6 +264,71 @@ it.effect("interrupts the effect worker when awareness relay startup fails", () 
       assert.isNull(yield* Ref.get(workerFiberRef));
     }),
   ),
+);
+
+/** Runs startup inside a scope whose shutdown finalizer detaches, and records what the detach saw. */
+const runShutdownAfterStartup = (
+  startRelay: (relayStarted: Deferred.Deferred<void>) => Effect.Effect<void>,
+) =>
+  Effect.gen(function* () {
+    const steps: Array<string> = [];
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const workerFiberRef = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
+        const workerScope = yield* ServerRuntimeStartup.addShutdownFinalizerBeforeWorkerStops(
+          ServerRuntimeStartup.detachForUpdateThenStopWorker({
+            detachForUpdate: Ref.get(workerFiberRef).pipe(
+              Effect.map((worker) => {
+                steps.push(
+                  worker !== null && worker.pollUnsafe() === undefined
+                    ? "detached, worker running"
+                    : "detached, worker stopped",
+                );
+                return [];
+              }),
+            ),
+            workerFiberRef,
+          }),
+        );
+        // Startup forks the worker after the shutdown finalizer is registered, as the server does.
+        const workerStarted = yield* Deferred.make<void>();
+        const relayStarted = yield* Deferred.make<void>();
+        yield* Effect.forkScoped(
+          ServerRuntimeStartup.startEffectWorkerWithRelay({
+            runWorker: Deferred.succeed(workerStarted, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.ensuring(Effect.sync(() => steps.push("worker stopped"))),
+            ),
+            startRelay: startRelay(relayStarted),
+            workerFiberRef,
+            workerScope,
+          }),
+        );
+        yield* Deferred.await(workerStarted);
+        yield* Deferred.await(relayStarted);
+      }),
+    );
+    return steps;
+  });
+
+it.effect("keeps the effect worker running until shutdown has detached kept processes", () =>
+  Effect.gen(function* () {
+    const steps = yield* runShutdownAfterStartup((relayStarted) =>
+      Deferred.succeed(relayStarted, undefined).pipe(Effect.asVoid),
+    );
+
+    assert.deepEqual(steps, ["detached, worker running", "worker stopped"]);
+  }),
+);
+
+it.effect("leaves the effect worker to the detach when shutdown interrupts relay startup", () =>
+  Effect.gen(function* () {
+    const steps = yield* runShutdownAfterStartup((relayStarted) =>
+      Deferred.succeed(relayStarted, undefined).pipe(Effect.andThen(Effect.never)),
+    );
+
+    assert.deepEqual(steps, ["detached, worker running", "worker stopped"]);
+  }),
 );
 
 it.effect("queues commands until startup signals readiness", () =>

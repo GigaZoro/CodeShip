@@ -1,3 +1,12 @@
+## 2026-11-27 — Codex turns keep running through planned server updates
+
+- A running Codex turn keeps going in its app-server process during a planned update. The new server takes that process over and finishes the same run, with no continuation prompt and no lost context. An approval Codex asked while no server was attached can be answered.
+- Every thread whose turn shares that app server is taken over too. Output is neither repeated nor lost: the old server stores everything it read, including an unfinished paragraph, before it lets the process go, and the new server replays exactly the rest.
+- An answer given just before the update reaches Codex before the old server lets the process go, and is never asked again. An approval still waiting keeps its id, so it can be answered after the update.
+- If the process cannot be taken over (an answer could not be delivered or its output stored in time, a thread on it was not running a turn, it exited, its output was cut, or adoption failed), the old process is stopped and every thread on it continues as after any restart. Claude and ACP agents still restart and continue; they do not survive an update.
+- Each Codex session costs one extra background process, its session host.
+- MCP credentials survive only for threads whose process was taken over and stop working if the MCP endpoint moved.
+
 ## 2026-11-27 — Pin thread system instructions across server updates
 
 - Resumed Claude and Antigravity chats keep the system instructions stored when their native session started, so a release that only rewords those instructions no longer invalidates their provider prompt cache. A chat rebuilds its instructions when its MCP or device-tool availability changes, or when a release bumps the instruction epoch. Codex chats are unchanged: Codex adds T3's context after the conversation so far, and only when it changes, so its cache already survives an update.

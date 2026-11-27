@@ -22,6 +22,8 @@ export const layer = Layer.succeed(
     // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
     resolve: () => Effect.succeed(undefined),
     touch: () => Effect.void,
+    restoredCredentialForThread: () => Effect.succeed({ _tag: "None" }),
+    pruneRestored: () => Effect.void,
     revokeProviderSession: () => Effect.void,
     revokeThread: () => Effect.void,
     revokeAll: Effect.void,

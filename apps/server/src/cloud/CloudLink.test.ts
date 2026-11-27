@@ -16,6 +16,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AgentAwarenessRelay from "../relay/AgentAwarenessRelay.ts";
 import * as CliTokenManager from "./CliTokenManager.ts";
 import * as CloudLink from "./CloudLink.ts";
+import { layerUpdateShutdownState } from "./updateHandoff.ts";
 import * as ConnectReachability from "./ConnectReachability.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import {
@@ -117,7 +118,12 @@ const withService = <A, E>(
       const link = yield* CloudLink.CloudLink;
       return yield* body({ preferences: { update: link.updatePreferences }, stored, relayCalls });
     }).pipe(
-      Effect.provide(CloudLink.layer.pipe(Layer.provide(layerDependencies))),
+      Effect.provide(
+        CloudLink.layer.pipe(
+          Layer.provide(layerUpdateShutdownState),
+          Layer.provide(layerDependencies),
+        ),
+      ),
       Effect.provideService(FetchHttpClient.Fetch, fetch),
     );
   });
@@ -298,6 +304,13 @@ it.effect("unlinks on startup and refuses to link when the policy turns Connect 
       const mintError = yield* link.mintCredential({} as never).pipe(Effect.flip);
       assert.equal(applyError.message, "Example Corp's policy does not allow T3 Connect.");
       assert.equal(mintError._tag, "ManagedPolicyRefusedError");
-    }).pipe(Effect.provide(CloudLink.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        CloudLink.layer.pipe(
+          Layer.provide(layerUpdateShutdownState),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
   }),
 );

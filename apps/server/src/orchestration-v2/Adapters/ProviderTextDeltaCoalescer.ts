@@ -24,6 +24,14 @@ export interface ProviderTextDeltaCoalescer {
     readonly emitEmpty?: boolean;
   }) => Effect.Effect<string>;
   readonly flushTurn: (turnId: string) => Effect.Effect<void>;
+  /** Emits every buffered update now, leaving the items open. */
+  readonly flush: Effect.Effect<void>;
+  /** Starts an item from text already emitted, so later deltas extend it instead of replacing it. */
+  readonly seed: (input: {
+    readonly turnId: string;
+    readonly itemId: string;
+    readonly text: string;
+  }) => Effect.Effect<void>;
 }
 
 interface BufferedProviderText {
@@ -151,6 +159,15 @@ export const makeProviderTextDeltaCoalescer = Effect.fn("makeProviderTextDeltaCo
           completed: true,
           onlyDirty: false,
         }),
+      flush: drain({ predicate: () => true, completed: false, onlyDirty: true }),
+      seed: ({ turnId, itemId, text }) =>
+        flushLock.withPermit(
+          Ref.update(buffered, (current) => {
+            const key = providerTextBufferKey(turnId, itemId);
+            if (current.has(key)) return current;
+            return new Map(current).set(key, { turnId, itemId, text, dirty: false });
+          }),
+        ),
     };
   },
 );

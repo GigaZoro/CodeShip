@@ -34,6 +34,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import { UpdateShutdownState } from "./cloud/updateHandoff.ts";
 
 it.effect("parks automatic pull until activation without delaying command readiness", () =>
   Effect.scoped(
@@ -72,6 +73,7 @@ it.effect("parks automatic pull until activation without delaying command readin
       const dependencies: Layer.Layer<
         Layer.Services<ReturnType<typeof ServerRuntimeStartup.layerWithOptions>>
       > = Layer.mergeAll(
+        Layer.succeed(UpdateShutdownState, { isPlannedUpdateShutdown: Effect.succeed(false) }),
         Layer.mock(ServerConfig.ServerConfig)({
           ...(yield* ServerConfig.deriveServerPaths(cwd, undefined).pipe(
             Effect.provide(Path.layer),
