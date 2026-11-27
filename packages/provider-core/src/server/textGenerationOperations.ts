@@ -23,7 +23,11 @@ import {
 
 export type Operation = Exclude<keyof ProviderTextGeneration, "supportsInvestigation">;
 
-/** Observers must be synchronous and nonthrowing. SDK acceptance can arrive after interruption. */
+/**
+ * Call once per send the provider accepts: the server keeps one usage row per call, so a runner
+ * that never calls it is accounted only when it succeeds. Observers must be synchronous and
+ * nonthrowing. SDK acceptance can arrive after interruption.
+ */
 export const OnDispatch = Context.Reference<() => void>(
   "t3/provider-core/textGeneration/OnDispatch",
   {

@@ -33,6 +33,8 @@ import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
 import { makeProcessProbe, processProbeSource } from "../testUtils/processProbe.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as TextGenerationUsageRepository from "../persistence/TextGenerationUsage.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
@@ -1014,6 +1016,7 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
           Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
             resolveLink: () => Effect.die("unused"),
           }),
+          TextGenerationUsageRepository.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
         ),
       ),
     );

@@ -1,3 +1,7 @@
+## 2026-11-27 — One-shot text generation keeps one usage row per accepted call
+
+- Titles, branch names, commit messages, PR text, review guides and manual-step reviews now leave one usage record per provider call the provider accepted, kept in the local database with its driver, account, operation, demand, outcome and the provider error. A request that fails before it is sent leaves no record, an accepted Cursor request that returns an invalid reply leaves one with unknown token counts, and measured counts (including zero) are kept as reported.
+
 ## 2026-11-27 — Released worktrees reopen after a rebased or archived landing
 
 - A chat whose worktree was released after its branch landed by rebase or squash, or whose unlanded work was kept under an archive ref, reopens on the project's current base again instead of failing every turn with "could not fast-forward the released branch". If no saved ref holds the branch's work any more, the worktree reopens at that work instead of moving the branch.

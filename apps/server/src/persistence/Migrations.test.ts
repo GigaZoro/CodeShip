@@ -79,13 +79,16 @@ describe("runMigrations", () => {
         yield* sql`SELECT reported_at, delivered_at FROM command_runs WHERE task_id = 'old-delivered'`,
         [{ reported_at: "2026-11-19T00:01:00Z", delivered_at: "2026-11-19T00:01:00Z" }],
       );
-      assert.deepEqual((yield* history).slice(-5), [
-        [118, "CommandLaunchError"],
-        [119, "CommandResultReported"],
-        [120, "CommandWindowsIdentity"],
-        [121, "CommandExitStatusError"],
-        [122, "CommandStopLeftovers"],
-      ]);
+      assert.deepEqual(
+        (yield* history).filter(([migrationId]) => migrationId >= 118 && migrationId <= 122),
+        [
+          [118, "CommandLaunchError"],
+          [119, "CommandResultReported"],
+          [120, "CommandWindowsIdentity"],
+          [121, "CommandExitStatusError"],
+          [122, "CommandStopLeftovers"],
+        ],
+      );
       assert.deepEqual(yield* runMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
