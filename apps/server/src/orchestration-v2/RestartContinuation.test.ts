@@ -20,6 +20,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as UpdateDrain from "../cloud/updateDrain.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
   CONTINUE_PROMPT,
@@ -1590,6 +1591,27 @@ it.each(["preparing", "starting", "running"] as const)(
         restartRetryRun(blocked as unknown as OrchestrationV2ThreadProjection, now),
       );
   },
+);
+
+it.effect(
+  "dispatches automatic prepared-run.retry without blocking an EffectWorker fiber during an active UpdateDrain",
+  () =>
+    Effect.gen(function* () {
+      const { commands } = yield* UpdateDrain.whileDraining(
+        resumeCommands(
+          cutBeforePrompt({ workspacePreparation: { type: "worktree", baseRef: "main" } }),
+        ),
+      ).pipe(Effect.provide(UpdateDrain.layer));
+      assert.deepEqual(commands, [
+        {
+          type: "prepared-run.retry",
+          automatic: true,
+          commandId: CommandId.make(`command:restart-retry:${runId}:1`),
+          threadId,
+          runId,
+        },
+      ]);
+    }),
 );
 
 it.effect(

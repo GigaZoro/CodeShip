@@ -511,6 +511,93 @@ it.layer(NodeServices.layer)("server self update", (it) => {
   );
 
   it.effect(
+    "commitDesktopUpdate holds UpdateDrain even when onHandoffAccepted is omitted and commit blocks",
+    () =>
+      Effect.gen(function* () {
+        const handoffAccepted = yield* Deferred.make<void>();
+        const { selfUpdate, drainRef } = yield* makeHarness({
+          mode: "desktop",
+          desktopAppUpdate: {
+            available: true,
+            run: () => Effect.die("unexpected desktop run"),
+            notAppliedVersion: Effect.undefined,
+            cancel: () => Effect.void,
+            commit: (_requestId, onHandoffAccepted) =>
+              Effect.gen(function* () {
+                if (onHandoffAccepted !== undefined) {
+                  yield* onHandoffAccepted();
+                }
+                yield* Deferred.succeed(handoffAccepted, undefined);
+                // Matches DesktopAppUpdate.commit: waits until Electron exits the server or reports failure.
+                return yield* Effect.never;
+              }),
+          },
+        });
+        const clientDrainScope = yield* Scope.make();
+        yield* UpdateDrain.drainUntilClosed.pipe(
+          Scope.provide(clientDrainScope),
+          Effect.provideService(UpdateDrain.UpdateDrain, drainRef),
+        );
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+
+        // Mirrors ws.ts server.commitDesktopUpdate RPC (onHandoffAccepted === undefined).
+        const commitFiber = yield* selfUpdate.commitDesktopUpdate("req-1").pipe(Effect.forkChild);
+        yield* Deferred.await(handoffAccepted);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(2);
+
+        // Closing the client drain stream and disconnecting the RPC fiber must keep UpdateDrain held.
+        yield* Scope.close(clientDrainScope, Exit.void);
+        yield* Fiber.interrupt(commitFiber);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+        expect(yield* UpdateDrain.isDrainingRef(drainRef)).toBe(true);
+
+        // Bounded release if Electron never exits the server.
+        yield* TestClock.adjust(ServerSelfUpdate.SELF_UPDATE_HANDOFF_DRAIN_LIMIT);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(0);
+        expect(yield* UpdateDrain.isDrainingRef(drainRef)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "commitDesktopUpdate releases the post-handoff drain hold immediately when desktop install fails",
+    () =>
+      Effect.gen(function* () {
+        const handoffAccepted = yield* Deferred.make<void>();
+        const failInstall = yield* Deferred.make<void>();
+        const { selfUpdate, drainRef } = yield* makeHarness({
+          mode: "desktop",
+          desktopAppUpdate: {
+            available: true,
+            run: () => Effect.die("unexpected desktop run"),
+            notAppliedVersion: Effect.undefined,
+            cancel: () => Effect.void,
+            commit: (_requestId, onHandoffAccepted) =>
+              Effect.gen(function* () {
+                if (onHandoffAccepted !== undefined) {
+                  yield* onHandoffAccepted();
+                }
+                yield* Deferred.succeed(handoffAccepted, undefined);
+                yield* Deferred.await(failInstall);
+                return yield* new ServerSelfUpdateError({ reason: "install failed" });
+              }),
+          },
+        });
+
+        const commitFiber = yield* selfUpdate
+          .commitDesktopUpdate("req-fail")
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(handoffAccepted);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+
+        yield* Deferred.succeed(failInstall, undefined);
+        const error = yield* Fiber.join(commitFiber);
+        expect(error.reason).toBe("install failed");
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(0);
+        expect(yield* UpdateDrain.isDrainingRef(drainRef)).toBe(false);
+      }),
+  );
+
+  it.effect(
     "prepare rejects while an update is already inFlight even when targetVersion is cached",
     () =>
       Effect.gen(function* () {
