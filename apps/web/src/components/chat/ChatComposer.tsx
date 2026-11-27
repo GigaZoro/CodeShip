@@ -66,7 +66,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -379,6 +379,11 @@ export interface ChatComposerProps {
   isPreparingWorktree: boolean;
   isCompacting: boolean;
   bannerItems: readonly ThreadNotice[];
+  /**
+   * Renders the notice slot apart from the composer, in this element, for layouts where a notice
+   * must not move it. Null while that element mounts; omitted, the slot sits on the composer.
+   */
+  detachedNoticeTarget?: HTMLElement | null | undefined;
   resumeCompactionTokens: number | null;
   keepFullHistory: boolean;
   onToggleKeepFullHistory: () => void;
@@ -2421,6 +2426,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       )
     : bannerItems;
   const noticeSlot = useThreadNoticeSlot(shelfItems);
+  const focusComposerAtEnd = () => composerEditorRef.current?.focusAtEnd();
+  const noticeSlotView = (
+    <ThreadNoticeSlot
+      slot={noticeSlot}
+      detached={props.detachedNoticeTarget !== undefined}
+      onFocusLost={focusComposerAtEnd}
+    />
+  );
 
   const insertComposerText = (
     text: string,
@@ -3235,7 +3248,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     >
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
-          <ThreadNoticeSlot slot={noticeSlot} />
+          {props.detachedNoticeTarget === undefined ? noticeSlotView : null}
           {showComposerTopDrawer ? (
             <ComposerBanner.Attachment>
               <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
@@ -3274,6 +3287,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         />
       </ComposerBanner.Dock>
       <ThreadNoticeStatus slot={noticeSlot} />
+      {props.detachedNoticeTarget ? createPortal(noticeSlotView, props.detachedNoticeTarget) : null}
       <div className="relative">
         <ComposerSurface.Main
           ref={composerMainSurfaceRef}

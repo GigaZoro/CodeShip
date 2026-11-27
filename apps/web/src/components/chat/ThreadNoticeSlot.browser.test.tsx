@@ -1,4 +1,5 @@
 import { InfoIcon } from "lucide-react";
+import { useState } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -24,10 +25,14 @@ function Thread({ notices }: { readonly notices: ReadonlyArray<ThreadNotice> }) 
   return (
     <div style={{ width: "40rem" }}>
       <ComposerBanner.Column>
-        <ThreadNoticeSlot slot={slot} detached />
+        <ThreadNoticeSlot
+          slot={slot}
+          detached
+          onFocusLost={() => document.getElementById("composer")?.focus()}
+        />
       </ComposerBanner.Column>
       <ThreadNoticeStatus slot={slot} />
-      <div data-testid="composer">Composer</div>
+      <textarea id="composer" data-testid="composer" aria-label="Composer" />
     </div>
   );
 }
@@ -54,7 +59,7 @@ it("shows six notices as one line with a counter that names the most urgent hidd
   const banners = screen.container.querySelectorAll("[data-slot=composer-banner]");
   expect([...banners].map((banner) => banner.textContent)).toEqual(["VPS is offline+5·Needs you"]);
   const more = screen.getByRole("button", {
-    name: "Show 5 more notices, most urgent: Needs you",
+    name: "+5 more notices, most urgent: Needs you",
   });
   await expect.element(more).toHaveTextContent("+5·Needs you");
   await expect.element(screen.getByRole("status")).toHaveTextContent("VPS is offline");
@@ -85,7 +90,7 @@ it("keeps the composer in place and the announcement unchanged as notices come a
 
   await screen.rerender(<Thread notices={sixNotices(() => {}).slice(3)} />);
 
-  await expect.element(screen.getByRole("button", { name: /Show 2 more notices/ })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: /\+2 more notices/ })).toBeVisible();
   expect(composerTop()).toBe(before);
   await expect.element(screen.getByRole("status")).toHaveTextContent("VPS is offline");
 });
@@ -106,7 +111,7 @@ it("gives the slot to the newest of two equally urgent notices", async () => {
 
   await expect.element(screen.getByRole("status")).toHaveTextContent("Could not clone repo");
   await expect
-    .element(screen.getByRole("button", { name: "Show 1 more notice, most urgent: Failed" }))
+    .element(screen.getByRole("button", { name: "+1 more notice, most urgent: Failed" }))
     .toBeVisible();
 });
 
@@ -118,4 +123,108 @@ it("drops colour from a notice that neither blocks, needs you nor failed", async
   expect(
     screen.container.querySelector("[data-composer-banner-surface]")?.getAttribute("data-variant"),
   ).toBe("default");
+});
+
+it("keeps the list of the rest open when a more urgent notice takes the slot", async () => {
+  const feedback = notice("feedback", "error", "Feedback was not sent");
+  const usage = notice("usageLimits", "info", "Usage limits");
+  await using screen = await render(<Thread notices={[feedback, usage]} />);
+  await userEvent.click(screen.getByRole("button", { name: /\+1 more notice/ }));
+  const list = page.getByRole("dialog", { name: "Other notices" });
+  await expect.element(list).toBeVisible();
+
+  await screen.rerender(
+    <Thread
+      notices={[feedback, usage, notice("environmentUnavailable", "error", "VPS is offline")]}
+    />,
+  );
+
+  await expect.element(screen.getByRole("status")).toHaveTextContent("VPS is offline");
+  await expect.element(list).toBeVisible();
+  await expect.element(list).toHaveTextContent("Feedback was not sentUsage limits");
+});
+
+it("moves focus back to the slot when the last hidden notice is dismissed from the list", async () => {
+  function Dismissable() {
+    const [hidden, setHidden] = useState(false);
+    return (
+      <Thread
+        notices={[
+          notice("feedback", "error", "Feedback was not sent", {
+            dismissLabel: "Dismiss feedback",
+            onDismiss: () => {},
+          }),
+          ...(hidden
+            ? []
+            : [
+                notice("usageLimits", "info", "Usage limits", {
+                  dismissLabel: "Dismiss usage limits",
+                  onDismiss: () => setHidden(true),
+                }),
+              ]),
+        ]}
+      />
+    );
+  }
+  await using screen = await render(<Dismissable />);
+  await userEvent.click(screen.getByRole("button", { name: /\+1 more notice/ }));
+
+  await userEvent.click(page.getByRole("button", { name: "Dismiss usage limits" }));
+
+  await expect.element(screen.getByRole("button", { name: "Dismiss feedback" })).toHaveFocus();
+});
+
+it("moves focus to the composer when the list empties and the slot has no control", async () => {
+  function Dismissable() {
+    const [hidden, setHidden] = useState(false);
+    return (
+      <Thread
+        notices={[
+          notice("feedback", "error", "Feedback was not sent"),
+          ...(hidden
+            ? []
+            : [
+                notice("usageLimits", "info", "Usage limits", {
+                  dismissLabel: "Dismiss usage limits",
+                  onDismiss: () => setHidden(true),
+                }),
+              ]),
+        ]}
+      />
+    );
+  }
+  await using screen = await render(<Dismissable />);
+  await userEvent.click(screen.getByRole("button", { name: /\+1 more notice/ }));
+
+  await userEvent.click(page.getByRole("button", { name: "Dismiss usage limits" }));
+
+  await expect.element(screen.getByRole("textbox", { name: "Composer" })).toHaveFocus();
+});
+
+it("keeps focus in the list when one of several hidden notices is dismissed", async () => {
+  function Dismissable() {
+    const [hidden, setHidden] = useState(false);
+    return (
+      <Thread
+        notices={[
+          notice("feedback", "error", "Feedback was not sent"),
+          notice("queuedMessages", "info", "1 message waits"),
+          ...(hidden
+            ? []
+            : [
+                notice("usageLimits", "info", "Usage limits", {
+                  dismissLabel: "Dismiss usage limits",
+                  onDismiss: () => setHidden(true),
+                }),
+              ]),
+        ]}
+      />
+    );
+  }
+  await using screen = await render(<Dismissable />);
+  await userEvent.click(screen.getByRole("button", { name: /\+2 more notices/ }));
+
+  await userEvent.click(page.getByRole("button", { name: "Dismiss usage limits" }));
+
+  await expect.element(page.getByRole("dialog", { name: "Other notices" })).toHaveFocus();
 });

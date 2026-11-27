@@ -76,7 +76,10 @@ export function nextThreadNoticeAppearance(
   previous: ThreadNoticeAppearance,
   ids: ReadonlyArray<string>,
 ): ThreadNoticeAppearance {
-  const unchanged = ids.length === previous.order.size && ids.every((id) => previous.order.has(id));
+  // A repeated id counts once, as in the record, or the record would never settle.
+  const unique = new Set(ids);
+  const unchanged =
+    unique.size === previous.order.size && [...unique].every((id) => previous.order.has(id));
   if (unchanged) return previous;
   let next = previous.next;
   const order = new Map<string, number>();

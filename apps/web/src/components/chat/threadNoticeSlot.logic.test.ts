@@ -124,6 +124,7 @@ describe("nextThreadNoticeAppearance", () => {
   it("keeps the same record while the notices stay the same, and forgets the ones that left", () => {
     const first = nextThreadNoticeAppearance(EMPTY_THREAD_NOTICE_APPEARANCE, ["a", "b"]);
     expect(nextThreadNoticeAppearance(first, ["b", "a"])).toBe(first);
+    expect(nextThreadNoticeAppearance(first, ["a", "b", "a"])).toBe(first);
 
     const second = nextThreadNoticeAppearance(first, ["b"]);
     expect([...second.order]).toEqual([["b", 1]]);
@@ -137,17 +138,20 @@ const webSource = NodePath.resolve(
   "../..",
 );
 
-it("renders thread notices only through the slot", () => {
-  const stackUsers = NodeFS.readdirSync(webSource, { recursive: true })
+const sourcesMatching = (pattern: RegExp) =>
+  NodeFS.readdirSync(webSource, { recursive: true })
     .map(String)
-    .filter((file) => /\.tsx$/.test(file) && !/\.(test|browser\.test)\.tsx$/.test(file))
-    .filter((file) =>
-      /<ComposerBannerStack[\s/>]/.test(
-        NodeFS.readFileSync(NodePath.join(webSource, file), "utf8"),
-      ),
-    )
+    .filter((file) => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file))
+    .filter((file) => pattern.test(NodeFS.readFileSync(NodePath.join(webSource, file), "utf8")))
     .map((file) => file.split(NodePath.sep).join("/"));
 
+it("renders thread notices only through one slot", () => {
   // A notice rendered beside the slot would stack again; give it a producer in the resolver.
-  expect(stackUsers).toEqual(["components/chat/ThreadNoticeSlot.tsx"]);
+  expect(sourcesMatching(/<ComposerBannerStack[\s/>]/)).toEqual([
+    "components/chat/ThreadNoticeSlot.tsx",
+  ]);
+  // A second slot would show a second top notice; pass its notices to the composer's.
+  expect(sourcesMatching(/(?<!function )useThreadNoticeSlot\(/)).toEqual([
+    "components/chat/ChatComposer.tsx",
+  ]);
 });

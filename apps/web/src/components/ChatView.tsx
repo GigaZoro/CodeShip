@@ -325,7 +325,6 @@ import { useThreadLinkedPullRequest } from "./pullRequest/useThreadLinkedPullReq
 import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
-import { ThreadNoticeSlot, ThreadNoticeStatus, useThreadNoticeSlot } from "./chat/ThreadNoticeSlot";
 import type { ThreadNotice } from "./chat/threadNoticeSlot.logic";
 import { modelFallbackBannerItem } from "./chat/ComposerUsageLimits";
 import { ComposerSurface } from "./chat/ComposerSurface";
@@ -733,6 +732,7 @@ export default function ChatView(props: ChatViewProps) {
   const conversationArea = workspaceAreaProps("conversation", 1, t("Conversation"));
   const composerArea = workspaceAreaProps("composer", 2, t("Message input"));
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
+  const [heroNoticeElement, setHeroNoticeElement] = useState<HTMLDivElement | null>(null);
   const [composerTimelineInset, setComposerTimelineInset] = useState(0);
   const composerTimelineInsetRef = useRef(0);
   const [composerReservedHeight, setComposerReservedHeight] = useState(0);
@@ -2718,9 +2718,6 @@ export default function ChatView(props: ChatViewProps) {
       }),
     ];
   })();
-  const heroNoticeSlot = useThreadNoticeSlot(
-    isDraftHeroState ? composerBannerItems : EMPTY_COMPOSER_BANNER_ITEMS,
-  );
 
   if (
     terminalUiLaunchContext !== null &&
@@ -3887,9 +3884,12 @@ export default function ChatView(props: ChatViewProps) {
                               }
                               isPreparingWorktree={isPreparingWorktree && !sendQueuesBehindSetup}
                               bannerItems={
-                                isDraftHeroState || composerBannerItems.length === 0
+                                composerBannerItems.length === 0
                                   ? EMPTY_COMPOSER_BANNER_ITEMS
                                   : composerBannerItems
+                              }
+                              detachedNoticeTarget={
+                                isDraftHeroState ? heroNoticeElement : undefined
                               }
                               resumeCompactionTokens={resumeCompactionTokens}
                               keepFullHistory={keepFullHistory}
@@ -4036,15 +4036,14 @@ export default function ChatView(props: ChatViewProps) {
                           )}
                         </div>
                       </div>
-                      <ThreadNoticeStatus slot={heroNoticeSlot} />
-                      {isDraftHeroState && (composerBannerItems.length > 0 || !embedded) ? (
+                      {isDraftHeroState ? (
                         // Out of flow, like the headline, so a notice never moves the centered composer.
                         <div className="absolute inset-x-0 top-full flex flex-col gap-1">
-                          {composerBannerItems.length > 0 ? (
-                            <div className="flex flex-col gap-1 pt-4">
-                              <ThreadNoticeSlot slot={heroNoticeSlot} detached />
-                            </div>
-                          ) : null}
+                          {/* The composer renders its notice slot here. */}
+                          <div
+                            ref={setHeroNoticeElement}
+                            className="flex flex-col gap-1 pt-4 empty:hidden"
+                          />
                           {embedded ? null : (
                             <DraftRecentThreads draftTarget={composerDraftTarget} />
                           )}

@@ -1891,6 +1891,18 @@ const catalog: MessageCatalog = {
     other: "+ {count} файлу",
   },
   "+{count}": "+{count}",
+  "+{count} more notices": {
+    one: "+{count} інше сповіщення",
+    few: "+{count} інші сповіщення",
+    many: "+{count} інших сповіщень",
+    other: "+{count} іншого сповіщення",
+  },
+  "+{count} more notices, most urgent: {tier}": {
+    one: "+{count} інше сповіщення, найтерміновіше: {tier}",
+    few: "+{count} інші сповіщення, найтерміновіше: {tier}",
+    many: "+{count} інших сповіщень, найтерміновіше: {tier}",
+    other: "+{count} іншого сповіщення, найтерміновіше: {tier}",
+  },
   "+{count} runs unpriced": {
     one: "+{count} запуск без ціни",
     few: "+{count} запуски без ціни",
@@ -11071,18 +11083,6 @@ const catalog: MessageCatalog = {
     few: "Показати ще {count} зображення",
     many: "Показати ще {count} зображень",
     other: "Показати ще {count} зображення",
-  },
-  "Show {count} more notices": {
-    one: "Показати ще {count} сповіщення",
-    few: "Показати ще {count} сповіщення",
-    many: "Показати ще {count} сповіщень",
-    other: "Показати ще {count} сповіщення",
-  },
-  "Show {count} more notices, most urgent: {tier}": {
-    one: "Показати ще {count} сповіщення, найтерміновіше: {tier}",
-    few: "Показати ще {count} сповіщення, найтерміновіше: {tier}",
-    many: "Показати ще {count} сповіщень, найтерміновіше: {tier}",
-    other: "Показати ще {count} сповіщення, найтерміновіше: {tier}",
   },
   "Show {count} more settled threads": {
     one: "Показати ще {count} завершений чат",

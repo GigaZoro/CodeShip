@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 import { msg, t, tn } from "~/i18n";
 import { Button } from "../ui/button";
@@ -44,32 +44,73 @@ function withTierColour(notice: ThreadNotice): ComposerBannerStackItem {
   return { ...notice, variant: threadNoticeVariant(notice) };
 }
 
-/** One notice, never a stack, so the composer keeps its height as notices come and go. */
+const SLOT_ID = "thread-notice-slot";
+
+const FOCUSABLE = "button:not(:disabled), a[href], [tabindex]:not([tabindex='-1'])";
+
+/**
+ * One notice, never a stack, so the composer keeps its height as notices come and go. The card
+ * keeps its identity as the top notice changes, so an open list of the rest stays open.
+ */
 export function ThreadNoticeSlot({
   slot,
   detached = false,
+  onFocusLost,
 }: {
   readonly slot: ResolvedThreadNoticeSlot;
   readonly detached?: boolean;
+  /** Where focus goes when the list of the rest empties under it and the card has no control. */
+  readonly onFocusLost?: () => void;
 }) {
   const { top, rest, restTier } = slot;
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [emptiedWhileOpen, setEmptiedWhileOpen] = useState(0);
+  const cardRef = useRef<HTMLElement | null>(null);
+  if (restTier === null && moreOpen) {
+    setMoreOpen(false);
+    setEmptiedWhileOpen((count) => count + 1);
+  }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the list unmounted with focus inside it; only the DOM knows focus fell to the page
+  useLayoutEffect(() => {
+    if (emptiedWhileOpen === 0) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    const card = cardRef.current;
+    const control = card?.isConnected ? card.querySelector<HTMLElement>(FOCUSABLE) : null;
+    if (control) control.focus();
+    else onFocusLost?.();
+  }, [emptiedWhileOpen, onFocusLost]);
+
   if (top === null) return null;
   const item = withTierColour(top);
   return (
     <ComposerBannerStack
       detached={detached}
       items={[
-        restTier === null
-          ? item
-          : {
-              ...item,
-              actions: (
-                <>
-                  {item.actions}
-                  <MoreNotices rest={rest} restTier={restTier} />
-                </>
-              ),
-            },
+        {
+          ...item,
+          id: SLOT_ID,
+          // Keyed by notice, so one notice's controls never carry another's state.
+          children:
+            item.children === undefined ? undefined : (
+              <Fragment key={top.id}>{item.children}</Fragment>
+            ),
+          actions:
+            restTier === null && item.actions === undefined ? undefined : (
+              <>
+                <Fragment key={top.id}>{item.actions}</Fragment>
+                {restTier === null ? null : (
+                  <MoreNotices
+                    rest={rest}
+                    restTier={restTier}
+                    open={moreOpen}
+                    onOpenChange={setMoreOpen}
+                    cardRef={cardRef}
+                  />
+                )}
+              </>
+            ),
+        },
       ]}
     />
   );
@@ -78,26 +119,46 @@ export function ThreadNoticeSlot({
 function MoreNotices({
   rest,
   restTier,
+  open,
+  onOpenChange,
+  cardRef,
 }: {
   readonly rest: ReadonlyArray<ThreadNotice>;
   readonly restTier: ThreadNoticeTier;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly cardRef: RefObject<HTMLElement | null>;
 }) {
   const tierLabel = TIER_LABELS[restTier];
+  const popupRef = useRef<HTMLDivElement>(null);
+  const restIds = rest.map((notice) => notice.id).join("\n");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a notice in the open list went away with focus on its control; only the DOM knows focus fell to the page
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (open && (active === null || active === document.body)) popupRef.current?.focus();
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- a change in the list is what can take focus with it.
+  }, [open, restIds]);
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger
         render={
           <Button
+            ref={(button: HTMLButtonElement | null) => {
+              // Kept after the counter unmounts: that is when focus may need the card.
+              if (button)
+                cardRef.current = button.closest<HTMLElement>("[data-slot=composer-banner]");
+            }}
             size="xs"
             variant="ghost"
             data-testid="thread-notice-more"
+            // Starts with the visible "+N" so speech input can name it.
             aria-label={
               tierLabel === null
-                ? tn(rest.length, "Show {count} more notice", "Show {count} more notices")
+                ? tn(rest.length, "+{count} more notice", "+{count} more notices")
                 : tn(
                     rest.length,
-                    "Show {count} more notice, most urgent: {tier}",
-                    "Show {count} more notices, most urgent: {tier}",
+                    "+{count} more notice, most urgent: {tier}",
+                    "+{count} more notices, most urgent: {tier}",
                     { tier: t(tierLabel) },
                   )
             }
@@ -113,6 +174,8 @@ function MoreNotices({
         )}
       </PopoverTrigger>
       <PopoverPopup
+        ref={popupRef}
+        tabIndex={-1}
         aria-label={t("Other notices")}
         side="top"
         align="end"
