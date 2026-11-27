@@ -174,6 +174,8 @@ export interface EnvironmentThreadShell {
   readonly createdAt: string;
   /** Moves with every event, streamed output included; order thread lists by `threadLastSendAt`. */
   readonly updatedAt: string;
+  /** How long the thread may work without an event before it reads as Stalled; absent is off. */
+  readonly stalledAfterMs?: number;
   readonly archivedAt: string | null;
   readonly settledOverride: "settled" | "active" | null;
   readonly settledAt: string | null;

@@ -384,6 +384,9 @@ const BACKGROUND_MOVE_TIMEOUT_MS = 5_000;
 const CLAUDE_STDERR_TAIL_LENGTH = 2_048;
 // How long a Stop waits for the CLI to exit before the user is offered Force stop.
 const CLAUDE_STOP_CONFIRM_TIMEOUT_MS = 10_000;
+// Clients read a working thread's last event to the minute; half that keeps the shortest Stalled
+// limit (2 minutes) clear of a tool that reports progress.
+const CLAUDE_TOOL_HEARTBEAT_INTERVAL_MS = 30_000;
 // The SDK's close gives the CLI this long to exit once its input ends before it escalates.
 const CLAUDE_CLOSE_GRACE = "2 seconds";
 
@@ -5426,9 +5429,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           string,
           { readonly fiber: Fiber.Fiber<void>; readonly stop: Deferred.Deferred<void> }
         >();
-        // Waits for the tail's last read so its output lands before the call settles.
-        const stopTaskOutputTail = (toolUseId: string) =>
+        // When each running tool was last announced; Claude sends no other frame while one runs.
+        const toolHeartbeatAt = new Map<string, number>();
+        // Releases what a running tool call holds once it ends, settled or not. Waits for the
+        // tail's last read so its output lands before the call settles.
+        const releaseToolCall = (toolUseId: string) =>
           Effect.suspend(() => {
+            toolHeartbeatAt.delete(toolUseId);
             const tail = taskOutputTails.get(toolUseId);
             if (tail === undefined) return Effect.void;
             taskOutputTails.delete(toolUseId);
@@ -7755,6 +7762,42 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const toolCallsFor = (context: ActiveClaudeTurnContext, toolCall: ActiveClaudeToolCall) =>
           toolCall.runId === null ? subagentToolCalls : context.toolCalls;
 
+        // Re-announcing a running call moves its thread's last event, which Stalled and the
+        // no-progress check read, so a tool that reports progress never looks quiet.
+        const announceRunningToolCall = Effect.fnUntraced(function* (
+          context: ActiveClaudeTurnContext,
+          nativeItemId: string,
+        ) {
+          const toolCall = findToolCall(context, nativeItemId);
+          if (toolCall === undefined) return;
+          const updatedAt = yield* DateTime.now;
+          const lastAt =
+            toolHeartbeatAt.get(nativeItemId) ?? DateTime.toEpochMillis(toolCall.startedAt);
+          if (DateTime.toEpochMillis(updatedAt) - lastAt < CLAUDE_TOOL_HEARTBEAT_INTERVAL_MS) {
+            return;
+          }
+          toolHeartbeatAt.set(nativeItemId, DateTime.toEpochMillis(updatedAt));
+          yield* emitToolCallArtifacts(
+            buildToolCallArtifacts({
+              context: toolCall.runId === null ? null : context,
+              nativeItemId: toolCall.nativeItemId,
+              toolName: toolCall.toolName,
+              classification: toolCall.classification,
+              toolInput: toolCall.input,
+              threadId: toolCall.threadId,
+              runId: toolCall.runId,
+              rootNodeId: toolCall.rootNodeId,
+              parentNodeId: toolCall.parentNodeId,
+              ordinal: toolCall.ordinal,
+              output: NO_CLAUDE_NATIVE_TOOL_OUTPUT,
+              status: "running",
+              startedAt: toolCall.startedAt,
+              updatedAt,
+              presentation: toolCall.presentation,
+            }),
+          );
+        });
+
         const ensureToolCallStarted = Effect.fnUntraced(function* (input: {
           readonly context: ActiveClaudeTurnContext;
           readonly nativeItemId: string;
@@ -7910,7 +7953,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             input.message,
             input.toolResult.tool_use_id,
           );
-          yield* stopTaskOutputTail(toolCall.nativeItemId);
+          yield* releaseToolCall(toolCall.nativeItemId);
           yield* emitToolCallArtifacts(
             buildToolCallArtifacts({
               context: input.context,
@@ -8254,7 +8297,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly completedAt: DateTime.Utc;
         }) {
           for (const toolCall of input.toolCalls) {
-            yield* stopTaskOutputTail(toolCall.nativeItemId);
+            yield* releaseToolCall(toolCall.nativeItemId);
             yield* emitToolCallArtifacts(
               buildToolCallArtifacts({
                 context: input.context,
@@ -9782,6 +9825,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             return;
           }
           yield* trackClaudeGoal({ nativeThreadId: liveQuery.nativeThreadId, context, message });
+
+          if (message.type === "tool_progress") {
+            yield* announceRunningToolCall(context, message.tool_use_id);
+          }
 
           if (message.type === "stream_event" && !message.parent_tool_use_id) {
             const event = message.event;

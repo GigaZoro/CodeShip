@@ -1025,6 +1025,12 @@ const catalog: MessageCatalog = {
     many: "{count} відкладених чатів",
     other: "{count} відкладеного чату",
   },
+  "{count} stalled": {
+    one: "{count} завис",
+    few: "{count} зависли",
+    many: "{count} зависли",
+    other: "{count} зависли",
+  },
   "{count} still need a sign-in": {
     one: "{count} ще потребує входу",
     few: "{count} ще потребують входу",
@@ -7569,6 +7575,8 @@ const catalog: MessageCatalog = {
   "Map {model} to model": "Зіставити {model} з моделлю",
   "Map to": "Зіставити з",
   "Map to a different model.": "Зіставте з іншою моделлю.",
+  "Mark a working thread Stalled when its agent sends nothing for this long. Stalled threads you started appear in Needs you.":
+    "Позначати робочий чат як завислий, коли його агент нічого не надсилає стільки часу. Завислі чати, які почали ви, з’являються в «Потрібні ви».",
   "Mark environment variable {name} as sensitive":
     "Позначити змінну середовища {name} як конфіденційну",
   "Mark every layer being merged ready for review.":
@@ -7576,6 +7584,7 @@ const catalog: MessageCatalog = {
   "Mark ready for review": "Позначити як готовий до рев’ю",
   "Mark servers another connected machine lacks or sets up differently":
     "Позначати сервери, яких немає на іншому підключеному комп’ютері або які там налаштовано інакше",
+  "Mark stalled threads": "Позначати завислі чати",
   "Mark this {term} as ready for review": "Позначити {term} як готовий до рев’ю",
   "Mark this draft ready for review before merging.":
     "Позначте цю чернетку готовою до рев’ю перед злиттям.",
@@ -7720,6 +7729,7 @@ const catalog: MessageCatalog = {
   minutes: "хвилин",
   Minutes: "Хвилини",
   "Minutes between runs": "Хвилин між запусками",
+  "Minutes without events before Stalled": "Хвилин без подій до стану «Завис»",
   "minutes, optional": "хвилин, необов’язково",
   "Missing here: {servers}": "Немає тут: {servers}",
   Mixed: "Різні",
@@ -8112,6 +8122,7 @@ const catalog: MessageCatalog = {
     "Жодне середовище не відповідає поточним фільтрам. Змініть фільтри, щоб створити завдання.",
   "No environments match these filters. Change the filter above.":
     "Жодне середовище не відповідає цим фільтрам. Змініть фільтр вище.",
+  "no events for {elapsed}": "немає подій {elapsed}",
   "No events yet.": "Подій ще немає.",
   "No existing Claude Code or Codex projects found.":
     "Наявних проєктів Claude Code чи Codex не знайдено.",
@@ -11678,6 +11689,9 @@ const catalog: MessageCatalog = {
   "Stage: {stage}": "Етап: {stage}",
   "Staged, unstaged, and untracked files":
     "Проіндексовані, непроіндексовані та невідстежувані файли",
+  Stalled: "Завис",
+  "stalled threads": "завислі чати",
+  "Stalled: no events from the agent": "Завис: від агента немає подій",
   Standard: "Стандартний",
   "Standard Android navigation bar and side rail.":
     "Стандартна панель навігації Android і бічна панель.",
@@ -12633,6 +12647,8 @@ const catalog: MessageCatalog = {
     "Назву вибирає агент. Схвалення повертається до {host} на комп’ютері, який відкрив цю сторінку. Схвалюйте лише вхід, який ви щойно почали.",
   "The name needs at least one letter or digit.":
     "Ім’я має містити принаймні одну літеру або цифру.",
+  "The next event from the agent clears the Stalled state.":
+    "Наступна подія від агента знімає стан «Завис».",
   "The only comment is hidden by the filter.": "Єдиний коментар приховано фільтром.",
   "The original attachment is no longer available.": "Початкове вкладення більше недоступне.",
   "the other machine": "інший комп’ютер",
@@ -13599,6 +13615,7 @@ const catalog: MessageCatalog = {
   "Thread search is unavailable on this server.": "Пошук чатів недоступний на цьому сервері.",
   "Thread search results": "Результати пошуку чатів",
   "Thread settings": "Налаштування чату",
+  "Thread stalled": "Чат завис",
   "Thread title": "Назва чату",
   "Thread title cannot be empty": "Назва чату не може бути порожньою",
   "Thread title cannot be empty.": "Назва чату не може бути порожньою.",

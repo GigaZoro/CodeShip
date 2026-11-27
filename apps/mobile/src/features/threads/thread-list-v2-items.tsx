@@ -1,6 +1,7 @@
 import { threadPreferenceLabels } from "@t3tools/client-runtime/thread-preferences";
 import type { ThreadColor } from "@t3tools/contracts";
 import { useThreadPreferenceMenu } from "./useThreadPreferenceMenu";
+import { useThreadStall } from "./useThreadStall";
 import {
   pickRowMarker,
   resolveThreadStatus,
@@ -217,6 +218,7 @@ const STATUS_LABEL_BY_STATUS: Partial<Record<ThreadStatus, StatusLabel>> = {
   limited: threadStatusLabel("limited", "exclamationmark.circle"),
 };
 const DONE_STATUS_LABEL = threadStatusLabel("done", "checkmark.circle");
+const STALLED_STATUS_LABEL = threadStatusLabel("stalled", "timer");
 
 function ThreadListV2Duration(props: { readonly startedAt: string | null }) {
   return useVisibleWorkingDurationLabel(props.startedAt);
@@ -1146,11 +1148,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
 
   const { statusColors } = useAppearancePreferences();
   const status = resolveThreadStatus(thread);
+  const stall = useThreadStall(thread);
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
-  const workingLabel = STATUS_LABEL_BY_STATUS[status];
+  const workingLabel = stall !== null ? STALLED_STATUS_LABEL : STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
   const statusLabel =
-    (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
+    (status === "working" &&
+    stall === null &&
+    workingLabel !== undefined &&
+    thread.goal?.status === "active"
       ? { ...workingLabel, label: THREAD_STATUS_DISPLAY.goal.label }
       : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
   const lastKnownMachine = threadRowLastKnownMachine(status, props.machineAvailability);
@@ -1167,13 +1173,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const durationStartedAt =
     statusLabel === undefined || showsWoke || lastKnownMachineLabel !== null
       ? null
-      : props.waitingSince !== undefined
-        ? new Date(props.waitingSince).toISOString()
-        : status === "working"
-          ? resolveThreadWorkingStartedAt(thread)
-          : status === "waiting"
-            ? (thread.latestRun?.completedAt ?? null)
-            : null;
+      : stall !== null
+        ? new Date(stall.lastEventAt).toISOString()
+        : props.waitingSince !== undefined
+          ? new Date(props.waitingSince).toISOString()
+          : status === "working"
+            ? resolveThreadWorkingStartedAt(thread)
+            : status === "waiting"
+              ? (thread.latestRun?.completedAt ?? null)
+              : null;
   const spokenDuration = useMinuteDurationLabel(variant === "card" ? durationStartedAt : null);
   const errorText =
     (status === "failed" || status === "limited") && thread.runtime?.lastError

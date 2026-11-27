@@ -13,6 +13,7 @@ import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { useDeadlinePassed } from "~/hooks/useDeadline";
+import { useThreadStall } from "~/hooks/useThreadStall";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/client-runtime/thread-pull-requests";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -176,6 +177,20 @@ function RelativeTimeLabel(props: { timestamp: string | null }) {
 export function WaitingSinceLabel(props: { since: number }) {
   const nowMinute = useNowMinute();
   return formatRelativeElapsed(Math.max(0, Date.parse(`${nowMinute}:00.000Z`) - props.since)).value;
+}
+
+/** How long a stalled thread has gone without an event; the label says what the time means. */
+function QuietSinceLabel(props: { since: number }) {
+  const nowMinute = useNowMinute();
+  const elapsed = formatRelativeElapsed(
+    Math.max(0, Date.parse(`${nowMinute}:00.000Z`) - props.since),
+  ).value;
+  return (
+    <>
+      <span aria-hidden>{elapsed}</span>
+      <span className="sr-only">{t("no events for {elapsed}", { elapsed })}</span>
+    </>
+  );
 }
 
 function threadTimeTimestamp(thread: SidebarThreadSummary): string {
@@ -1018,11 +1033,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       isActive: props.isActive,
       isSelected,
     });
+  const stall = useThreadStall(thread);
   const topStatus = resolveThreadRowStatus({
     status,
     goalActive: thread.goal?.status === "active",
     isWoke,
     isUnread,
+    stalled: stall !== null,
     machine,
   });
   // A frozen status has no live clock: the time it shows would only keep counting from memory.
@@ -1841,7 +1858,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       >
                         <ThreadRowStatusContent status={topStatus} iconClassName="size-3" />
                         {/* The Working shelf's one-line rows keep the elapsed time its cards showed. */}
-                        {variant === "line" && status === "working" && statusIsLive ? (
+                        {stall !== null && statusIsLive ? (
+                          <span className="font-normal">
+                            <QuietSinceLabel since={stall.lastEventAt} />
+                          </span>
+                        ) : variant === "line" && status === "working" && statusIsLive ? (
                           <span aria-hidden className="font-normal">
                             <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                           </span>
@@ -2035,7 +2056,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
                           <ThreadRowStatusContent status={topStatus} iconClassName="size-4" />
-                          {!statusIsLive ? null : props.waitingSince != null ? (
+                          {!statusIsLive ? null : stall !== null ? (
+                            <span className="font-normal">
+                              <QuietSinceLabel since={stall.lastEventAt} />
+                            </span>
+                          ) : props.waitingSince != null ? (
                             <span className="font-normal">
                               <WaitingSinceLabel since={props.waitingSince} />
                             </span>

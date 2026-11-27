@@ -92,11 +92,13 @@ const REASON_ICON = {
   request: THREAD_ROW_STATUS_ICONS.request,
   failed: THREAD_ROW_STATUS_ICONS.failed,
   limited: THREAD_ROW_STATUS_ICONS.failed,
+  stalled: THREAD_ROW_STATUS_ICONS.stalled,
 } satisfies Record<NeedsYouReason, unknown>;
 
 /** Listed threads already passed the snooze and settle checks, so only the kind of wait is left. */
 function needsYouReasonOf(thread: EnvironmentThreadShell): NeedsYouReason {
   const status = resolveThreadStatus(thread);
+  if (status === "working") return "stalled";
   return status === "approval" || status === "input" || status === "request" || status === "limited"
     ? status
     : "failed";

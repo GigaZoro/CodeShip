@@ -1345,6 +1345,13 @@ export function createServerEnvironmentAtoms<R, E>(
       Atom.withLabel(`environment-data:server:hidden-thread-tags:${environmentId}`),
     ),
   );
+  // Off until settings load, so a thread never reads as Stalled by a limit the user did not set.
+  const stalledAfterMsAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => {
+      const minutes = get(settingsValueAtom(environmentId))?.stalledThreadAfterMinutes;
+      return minutes == null ? null : minutes * 60_000;
+    }).pipe(Atom.withLabel(`environment-data:server:stalled-after:${environmentId}`)),
+  );
   // Null until settings load: a tag hidden there would hide its thread once they arrive.
   const blockedThreadTagsAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) =>
@@ -1591,6 +1598,7 @@ export function createServerEnvironmentAtoms<R, E>(
     updateStateAtom,
     settingsValueAtom,
     hiddenThreadTagsAtom,
+    stalledAfterMsAtom,
     blockedThreadTagsAtom,
     usageModelFilterAtom,
     usageScanSettingsKeyAtom,

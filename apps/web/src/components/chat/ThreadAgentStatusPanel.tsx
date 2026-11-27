@@ -7,6 +7,7 @@ import {
 import {
   isThreadWaitingOnWork,
   resolveThreadStatus,
+  THREAD_STATUS_DISPLAY,
   type ThreadStatusInput,
 } from "@t3tools/client-runtime/state/thread-status";
 import {
@@ -18,6 +19,7 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
+import { useThreadStall } from "../../hooks/useThreadStall";
 import { tickTextContent } from "~/lib/tickTextContent";
 import { cn } from "../../lib/utils";
 import { projectedWorkEntry } from "../../session-logic";
@@ -61,7 +63,10 @@ const ACTIVITY_ITEM_TYPES: ReadonlySet<string> = new Set([
 const IN_PROGRESS_ITEM_STATUSES: ReadonlySet<string> = new Set(["pending", "running", "waiting"]);
 
 type AgentStatusShell = ThreadStatusInput &
-  Pick<EnvironmentThreadShell, "latestRun" | "pendingBackgroundTasks">;
+  Pick<
+    EnvironmentThreadShell,
+    "latestRun" | "pendingBackgroundTasks" | "updatedAt" | "stalledAfterMs"
+  >;
 
 /** What the agent is doing, from the same work entries the timeline labels. */
 export function ThreadAgentStatusPanel(props: {
@@ -78,6 +83,7 @@ export function ThreadAgentStatusPanel(props: {
   const childInputs = useChildThreadInputs(threadRef);
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const { shell } = props;
+  const stall = useThreadStall(shell);
   if (shell === null) return null;
 
   const threadStatus = resolveThreadStatus(shell);
@@ -131,12 +137,16 @@ export function ThreadAgentStatusPanel(props: {
     };
   }
 
+  // The run is still active but has gone quiet; the time beside it is still the run's length.
+  const stalled = status.kind === "working" && stall !== null;
   const label =
     status.kind === "usageLimit" && status.resetAt !== null
       ? t("Usage limit until {time}", {
           time: formatUpcomingTimestamp(status.resetAt, timestampFormat),
         })
-      : t(STATUS_PRESENTATION[status.kind].label);
+      : stalled
+        ? t(THREAD_STATUS_DISPLAY.stalled.label)
+        : t(STATUS_PRESENTATION[status.kind].label);
   const modelText =
     props.effortLabel === null ? props.modelLabel : `${props.modelLabel} ${props.effortLabel}`;
   const tookText = status.tookMs === null ? null : formatDuration(status.tookMs);
@@ -153,7 +163,7 @@ export function ThreadAgentStatusPanel(props: {
             aria-hidden
             className={cn(
               "size-2 shrink-0 rounded-full",
-              STATUS_PRESENTATION[status.kind].dotClassName,
+              stalled ? "bg-warning-foreground" : STATUS_PRESENTATION[status.kind].dotClassName,
             )}
           />
           <span className="min-w-0 truncate font-medium text-foreground">{label}</span>

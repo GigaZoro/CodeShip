@@ -5,6 +5,7 @@ import {
   CircleDotDashedIcon,
   MessageCircleQuestionIcon,
   ShieldQuestionIcon,
+  TimerOffIcon,
   UserRoundIcon,
   WifiOffIcon,
 } from "lucide-react";
@@ -27,6 +28,7 @@ import {
 import { t } from "~/i18n";
 export const THREAD_ROW_STATUS_ICONS = {
   working: CircleDashedIcon,
+  stalled: TimerOffIcon,
   waiting: CircleDotDashedIcon,
   input: MessageCircleQuestionIcon,
   request: UserRoundIcon,
@@ -89,6 +91,8 @@ export function resolveThreadRowStatus(input: {
   readonly goalActive: boolean;
   readonly isWoke: boolean;
   readonly isUnread: boolean;
+  /** A working thread quiet past its stall limit (`useThreadStall`). */
+  readonly stalled?: boolean | undefined;
   /** The thread's machine; while it is unreachable, a live status shows as last known. */
   readonly machine?: MachineAvailability | undefined;
 }): ThreadRowStatus | null {
@@ -118,6 +122,7 @@ export function resolveThreadRowStatus(input: {
 // Statuses that change while the machine runs; an unreachable machine can only report the last one.
 const LIVE_ICONS: ReadonlySet<ThreadRowStatusIconName> = new Set([
   "working",
+  "stalled",
   "waiting",
   "input",
   "request",
@@ -129,9 +134,11 @@ function resolveLiveThreadRowStatus(input: {
   readonly goalActive: boolean;
   readonly isWoke: boolean;
   readonly isUnread: boolean;
+  readonly stalled?: boolean | undefined;
 }): ThreadRowStatus | null {
   switch (input.status) {
     case "working":
+      if (input.stalled === true) return rowStatus("stalled", "stalled");
       return rowStatus(input.goalActive ? "goal" : "working", "working");
     case "waiting":
       return rowStatus("waiting", "waiting");

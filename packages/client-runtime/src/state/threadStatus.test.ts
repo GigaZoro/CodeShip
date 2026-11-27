@@ -18,6 +18,7 @@ describe("THREAD_STATUS_TONE_SALIENCE", () => {
       input: "attention",
       request: "attention",
       limited: "attention",
+      stalled: "attention",
       woke: "attention",
       failed: "alarm",
       starting: "calm",

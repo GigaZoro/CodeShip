@@ -23,6 +23,7 @@ import {
   ShieldQuestionIcon,
   TargetIcon,
   TerminalIcon,
+  TimerOffIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import { Fragment } from "react";
@@ -150,6 +151,27 @@ export function runStopNowItem(input: {
           </InlineButton>
         ) : null}
       </>
+    ),
+  };
+}
+
+/** A working thread quiet past its stall limit, with how long since its last event. */
+export function stalledNowItem(input: {
+  readonly threadId: ThreadId;
+  readonly lastEventAt: number;
+}): ThreadNowItem {
+  return {
+    id: `stalled:${input.threadId}`,
+    icon: <TimerOffIcon className="text-warning-foreground" />,
+    title: t("Stalled: no events from the agent"),
+    actions: (
+      <span
+        ref={tickTextContent(
+          (nowMs) => formatDuration(Math.max(0, nowMs - input.lastEventAt)),
+          true,
+        )}
+        className="tabular-nums"
+      />
     ),
   };
 }

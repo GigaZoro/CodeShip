@@ -13,6 +13,7 @@ import { composerDraftHasUserContent } from "~/composerDraftStore";
 import { cn } from "~/lib/utils";
 import { useNowMinute } from "~/hooks/useNowMinute";
 import { useSidebarScopedProjectKeys } from "~/hooks/useSidebarProjectGroups";
+import { useThreadStall } from "~/hooks/useThreadStall";
 import { useDelegatedUnderParent, useProjects, useQuietThreadShells } from "~/state/entities";
 import { environmentPresentations } from "~/state/presentation";
 import { environmentThreadShells, hiddenScheduledTaskThreadKeysAtom } from "~/state/threads";
@@ -45,11 +46,13 @@ function RecentThreadRow(props: {
   );
   const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
   const nowMinute = useNowMinute();
+  const stall = useThreadStall(thread);
   const status = resolveThreadRowStatus({
     status: resolveThreadStatus(thread),
     goalActive: thread.goal?.status === "active",
     isWoke: false,
     isUnread: hasUnseenCompletion({ ...thread, lastVisitedAt }),
+    stalled: stall !== null,
   });
   return (
     <li>

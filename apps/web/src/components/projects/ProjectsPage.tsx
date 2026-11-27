@@ -1,4 +1,5 @@
 import {
+  isThreadStalled,
   resolveProjectThreadState,
   resolveThreadStatus,
   THREAD_LIST_STATUS_LABELS,
@@ -39,6 +40,7 @@ import { isElectron } from "../../env";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import { useThreadStall } from "../../hooks/useThreadStall";
 import { useProjectGroupUpdate } from "../../hooks/useProjectGroupUpdate";
 import { useClientSettings, useSidebarGrouping } from "../../hooks/useSettings";
 import { useSidebarProjectGroups } from "../../hooks/useSidebarProjectGroups";
@@ -73,7 +75,7 @@ import {
   sidebarMachineProjectFolderKey,
   sortPinnedThreadsForSidebar,
   sortWorkingThreadsBySend,
-  useSnoozeWakeClock,
+  useListDeadlineClock,
 } from "../Sidebar.logic";
 import type { SidebarMachine } from "../sidebar/SidebarFolderHeader";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "../sidebar/threadRowStatus";
@@ -190,8 +192,8 @@ export function ProjectsPage() {
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const setProjectExpanded = useUiStateStore((store) => store.setProjectExpanded);
   const nowMinute = useNowMinute();
-  // As in the sidebar: minute ticks alone would wake a snooze up to a minute late.
-  const snoozeWakeClock = useSnoozeWakeClock(threads);
+  // As in the sidebar: minute ticks alone would wake a snooze or show a stall up to a minute late.
+  const deadlineClock = useListDeadlineClock(threads);
   const search = useSearch({ from: "/_chat/projects" });
   const navigate = useNavigate({ from: "/projects" });
   const { handleNewThread } = useHandleNewThread();
@@ -227,7 +229,7 @@ export function ProjectsPage() {
       resetScroll: false,
     });
 
-  const now = new Date(Math.max(snoozeWakeClock, Date.parse(`${nowMinute}:00.000Z`))).toISOString();
+  const now = new Date(Math.max(deadlineClock, Date.parse(`${nowMinute}:00.000Z`))).toISOString();
   const stateByKey = new Map<string, ProjectThreadState>();
   const wokeKeys = new Set<string>();
   const openThreads: EnvironmentThreadShell[] = [];
@@ -252,7 +254,11 @@ export function ProjectsPage() {
     if (woke) wokeKeys.add(key);
     stateByKey.set(
       key,
-      resolveProjectThreadState(thread, { woke, locallyUnread: locallyUnreadKeys.has(key) }),
+      resolveProjectThreadState(thread, {
+        woke,
+        locallyUnread: locallyUnreadKeys.has(key),
+        stalled: isThreadStalled(thread, Date.parse(now)),
+      }),
     );
     openThreads.push(thread);
   }
@@ -959,11 +965,13 @@ function ProjectThreadRow(props: {
   onSettle: ((thread: EnvironmentThreadShell) => void) | null;
 }) {
   const { thread, onSettle } = props;
+  const stall = useThreadStall(thread);
   const status = resolveThreadRowStatus({
     status: resolveThreadStatus(thread),
     goalActive: thread.goal?.status === "active",
     isWoke: props.woke,
     isUnread: props.state === "done",
+    stalled: stall !== null,
   });
   return (
     <li className="group/project-row relative">
