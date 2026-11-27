@@ -516,8 +516,10 @@ describe("check:changed", () => {
       using _observe = vi
         .spyOn(NodeSqlite.DatabaseSync.prototype, "prepare")
         .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql) {
-          if (sql.startsWith("VACUUM INTO"))
+          if (sql.startsWith("VACUUM INTO")) {
             seedTimeout = Number(prepare.call(this, "PRAGMA busy_timeout").get()?.timeout);
+            this.exec("PRAGMA busy_timeout = 0");
+          }
           return prepare.call(this, sql);
         });
       yield* Effect.scoped(
@@ -525,7 +527,7 @@ describe("check:changed", () => {
           yield* stageTestCache(shared, cache, Effect.succeed([]));
           assert.isFalse(NodeFS.existsSync(cacheDb(cache)));
           writer.exec("ROLLBACK");
-          expect(seedTimeout).toBeLessThan(1000);
+          expect(seedTimeout).toBe(10_000);
           storePass(cache, "new");
         }),
       );
@@ -3395,7 +3397,19 @@ it("discards test results recorded while HEAD moved, and replays them at a commi
 it.each([
   ["opens the checkout", `git(root, "rev-parse", "HEAD")`],
   ["clones the checkout", `git(other, "clone", "-q", root, "copy")`],
+  [
+    "clones the checkout relatively from a deleted temp folder",
+    `git(other, "clone", "-q", relative(other, root), "copy")`,
+  ],
   ["aims --git-dir at the checkout", `git(other, "--git-dir=" + join(root, ".git"), "log", "-1")`],
+  [
+    "overwrites GIT_TRACE2_EVENT while reading the checkout",
+    `execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "pipe", env: { ...process.env, GIT_TRACE2_EVENT: join(other, "progress.jsonl") } })`,
+  ],
+  [
+    "sets a C-quoted GIT_ALTERNATE_OBJECT_DIRECTORIES pointing at the checkout",
+    `git(other, "init", "-q"); execFileSync("git", ["rev-parse", "--git-dir"], { cwd: other, stdio: "pipe", env: { ...process.env, GIT_ALTERNATE_OBJECT_DIRECTORIES: JSON.stringify(join(root, ".git", "objects")) } })`,
+  ],
 ])("reruns a test group that %s after a commit that leaves its files alone", (_, read) => {
   using project = launcherFixture();
   project.write(
@@ -3403,7 +3417,7 @@ it.each([
     `import { execFileSync } from "node:child_process";
     import { mkdtempSync, rmSync } from "node:fs";
     import { tmpdir } from "node:os";
-    import { join } from "node:path";
+    import { join, relative } from "node:path";
     import { it } from "vite-plus/test";
     const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe" });
     it("reads the checkout's Git", () => {

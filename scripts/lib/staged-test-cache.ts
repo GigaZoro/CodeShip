@@ -31,7 +31,7 @@ function seedVersion(source: string, destination: string, seed: string) {
     using database = new NodeSqlite.DatabaseSync(NodePath.join(source, databaseName), {
       readOnly: true,
     });
-    database.exec("PRAGMA busy_timeout = 100");
+    database.exec("PRAGMA busy_timeout = 10000");
     database.prepare("VACUUM INTO ?").run(snapshot);
     NodeFS.copyFileSync(snapshot, file, NodeFS.constants.COPYFILE_FICLONE);
   } catch (error) {

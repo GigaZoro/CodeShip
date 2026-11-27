@@ -1,3 +1,8 @@
+## 2026-11-27 — `check:changed` reuses test passes across commits in smaller groups
+
+- Maintainers: `vp run check:changed` now shares its staged test cache across commits with the same install instead of starting cold on every commit or rebase. Groups whose Git commands read this checkout's repository, tracked through `GIT_TRACE2_PERF`, still key on `HEAD` and rerun on every commit; all other groups replay whenever their read files and tree state still match.
+- Test groups in `check:changed` are now hash-chunked to at most 8 files each instead of 16, keeping individual cache entries smaller and avoiding unnecessary reruns when an unrelated test file changes.
+
 ## 2026-11-27 — The weekly dependency upgrade runs while Codex is out of usage
 
 - Maintainers: the "CodeShip: weekly dependency upgrade" scheduled task now lists only its own provider (Claude) in `delegate_providers`. Listing Codex made CodeShip skip every run while all Codex accounts were out of usage, although the task only needs a second reviewer from any provider that has usage. Machines pick up the change with `schedule_task` and `delegateProviders`, as `machine-config.mjs check` reports.
