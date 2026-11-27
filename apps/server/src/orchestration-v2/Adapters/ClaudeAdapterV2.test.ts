@@ -14327,6 +14327,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
         yield* harness.awaitTerminal(1);
+        const reportedPins = () =>
+          harness.events.flatMap((event) =>
+            event.type === "provider_thread.updated" && event.pinnedSystemInstructions !== undefined
+              ? [event.pinnedSystemInstructions]
+              : [],
+          );
+        const [sessionPin] = reportedPins();
+        assert.lengthOf(reportedPins(), 1);
 
         yield* harness.offerAndWait(wakeNotification);
         assert.lengthOf(harness.continuationRequests, 0);
@@ -14334,10 +14342,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(harness.continuationRequests, 1);
         assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
 
+        // The wake turn has no user message; a stored pin that differs from the session's is
+        // still reported, so the pin the session runs with is the one stored.
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
             threadId: harness.threadId,
-            providerThread: harness.providerThread,
+            providerThread: {
+              ...harness.providerThread,
+              pinnedSystemInstructions: {
+                key: "key-from-an-older-epoch",
+                text: "<runtime_info>Before the epoch bump</runtime_info>",
+              },
+            },
             now,
             attemptId: RunAttemptId.make("attempt-claude-wake-init-2"),
             text: "Background task completed.",
@@ -14365,6 +14381,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* harness.awaitTerminal(2);
         assert.equal(harness.terminalEvents()[1]?.status, "completed");
         assert.lengthOf(harness.continuationRequests, 1);
+        assert.deepEqual(reportedPins(), [sessionPin, sessionPin]);
         const compacted = harness.events.findLast(
           (event) =>
             event.type === "provider_turn.updated" &&

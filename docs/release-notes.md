@@ -19,7 +19,7 @@
 
 ## 2026-11-27 — Pin thread system instructions across server updates
 
-- Resumed Claude and Antigravity chats keep the system instructions stored when their native session started, so a release that only rewords those instructions no longer invalidates their provider prompt cache. A chat rebuilds its instructions when its MCP or device-tool availability changes, or when a release bumps the instruction epoch. Codex chats are unchanged: Codex resends its T3 context on every turn, so pinning it would not keep its cache.
+- Resumed Claude and Antigravity chats keep the system instructions stored when their native session started, so a release that only rewords those instructions no longer invalidates their provider prompt cache. A chat rebuilds its instructions when its MCP or device-tool availability changes, or when a release bumps the instruction epoch. Codex chats are unchanged: Codex adds T3's context after the conversation so far, and only when it changes, so its cache already survives an update.
 
 ## 2026-11-27 — At most one marker per sidebar row
 

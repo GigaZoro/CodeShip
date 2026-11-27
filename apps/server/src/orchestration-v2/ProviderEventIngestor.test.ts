@@ -458,6 +458,8 @@ layer("ProviderEventIngestorV2", (it) => {
           strength: "strong",
         },
         nativeConversationHeadRef: null,
+        // Adapters return the stored pin on the thread; the log must not copy it every update.
+        pinnedSystemInstructions: { key: "stored-pin-key", text: "STORED_PIN_TEXT" },
         status: "idle",
         firstRunOrdinal: null,
         lastRunOrdinal: null,
@@ -466,6 +468,7 @@ layer("ProviderEventIngestorV2", (it) => {
         createdAt: now,
         updatedAt: now,
       };
+      const sessionPin = { key: "session-pin-key", text: "SESSION_PIN_TEXT" };
 
       yield* eventSink.write({ events: [threadEvent] });
       const storedEvents = yield* ingestor.ingestNormalized({
@@ -476,6 +479,7 @@ layer("ProviderEventIngestorV2", (it) => {
           type: "provider_thread.updated",
           driver: CODEX_DRIVER,
           providerThread,
+          pinnedSystemInstructions: sessionPin,
           awaitedTaskNotice: {
             id: TurnItemId.make("item:awaited-landing"),
             type: "system_notice",
@@ -506,30 +510,52 @@ layer("ProviderEventIngestorV2", (it) => {
       const latestThreadSequence = yield* eventStore.latestSequence({
         threadId: threadEvent.threadId,
       });
+      const sql = yield* SqlClient.SqlClient;
+      const pinRows = yield* sql<{ readonly event_type: string; readonly payload_json: string }>`
+        SELECT event_type, payload_json FROM orchestration_events
+        WHERE stream_id = ${threadEvent.threadId}
+          AND event_type IN ('provider-thread.updated', 'provider-thread.pinned-instructions-set')
+        ORDER BY sequence
+      `;
 
-      assert.equal(storedEvents.length, 2);
+      assert.equal(storedEvents.length, 3);
       assert.equal(storedEvents[0]?.event.type, "provider-thread.updated");
       assert.deepEqual(
         projection.turnItems.map((item) => item.type === "system_notice" && item.awaitedTaskId),
         ["landing"],
       );
       assert.deepEqual(
-        projection.providerThreads.map((thread) => thread.id),
-        [providerThread.id],
+        projection.providerThreads.map((thread) => [thread.id, thread.pinnedSystemInstructions]),
+        [[providerThread.id, sessionPin]],
       );
       assert.deepEqual(
+        pinRows.map((row) => row.event_type),
+        ["provider-thread.updated", "provider-thread.pinned-instructions-set"],
+      );
+      assert.notInclude(pinRows[0]!.payload_json, "pinnedSystemInstructions");
+      assert.notInclude(pinRows[0]!.payload_json, "STORED_PIN_TEXT");
+      assert.deepEqual(JSON.parse(pinRows[1]!.payload_json), {
+        providerThreadId: providerThread.id,
+        ...sessionPin,
+      });
+      assert.deepEqual(
         Array.from(storedDomainEvents).map((stored) => stored.event.type),
-        ["thread.created", "provider-thread.updated", "turn-item.updated"],
+        [
+          "thread.created",
+          "provider-thread.updated",
+          "provider-thread.pinned-instructions-set",
+          "turn-item.updated",
+        ],
       );
       assert.deepEqual(
         Array.from(storedDomainEvents).map((stored) => stored.sequence),
-        [1, 2, 3],
+        [1, 2, 3, 4],
       );
       assert.deepEqual(
         Array.from(afterFirstEvent).map((stored) => stored.event.type),
-        ["provider-thread.updated", "turn-item.updated"],
+        ["provider-thread.updated", "provider-thread.pinned-instructions-set", "turn-item.updated"],
       );
-      assert.equal(latestThreadSequence, 3);
+      assert.equal(latestThreadSequence, 4);
     }),
   );
 
