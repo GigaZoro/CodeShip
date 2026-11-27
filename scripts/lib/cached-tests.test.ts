@@ -1242,8 +1242,36 @@ describe("readsCheckoutGit", () => {
     [
       "macOS case-insensitive path matching",
       true,
-      (checkout) => [start("git-upload-pack", checkout.toUpperCase())],
-      (checkout) => ({ checkoutPaths: [checkout], cwd: checkout, platform: "darwin" }),
+      () => [start("git-upload-pack", "/USERS/DEV/WORK/REPO")],
+      () => ({
+        checkoutPaths: ["/Users/dev/Work/Repo", "/Users/dev/Work/Repo/.git"],
+        cwd: "/Users/dev/Work/Repo",
+        platform: "darwin",
+      }),
+    ],
+    [
+      "bare repository GIT_DIR:. without def_repo (such as git push to a temp bare remote)",
+      false,
+      () => [start("git", "unpack-objects"), param("GIT_DIR", ".")],
+    ],
+    [
+      "relative GIT_DIR:.git without def_repo from a package subdirectory",
+      true,
+      () => [start("git", "rev-parse", "--git-dir"), param("GIT_DIR", "../../.git")],
+      (checkout) => ({
+        checkoutPaths: [checkout, NodePath.join(checkout, ".git")],
+        cwd: NodePath.join(checkout, "apps", "server"),
+      }),
+    ],
+    [
+      "multiline alias and exec events in another repository",
+      false,
+      (_, other) => [
+        perf("version", "2.56.1"),
+        perf("alias", "alias:myalias argv:[\x27echo hi\necho bye\x27]"),
+        perf("exec", "argv:[\x27echo a\nb\x27]"),
+        repo(other),
+      ],
     ],
     [
       "relative arguments, multiline commit message, and multiline error in another repository",
@@ -1295,12 +1323,18 @@ describe("readsCheckoutGit", () => {
     }
   });
 
-  it("counts an unparseable or empty trace file as a read", () => {
+  it("counts an unparseable, empty, or discarded trace file as a read", () => {
     const traces = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "trace-"));
     try {
       NodeFS.writeFileSync(NodePath.join(traces, "process"), '{"event":"start","argv":[');
       expect(readsCheckoutGit(traces, [NodePath.join(traces, "checkout")])).toBe(true);
       NodeFS.writeFileSync(NodePath.join(traces, "process"), "");
+      expect(readsCheckoutGit(traces, [NodePath.join(traces, "checkout")])).toBe(true);
+      NodeFS.rmSync(NodePath.join(traces, "process"));
+      NodeFS.writeFileSync(
+        NodePath.join(traces, "git-trace2-discard"),
+        [perf("version", "2.56.1"), repo(NodePath.join(traces, "other"))].join("\n"),
+      );
       expect(readsCheckoutGit(traces, [NodePath.join(traces, "checkout")])).toBe(true);
     } finally {
       NodeFS.rmSync(traces, { recursive: true, force: true });
@@ -1329,6 +1363,52 @@ describe("readsCheckoutGit", () => {
         },
       });
       expect(readsCheckoutGit(traces, [checkout, NodePath.join(checkout, ".git")])).toBe(true);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag a real git push to a temp bare remote as reading the checkout", () => {
+    const root = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "trace-")));
+    try {
+      const checkout = NodePath.join(root, "checkout");
+      const remote = NodePath.join(root, "origin.git");
+      const work = NodePath.join(root, "work");
+      const traces = NodePath.join(root, "traces");
+      NodeFS.mkdirSync(checkout);
+      NodeFS.mkdirSync(work);
+      NodeFS.mkdirSync(traces);
+      const baseEnv = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
+      );
+      const runGit = (args: ReadonlyArray<string>, cwd: string, extraEnv?: NodeJS.ProcessEnv) =>
+        NodeChildProcess.execFileSync("git", [...args], {
+          cwd,
+          env: {
+            ...baseEnv,
+            GIT_AUTHOR_NAME: "Test",
+            GIT_AUTHOR_EMAIL: "test@example.com",
+            GIT_COMMITTER_NAME: "Test",
+            GIT_COMMITTER_EMAIL: "test@example.com",
+            ...extraEnv,
+          },
+        });
+      runGit(["init", "-q"], checkout);
+      runGit(["init", "-q", "--bare", remote], root);
+      runGit(["init", "-q", "-b", "main"], work);
+      NodeFS.writeFileSync(NodePath.join(work, "a.txt"), "hello\n");
+      runGit(["add", "a.txt"], work);
+      runGit(["commit", "-q", "-m", "init"], work);
+      runGit(["push", "-q", remote, "HEAD:refs/heads/main"], work, {
+        GIT_TRACE2_PERF: traces,
+        GIT_TRACE2_PERF_BRIEF: "1",
+        GIT_TRACE2_ENV_VARS:
+          "GIT_DIR,GIT_COMMON_DIR,GIT_WORK_TREE,GIT_OBJECT_DIRECTORY,GIT_ALTERNATE_OBJECT_DIRECTORIES,GIT_INDEX_FILE",
+        GIT_TRACE2_MAX_FILES: "0",
+      });
+      expect(
+        readsCheckoutGit(traces, [checkout, NodePath.join(checkout, ".git")], { cwd: checkout }),
+      ).toBe(false);
     } finally {
       NodeFS.rmSync(root, { recursive: true, force: true });
     }

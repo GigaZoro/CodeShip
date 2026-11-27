@@ -26,15 +26,20 @@ const tracedEnv = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_INDEX_FILE",
 ];
+// Env vars that name a git directory (never a non-bare worktree root). In a bare repo without
+// def_repo, Git emits GIT_DIR:. which must not falsely match checkoutRoot via fallbackBases.
+const gitDirEnv = new Set(tracedEnv.filter((name) => name !== "GIT_WORK_TREE"));
 // Matches both full (`HH:MM:SS.ffffff file:line | d0 | ...`) and brief (`d0 | ...`) trace2 perf lines.
 const perfHeader =
   /^(?:\d{2}:\d{2}:\d{2}\.\d+\s+[^|]+\|\s*)?d\d+\s*\|\s*[^|]+\|\s*([a-z0-9_]+)\s*\|\s*[^|]*\|\s*[^|]*\|\s*[^|]*\|\s*[^|]*\| (.*)$/;
 const multilinePerfEvents = new Set([
+  "alias",
   "child_start",
   "data",
   "data_json",
   "def_param",
   "error",
+  "exec",
   "printf",
   "region_enter",
   "region_leave",
@@ -221,6 +226,8 @@ export function readsCheckoutGit(
   }
 
   for (const file of NodeFS.readdirSync(traces)) {
+    // Git writes this sentinel and drops further traces once trace2.maxFiles is hit.
+    if (file === "git-trace2-discard") return true;
     const rawLines = NodeFS.readFileSync(NodePath.join(traces, file), "utf8").split(/\r?\n/);
     if (rawLines.at(-1) === "") rawLines.pop();
     const records: Array<{ event: string; payload: string }> = [];
@@ -243,16 +250,16 @@ export function readsCheckoutGit(
     }
     if (!records.length) return true;
 
-    const values: Array<string> = [];
+    const values: Array<{ value: string; gitDirOnly: boolean }> = [];
     const bases: Array<string> = [];
     for (const record of records) {
       if (record.event === "start") {
         const argv = parsePerfWords(record.payload);
         if (!argv || !argv.length) return true;
         for (const arg of argv) {
-          values.push(arg);
+          values.push({ value: arg, gitDirOnly: false });
           const eq = arg.indexOf("=");
-          if (eq >= 0) values.push(arg.slice(eq + 1));
+          if (eq >= 0) values.push({ value: arg.slice(eq + 1), gitDirOnly: false });
         }
       } else if (record.event === "def_repo") {
         const payload = record.payload.replace(/^(?:\.\.)*/, "");
@@ -274,17 +281,20 @@ export function readsCheckoutGit(
         }
         const name = payload.slice(0, colon);
         const value = payload.slice(colon + 1);
-        values.push(value);
+        const gitDirOnly = gitDirEnv.has(name);
+        values.push({ value, gitDirOnly });
         if (name === "GIT_ALTERNATE_OBJECT_DIRECTORIES") {
           const entries = splitAlternateObjectDirectories(value, pathMod.delimiter);
           if (!entries) return true;
-          values.push(...entries);
+          for (const entry of entries) values.push({ value: entry, gitDirOnly });
         } else if (value.includes(pathMod.delimiter)) {
-          values.push(...value.split(pathMod.delimiter));
+          for (const entry of value.split(pathMod.delimiter)) {
+            values.push({ value: entry, gitDirOnly });
+          }
         }
       }
     }
-    for (const value of values) {
+    for (const { value, gitDirOnly } of values) {
       const path = fromFileUrl(value, win32);
       if (!path) continue;
       if (pathMod.isAbsolute(path)) {
@@ -297,7 +307,10 @@ export function readsCheckoutGit(
         !bases.length &&
         fallbackBases.some((base) => {
           const candidate = pathMod.resolve(base, path);
-          return reaches(candidate, rootTargets, false) || reaches(candidate, gitTargets, true);
+          return (
+            (!gitDirOnly && reaches(candidate, rootTargets, false)) ||
+            reaches(candidate, gitTargets, true)
+          );
         })
       ) {
         return true;
@@ -323,6 +336,7 @@ function traceCheckoutGit() {
   const traces = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-git-trace-"));
   const traceEnv = {
     GIT_TRACE2_ENV_VARS: tracedEnv.join(","),
+    GIT_TRACE2_MAX_FILES: "0",
     GIT_TRACE2_PERF_BRIEF: "1",
   };
   let tests: string;

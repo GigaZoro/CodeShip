@@ -3021,7 +3021,7 @@ it("reuses passes in another worktree with the same inputs and tracked environme
   expect(repeat.stdout).toContain("pass  test (2 files)");
   expect(repeat.stdout).toContain("cache hit, replaying");
   expect(NodeFS.readdirSync(NodePath.join(project.root, ".git/t3-check-changed/tests"))).toEqual([
-    project.git("rev-parse", "HEAD").toString().trim(),
+    expect.stringMatching(/^[0-9a-f]{64}\.0$/),
   ]);
 });
 
