@@ -98,6 +98,7 @@ export const RPC_REQUIRED_SCOPES = {
   // Reviewing a step may run a model on this environment's providers.
   [WS_METHODS.manualStepsReview]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverWatchRestartHold]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverDrainForUpdate]: AuthEnvironmentMaintainScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
   [WS_METHODS.serverShareSettings]: AuthSettingsWriteScope,

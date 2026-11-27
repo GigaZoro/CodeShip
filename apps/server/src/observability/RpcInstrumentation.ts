@@ -76,6 +76,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverUpdateServerWithProgress]: "server",
   [WS_METHODS.serverCommitDesktopUpdate]: "server",
   [WS_METHODS.serverWatchRestartHold]: "server",
+  [WS_METHODS.serverDrainForUpdate]: "server",
   [WS_METHODS.serverUpsertKeybinding]: "server",
   [WS_METHODS.serverRemoveKeybinding]: "server",
   [WS_METHODS.serverRunStorageCleanup]: "server",

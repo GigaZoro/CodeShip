@@ -36,7 +36,7 @@ import { useServerConfigs } from "~/state/entities";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { environmentPresentations } from "~/state/presentation";
 import { ManagedControl } from "./ManagedPolicy";
-import { restartHoldWorkLines, waitingOnWorkLabel } from "./restartHold.logic";
+import { restartHoldDetailLines, waitingOnWorkLabel } from "./restartHold.logic";
 import { manualServerUpdateCommand } from "~/versionSkew";
 import { crossesReleaseTrack } from "@t3tools/shared/cliRelease";
 import { Button } from "./ui/button";
@@ -263,14 +263,16 @@ export function ServerUpdateProgress({
   }
   if (state.stage === "waiting") {
     const work = state.waitingOn ?? [];
+    const turns = state.waitingOnTurns ?? [];
+    const details = restartHoldDetailLines(work, turns);
     return (
       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-medium text-foreground">
         <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />
         <Tooltip>
-          <TooltipTrigger render={<span>{waitingOnWorkLabel(work.length)}</span>} />
-          {work.length > 0 ? (
+          <TooltipTrigger render={<span>{waitingOnWorkLabel(work.length, turns.length)}</span>} />
+          {details !== "" ? (
             <TooltipPopup side="top">
-              <span className="whitespace-pre-line">{restartHoldWorkLines(work)}</span>
+              <span className="whitespace-pre-line">{details}</span>
             </TooltipPopup>
           ) : null}
         </Tooltip>

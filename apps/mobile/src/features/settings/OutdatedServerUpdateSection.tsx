@@ -88,7 +88,7 @@ export function OutdatedServerUpdateSection({
         <Text className="text-sm text-foreground-muted">
           {state.status === "running"
             ? isWaitingOnWork(state)
-              ? waitingOnWorkText(state.waitingOn)
+              ? waitingOnWorkText(state.waitingOn, state.waitingOnTurns)
               : state.stage === "resuming"
                 ? t("Restarting and reconnecting…")
                 : state.stage === "installing"

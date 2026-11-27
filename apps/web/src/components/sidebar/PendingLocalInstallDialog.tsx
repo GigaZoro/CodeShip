@@ -50,7 +50,13 @@ export function PendingLocalInstallDialog({
               : t("Update is waiting")}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {t("The update installs once nothing listed here is running. Restarting now stops it.")}
+            {pending?.draining === true
+              ? t(
+                  "The update installs once running chats and background work finish. New turns wait until after the update. Restarting now stops them.",
+                )
+              : t(
+                  "The update installs once nothing listed here is running. Restarting now stops it.",
+                )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ScrollArea scrollFade>

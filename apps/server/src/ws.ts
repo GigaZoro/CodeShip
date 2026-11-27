@@ -196,6 +196,7 @@ import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner
 import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
 import { makeProviderInstallation } from "./provider/providerInstallation.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
+import { drainUntilClosed, UpdateDrain } from "./cloud/updateDrain.ts";
 import * as NpmRelease from "./cloud/npmRelease.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -1444,6 +1445,7 @@ export const layerWsRpc = (
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const runtimeRecovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+      const updateDrain = yield* UpdateDrain;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const sharedSettings = yield* SharedSettings.SharedSettings;
       const secretResolver = yield* SecretResolver.SecretResolver;
@@ -2714,6 +2716,20 @@ export const layerWsRpc = (
           runtimeRecovery.watchRestartHold.pipe(
             Stream.mapError(
               (cause) => new OrchestrationV2RestartHoldError({ message: cause.message, cause }),
+            ),
+          ),
+        [WS_METHODS.serverDrainForUpdate]: () =>
+          Stream.unwrap(
+            drainUntilClosed.pipe(
+              Effect.provideService(UpdateDrain, updateDrain),
+              Effect.as(
+                runtimeRecovery.watchRestartHold.pipe(
+                  Stream.mapError(
+                    (cause) =>
+                      new OrchestrationV2RestartHoldError({ message: cause.message, cause }),
+                  ),
+                ),
+              ),
             ),
           ),
         [WS_METHODS.peerLinksList]: (_input) =>

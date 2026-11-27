@@ -206,6 +206,7 @@ import {
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as CloudCliState from "./cloud/CliState.ts";
 import * as ServerAutoUpdate from "./cloud/autoUpdate.ts";
+import * as UpdateDrain from "./cloud/updateDrain.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as DesktopAppUpdate from "./desktopUpdate/DesktopAppUpdate.ts";
 import * as DesktopUpdateResume from "./desktopUpdate/DesktopUpdateResume.ts";
@@ -1403,6 +1404,7 @@ const layerMakeServer = Layer.unwrap(
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),
       Layer.provideMerge(AgentScopeLive.layer),
+      Layer.provide(UpdateDrain.layer),
       Layer.provideMerge(layerPlatformServices),
     );
   }),

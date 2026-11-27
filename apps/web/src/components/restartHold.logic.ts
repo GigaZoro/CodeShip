@@ -25,8 +25,18 @@ export function splitRestartHoldWork(work: ReadonlyArray<OrchestrationV2RestartH
 }
 
 /** One line per entry, for a tooltip. */
-export function restartHoldWorkLines(work: ReadonlyArray<OrchestrationV2RestartHoldWork>): string {
+function restartHoldWorkLines(work: ReadonlyArray<OrchestrationV2RestartHoldWork>): string {
   return work.map((entry) => `${entry.label} · ${entry.threadTitle}`).join("\n");
+}
+
+/** One line per background task and per chat still answering, for a tooltip. */
+export function restartHoldDetailLines(
+  work: ReadonlyArray<OrchestrationV2RestartHoldWork>,
+  runningTurns: ReadonlyArray<OrchestrationV2RestartHoldTurn> = [],
+): string {
+  return [restartHoldWorkLines(work), ...runningTurns.map((turn) => turn.threadTitle)]
+    .filter((line) => line !== "")
+    .join("\n");
 }
 
 /** The waiting label, then one line per entry and per chat still answering. */
@@ -36,8 +46,7 @@ export function restartHoldTooltip(
 ): string {
   return [
     waitingOnWorkLabel(work.length, runningTurns.length),
-    restartHoldWorkLines(work),
-    ...runningTurns.map((turn) => turn.threadTitle),
+    restartHoldDetailLines(work, runningTurns),
   ]
     .filter((line) => line !== "")
     .join("\n");

@@ -4,6 +4,7 @@ import {
   ThreadId,
   type MonitoringThreadDetail,
   type EnvironmentStartup,
+  type OrchestrationV2RestartHold,
   ProviderDriverKind,
   ServerSelfUpdateError,
   ProviderInstanceId,
@@ -52,6 +53,7 @@ import type { RpcSession } from "../rpc/session.ts";
 import {
   applyServerWelcomeEvent,
   createServerEnvironmentAtoms,
+  decideRestartHold,
   serverUpdateStateAtom,
   makeEnvironmentServerWelcomeState,
   makeEnvironmentServerConfigState,
@@ -1639,5 +1641,394 @@ describe("provider setup commands", () => {
       });
       expect(yield* Queue.takeAll(requested)).toEqual(["antigravity"]);
     }).pipe(Effect.scoped),
+  );
+});
+
+describe("manual update drain", () => {
+  const runningTurn = { threadId: ThreadId.make("thread-answering"), threadTitle: "Answering" };
+
+  it.effect(
+    "opens server.drainForUpdate, waits for running turns, holds the drain across handoff, and releases it afterward",
+    () =>
+      Effect.gen(function* () {
+        const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
+        const drainOpened = yield* Deferred.make<void>();
+        const drainReleased = yield* Deferred.make<void>();
+        const handoffStarted = yield* Deferred.make<void>();
+        const finishHandoff = yield* Deferred.make<void>();
+        const watchCalls = yield* Ref.make(0);
+        let drainingAtHandoff = false;
+        let drainOpen = false;
+        const readyEvents =
+          yield* Queue.unbounded<Parameters<typeof matchesServerUpdateReadyEvent>[1]>();
+        const config = {
+          ...CONFIG,
+          environment: {
+            ...CONFIG.environment,
+            serverVersion: "0.0.30",
+            capabilities: {
+              serverSelfUpdate: "boot-service",
+              serverSelfUpdateProgress: true,
+              restartHold: true,
+              updateDrain: true,
+            },
+          },
+        } as ServerConfig;
+        const client = {
+          [WS_METHODS.subscribeServerConfig]: () => Stream.never,
+          [WS_METHODS.subscribeServerLifecycle]: () => Stream.fromQueue(readyEvents),
+          [WS_METHODS.serverWatchRestartHold]: () =>
+            Stream.fromEffect(Ref.update(watchCalls, (count) => count + 1)).pipe(
+              Stream.drain,
+              Stream.concat(Stream.never),
+            ),
+          [WS_METHODS.serverDrainForUpdate]: () =>
+            Stream.unwrap(
+              Effect.acquireRelease(
+                Effect.sync(() => {
+                  drainOpen = true;
+                }).pipe(Effect.andThen(Deferred.succeed(drainOpened, undefined))),
+                () =>
+                  Effect.sync(() => {
+                    drainOpen = false;
+                  }).pipe(Effect.andThen(Deferred.succeed(drainReleased, undefined))),
+              ).pipe(Effect.as(Stream.fromQueue(holds))),
+            ),
+          [WS_METHODS.serverUpdateServerWithProgress]: () =>
+            Stream.fromEffect(
+              Effect.sync(() => {
+                drainingAtHandoff = drainOpen;
+              }).pipe(
+                Effect.andThen(Deferred.succeed(handoffStarted, undefined)),
+                Effect.andThen(Deferred.await(finishHandoff)),
+                Effect.as({
+                  type: "complete" as const,
+                  result: {
+                    targetVersion: "0.0.31",
+                    method: "boot-service" as const,
+                    updateId: "u-drain",
+                  },
+                }),
+              ),
+            ),
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        });
+        const run: EnvironmentRegistry.EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+          Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+        const runStream: EnvironmentRegistry.EnvironmentRegistry["Service"]["runStream"] = (
+          _id,
+          stream,
+        ) => Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+        const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
+          run,
+          runStream,
+          followStream: runStream,
+          stateChanges: () => Stream.never,
+          retryNow: () => Effect.void,
+        } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+        const runtime = Atom.runtime(
+          Layer.mergeAll(
+            Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+            Layer.succeed(RpcPermissionGuard, { authorize: () => Effect.void }),
+            Layer.succeed(Persistence.EnvironmentCacheStore, {
+              loadServerConfig: () => Effect.succeedNone,
+            } as unknown as Persistence.EnvironmentCacheStore["Service"]),
+          ),
+        );
+        const atoms = createServerEnvironmentAtoms(runtime, {
+          initialConfigValueAtom: () => Atom.make(config),
+        });
+        const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (value) =>
+          Effect.sync(() => value.dispose()),
+        );
+        const waitingState = yield* Deferred.make<void>();
+        const unsubscribe = registry.subscribe(
+          serverUpdateStateAtom(TARGET.environmentId),
+          (value) => {
+            if (value.status === "running" && value.stage === "waiting") {
+              Deferred.doneUnsafe(waitingState, Exit.void);
+            }
+          },
+          { immediate: true },
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+
+        const pending = atoms.updateServer.run(registry, {
+          environmentId: TARGET.environmentId,
+          input: { targetVersion: "0.0.31" },
+        });
+        yield* Deferred.await(drainOpened);
+        expect(yield* Ref.get(watchCalls)).toBe(0);
+
+        yield* Queue.offer(holds, {
+          work: [],
+          runningTurns: [runningTurn],
+          draining: true,
+        });
+        yield* Deferred.await(waitingState);
+        expect(registry.get(serverUpdateStateAtom(TARGET.environmentId))).toMatchObject({
+          status: "running",
+          stage: "waiting",
+          waitingOn: [],
+          waitingOnTurns: [runningTurn],
+          draining: true,
+        });
+        expect(yield* Deferred.isDone(handoffStarted)).toBe(false);
+
+        // Once the running turn finishes, handoff starts while the drain stream is still open.
+        yield* Queue.offer(holds, { work: [], runningTurns: [], draining: true });
+        yield* Deferred.await(handoffStarted);
+        expect(drainingAtHandoff).toBe(true);
+        expect(yield* Deferred.isDone(drainReleased)).toBe(false);
+
+        yield* Deferred.succeed(finishHandoff, undefined);
+        yield* Deferred.await(drainReleased);
+        yield* Queue.offer(readyEvents, {
+          version: 1,
+          sequence: 1,
+          type: "ready",
+          payload: {
+            at: "2026-09-01T00:00:00.000Z",
+            environment: { serverVersion: "0.0.31" },
+            updateOutcome: {
+              id: "u-drain",
+              fromVersion: "0.0.30",
+              targetVersion: "0.0.31",
+              status: "committed",
+            },
+          },
+        } as Parameters<typeof matchesServerUpdateReadyEvent>[1]);
+
+        expect(AsyncResult.isSuccess(yield* Effect.promise(() => pending))).toBe(true);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("closes the server.drainForUpdate stream and skips handoff when cancelled", () =>
+    Effect.gen(function* () {
+      const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
+      const drainOpened = yield* Deferred.make<void>();
+      const drainReleased = yield* Deferred.make<void>();
+      const handoffCalls = yield* Ref.make(0);
+      const config = {
+        ...CONFIG,
+        environment: {
+          ...CONFIG.environment,
+          serverVersion: "0.0.30",
+          capabilities: {
+            serverSelfUpdate: "boot-service",
+            serverSelfUpdateProgress: true,
+            restartHold: true,
+            updateDrain: true,
+          },
+        },
+      } as ServerConfig;
+      const client = {
+        [WS_METHODS.subscribeServerConfig]: () => Stream.never,
+        [WS_METHODS.subscribeServerLifecycle]: () => Stream.never,
+        [WS_METHODS.serverDrainForUpdate]: () =>
+          Stream.unwrap(
+            Effect.acquireRelease(Deferred.succeed(drainOpened, undefined), () =>
+              Deferred.succeed(drainReleased, undefined),
+            ).pipe(Effect.as(Stream.fromQueue(holds))),
+          ),
+        [WS_METHODS.serverUpdateServerWithProgress]: () =>
+          Stream.fromEffect(Ref.update(handoffCalls, (count) => count + 1)).pipe(
+            Stream.drain,
+            Stream.concat(Stream.never),
+          ),
+      } as unknown as WsRpcProtocolClient;
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make(Option.some(session(client))),
+        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const run: EnvironmentRegistry.EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+        Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+      const runStream: EnvironmentRegistry.EnvironmentRegistry["Service"]["runStream"] = (
+        _id,
+        stream,
+      ) => Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+      const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
+        run,
+        runStream,
+        followStream: runStream,
+        stateChanges: () => Stream.never,
+        retryNow: () => Effect.void,
+      } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+      const runtime = Atom.runtime(
+        Layer.mergeAll(
+          Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+          Layer.succeed(RpcPermissionGuard, { authorize: () => Effect.void }),
+          Layer.succeed(Persistence.EnvironmentCacheStore, {
+            loadServerConfig: () => Effect.succeedNone,
+          } as unknown as Persistence.EnvironmentCacheStore["Service"]),
+        ),
+      );
+      const atoms = createServerEnvironmentAtoms(runtime, {
+        initialConfigValueAtom: () => Atom.make(config),
+      });
+      const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (value) =>
+        Effect.sync(() => value.dispose()),
+      );
+      const waitingState = yield* Deferred.make<void>();
+      const unsubscribe = registry.subscribe(
+        serverUpdateStateAtom(TARGET.environmentId),
+        (value) => {
+          if (value.status === "running" && value.stage === "waiting") {
+            Deferred.doneUnsafe(waitingState, Exit.void);
+          }
+        },
+        { immediate: true },
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+
+      const pending = atoms.updateServer.run(registry, {
+        environmentId: TARGET.environmentId,
+        input: { targetVersion: "0.0.31" },
+      });
+      yield* Deferred.await(drainOpened);
+      yield* Queue.offer(holds, { work: [], runningTurns: [runningTurn], draining: true });
+      yield* Deferred.await(waitingState);
+
+      decideRestartHold(registry, TARGET.environmentId, "cancel");
+      yield* Deferred.await(drainReleased);
+      const result = yield* Effect.promise(() => pending);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(Cause.hasInterruptsOnly(result.cause)).toBe(true);
+      expect(yield* Ref.get(handoffCalls)).toBe(0);
+      expect(registry.get(serverUpdateStateAtom(TARGET.environmentId))).toEqual({ status: "idle" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "falls back to server.watchRestartHold without waiting on runningTurns when updateDrain is absent",
+    () =>
+      Effect.gen(function* () {
+        const drainCalls = yield* Ref.make(0);
+        const watchCalls = yield* Ref.make(0);
+        const handoffStarted = yield* Deferred.make<void>();
+        const readyEvents =
+          yield* Queue.unbounded<Parameters<typeof matchesServerUpdateReadyEvent>[1]>();
+        const config = {
+          ...CONFIG,
+          environment: {
+            ...CONFIG.environment,
+            serverVersion: "0.0.30",
+            capabilities: {
+              serverSelfUpdate: "boot-service",
+              serverSelfUpdateProgress: true,
+              restartHold: true,
+            },
+          },
+        } as ServerConfig;
+        const client = {
+          [WS_METHODS.subscribeServerConfig]: () => Stream.never,
+          [WS_METHODS.subscribeServerLifecycle]: () => Stream.fromQueue(readyEvents),
+          [WS_METHODS.serverDrainForUpdate]: () =>
+            Stream.fromEffect(Ref.update(drainCalls, (count) => count + 1)).pipe(
+              Stream.drain,
+              Stream.concat(Stream.never),
+            ),
+          [WS_METHODS.serverWatchRestartHold]: () =>
+            Stream.fromEffect(Ref.update(watchCalls, (count) => count + 1)).pipe(
+              Stream.drain,
+              Stream.concat(
+                Stream.make({
+                  work: [],
+                  runningTurns: [runningTurn],
+                } satisfies OrchestrationV2RestartHold),
+              ),
+            ),
+          [WS_METHODS.serverUpdateServerWithProgress]: () =>
+            Stream.fromEffect(
+              Deferred.succeed(handoffStarted, undefined).pipe(
+                Effect.as({
+                  type: "complete" as const,
+                  result: {
+                    targetVersion: "0.0.31",
+                    method: "boot-service" as const,
+                    updateId: "u-legacy",
+                  },
+                }),
+              ),
+            ),
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        });
+        const run: EnvironmentRegistry.EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+          Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+        const runStream: EnvironmentRegistry.EnvironmentRegistry["Service"]["runStream"] = (
+          _id,
+          stream,
+        ) => Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+        const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
+          run,
+          runStream,
+          followStream: runStream,
+          stateChanges: () => Stream.never,
+          retryNow: () => Effect.void,
+        } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+        const runtime = Atom.runtime(
+          Layer.mergeAll(
+            Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+            Layer.succeed(RpcPermissionGuard, { authorize: () => Effect.void }),
+            Layer.succeed(Persistence.EnvironmentCacheStore, {
+              loadServerConfig: () => Effect.succeedNone,
+            } as unknown as Persistence.EnvironmentCacheStore["Service"]),
+          ),
+        );
+        const atoms = createServerEnvironmentAtoms(runtime, {
+          initialConfigValueAtom: () => Atom.make(config),
+        });
+        const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (value) =>
+          Effect.sync(() => value.dispose()),
+        );
+
+        const pending = atoms.updateServer.run(registry, {
+          environmentId: TARGET.environmentId,
+          input: { targetVersion: "0.0.31" },
+        });
+        // Proceeds immediately to handoff because legacy servers only hold on `work`, not `runningTurns`.
+        yield* Deferred.await(handoffStarted);
+        expect(yield* Ref.get(drainCalls)).toBe(0);
+        expect(yield* Ref.get(watchCalls)).toBe(1);
+
+        yield* Queue.offer(readyEvents, {
+          version: 1,
+          sequence: 1,
+          type: "ready",
+          payload: {
+            at: "2026-09-01T00:00:00.000Z",
+            environment: { serverVersion: "0.0.31" },
+            updateOutcome: {
+              id: "u-legacy",
+              fromVersion: "0.0.30",
+              targetVersion: "0.0.31",
+              status: "committed",
+            },
+          },
+        } as Parameters<typeof matchesServerUpdateReadyEvent>[1]);
+
+        expect(AsyncResult.isSuccess(yield* Effect.promise(() => pending))).toBe(true);
+      }).pipe(Effect.scoped),
   );
 });

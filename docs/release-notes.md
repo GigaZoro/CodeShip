@@ -63,6 +63,12 @@
 - **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
 - Applying the preset leaves notification settings untouched, lists each setting it changed, and offers **Undo** (inline in Settings, in the confirmation toast on web and desktop, and as **Undo Calm preset** in the mobile command palette) to restore your prior values.
 
+## 2026-11-27 — Update drain barrier, pre-staging, and clean turn-boundary updates
+
+- Automatic updates now download and preflight the new CodeShip release while chats continue running, then enter a drain barrier before activating so no new turns, scheduled runs, or idle wakes start during handoff.
+- Manual updates from the sidebar, Settings, and the outdated-host banner now drain active work and answering turns cleanly at a turn boundary before restarting, holding new starts until the restart finishes or the user cancels.
+- New turns, background completions, and asynchronous delegations that arrive during a drain stay queued and start automatically if the drain is canceled or right after the restarted server boots, while approvals and `wait` delegations on active turns continue uninterrupted.
+
 ## 2026-11-27 — Stalled threads stand out
 
 - A working thread whose agent has sent nothing for 10 minutes reads **Stalled** in the thread list, its activity line and its Details status, with the time since its last event. The next event clears it, and Claude tools that report progress, such as a long build, keep it from stalling.

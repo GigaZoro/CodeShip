@@ -3417,6 +3417,8 @@ const catalog: MessageCatalog = {
   "Choices in every snooze menu, listed soonest first. Weekdays mean the next one after today.":
     "Варіанти в кожному меню відкладення, від найближчого. Дні тижня означають найближчий після сьогодні.",
   Choose: "Вибрати",
+  "Choose “Update when it finishes” to let these chats finish cleanly while new turns wait for the update.":
+    "Виберіть «Оновити після завершення», щоб ці чати спокійно завершилися, а нові ходи зачекали на оновлення.",
   "Choose {color} color": "Вибрати колір: {color}",
   "Choose a .kdl Niri config or a .conf/.lua Hyprland config.":
     "Виберіть конфігурацію Niri .kdl або конфігурацію Hyprland .conf/.lua.",
@@ -12855,12 +12857,16 @@ const catalog: MessageCatalog = {
   "The unsent message could not be restored.": "Не вдалося відновити ненадіслане повідомлення.",
   "The update download failed. Try Download update again.":
     "Не вдалося завантажити оновлення. Спробуйте «Завантажити оновлення» ще раз.",
+  "The update drains new work and installs once running chats and this work finish. Restarting now stops it.":
+    "Оновлення призупиняє нові запуски й встановлюється, коли активні чати та ці завдання завершаться. Перезапуск зараз зупинить їх.",
   "The update install failed. Try Restart to update again.":
     "Не вдалося встановити оновлення. Спробуйте «Перезапустити для оновлення» ще раз.",
   "The update installs once each of these chats has no tool call running, so none is cut halfway. Restarting now stops them.":
     "Оновлення встановиться, коли в жодному з цих чатів не виконуватиметься виклик інструмента, тож жоден не обірветься на півдорозі. Перезапуск зараз зупинить їх.",
   "The update installs once nothing listed here is running. Restarting now stops it.":
     "Оновлення встановиться, коли ніщо з переліченого тут не виконуватиметься. Перезапуск зараз зупинить це.",
+  "The update installs once running chats and background work finish. New turns wait until after the update. Restarting now stops them.":
+    "Оновлення встановиться, коли активні чати й фонові завдання завершаться. Нові ходи зачекають до завершення оновлення. Перезапуск зараз зупинить їх.",
   "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.":
     "Оновлення встановиться, коли ці завдання завершаться, навіть якщо чати тим часом почнуть нові. Перезапуск зараз зупинить їх.",
   "The update track did not change.": "Канал оновлень не змінився.",

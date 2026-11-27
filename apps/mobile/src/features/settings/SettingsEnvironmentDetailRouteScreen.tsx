@@ -260,7 +260,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                     {running ? (
                       <Text className="text-sm text-foreground-muted">
                         {isWaitingOnWork(updateState)
-                          ? waitingOnWorkText(updateState.waitingOn)
+                          ? waitingOnWorkText(updateState.waitingOn, updateState.waitingOnTurns)
                           : updateState.stage === "resuming"
                             ? t("Restarting and reconnecting…")
                             : t("Downloading update…")}

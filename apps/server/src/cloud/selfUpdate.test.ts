@@ -417,6 +417,60 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       );
     }),
   );
+
+  it.effect("pre-stages via prepare and activates without redownloading or re-preflighting", () =>
+    Effect.gen(function* () {
+      const stages: string[] = [];
+      const { selfUpdate, order } = yield* makeHarness();
+
+      const prepared = yield* selfUpdate.prepare({ targetVersion: "1.1.0" }, (stage) =>
+        Effect.sync(() => void stages.push(`prepare:${stage}`)),
+      );
+      expect(prepared.targetVersion).toBe("1.1.0");
+      expect(order).toEqual(["download", "extract", "preflight"]);
+      expect(stages).toEqual(["prepare:downloading"]);
+
+      // A second prepare for the same version hits the in-memory staged cache immediately.
+      const cached = yield* selfUpdate.prepare({ targetVersion: "1.1.0" });
+      expect(cached).toEqual(prepared);
+      expect(order).toEqual(["download", "extract", "preflight"]);
+
+      // Activating hands off directly without redownloading or rerunning preflight.
+      const result = yield* selfUpdate.activatePrepared(prepared, (stage) =>
+        Effect.sync(() => void stages.push(`activate:${stage}`)),
+      );
+      expect(result).toEqual({
+        targetVersion: "1.1.0",
+        method: "boot-service",
+        updateId: "launcher-id",
+      });
+      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      expect(stages).toEqual(["prepare:downloading", "activate:installing"]);
+    }),
+  );
+
+  it.effect(
+    "reuses a prepared runtime from update and resets inFlight when beforeHandoff fails",
+    () =>
+      Effect.gen(function* () {
+        const { selfUpdate, order } = yield* makeHarness();
+        const prepared = yield* selfUpdate.prepare({ targetVersion: "1.1.0" });
+        expect(order).toEqual(["download", "extract", "preflight"]);
+
+        const refused = yield* selfUpdate
+          .activatePrepared(prepared, undefined, undefined, () =>
+            Effect.fail(new ServerSelfUpdateError({ reason: "a chat is answering" })),
+          )
+          .pipe(Effect.flip);
+        expect(refused.reason).toBe("a chat is answering");
+        expect(order).toEqual(["download", "extract", "preflight"]);
+
+        // inFlight was reset, and update reuses the staged runtime without redownloading.
+        const result = yield* selfUpdate.update({ targetVersion: "1.1.0" });
+        expect(result.updateId).toBe("launcher-id");
+        expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      }),
+  );
 });
 
 /** An `lsof` listing in which no process runs a pinned runtime. */

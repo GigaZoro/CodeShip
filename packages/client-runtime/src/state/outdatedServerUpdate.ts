@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  OrchestrationV2RestartHoldTurn,
   OrchestrationV2RestartHoldWork,
   ServerSelfUpdateInput,
 } from "@t3tools/contracts";
@@ -70,6 +71,8 @@ export function createOutdatedServerUpdateCommand<E>(
       const setStage = (
         stage: ServerUpdateStage,
         waitingOn?: ReadonlyArray<OrchestrationV2RestartHoldWork>,
+        waitingOnTurns?: ReadonlyArray<OrchestrationV2RestartHoldTurn>,
+        draining?: boolean,
       ) =>
         Effect.sync(() => {
           currentStage = stage;
@@ -79,6 +82,8 @@ export function createOutdatedServerUpdateCommand<E>(
             fromVersion,
             targetVersion,
             ...(waitingOn === undefined ? {} : { waitingOn }),
+            ...(waitingOnTurns === undefined ? {} : { waitingOnTurns }),
+            ...(draining === undefined ? {} : { draining }),
           });
         });
       return setStage(currentStage).pipe(
