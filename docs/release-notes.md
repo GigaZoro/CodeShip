@@ -1,3 +1,8 @@
+## 2026-11-27 — Faster landing-turn tests and release-notes-only changes
+
+- Maintainers: the landing-turn tests now run as six files in parallel, so their `node --test` step takes about a minute instead of five, within the check budget's free slots. A new lint rule keeps each `.github/scripts` test file under 1,500 lines.
+- A change to `docs/release-notes.md` no longer marks the web app affected, so `vp run check:changed` and CI skip the web and scripts typechecks it never needed.
+
 ## 2026-11-27 — Auto mode matches model and reasoning effort to request complexity
 
 - New **Auto** threads start on a faster model (such as Sonnet or GPT-6.2 Sol) at low effort for short lookups, utility slash commands, and tiny mechanical edits, then upgrade monotonically to the configured coordinator model when a deeper request arrives.
