@@ -629,6 +629,7 @@ it.layer(
             Layer.mergeAll(
               Layer.mock(ServerConfig.ServerConfig)({
                 worktreesDir,
+                stateDir: baseDir,
               } as ServerConfig.ServerConfig["Service"]),
               ServerSettings.layerTest(),
               Layer.mock(ProjectService.ProjectService)({

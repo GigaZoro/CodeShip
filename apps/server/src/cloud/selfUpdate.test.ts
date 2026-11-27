@@ -1,6 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { type ManagedPolicyDocument, ServerSelfUpdateError } from "@t3tools/contracts";
+import {
+  DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
+  type ManagedPolicyDocument,
+  ServerSelfUpdateError,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";
@@ -493,10 +497,12 @@ it.layer(NodeServices.layer)("server self update", (it) => {
 
   it.effect("keeps preparing after the progress stream closes", () =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const releaseDownload = yield* Deferred.make<void>();
       const sawDownloading = yield* Deferred.make<void>();
       const accepted = yield* Deferred.make<void>();
-      const { selfUpdate, order } = yield* makeHarness({
+      const { selfUpdate, order, baseDir } = yield* makeHarness({
         beforeDownload: Deferred.await(releaseDownload),
         requestUpdate: () =>
           Effect.sync(() => {
@@ -524,6 +530,9 @@ it.layer(NodeServices.layer)("server self update", (it) => {
 
       yield* Deferred.succeed(releaseDownload, undefined);
       yield* Deferred.await(accepted);
+      // Wait for the detached prepare fiber's marker write before scoped cleanup deletes runtime/.
+      const markerPath = path.join(baseDir, "runtime", DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE);
+      yield* Effect.repeat(fs.exists(markerPath), { until: Boolean });
       expect(order).toEqual(["download", "extract", "preflight", "accept"]);
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason).toBe(
         "A server update is already in progress.",

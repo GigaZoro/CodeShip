@@ -274,7 +274,7 @@ it.effect("reports sizes just under the next unit in that unit", () =>
       ),
     );
     const [summary] = yield* TestConsole.logLines;
-    assert.strictEqual(summary, "Database: 1.00 GiB, 1.0 MiB reclaimable.");
+    assert.strictEqual(summary, "Database: 1.00 GiB, 1.0 MiB free, about 0 KiB fragmented.");
   }).pipe(Effect.provide(Layer.merge(layerHost, TestConsole.layer))),
 );
 

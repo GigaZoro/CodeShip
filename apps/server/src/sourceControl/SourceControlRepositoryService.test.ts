@@ -303,65 +303,6 @@ it.effect.each([
     ),
   ),
 );
-it.effect("reports clone progress from git's stderr and keeps its error text on failure", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const parent = yield* fs.makeTempDirectoryScoped({
-      prefix: "t3-source-control-clone-progress-",
-    });
-    const destinationPath = path.join(parent, "t3code");
-    const progress: Array<{ stage: string; percent: number | null; detail: string | null }> = [];
-
-    const stderrLines = [
-      "Cloning into 't3code'...",
-      "remote: Enumerating objects: 10, done.",
-      "Receiving objects:  40% (4/10), 1.00 MiB | 2.00 MiB/s",
-      "Receiving objects: 100% (10/10), 2.50 MiB | 2.00 MiB/s, done.",
-      "fatal: early EOF",
-      "fatal: unable to access 'https://user:s3c@ret@github.com/octocat/t3code.git/': could not resolve host",
-    ];
-    const error = yield* Effect.gen(function* () {
-      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
-      return yield* Effect.flip(
-        service.cloneRepository(
-          { remoteUrl: CLONE_URLS.sshUrl, destinationPath },
-          { onProgress: (line) => Effect.sync(() => void progress.push(line)) },
-        ),
-      );
-    }).pipe(
-      Effect.provide(
-        layer({
-          git: {
-            execute: (input) =>
-              Effect.gen(function* () {
-                for (const line of stderrLines) {
-                  yield* input.progress?.onStderrLine?.(line) ?? Effect.void;
-                }
-                return yield* new GitCommandError({
-                  operation: input.operation,
-                  command: "git",
-                  cwd: input.cwd,
-                  detail: "Git command exited with a non-zero status.",
-                  exitCode: 128,
-                });
-              }),
-          },
-        }),
-      ),
-    );
-
-    assert.deepStrictEqual(progress, [
-      { stage: "counting", percent: null, detail: null },
-      { stage: "receiving", percent: 40, detail: "1.00 MiB | 2.00 MiB/s" },
-      { stage: "receiving", percent: 100, detail: "2.50 MiB | 2.00 MiB/s" },
-    ]);
-    assert.strictEqual(
-      error.detail,
-      "fatal: early EOF fatal: unable to access 'https://github.com/octocat/t3code.git/': could not resolve host",
-    );
-  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
-);
 it.effect(
   "reports clone progress from git's stderr and the shape of its error text on failure",
   () =>

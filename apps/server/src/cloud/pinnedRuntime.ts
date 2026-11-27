@@ -1059,10 +1059,30 @@ const shellLauncherTargets = Effect.fn("cloud.pinned_runtime.shell_launcher_targ
     // It is named as `versions/<version>/t3`, and neither it nor its directory is a link.
     const entryDir = path.dirname(path.resolve(launcher));
     const parent = path.dirname(entryDir);
+    const realParent =
+      platform === "win32"
+        ? undefined
+        : yield* fs.realPath(parent).pipe(Effect.orElseSucceed(() => undefined));
+    const launcherIsLink =
+      platform === "win32"
+        ? false
+        : yield* fs.readLink(launcher).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
+    const entryDirIsLink =
+      platform === "win32"
+        ? false
+        : yield* fs.readLink(entryDir).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
     if (
       platform !== "win32" &&
       scriptTarget === undefined &&
-      (parent === versionsDir || parent === realVersionsDir) &&
+      !launcherIsLink &&
+      !entryDirIsLink &&
+      (parent === versionsDir || parent === realVersionsDir || realParent === realVersionsDir) &&
       target === path.join(realVersionsDir, path.basename(entryDir), path.basename(launcher))
     ) {
       continue;

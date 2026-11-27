@@ -126,6 +126,7 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
       ),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
     getShellSnapshot: () => linked.pipe(Effect.map((shell) => ({ threads: [shell] }) as never)),
+    listActiveShellIndex: () => Effect.succeed([]),
     sendToThread: (input) =>
       Ref.update(seen, (current) => ({ ...current, sends: [...current.sends, input] })).pipe(
         Effect.as({ run: run("running"), delivery: "started" } as never),
@@ -244,8 +245,9 @@ const boxProjects = (seen: Ref.Ref<Seen>) =>
  * OAuth. `linkSession` is filled in once A links, so B's fixture thread reads
  * as one that link started.
  */
-const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
-  servePeer(
+const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
+  const threads = boxThreads(seen, linkSession);
+  return servePeer(
     box,
     Layer.mergeAll(
       McpHttpServer.layerOrchestratorToolkit,
@@ -254,7 +256,7 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
     ).pipe(
       Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
       Layer.provide(NodeCrypto.layer),
-      Layer.provide(boxThreads(seen, linkSession)),
+      Layer.provide(threads),
       Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
       Layer.provide(boxLaunches(seen)),
       Layer.provide(
@@ -292,7 +294,10 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       ),
       Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     ),
+    Layer.empty,
+    { threads },
   );
+};
 
 const mcpClient = McpSchema.McpServerClient.of({
   clientId: 1,

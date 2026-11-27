@@ -91,7 +91,6 @@ const makeLaptop = Effect.gen(function* () {
   const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
   const answered = yield* Queue.unbounded<number>();
   const relay = yield* PeerThreadRelay.layer.pipe(
-    Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(
       Layer.effect(
         HttpClient.HttpClient,
@@ -101,6 +100,7 @@ const makeLaptop = Effect.gen(function* () {
         ),
       ).pipe(Layer.provide(FetchHttpClient.layer)),
     ),
+    Layer.provide(Layer.succeedContext(linking)),
     Layer.build,
   );
   return {

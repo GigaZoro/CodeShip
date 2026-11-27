@@ -113,9 +113,9 @@ it.effect("points to Labs only when the server hides the feedback tool", () =>
           Effect.fail(
             new McpBridge.AcpMcpBridgeError({ message: "fetch failed: connection refused" }),
           ),
-        stderr: `Could not reach the T3 Code server at ${runtimeState.origin}.`,
+        stderr: `Could not reach the T3.CodeShip server at ${runtimeState.origin}.`,
       },
-      { args: submit, running: false, stderr: "No running T3 Code server uses" },
+      { args: submit, running: false, stderr: "No running T3.CodeShip server uses" },
     ];
     for (const { args, running, call, stderr } of cases) {
       yield* running === false

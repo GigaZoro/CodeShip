@@ -858,7 +858,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           { name: "already-off", enabled: false },
         ],
         requireArg:
-          'exec --config mcp_servers={"augmenter"={enabled=false},"my.server"={enabled=false}} --config developer_instructions="Use',
+          '--config features.apps=false --config mcp_servers={"augmenter"={enabled=false},"my.server"={enabled=false}} --ephemeral',
       },
       (textGeneration) =>
         Effect.gen(function* () {
@@ -909,7 +909,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           { name: "my server", enabled: true },
         ],
         requireArg:
-          '--config features.apps=false --config mcp_servers={"my.server"={enabled=false},"my server"={enabled=false}} --config mcp_servers.my server.enabled=false --ephemeral',
+          '-c mcp_servers={"my.server"={"command"="echo","enabled"=false}} --config features.connectors=false --config features.plugins=false --config features.apps=false --config mcp_servers.my server.enabled=false --ephemeral',
       },
       (textGeneration) =>
         Effect.gen(function* () {

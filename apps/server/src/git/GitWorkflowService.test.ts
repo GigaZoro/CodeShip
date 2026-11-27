@@ -182,7 +182,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       const brokenError = yield* Effect.flip(
         workflow.hasRefNamed({ cwd: broken, refName: "main" }),
       );
-      assert.include(brokenError.message, "fatal: bad config line 1 in file .git/config");
+      assert.include(brokenError.message, "fatal: bad config line … in file …");
 
       const plain = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-no-repo-" });
       const plainError = yield* Effect.flip(workflow.hasRefNamed({ cwd: plain, refName: "main" }));

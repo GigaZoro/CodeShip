@@ -24,6 +24,8 @@ T3 Connect could not reach the host's tunnel (host is asleep/offline, T3.CodeShi
 - **Tailscale exit node**: Run `tailscale set --exit-node=` on the host or allow outbound 7844 on the exit node.
 - **Work VPN / firewall**: Allow outbound TCP/UDP 7844, or bypass T3 Connect by adding a direct Tailscale route ([Reach one machine several ways](./remote-access.md#reach-one-machine-several-ways)).
 
+<a id="the-tunnel-works-but-t3-code-does-not-answer"></a>
+
 ## The tunnel works, but T3.CodeShip does not answer
 
 The tunnel is up, but T3.CodeShip didn't respond on `127.0.0.1` (crashed, starting up, port changed, or `T3CODE_HOST` bound only a non-loopback IP).
@@ -58,6 +60,8 @@ The issue is on the client device's network:
 ## The clock is off
 
 T3 Connect uses short-lived signed proofs. Enable automatic date and time on both the host and client device, then retry.
+
+<a id="the-host-runs-an-older-t3-code"></a>
 
 ## The host runs an older T3.CodeShip
 

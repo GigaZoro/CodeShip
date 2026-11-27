@@ -214,6 +214,7 @@ fi
 globalThis.fetch = (url) => {
   const name = new URL(url).pathname.split("/").at(-1);
   fs.appendFileSync("requests", name + "\\n");
+  if (!fs.existsSync(name)) return Promise.resolve(new Response(null, { status: 404 }));
   return Promise.resolve(new Response(fs.readFileSync(name)));
 };`,
   );
@@ -337,7 +338,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         const offline = HttpClient.make((request) => {
           requests.push(request.url);
           return Effect.succeed(
-            HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
+            HttpClientResponse.fromWeb(request, new Response(null, { status: 403 })),
           );
         });
         yield* ensurePinnedRuntimeInstalled({

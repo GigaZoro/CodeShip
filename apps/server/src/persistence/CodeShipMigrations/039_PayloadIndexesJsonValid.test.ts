@@ -26,7 +26,8 @@ layer("039_PayloadIndexesJsonValid", (it) => {
       assert.deepStrictEqual(
         unguarded.map((row) => row.name),
         [
-          // Upstream migrations 84 and 65.
+          // Upstream migrations 107, 84 and 65.
+          "orchestration_v2_projection_messages_deferred_command_idx",
           "orchestration_v2_projection_runs_last_executed_idx",
           "orchestration_v2_provider_turns_codex_native_id_idx",
         ],

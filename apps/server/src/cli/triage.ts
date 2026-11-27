@@ -198,7 +198,10 @@ export const triageCommand = Command.make("triage", {
 
       const installed: Array<TriageAgent> = [];
       for (const agent of TRIAGE_AGENTS) {
-        if (yield* isCommandAvailable(agent.command, { cwd: session.sessionDir })) {
+        if (
+          (yield* isCommandAvailable(agent.command)) ||
+          (yield* isCommandAvailable(agent.command, { cwd: session.sessionDir }))
+        ) {
           installed.push(agent);
         }
       }
@@ -247,11 +250,18 @@ export const triageCommand = Command.make("triage", {
       const launchPrompt = buildTriageLaunchPrompt(promptFilePath);
       // The agent starts in the session directory, so a PATH match relative to this one would
       // be searched from there. Windows keeps the bare name for its .cmd shim handling.
-      const onPath =
-        (yield* HostProcess.Platform) === "win32"
+      const isWindows = (yield* HostProcess.Platform) === "win32";
+      const onCurrentPath = isWindows ? null : yield* resolveCommandPath(selected.command);
+      const onSessionPath =
+        isWindows || onCurrentPath !== null
           ? null
-          : yield* resolveCommandPath(selected.command);
-      const command = onPath === null ? selected.command : NodePath.resolve(onPath);
+          : yield* resolveCommandPath(selected.command, { cwd: sessionDir });
+      const command =
+        onCurrentPath !== null
+          ? NodePath.resolve(onCurrentPath)
+          : onSessionPath !== null
+            ? NodePath.resolve(sessionDir, onSessionPath)
+            : selected.command;
       const spawnSpec = yield* resolveSpawnCommand(
         command,
         [

@@ -2237,10 +2237,7 @@ it.effect.each([
             Effect.provide(
               Logger.layer([
                 Logger.make(({ message }) => {
-                  if (
-                    Array.isArray(message) &&
-                    message[0] === "Skipping missed schedule task run"
-                  ) {
+                  if (Array.isArray(message) && message[0] === "Skipping schedule task run") {
                     reportedSkips++;
                   }
                 }),
@@ -3918,6 +3915,13 @@ it.effect("an agent's report decides its occurrence, once, and only for its own 
           MemoryAdmission.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadShell: (threadId) =>
+              Effect.succeed({
+                id: threadId,
+                projectId: project,
+                deletedAt: null,
+                archivedAt: null,
+              } as never),
             sendToThread: () => Effect.succeed({} as never),
           }),
           layerSharedTaskDependencies(),

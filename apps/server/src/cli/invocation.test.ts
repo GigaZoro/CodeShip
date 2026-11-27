@@ -21,8 +21,9 @@ const isWindows = HostProcess.Platform.defaultValue() === "win32";
 it.layer(NodeServices.layer)("root CLI commands", (it) => {
   const makePathDirectory = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     return yield* fs.makeTempDirectoryScoped({
-      directory: pathEntryTempRoot(),
+      directory: isWindows ? pathEntryTempRoot() : path.resolve(pathEntryTempRoot()),
       prefix: "invocation-",
     });
   });

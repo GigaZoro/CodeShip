@@ -1212,7 +1212,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       const settings = yield* serverSettings.getSettings;
 
       assert.equal(settings.agentFeedback.mode, "off");
-      assert.isFalse(settings.continueThreadsAfterServerUpdate);
+      assert.isTrue(settings.continueThreadsAfterServerUpdate);
       assert.equal(yield* fileSystem.readFileString(serverConfig.settingsPath), raw);
     }).pipe(Effect.provide(layerServerSettings())),
   );

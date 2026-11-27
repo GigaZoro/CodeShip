@@ -436,6 +436,7 @@ describe("environment theme", () => {
       Effect.gen(function* () {
         const resumeProbes = yield* Deferred.make<void>();
         let linkedEntry: string | undefined;
+        let moveBeforeListing: Effect.Effect<void> | undefined;
         let holdProbes = false;
         yield* withEnvironmentThemes(
           { "nightfall.json": encodeThemeFile(NIGHTFALL_THEME) },
@@ -470,10 +471,12 @@ describe("environment theme", () => {
               ["Shared Light"],
             );
 
+            // Move the grandparent out of the way right before the triggered refresh lists the directory,
+            // so both path-based (macOS FSEvents) and inode-based watchers observe the NotFound read.
+            moveBeforeListing = Effect.orDie(fs.rename(active, previous));
             holdProbes = true;
-            yield* fs.rename(active, previous);
             yield* fs.writeFileString(
-              path.join(previous, "shared", "themes", "nightfall.json"),
+              path.join(target, "nightfall.json"),
               encodeThemeFile(NIGHTFALL_THEME),
             );
             assert.deepEqual(yield* Queue.take(snapshots), []);
@@ -485,6 +488,13 @@ describe("environment theme", () => {
             wrapFileSystem: (fs) =>
               FileSystem.FileSystem.of({
                 ...fs,
+                readDirectory: (directory, options) =>
+                  Effect.suspend(() => {
+                    const move = directory === linkedEntry ? moveBeforeListing : undefined;
+                    if (move === undefined) return fs.readDirectory(directory, options);
+                    moveBeforeListing = undefined;
+                    return move.pipe(Effect.andThen(fs.readDirectory(directory, options)));
+                  }),
                 stat: (entry) =>
                   Effect.suspend(() =>
                     entry === linkedEntry && holdProbes

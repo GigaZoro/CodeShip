@@ -227,13 +227,30 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
         const hostRunner = yield* ProcessRunner.make();
         const probes: string[] = [];
         const downloads: string[] = [];
+        const databasePath = path.join(baseDir, "state.sqlite");
         const runner = ProcessRunner.ProcessRunner.of({
           run: (command) => {
             if (command.command === "sh") return hostRunner.run(command);
-            assert.deepStrictEqual(command.args, ["--version"]);
+            assert.deepStrictEqual(command.args, [
+              "__service-preflight",
+              "--database-path",
+              databasePath,
+              "--launcher-protocol",
+              String(SERVICE_LAUNCHER_PROTOCOL),
+            ]);
             assert.equal(command.env?.T3CODE_VERIFY_INSTALL, "1");
             probes.push(command.command);
-            return Effect.succeed(processOutput(code, `t3 v${version}\n`));
+            return Effect.succeed(
+              processOutput(
+                code,
+                JSON.stringify({
+                  status: "ready",
+                  version,
+                  launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                  migratesDatabase: false,
+                }),
+              ),
+            );
           },
         });
         const result = yield* runUpdate({
@@ -278,8 +295,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
         assert.isFalse(yield* fs.exists(previousDir));
         assert.equal(yield* fs.readFileString(path.join(target, entryName)), "fixture");
         if (code === 78) {
-          assert.lengthOf(downloads, 1);
-          assert.match(downloads[0]!, /SHA256SUMS$/);
+          assert.deepStrictEqual(downloads, []);
           assert.equal(result._tag, "Failure");
         } else {
           assert.deepStrictEqual(downloads, []);

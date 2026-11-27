@@ -858,7 +858,9 @@ it.effect("restarts the hub with an Android SDK installed after it started", () 
               pid: ChildProcessSpawner.ProcessId(123),
               stdout: Stream.empty,
               stderr: Stream.empty,
-              all: Stream.empty,
+              all: Stream.make("  Local:   http://localhost:1/?token=hub-token\n").pipe(
+                Stream.encodeText,
+              ),
               exitCode: Effect.never,
               isRunning: Effect.succeed(true),
               kill: () => Effect.void,

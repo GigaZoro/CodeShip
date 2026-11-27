@@ -106,7 +106,14 @@ it.effect.each([3, SERVICE_LAUNCHER_PROTOCOL])(
       const sentPrepared = yield* Deferred.make<void>();
       const send = host.send;
       host.send = (message, callback) => {
-        Deferred.doneUnsafe(sentPrepared, Effect.void);
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "prepared"
+        ) {
+          Deferred.doneUnsafe(sentPrepared, Effect.void);
+        }
         return send(message, callback);
       };
       const client = yield* makeClient(host, "1.1.0").pipe(
