@@ -63,6 +63,8 @@ const MAX_HOST_ROWS = 256;
  * continue from their transcript instead.
  */
 const DETACH_DRAIN_TIMEOUT = Duration.seconds(2);
+/** Answers, interrupts and steers queued for the process reach it before its output is held. */
+const DETACH_DELIVER_TIMEOUT = Duration.seconds(1);
 
 class SessionHostError extends Data.TaggedError("SessionHostError")<{
   readonly detail: string;
@@ -131,10 +133,12 @@ export interface DetachedHostSummary {
 
 /** What the session on a host's process does before the host is detached for an update. */
 export interface DetachPreparation {
-  /** Every thread the process serves; each one's run is taken over after the restart. */
-  readonly threadIds: ReadonlyArray<ThreadId>;
+  /** Completes once everything queued for the process's threads was written to it. */
+  readonly deliver: Effect.Effect<void>;
   /** Completes once every event from output the session already got is persisted. */
   readonly drain: Effect.Effect<void>;
+  /** Read after the drain: the threads whose runs the next server takes over; none stops it. */
+  readonly takenOverThreads: Effect.Effect<ReadonlyArray<ThreadId>>;
 }
 
 export interface DetachAllForUpdateOptions {
@@ -1081,42 +1085,66 @@ const make = Effect.gen(function* () {
       yield* retireRow(tracked.id);
       return undefined;
     }
-    // Output the session got before this point must be persisted; the next server replays the rest.
-    const replayFromSeq = tracked.handle.holdForDetach();
+    const stop = (reason: string) =>
+      Effect.logWarning("A session host is stopped instead of detached for the update", {
+        sessionHostId: tracked.id,
+        reason,
+      }).pipe(Effect.andThen(terminate(tracked.id)), Effect.as(undefined));
+    // The broker keeps its child only for a detach it got while attached.
+    if (tracked.handle.info === null) return yield* stop("not_attached");
     const preparation: DetachPreparation | undefined =
       prepare === undefined
-        ? { threadIds: [tracked.threadId], drain: Effect.void }
+        ? {
+            deliver: Effect.void,
+            drain: Effect.void,
+            takenOverThreads: Effect.succeed([tracked.threadId]),
+          }
         : yield* prepare(tracked.providerSessionId);
-    const drained =
-      preparation === undefined || preparation.threadIds.length === 0
-        ? false
-        : yield* preparation.drain.pipe(
-            Effect.timeoutOption(DETACH_DRAIN_TIMEOUT),
-            Effect.map(Option.isSome),
-            Effect.catchCause((cause) =>
-              Effect.logError("A session host's output could not be drained", cause).pipe(
-                Effect.as(false),
-              ),
-            ),
-          );
-    if (!drained || preparation === undefined) {
-      yield* Effect.logWarning("A session host is stopped instead of detached for the update", {
-        sessionHostId: tracked.id,
-        reason: preparation === undefined ? "no_session" : "drain_incomplete",
-      });
-      yield* terminate(tracked.id);
-      return undefined;
+    if (preparation === undefined) return yield* stop("no_session");
+    const within = (step: Effect.Effect<void>, timeout: Duration.Duration, failure: string) =>
+      step.pipe(
+        Effect.timeoutOption(timeout),
+        Effect.map(Option.isSome),
+        Effect.catchCause((cause) => Effect.logError(failure, cause).pipe(Effect.as(false))),
+      );
+    if (
+      !(yield* within(
+        preparation.deliver,
+        DETACH_DELIVER_TIMEOUT,
+        "What was queued for a session host could not be delivered",
+      ))
+    ) {
+      return yield* stop("delivery_incomplete");
     }
-    for (const threadId of preparation.threadIds) detachedThreads.add(threadId);
+    // Output the session got before this point must be persisted; the next server replays the rest.
+    const replayFromSeq = tracked.handle.holdForDetach();
+    if (
+      !(yield* within(
+        preparation.drain,
+        DETACH_DRAIN_TIMEOUT,
+        "A session host's output could not be drained",
+      ))
+    ) {
+      return yield* stop("drain_incomplete");
+    }
+    const threadIds = yield* preparation.takenOverThreads.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("Could not tell which runs a session host keeps", cause).pipe(
+          Effect.as([]),
+        ),
+      ),
+    );
+    if (threadIds.length === 0) return yield* stop("not_adoptable");
+    for (const threadId of threadIds) detachedThreads.add(threadId);
     detachedProviderSessions.add(tracked.providerSessionId);
     tracked.handle.markDetachingForUpdate();
     yield* Effect.promise(() => tracked.handle.detach());
     clearTrackedHost(tracked);
-    yield* markDetachedForUpdate(tracked.id, replayFromSeq, preparation.threadIds);
+    yield* markDetachedForUpdate(tracked.id, replayFromSeq, threadIds);
     return {
       id: tracked.id,
       providerSessionId: tracked.providerSessionId,
-      threadIds: preparation.threadIds,
+      threadIds,
       driver: tracked.driver,
       lastAckedSeq: replayFromSeq,
     };

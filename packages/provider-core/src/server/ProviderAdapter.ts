@@ -559,7 +559,8 @@ export interface ProviderAdapterV2EventSubscription {
    * Sets what runs when a detach barrier reaches this reader, after every earlier event and
    * before the barrier passes, so text the reader held back is stored before the replay point.
    */
-  readonly setBarrierFlush?: (flush: Effect.Effect<void>) => Effect.Effect<void>;
+  /** The flush yields false when held output could not be stored; the process is then not kept. */
+  readonly setBarrierFlush?: (flush: Effect.Effect<boolean>) => Effect.Effect<void>;
 }
 
 export interface ProviderAdapterV2HistoricalContext {

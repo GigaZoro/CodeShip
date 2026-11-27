@@ -243,13 +243,10 @@ const startApprovalTurn = Effect.fn("DetachedCodexAdoptionTest.startApprovalTurn
 const shutDownForUpdate = Effect.fn("DetachedCodexAdoptionTest.shutDownForUpdate")(function* (
   threads: ReadonlyArray<ApprovalThread>,
 ) {
-  const sessionHost = yield* SessionHostService.SessionHostService;
   const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  const detached = yield* sessionHost.detachAllForUpdate({
-    prepare: providerSessions.prepareDetachForUpdate,
-  });
+  const detached = yield* recovery.detachForUpdate(providerSessions.prepareDetachForUpdate);
   assert.deepEqual(
     detached.map((host) => host.threadIds.toSorted()),
     [threads.map((thread) => thread.threadId).toSorted()],

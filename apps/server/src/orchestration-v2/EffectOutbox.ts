@@ -148,20 +148,12 @@ export const PROCESS_BOUND_EFFECT_TYPES = [
   "runtime-request.respond",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
-/**
- * Process-bound effects still deliverable to a provider process that outlived the server, such as
- * a detached session host. A steer is kept only while unsent: a running one may have reached it.
- */
-const KEPT_FOR_SURVIVING_PROCESS_EFFECT_TYPES = [
+/** What a provider process kept through a planned update must get before it is detached. */
+export const DELIVERED_BEFORE_DETACH_EFFECT_TYPES = [
   "runtime-request.respond",
   "provider-turn.interrupt",
   "provider-turn.steer",
 ] as const satisfies ReadonlyArray<(typeof PROCESS_BOUND_EFFECT_TYPES)[number]>;
-
-const REQUEUED_FOR_SURVIVING_PROCESS_EFFECT_TYPES = [
-  "runtime-request.respond",
-  "provider-turn.interrupt",
-] as const satisfies ReadonlyArray<(typeof KEPT_FOR_SURVIVING_PROCESS_EFFECT_TYPES)[number]>;
 
 const PROVIDER_START_EFFECT_TYPES = [
   "provider-turn.start",
@@ -268,10 +260,19 @@ export interface EffectOutboxV2Shape {
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
   /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
   readonly awaitSettled: (effectId: string) => Effect.Effect<void, EffectOutboxError>;
-  /** `preservedThreadIds` are threads whose provider process outlived the server. */
-  readonly reconcileAfterProcessLoss: (input: {
-    readonly preservedThreadIds: ReadonlySet<ThreadId>;
-  }) => Effect.Effect<{ readonly requeued: number; readonly cancelled: number }, EffectOutboxError>;
+  /** Pending or running effects of these types on these threads, oldest first. */
+  readonly listUnsettled: (input: {
+    readonly threadIds: ReadonlyArray<ThreadId>;
+    readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+  }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
+  /** From now on only effects of these types are claimed; a shutdown uses it to deliver and stop. */
+  readonly restrictClaimsTo: (
+    effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>,
+  ) => Effect.Effect<void>;
+  readonly reconcileAfterProcessLoss: Effect.Effect<
+    { readonly requeued: number; readonly cancelled: number },
+    EffectOutboxError
+  >;
   readonly claimNext: (input: {
     readonly workerId: string;
     readonly excludeRestartContinuations?: boolean;
@@ -349,6 +350,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const available = yield* Queue.dropping<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
     const settledSignals = new Map<string, Deferred.Deferred<void>>();
+    let claimableTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]> | undefined;
     const signalSettled = (effectIds: ReadonlyArray<string>) =>
       Effect.forEach(
         effectIds,
@@ -378,6 +380,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND ${
+          claimableTypes === undefined
+            ? sql`1 = 1`
+            : sql`candidate.effect_type IN ${sql.in(claimableTypes)}`
+        }
         AND NOT EXISTS (
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
@@ -579,24 +586,28 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         }
         yield* signalSettled([effectId]);
       }),
-      reconcileAfterProcessLoss: Effect.fn("EffectOutbox.reconcileAfterProcessLoss")(
-        function* ({ preservedThreadIds }) {
-          const now = DateTime.formatIso(yield* DateTime.now);
-          const preserved = [...preservedThreadIds];
-          const keptRows = yield* sql<{ readonly effect_id: string }>`
-          UPDATE orchestration_v2_effect_outbox
-          SET
-            status = 'pending',
-            lease_owner = NULL,
-            available_at = ${now},
-            updated_at = ${now},
-            last_error = 'Requeued for the provider process that outlived the previous server.'
-          WHERE status = 'running'
-            AND thread_id IN ${sql.in(preserved)}
-            AND effect_type IN ${sql.in(REQUEUED_FOR_SURVIVING_PROCESS_EFFECT_TYPES)}
-          RETURNING effect_id
-        `;
-          const cancelledRows = yield* sql<{ readonly effect_id: string }>`
+      listUnsettled: Effect.fn("EffectOutbox.listUnsettled")(
+        function* ({ threadIds, effectTypes }) {
+          if (threadIds.length === 0 || effectTypes.length === 0) return [];
+          const rows = yield* sql<{ readonly effect_id: string }>`
+            SELECT effect_id
+            FROM orchestration_v2_effect_outbox
+            WHERE status IN ('pending', 'running')
+              AND thread_id IN ${sql.in(threadIds)}
+              AND effect_type IN ${sql.in(effectTypes)}
+            ORDER BY rowid ASC
+          `.pipe(NodeSqliteClient.readOnly);
+          return rows.map(({ effect_id }) => effect_id);
+        },
+        Effect.mapError((cause) => new EffectOutboxError({ operation: "list-unsettled", cause })),
+      ),
+      restrictClaimsTo: (effectTypes) =>
+        Effect.sync(() => {
+          claimableTypes = [...effectTypes];
+        }).pipe(Effect.andThen(notifyAvailable())),
+      reconcileAfterProcessLoss: Effect.gen(function* () {
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const cancelledRows = yield* sql<{ readonly effect_id: string }>`
           UPDATE orchestration_v2_effect_outbox
           SET
             status = 'cancelled',
@@ -606,14 +617,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             last_error = 'Cancelled because the server process ended before the effect completed.'
           WHERE status IN ('pending', 'running')
             AND effect_type IN ${sql.in(PROCESS_BOUND_EFFECT_TYPES)}
-            AND NOT (
-              status = 'pending'
-              AND thread_id IN ${sql.in(preserved)}
-              AND effect_type IN ${sql.in(KEPT_FOR_SURVIVING_PROCESS_EFFECT_TYPES)}
-            )
           RETURNING effect_id
         `;
-          const requeuedRows = yield* sql<{ readonly effect_id: string }>`
+        const requeuedRows = yield* sql<{ readonly effect_id: string }>`
           UPDATE orchestration_v2_effect_outbox
           SET
             status = 'pending',
@@ -625,10 +631,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             AND effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
           RETURNING effect_id
         `;
-          const requeued = keptRows.length + requeuedRows.length;
-          if (requeued > 0) yield* notifyAvailable(requeued);
-          return { requeued, cancelled: cancelledRows.length };
-        },
+        if (requeuedRows.length > 0) yield* notifyAvailable(requeuedRows.length);
+        return { requeued: requeuedRows.length, cancelled: cancelledRows.length };
+      }).pipe(
         Effect.mapError(
           (cause) => new EffectOutboxError({ operation: "reconcile-process-loss", cause }),
         ),

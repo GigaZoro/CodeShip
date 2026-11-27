@@ -146,6 +146,15 @@ export class ProviderSessionReleaseError extends Schema.TaggedError<ProviderSess
   }
 }
 
+export class ProviderSessionDetachDrainError extends Schema.TaggedError<ProviderSessionDetachDrainError>()(
+  "ProviderSessionDetachDrainError",
+  { providerSessionId: ProviderSessionId },
+) {
+  override get message(): string {
+    return `Output held for provider session ${this.providerSessionId} could not be stored before it detached.`;
+  }
+}
+
 export class ProviderSessionActivityError extends Schema.TaggedError<ProviderSessionActivityError>()(
   "ProviderSessionActivityError",
   {
@@ -247,7 +256,14 @@ export interface ProviderSessionManagerV2Shape {
    */
   readonly prepareDetachForUpdate: (
     providerSessionId: string,
-  ) => Effect.Effect<SessionHostService.DetachPreparation | undefined>;
+  ) => Effect.Effect<SessionDetachPreparation | undefined>;
+}
+
+export interface SessionDetachPreparation {
+  /** Every thread the process serves. */
+  readonly threadIds: ReadonlyArray<ThreadId>;
+  /** Completes once every event from output the session already got is persisted. */
+  readonly drain: Effect.Effect<void, ProviderSessionDetachDrainError>;
 }
 
 export class ProviderSessionManagerV2 extends Context.Service<
@@ -293,8 +309,8 @@ type ProviderSessionEventSignal =
       readonly type: "failure";
       readonly cause: Cause.Cause<ProviderAdapter.ProviderAdapterV2Error>;
     }
-  /** Completed once the subscriber has handled every earlier event or stopped reading. */
-  | { readonly type: "barrier"; readonly passed: Deferred.Deferred<void> };
+  /** True once the subscriber has handled and stored every earlier event or stopped reading. */
+  | { readonly type: "barrier"; readonly passed: Deferred.Deferred<boolean> };
 
 export interface ProviderSessionManagerV2LayerOptions {
   readonly idleTimeoutMs?: number;
@@ -688,7 +704,7 @@ export const layerWithOptions = (
         Effect.forEach(
           signals,
           (signal) =>
-            signal.type === "barrier" ? Deferred.succeed(signal.passed, undefined) : Effect.void,
+            signal.type === "barrier" ? Deferred.succeed(signal.passed, true) : Effect.void,
           { discard: true },
         );
 
@@ -2167,7 +2183,7 @@ export const layerWithOptions = (
               ),
             ),
           );
-          let barrierFlush: Effect.Effect<void> = Effect.void;
+          let barrierFlush: Effect.Effect<boolean> = Effect.succeed(true);
           // One signal per pull: a barrier is taken only once the reader asks for the next event.
           const nextEvent: Effect.Effect<
             ProviderAdapter.ProviderAdapterV2Event,
@@ -2179,7 +2195,8 @@ export const layerWithOptions = (
                   return Effect.succeed(signal.event);
                 case "barrier":
                   return Effect.suspend(() => barrierFlush).pipe(
-                    Effect.ensuring(Deferred.succeed(signal.passed, undefined)),
+                    Effect.flatMap((stored) => Deferred.succeed(signal.passed, stored)),
+                    Effect.ensuring(Deferred.succeed(signal.passed, false)),
                     Effect.andThen(Effect.suspend(() => nextEvent)),
                   );
                 case "failure":
@@ -2188,7 +2205,7 @@ export const layerWithOptions = (
             }),
           );
           const events = Stream.fromEffectRepeat(nextEvent).pipe(Stream.ensuring(close));
-          const setBarrierFlush = (flush: Effect.Effect<void>) =>
+          const setBarrierFlush = (flush: Effect.Effect<boolean>) =>
             Effect.sync(() => {
               barrierFlush = flush;
             });
@@ -2663,13 +2680,18 @@ export const layerWithOptions = (
               (yield* Ref.get(entry.eventSubscribers)).values(),
               (queue) =>
                 Effect.gen(function* () {
-                  const passed = yield* Deferred.make<void>();
+                  const passed = yield* Deferred.make<boolean>();
                   const queued = yield* Queue.offer(queue, { type: "barrier", passed });
-                  if (!queued) yield* Deferred.succeed(passed, undefined);
+                  if (!queued) yield* Deferred.succeed(passed, true);
                   return passed;
                 }),
             );
-            yield* Effect.forEach(barriers, Deferred.await, { discard: true });
+            const passed = yield* Effect.forEach(barriers, Deferred.await);
+            if (passed.includes(false)) {
+              return yield* new ProviderSessionDetachDrainError({
+                providerSessionId: entry.runtime.providerSessionId,
+              });
+            }
           });
           return { threadIds: [...entry.attachedThreadIds], drain };
         });

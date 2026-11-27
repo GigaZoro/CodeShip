@@ -86,6 +86,7 @@ import type {
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexSchema from "effect-codex-app-server/schema";
+import type { CodexRequestHandlerWaitpoint } from "effect-codex-app-server/protocol";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -1490,7 +1491,10 @@ interface PendingCodexSubagentTurnStarted {
   readonly startedAt: DateTime.Utc;
 }
 
-type PendingCodexRuntimeRequest =
+/** The waitpoint is answered before the answer is handed over, so a detach drain waits for it. */
+type PendingCodexRuntimeRequest = {
+  readonly waitpoint: CodexRequestHandlerWaitpoint;
+} & (
   | {
       readonly type: "approval";
       readonly requestKind: ProviderRequestKind;
@@ -1499,7 +1503,8 @@ type PendingCodexRuntimeRequest =
   | {
       readonly type: "user_input";
       readonly answers: Deferred.Deferred<ProviderUserInputAnswers, never>;
-    };
+    }
+);
 
 type CodexWebSearchItem = {
   readonly id: string;
@@ -4814,6 +4819,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
             yield* Deferred.await(barrier);
           }).pipe(Effect.ensuring(Effect.sync(() => outputBarriers.delete(id))));
+          // Each request read before the barrier has emitted its events, or its answer is written.
+          yield* client.awaitRequestHandlersParked;
+          yield* client.flushOutgoing;
           yield* agentMessageDeltas.flush;
           yield* reasoningDeltas.flush;
           yield* planDeltas.flush;
@@ -5738,10 +5746,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 : { prompt: payload.reason ?? payload.command }),
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "command",
                 decision,
               });
@@ -5764,6 +5774,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -5810,10 +5821,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }) ?? null,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "file-change",
                 decision,
               });
@@ -5836,6 +5849,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -5873,10 +5887,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ...(payload.reason === undefined ? {} : { prompt: payload.reason }),
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind,
                 decision,
               });
@@ -5899,6 +5915,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -5955,10 +5972,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               options: described.options,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "mcp-elicitation",
                 decision,
               });
@@ -5981,6 +6000,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -6019,10 +6039,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               prompt: payload.reason ?? payload.command.join(" "),
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "command",
                 decision,
               });
@@ -6045,6 +6067,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -6087,10 +6110,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               prompt: codexFileChangeApprovalPrompt(payload) ?? null,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "file-change",
                 decision,
               });
@@ -6113,6 +6138,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -6148,10 +6174,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               questions: payload.questions,
             });
             const answers = yield* Deferred.make<ProviderUserInputAnswers, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "user_input",
+                waitpoint,
                 answers,
               });
               return updated;
@@ -6173,6 +6201,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(answers).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -8325,6 +8354,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ),
                   });
                 }
+                yield* pending.waitpoint.answer;
                 yield* Deferred.succeed(pending.answers, requestInput.answers);
                 return;
               }
@@ -8337,6 +8367,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ),
                 });
               }
+              yield* pending.waitpoint.answer;
               yield* Deferred.succeed(pending.decision, requestInput.decision);
             },
             (effect, requestInput) =>

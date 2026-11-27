@@ -1045,7 +1045,7 @@ it.effect.each(["paragraph", "turn"] as const)(
       const fullText = "First paragraph.\n\nAn unfinished tail";
       const stored = yield* Ref.make<ReadonlyArray<string>>([]);
       const consumed = yield* Deferred.make<void>();
-      const barrierFlush = yield* Deferred.make<Effect.Effect<void>>();
+      const barrierFlush = yield* Deferred.make<Effect.Effect<boolean>>();
       const now = DateTime.makeUnsafe("2026-11-27T12:00:00.000Z");
       const streamingEvent = {
         type: "turn_item.updated",
@@ -1123,7 +1123,7 @@ it.effect.each(["paragraph", "turn"] as const)(
                 Stream.concat(Stream.never),
               ),
               close: Effect.void,
-              setBarrierFlush: (flush: Effect.Effect<void>) =>
+              setBarrierFlush: (flush: Effect.Effect<boolean>) =>
                 Deferred.succeed(barrierFlush, flush).pipe(Effect.asVoid),
             }),
             startTurn: () => Effect.void,
@@ -1161,7 +1161,7 @@ it.effect.each(["paragraph", "turn"] as const)(
         yield* Deferred.await(consumed);
         assert.notInclude(yield* Ref.get(stored), fullText);
         // A detach barrier runs the flush between two pulls, as the session manager does.
-        yield* yield* Deferred.await(barrierFlush);
+        assert.isTrue(yield* yield* Deferred.await(barrierFlush));
         assert.strictEqual((yield* Ref.get(stored)).at(-1), fullText);
       }).pipe(Effect.scoped, Effect.provide(layerTest));
     }),

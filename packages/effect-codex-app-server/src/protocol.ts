@@ -8,6 +8,7 @@ import * as FiberMap from "effect/FiberMap";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
@@ -561,10 +562,10 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     // One item per pull, so a flush marker is taken only after every line before it is written.
     yield* Stream.fromQueue(outgoing).pipe(
       Stream.rechunk(1),
-      Stream.filterEffect((item) =>
+      Stream.filterMapEffect((item) =>
         typeof item === "string"
-          ? Effect.succeed(true)
-          : Deferred.succeed(item, undefined).pipe(Effect.as(false)),
+          ? Effect.succeed(Result.succeed(item))
+          : Deferred.succeed(item, undefined).pipe(Effect.as(Result.fail(item))),
       ),
       Stream.run(options.stdio.stdout()),
       Effect.catch((cause) =>

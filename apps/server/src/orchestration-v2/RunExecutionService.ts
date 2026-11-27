@@ -1587,7 +1587,14 @@ export const layer: Layer.Layer<
               yield* Effect.forEach(held, (event) => storeAcceptedEvent(event, (event) => event), {
                 discard: true,
               });
-            }),
+            }).pipe(
+              Effect.as(true),
+              Effect.catchCause((cause) =>
+                Effect.logError("Held assistant text could not be stored", cause).pipe(
+                  Effect.as(false),
+                ),
+              ),
+            ),
           ) ?? Effect.void
         );
         const providerEventFiber = yield* eventSubscription.events.pipe(

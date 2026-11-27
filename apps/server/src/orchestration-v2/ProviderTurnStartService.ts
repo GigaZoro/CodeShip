@@ -351,7 +351,10 @@ export interface ProviderTurnStartServiceV2Shape {
    * False when its session is gone or was not taken over.
    */
   readonly releaseAdoptedOutput: (providerSessionId: ProviderSessionId) => Effect.Effect<boolean>;
-  /** Closes a session whose takeover failed, which ends its process and fails runs it adopted. */
+  /**
+   * Ends a session whose takeover failed the way a server shutdown does: its process ends and
+   * runs it adopted stay running for restart recovery.
+   */
   readonly abandonAdoption: (providerSessionId: ProviderSessionId) => Effect.Effect<void>;
   /** Ends a run still `starting` as failed with the cause; a no-op once it left `starting`. */
   readonly failUnstartedRun: (input: {
@@ -3282,12 +3285,19 @@ export const layer: Layer.Layer<
       }),
       abandonAdoption: Effect.fn("ProviderTurnStartServiceV2.abandonAdoption")(
         (providerSessionId: ProviderSessionId) =>
-          providerSessions.close(providerSessionId).pipe(
-            Effect.ignore({
-              log: "Error",
-              message: "Could not close a provider session whose takeover failed.",
-            }),
-          ),
+          // Like a server shutdown, so adopted runs are left to restart recovery, not failed.
+          providerSessions
+            .release({
+              providerSessionId,
+              reason: "server_shutdown",
+              detail: "The provider process could not be taken over after the update.",
+            })
+            .pipe(
+              Effect.ignore({
+                log: "Error",
+                message: "Could not close a provider session whose takeover failed.",
+              }),
+            ),
       ),
       failUnstartedRun,
       start: Effect.fn("ProviderTurnStartService.start")(

@@ -4534,6 +4534,7 @@ it.effect("ProviderSessionManagerV2 lets a run store held-back text before a dra
       yield* subscription.setBarrierFlush!(
         Deferred.succeed(flushStarted, undefined).pipe(
           Effect.andThen(Deferred.await(mayFinishFlush)),
+          Effect.as(true),
         ),
       );
       yield* subscription.events.pipe(Stream.runDrain, Effect.forkScoped);
@@ -4545,6 +4546,30 @@ it.effect("ProviderSessionManagerV2 lets a run store held-back text before a dra
       assert.isUndefined(drained.pollUnsafe());
       yield* Deferred.succeed(mayFinishFlush, undefined);
       yield* Fiber.join(drained);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        layerTest({ state, idleTimeoutMs: 60_000, drainForDetach: Effect.succeed(0) }),
+      ),
+    );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 fails a drain when a run could not store held-back text", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const { manager, providerSessionId, runtime } = yield* openDrainableSession(
+        "provider-session-manager-drain-flush-failed",
+      );
+      const subscription = yield* runtime.subscribeEvents!;
+      yield* subscription.setBarrierFlush!(Effect.succeed(false));
+      yield* subscription.events.pipe(Stream.runDrain, Effect.forkScoped);
+
+      const preparation = yield* manager.prepareDetachForUpdate(providerSessionId);
+      const error = yield* Effect.flip(preparation!.drain);
+      // Without the held-back text stored, the replay point would skip it, so the process is stopped.
+      assert.equal(error._tag, "ProviderSessionDetachDrainError");
     }).pipe(
       Effect.scoped,
       Effect.provide(

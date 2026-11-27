@@ -3131,10 +3131,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         ]);
         if (replayed) {
           assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "crashed-worker" })));
-          assert.equal(
-            (yield* outbox.reconcileAfterProcessLoss({ preservedThreadIds: new Set() })).requeued,
-            1,
-          );
+          assert.equal((yield* outbox.reconcileAfterProcessLoss).requeued, 1);
         }
 
         const layerExecutor = Layer.succeed(
@@ -3354,13 +3351,10 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         ]);
         assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "crashed-worker" })));
         assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "crashed-worker" })));
-        assert.deepEqual(
-          yield* outbox.reconcileAfterProcessLoss({ preservedThreadIds: new Set() }),
-          {
-            cancelled: 1,
-            requeued: 1,
-          },
-        );
+        assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, {
+          cancelled: 1,
+          requeued: 1,
+        });
         const cancelled = yield* outbox.get(
           `effect:a-foundation-cancel-provider-turn:${replayRequest.type}`,
         );
@@ -3379,89 +3373,67 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       }),
   );
 
-  it.effect("keeps answers, interrupts and unsent steers for threads whose process survived", () =>
+  // A claim restriction lasts for the outbox's lifetime, so this test uses its own outbox.
+  it.effect("lists a process's undelivered answers and claims only those once restricted", () =>
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const sql = yield* SqlClient.SqlClient;
-      const preserved = ThreadId.make("thread:foundation-preserved-process");
-      const lost = ThreadId.make("thread:foundation-lost-process");
-      const commandId = CommandId.make("command:foundation-preserved-process");
+      const kept = ThreadId.make("thread:foundation-detach-kept");
+      const other = ThreadId.make("thread:foundation-detach-other");
+      const commandId = CommandId.make("command:foundation-detach-delivery");
       const turn = {
-        providerSessionId: ProviderSessionId.make("provider-session:foundation-preserved"),
-        providerThreadId: ProviderThreadId.make("provider-thread:foundation-preserved"),
-        providerTurnId: ProviderTurnId.make("provider-turn:foundation-preserved"),
+        providerSessionId: ProviderSessionId.make("provider-session:foundation-detach"),
+        providerThreadId: ProviderThreadId.make("provider-thread:foundation-detach"),
+        providerTurnId: ProviderTurnId.make("provider-turn:foundation-detach"),
       };
-      const respond = (threadId: ThreadId, id: string) => ({
-        id,
-        commandId,
-        threadId,
-        request: {
-          type: "runtime-request.respond" as const,
-          providerSessionId: turn.providerSessionId,
-          requestId: RuntimeRequestId.make(`request:${id}`),
-          decision: "accept" as const,
-        },
-      });
-      const steer = (id: string) => ({
-        id,
-        commandId,
-        threadId: preserved,
-        request: {
-          type: "provider-turn.steer" as const,
-          ...turn,
-          messageId: MessageId.make(`message:${id}`),
-        },
-      });
       yield* outbox.enqueue([
-        respond(preserved, "effect:preserved-respond"),
         {
-          id: "effect:preserved-interrupt",
+          id: "effect:detach-kept-respond",
           commandId,
-          threadId: preserved,
+          threadId: kept,
+          request: {
+            type: "runtime-request.respond",
+            providerSessionId: turn.providerSessionId,
+            requestId: RuntimeRequestId.make("request:detach-kept"),
+            decision: "accept",
+          },
+        },
+        {
+          id: "effect:detach-other-title",
+          commandId,
+          threadId: other,
+          request: { type: "thread-title.generate", kind: { type: "regenerate" } },
+        },
+        {
+          id: "effect:detach-other-interrupt",
+          commandId,
+          threadId: other,
           request: { type: "provider-turn.interrupt", ...turn },
         },
-        steer("effect:preserved-steer-unsent"),
-        steer("effect:preserved-steer-sent"),
-        respond(lost, "effect:lost-respond"),
       ]);
-      // One thread runs one effect at a time, so the crashed worker's claims are set directly.
-      yield* sql`
-        UPDATE orchestration_v2_effect_outbox
-        SET status = 'running', lease_owner = 'crashed-worker'
-        WHERE effect_id IN ('effect:preserved-respond', 'effect:preserved-steer-sent')
-      `;
+      const deliveries = ["runtime-request.respond", "provider-turn.interrupt"] as const;
 
       assert.deepEqual(
-        yield* outbox.reconcileAfterProcessLoss({ preservedThreadIds: new Set([preserved]) }),
-        { requeued: 1, cancelled: 2 },
+        yield* outbox.listUnsettled({ threadIds: [kept], effectTypes: deliveries }),
+        ["effect:detach-kept-respond"],
       );
-      const statuses = Object.fromEntries(
-        yield* Effect.forEach(
-          [
-            "effect:preserved-respond",
-            "effect:preserved-interrupt",
-            "effect:preserved-steer-unsent",
-            "effect:preserved-steer-sent",
-            "effect:lost-respond",
-          ],
-          (id) =>
-            outbox.get(id).pipe(Effect.map((effect) => [id, Option.getOrThrow(effect).status])),
-        ),
+      yield* outbox.restrictClaimsTo(deliveries);
+      const claimed: Array<string> = [];
+      for (;;) {
+        const next = yield* outbox.claimNext({ workerId: "detach-worker" });
+        if (Option.isNone(next)) break;
+        claimed.push(next.value.id);
+        yield* outbox.succeed({ effectId: next.value.id, workerId: "detach-worker" });
+      }
+      assert.deepEqual(claimed.toSorted(), [
+        "effect:detach-kept-respond",
+        "effect:detach-other-interrupt",
+      ]);
+      assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt()));
+      assert.deepEqual(
+        yield* outbox.listUnsettled({ threadIds: [kept, other], effectTypes: deliveries }),
+        [],
       );
-      assert.deepEqual(statuses, {
-        "effect:preserved-respond": "pending",
-        "effect:preserved-interrupt": "pending",
-        "effect:preserved-steer-unsent": "pending",
-        // It may already have reached the process, and a steer sent twice is a second message.
-        "effect:preserved-steer-sent": "cancelled",
-        "effect:lost-respond": "cancelled",
-      });
-      // Once no process survives, nothing kept for it can be delivered.
-      assert.deepEqual(yield* outbox.reconcileAfterProcessLoss({ preservedThreadIds: new Set() }), {
-        requeued: 0,
-        cancelled: 3,
-      });
-    }),
+    }).pipe(Effect.provide(layerIsolatedOutbox)),
   );
 
   it.effect("atomically cancels stale runs and their process-bound effects", () =>

@@ -265,6 +265,32 @@ it.effect("interrupts the effect worker when awareness relay startup fails", () 
   ),
 );
 
+it.effect("detaches kept processes for an update while the effect worker still runs", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const steps: Array<string> = [];
+      const workerFiberRef = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
+      const worker = yield* Effect.never.pipe(
+        Effect.ensuring(Effect.sync(() => steps.push("worker stopped"))),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+      yield* Ref.set(workerFiberRef, worker);
+
+      yield* ServerRuntimeStartup.detachForUpdateThenStopWorker({
+        detachForUpdate: Effect.sync(() => {
+          steps.push(worker.pollUnsafe() === undefined ? "detached, worker running" : "detached");
+          return [];
+        }),
+        workerFiberRef,
+      });
+
+      assert.deepEqual(steps, ["detached, worker running", "worker stopped"]);
+      assert.isNull(yield* Ref.get(workerFiberRef));
+    }),
+  ),
+);
+
 it.effect("queues commands until startup signals readiness", () =>
   Effect.scoped(
     Effect.gen(function* () {

@@ -412,6 +412,30 @@ export const startEffectWorkerWithRelay = Effect.fn(
   );
 });
 
+/** The worker still runs while kept processes detach: each gets the answers queued for it first. */
+export const detachForUpdateThenStopWorker = Effect.fn(
+  "ServerRuntimeStartup.detachForUpdateThenStopWorker",
+)(function* (input: {
+  readonly detachForUpdate:
+    | Effect.Effect<ReadonlyArray<SessionHostService.DetachedHostSummary>>
+    | undefined;
+  readonly workerFiberRef: Ref.Ref<Fiber.Fiber<void, never> | null>;
+}) {
+  if (input.detachForUpdate !== undefined) {
+    const detached = yield* input.detachForUpdate;
+    if (detached.length > 0) {
+      yield* Effect.logInfo("Detached live provider session hosts for planned update", {
+        count: detached.length,
+        threadIds: detached.flatMap((entry) => entry.threadIds),
+      });
+    }
+  }
+  const workerFiber = yield* Ref.getAndSet(input.workerFiberRef, null);
+  if (workerFiber !== null) {
+    yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
+  }
+});
+
 const runOrderedV2StartupPhases = Effect.fn("serverRuntimeStartup.runOrderedV2StartupPhases")(
   function* <
     Import,
@@ -475,23 +499,13 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           cause: "Server runtime is shutting down.",
         }),
       );
-      const workerFiber = yield* Ref.getAndSet(effectWorkerFiber, null);
-      if (workerFiber !== null) {
-        yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
-      }
-      if (Option.isSome(sessionHostOption)) {
-        if (yield* updateShutdownState.isPlannedUpdateShutdown) {
-          const detached = yield* sessionHostOption.value.detachAllForUpdate({
-            prepare: providerSessions.prepareDetachForUpdate,
-          });
-          if (detached.length > 0) {
-            yield* Effect.logInfo("Detached live provider session hosts for planned update", {
-              count: detached.length,
-              threadIds: detached.flatMap((entry) => entry.threadIds),
-            });
-          }
-        }
-      }
+      yield* detachForUpdateThenStopWorker({
+        detachForUpdate:
+          Option.isSome(sessionHostOption) && (yield* updateShutdownState.isPlannedUpdateShutdown)
+            ? providerRuntimeRecovery.detachForUpdate(providerSessions.prepareDetachForUpdate)
+            : undefined,
+        workerFiberRef: effectWorkerFiber,
+      });
       yield* providerRuntimeRecovery.prepareForShutdown.pipe(
         Effect.ensuring(providerSessions.shutdown),
       );
