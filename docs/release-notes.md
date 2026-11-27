@@ -1,3 +1,9 @@
+## 2026-11-27 — Calm status colors
+
+- Status colors are calm by default on web, desktop and mobile. Working, Waiting, Done and other healthy statuses show in gray, each with its own icon. Only what needs you keeps color: amber when you need to answer and red when something failed. On web and desktop, a running thread shows a solid dot and a waiting one shows a hollow dot.
+- On web and desktop, the calm look stops the pulsing status dots and the shimmer on running tools and shows a still "live" mark instead. It also removes nested borders from code blocks, the composer and the sidebar rail, keeps chat paragraphs to a readable line length, gives badges one height and shape, and rests secondary icon buttons quieter until you point at or focus them. Each calm status color and resting icon meets WCAG AA contrast in every built-in theme, light and dark.
+- Choose **Settings → Appearance → Status colors → Vivid** to bring back a color for every status and the previous look. The choice syncs with the shared appearance profile.
+
 ## 2026-11-26 — Windows command cleanup respects reused process IDs
 
 - When CodeShip detects that another process has taken a command's PID, it remembers that process's start time so cleanup can spare its children even after it has exited.

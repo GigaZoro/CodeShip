@@ -3028,6 +3028,11 @@ const catalog: MessageCatalog = {
     "Кешовані дані залишаються доступними. Розділ «{resource}» завантажиться, коли з’єднання відновиться.",
   "Cached input": "Вхід із кешу",
   Calendar: "Календар",
+  Calm: "Спокійні",
+  "Calm (default)": "Спокійні (за замовчуванням)",
+  "Calm shows healthy statuses in gray, keeps them still, and quiets borders; only what needs you has color. Vivid gives every status its own color.":
+    "Спокійні показують звичайні статуси сірим і без анімації та приглушують рамки; кольоровим лишається тільки те, що чекає на вас. Яскраві дають кожному статусу власний колір.",
+  "Calm status colors": "Спокійні кольори статусів",
   Camera: "Камера",
   "Camera access is off for T3.CodeShip. Turn it on in Settings to take photos.":
     "Доступ до камери для T3.CodeShip вимкнено. Увімкніть його в Налаштуваннях, щоб робити фото.",
@@ -5713,6 +5718,7 @@ const catalog: MessageCatalog = {
   "Every running agent in {label} stops.": "Усі запущені агенти в {label} буде зупинено.",
   "Every second": "Щосекунди",
   "Every sign-in is done.": "Усі входи виконано.",
+  "Every status has its own color.": "Кожен статус має власний колір.",
   "Every week": "Щотижня",
   "Everything outside code blocks and the terminal.": "Усе поза блоками коду та терміналом.",
   "Excerpts are hidden until the guide is rewritten for the current head.":
@@ -8474,6 +8480,8 @@ const catalog: MessageCatalog = {
     "Підключитися може лише цей комп’ютер. Перезапустіть із не-loopback хостом для віддаленого сполучення.",
   "Only UTF-8 text and images can be opened inside an archive.":
     "В архіві можна відкривати лише текст UTF-8 та зображення.",
+  "Only what needs you has color: amber to answer, red when it failed.":
+    "Кольоровим лишається тільки те, що чекає на вас: бурштиновий, коли треба відповісти, червоний, коли сталася помилка.",
   "Only you": "Лише ви",
   Open: "Відкрити",
   "Open {file} in editor": "Відкрити {file} у редакторі",
@@ -11647,6 +11655,8 @@ const catalog: MessageCatalog = {
   State: "Стан",
   "Static prefix": "Статичний префікс",
   Status: "Стан",
+  "status colors": "кольори статусів",
+  "Status colors": "Кольори статусів",
   "status pending": "стан очікує",
   "Status unknown": "Стан невідомий",
   "Stays signed in for a year with no renewals. Suits accounts that run scheduled tasks. Requires Pro, Max, Ultra, Team or Enterprise. Sessions on this account cannot use Remote Control or claude.ai connectors; MCP servers configured on this machine still work.":
@@ -14420,6 +14430,8 @@ const catalog: MessageCatalog = {
   "Viewport width": "Ширина області перегляду",
   Violet: "Фіолетовий",
   Visibility: "Видимість",
+  Vivid: "Яскраві",
+  "Vivid status colors": "Яскраві кольори статусів",
   voice: "голос",
   "Voice input": "Голосове введення",
   "Voice input needs microphone access before it can record or list your microphones.":

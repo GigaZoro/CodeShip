@@ -6,6 +6,7 @@ import {
   type ChatWidth,
   type EffortDisplay,
   type InterfaceDensity,
+  type StatusColors,
   type EnvironmentIdentificationMode,
   MAX_APPEARANCE_CONTRAST,
   MAX_GLASS_OPACITY,
@@ -87,6 +88,11 @@ const CHAT_WIDTH_LABELS: Record<ChatWidth, Message> = {
 const INTERFACE_DENSITY_LABELS: Record<InterfaceDensity, Message> = {
   comfortable: msg("Comfortable"),
   compact: msg("Compact spacing"),
+};
+
+const STATUS_COLORS_LABELS: Record<StatusColors, Message> = {
+  calm: msg("Calm"),
+  vivid: msg("Vivid"),
 };
 
 const EFFORT_DISPLAY_LABELS: Record<EffortDisplay, Message> = {
@@ -386,6 +392,41 @@ export function AppearanceSettingsPanel() {
                 <SelectPopup align="end" alignItemWithTrigger={false}>
                   <SelectItem value="comfortable">{t("Comfortable (default)")}</SelectItem>
                   <SelectItem value="compact">{t("Compact spacing")}</SelectItem>
+                </SelectPopup>
+              </Select>
+            </div>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("status-colors")}
+          description={t(
+            "Calm shows healthy statuses in gray, keeps them still, and quiets borders; only what needs you has color. Vivid gives every status its own color.",
+          )}
+          resetAction={
+            settings.statusColors !== DEFAULT_UNIFIED_SETTINGS.statusColors ? (
+              <SettingResetButton
+                label={t("status colors")}
+                onClick={() =>
+                  updateSettings({ statusColors: DEFAULT_UNIFIED_SETTINGS.statusColors })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="w-full sm:w-40">
+              <Select
+                value={settings.statusColors}
+                onValueChange={(value) => {
+                  if (value === "calm" || value === "vivid")
+                    updateSettings({ statusColors: value });
+                }}
+              >
+                <SelectTrigger size="sm" className="w-full min-w-0" aria-label={t("Status colors")}>
+                  <SelectValue>{t(STATUS_COLORS_LABELS[settings.statusColors])}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem value="calm">{t("Calm (default)")}</SelectItem>
+                  <SelectItem value="vivid">{t("Vivid")}</SelectItem>
                 </SelectPopup>
               </Select>
             </div>

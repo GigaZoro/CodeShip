@@ -384,8 +384,9 @@ describe("resolveThreadStatusPill", () => {
       }),
     ).toMatchObject({
       label: "Waiting",
-      colorClass: "text-sidebar-muted-foreground",
-      dotClass: "bg-sidebar-muted-foreground",
+      colorClass: "text-sidebar-muted-foreground calm:text-calm-quiet",
+      dotClass:
+        "bg-sidebar-muted-foreground calm:bg-transparent calm:ring-1 calm:ring-inset calm:ring-calm-quiet",
       pulse: false,
     });
   });

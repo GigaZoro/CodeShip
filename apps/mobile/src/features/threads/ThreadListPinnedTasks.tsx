@@ -58,7 +58,8 @@ import {
   getThreadListV2RowAppearance,
 } from "./thread-list-v2-row-appearance";
 import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
-import { threadStatusLabel } from "./thread-list-v2-items";
+import { threadStatusLabel, threadStatusToneClasses } from "./thread-list-v2-items";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { useVisibleWorkingDurationLabel } from "./use-visible-working-duration-label";
 import { useThreadListRowContentClassName } from "./useThreadListRowDensity";
@@ -158,10 +159,15 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
         },
   );
   const rowStatus = pinnedTaskRowStatus(task, status);
+  const { statusColors } = useAppearancePreferences();
   const display =
     rowStatus.run === null
       ? null
-      : { ...STATUS_DISPLAY[rowStatus.run.status], text: rowStatus.run.text };
+      : {
+          ...STATUS_DISPLAY[rowStatus.run.status],
+          ...threadStatusToneClasses(STATUS_DISPLAY[rowStatus.run.status].tone, statusColors),
+          text: rowStatus.run.text,
+        };
   const canOperate = useAtomValue(
     serverEnvironment.setScheduledTaskPlacement.permissionAtom(environmentId),
   );

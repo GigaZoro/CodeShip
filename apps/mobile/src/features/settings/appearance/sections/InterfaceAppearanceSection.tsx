@@ -71,8 +71,15 @@ function AccentSwatch(props: {
 }
 
 export function InterfaceAppearanceSection() {
-  const { isReady, interfaceDensity, setInterfaceDensity, accentColor, setAccentColor } =
-    useAppearancePreferences();
+  const {
+    isReady,
+    interfaceDensity,
+    setInterfaceDensity,
+    statusColors,
+    setStatusColors,
+    accentColor,
+    setAccentColor,
+  } = useAppearancePreferences();
   const appearance = useColorScheme() === "dark" ? "dark" : "light";
 
   return (
@@ -90,6 +97,27 @@ export function InterfaceAppearanceSection() {
           disabled={!isReady}
           selected={interfaceDensity === "compact"}
           onPress={() => setInterfaceDensity("compact")}
+          separated
+        />
+      </View>
+      <View
+        accessibilityRole="radiogroup"
+        accessibilityLabel={t("Status colors")}
+        className="border-t border-border-subtle"
+      >
+        <SettingsChoiceRow
+          label={t("Calm status colors")}
+          description={t("Only what needs you has color: amber to answer, red when it failed.")}
+          disabled={!isReady}
+          selected={statusColors === "calm"}
+          onPress={() => setStatusColors("calm")}
+        />
+        <SettingsChoiceRow
+          label={t("Vivid status colors")}
+          description={t("Every status has its own color.")}
+          disabled={!isReady}
+          selected={statusColors === "vivid"}
+          onPress={() => setStatusColors("vivid")}
           separated
         />
       </View>

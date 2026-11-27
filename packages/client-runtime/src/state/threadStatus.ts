@@ -91,6 +91,23 @@ export type ThreadStatusTone =
   | "success"
   | "plan";
 
+/**
+ * How loudly a tone may speak in the Calm look: calm tones are grey, attention is what the user
+ * must answer (amber), alarm is what failed (red). Every palette reads it, mobile included.
+ */
+export type ThreadStatusSalience = "calm" | "attention" | "alarm";
+
+export const THREAD_STATUS_TONE_SALIENCE = {
+  attention: "attention",
+  question: "attention",
+  guest: "attention",
+  active: "calm",
+  muted: "calm",
+  error: "alarm",
+  success: "calm",
+  plan: "calm",
+} as const satisfies Record<ThreadStatusTone, ThreadStatusSalience>;
+
 interface ThreadStatusDisplay {
   /** The short word rows, pills, and task lists show. */
   readonly label: Message;

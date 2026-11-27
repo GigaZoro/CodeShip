@@ -1,15 +1,20 @@
+// @effect-diagnostics nodeBuiltinImport:off - reads the stylesheet the calm contrast checks guard.
 import { describe, expect, it, vi } from "vite-plus/test";
 import { converter } from "culori/fn";
+import * as NodeFS from "node:fs";
 import { BUILT_IN_THEMES } from "@t3tools/shared/themePalettes";
 
 import { CONTEXT_CHIP_ACCENTS, contextChipColorVariable } from "./lib/contextChipAccents";
 
 import {
   applyThemePalette,
+  CALM_STATUS_VARIABLES,
+  calmStatusVariables,
   contextChipVariables,
   getThemeColorsForMode,
   getThemeModes,
   getCustomThemes,
+  getStandardPaintedThemeColors,
   getStandardThemeColors,
   getStoredCustomThemeCollection,
   invalidateCustomThemes,
@@ -551,6 +556,78 @@ describe("theme files", () => {
 
     vi.unstubAllGlobals();
     invalidateCustomThemes();
+  });
+});
+
+describe("calm status colors", () => {
+  const palettes = [
+    { name: "standard light", colors: getStandardPaintedThemeColors("light") },
+    { name: "standard dark", colors: getStandardPaintedThemeColors("dark") },
+    ...BUILT_IN_THEMES.flatMap((theme) =>
+      getThemeModes(theme).map((mode) => ({
+        name: `${theme.id} ${mode}`,
+        colors: getThemeColorsForMode(theme, mode)!,
+      })),
+    ),
+  ];
+  const toRgb = converter("rgb");
+  const opaque = (color: string, under: string, opacity = 1) => {
+    const top = toRgb(color)!;
+    const back = toRgb(under)!;
+    const alpha = (top.alpha ?? 1) * opacity;
+    const channel = (value: number, behind: number) =>
+      Math.round(Math.min(1, Math.max(0, value * alpha + behind * (1 - alpha))) * 255)
+        .toString(16)
+        .padStart(2, "0");
+    return `#${channel(top.r, back.r)}${channel(top.g, back.g)}${channel(top.b, back.b)}`;
+  };
+
+  // Calm paints every status in one of these colors (THREAD_STATUS_TONE_SALIENCE), as text and as
+  // dots, on sidebar rows in every state and on canvas lists; text needs 4.5:1, which covers 3:1.
+  it("keeps every calm status color at AA on every surface it is painted on", () => {
+    const failures: string[] = [];
+    for (const { name, colors } of palettes) {
+      const variables = calmStatusVariables(colors);
+      const canvas = opaque(colors.canvas, "#ffffff");
+      const sidebar = opaque(colors.sidebar, canvas);
+      const surfaces = {
+        canvas,
+        sidebar,
+        sidebarRowHover: opaque(colors.sidebarRowHover, sidebar),
+        sidebarRowActive: opaque(colors.sidebarRowActive, sidebar),
+        sidebarRowSelected: opaque(colors.sidebarRowSelected, sidebar),
+      };
+      for (const [salience, variable] of Object.entries(CALM_STATUS_VARIABLES)) {
+        for (const [surfaceName, surface] of Object.entries(surfaces)) {
+          const ratio = contrastRatio(variables[variable], surface);
+          if (ratio < 4.5)
+            failures.push(`${name}: ${salience} on ${surfaceName} ${ratio.toFixed(2)}`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  // Calm rests secondary icon buttons at a lower opacity; an icon is a graphic, so it needs 3:1.
+  it("keeps resting secondary icons at 3:1 on every surface", () => {
+    const opacity = Number(
+      /--calm-secondary-icon-opacity:\s*([\d.]+)/.exec(
+        NodeFS.readFileSync(new URL("./index.css", import.meta.url), "utf8"),
+      )?.[1],
+    );
+    expect(opacity).toBeGreaterThan(0);
+    const failures: string[] = [];
+    for (const { name, colors } of palettes) {
+      const canvas = opaque(colors.canvas, "#ffffff");
+      const sidebar = opaque(colors.sidebar, canvas);
+      const surfaces = { canvas, sidebar, surface: opaque(colors.surface, canvas) };
+      for (const [surfaceName, surface] of Object.entries(surfaces)) {
+        const resting = opaque(opaque(colors.mutedForeground, surface), surface, opacity);
+        const ratio = contrastRatio(resting, surface);
+        if (ratio < 3) failures.push(`${name}: icon on ${surfaceName} ${ratio.toFixed(2)}`);
+      }
+    }
+    expect(failures).toEqual([]);
   });
 });
 

@@ -390,6 +390,10 @@ export type AccentColorHue = (typeof ACCENT_COLOR_HUES)[number];
 export const AccentColor = Schema.Literals(["theme", ...ACCENT_COLOR_HUES]);
 export type AccentColor = typeof AccentColor.Type;
 
+/** Calm paints healthy statuses gray and colors only what needs the user; Vivid colors every status. */
+export const StatusColors = Schema.Literals(["calm", "vivid"]);
+export type StatusColors = typeof StatusColors.Type;
+
 /** How the composer shows reasoning effort: the level's name, or rising bars. */
 export const EffortDisplay = Schema.Literals(["label", "bars"]);
 export type EffortDisplay = typeof EffortDisplay.Type;
@@ -443,6 +447,7 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   accentColor: AccentColor.pipe(Schema.withDecodingDefault(Effect.succeed("theme" as const))),
   effortDisplay: EffortDisplay.pipe(Schema.withDecodingDefault(Effect.succeed("label" as const))),
+  statusColors: StatusColors.pipe(Schema.withDecodingDefault(Effect.succeed("calm" as const))),
   loadBalancingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   loadBalancingWeights: LoadBalancingWeights.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   appearanceContrast: AppearanceContrast.pipe(
@@ -2209,6 +2214,7 @@ export const ClientSettingsPatch = Schema.Struct({
   interfaceDensity: Schema.optionalKey(InterfaceDensity),
   accentColor: Schema.optionalKey(AccentColor),
   effortDisplay: Schema.optionalKey(EffortDisplay),
+  statusColors: Schema.optionalKey(StatusColors),
   loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
   loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
   appearanceContrast: Schema.optionalKey(AppearanceContrast),

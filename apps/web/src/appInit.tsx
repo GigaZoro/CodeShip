@@ -84,6 +84,9 @@ function startClientAppearance(): void {
     if (previous?.interfaceDensity !== settings.interfaceDensity) {
       root.dataset.interfaceDensity = settings.interfaceDensity;
     }
+    if (previous?.statusColors !== settings.statusColors) {
+      root.dataset.statusColors = settings.statusColors;
+    }
     if (previous?.accentColor !== settings.accentColor) {
       applyAccentColor(root, settings.accentColor);
     }

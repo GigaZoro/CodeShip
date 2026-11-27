@@ -6,6 +6,8 @@ import {
   THREAD_STATUS_DISPLAY,
   type ThreadStatus,
   type ThreadStatusDisplayKey,
+  THREAD_STATUS_TONE_SALIENCE,
+  type ThreadStatusSalience,
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
 import { useAtomValue } from "@effect/atom-react";
@@ -43,7 +45,7 @@ import {
 } from "@t3tools/client-runtime/state/models";
 import { minuteTick } from "@t3tools/client-runtime/clock";
 import { AuthOrchestrationOperateScope, threadFolderKeyOf } from "@t3tools/contracts";
-import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
+import type { SnoozePresetSetting, StatusColors } from "@t3tools/contracts/settings";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import type { MenuAction } from "@react-native-menu/menu";
@@ -127,6 +129,7 @@ import {
   type MachineAvailability,
 } from "@t3tools/client-runtime/connection";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import {
   useThreadListRowContentClassName,
@@ -139,15 +142,16 @@ import { msg, t, tn, type Message } from "../../lib/i18n";
 interface StatusLabel {
   readonly label: Message;
   readonly icon: AppSymbolName;
+  readonly tone: ThreadStatusTone;
+}
+
+interface StatusToneClasses {
   readonly className: string;
   readonly iconTintClassName: string;
 }
 
-/** Text and icon tint for each status tone; web keeps its own palette. */
-const THREAD_STATUS_TONE_CLASSES: Record<
-  ThreadStatusTone,
-  Pick<StatusLabel, "className" | "iconTintClassName">
-> = {
+/** Text and icon tint for each status tone in the Vivid look; web keeps its own palette. */
+const THREAD_STATUS_TONE_CLASSES: Record<ThreadStatusTone, StatusToneClasses> = {
   attention: {
     className: "text-warning-foreground",
     iconTintClassName: "accent-warning-foreground",
@@ -176,9 +180,24 @@ const THREAD_STATUS_TONE_CLASSES: Record<
   },
 };
 
+const THREAD_STATUS_SALIENCE_CLASSES: Record<ThreadStatusSalience, StatusToneClasses> = {
+  calm: THREAD_STATUS_TONE_CLASSES.muted,
+  attention: THREAD_STATUS_TONE_CLASSES.attention,
+  alarm: THREAD_STATUS_TONE_CLASSES.error,
+};
+
+export function threadStatusToneClasses(
+  tone: ThreadStatusTone,
+  statusColors: StatusColors,
+): StatusToneClasses {
+  return statusColors === "vivid"
+    ? THREAD_STATUS_TONE_CLASSES[tone]
+    : THREAD_STATUS_SALIENCE_CLASSES[THREAD_STATUS_TONE_SALIENCE[tone]];
+}
+
 export function threadStatusLabel(key: ThreadStatusDisplayKey, icon: AppSymbolName): StatusLabel {
   const display = THREAD_STATUS_DISPLAY[key];
-  return { label: display.label, icon, ...THREAD_STATUS_TONE_CLASSES[display.tone] };
+  return { label: display.label, icon, tone: display.tone };
 }
 
 const STATUS_LABEL_BY_STATUS: Partial<Record<ThreadStatus, StatusLabel>> = {
@@ -1073,6 +1092,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const rowAppearance = getThreadListV2RowAppearance(theme, sidebarPane, selected);
 
+  const { statusColors } = useAppearancePreferences();
   const status = resolveThreadStatus(thread);
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
@@ -1811,7 +1831,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 tintColorClassName={
                   selected
                     ? selectedThreadRowColors.iconTintClassName
-                    : statusLabel.iconTintClassName
+                    : threadStatusToneClasses(statusLabel.tone, statusColors).iconTintClassName
                 }
                 type="monochrome"
                 weight="semibold"
@@ -1820,7 +1840,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 className={cn(
                   "shrink text-xs font-t3-bold",
                   (status === "working" || status === "waiting") && "tabular-nums",
-                  selected ? selectedThreadRowColors.foregroundClassName : statusLabel.className,
+                  selected
+                    ? selectedThreadRowColors.foregroundClassName
+                    : threadStatusToneClasses(statusLabel.tone, statusColors).className,
                 )}
                 numberOfLines={1}
               >
