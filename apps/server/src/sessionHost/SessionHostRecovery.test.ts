@@ -239,6 +239,7 @@ const buildRecoveryLayer = (
     readonly releaseAdoptedOutput?: ReleaseAdoptedOutput;
     readonly onAbandonAdoption?: (providerSessionId: ProviderSessionId) => void;
     readonly onPruneRestored?: (keepThreadIds: ReadonlySet<ThreadId>) => void;
+    readonly onReconcileAfterProcessLoss?: () => void;
   } = {},
 ) => {
   const { adopt, onAbandonAdoption, onPruneRestored } = hooks;
@@ -285,7 +286,10 @@ const buildRecoveryLayer = (
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           cancelUnsettled: () => Effect.succeed([]),
           signalCancellations: () => Effect.void,
-          reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          reconcileAfterProcessLoss: Effect.sync(() => {
+            hooks.onReconcileAfterProcessLoss?.();
+            return { requeued: 0, cancelled: 0 };
+          }),
         }),
       ),
     ),
@@ -371,6 +375,7 @@ it.live(
       // the turn start service takes the reattached process over, as the Codex adapter does.
       const adoptRequests: Array<Parameters<AdoptTurn>[0]> = [];
       const prunedKeep: Array<ReadonlyArray<ThreadId>> = [];
+      const startupOrder: Array<string> = [];
       let adoptedHandle: DetachedStdioHandle | undefined;
       yield* Effect.gen(function* () {
         const sessionHost = yield* SessionHostService.SessionHostService;
@@ -384,6 +389,8 @@ it.live(
         assert.deepEqual(adoptRequests, [{ threadId, runId }]);
         // Credentials are pruned after the takeover, so the taken-over thread keeps its own.
         assert.deepEqual(prunedKeep, [[threadId]]);
+        // What the replayed output queues, such as the thread's next run, is not the old process's.
+        assert.deepEqual(startupOrder, ["outbox reconciled", "output released"]);
 
         const reattachedHandle = adoptedHandle;
         assert.isDefined(reattachedHandle);
@@ -421,10 +428,12 @@ it.live(
                     ),
                   releaseAdoptedOutput: () =>
                     Effect.sync(() => {
+                      startupOrder.push("output released");
                       adoptedHandle?.releaseOutput();
                       return adoptedHandle !== undefined;
                     }),
                   onPruneRestored: (keepThreadIds) => prunedKeep.push([...keepThreadIds]),
+                  onReconcileAfterProcessLoss: () => startupOrder.push("outbox reconciled"),
                 },
               );
             }),
@@ -791,6 +800,101 @@ it.live(
               adopt: ({ runId }) => Effect.sync(() => adopted.push(runId)),
               onAbandonAdoption: (id) => abandoned.push(id),
             },
+          ).pipe(Layer.provideMerge(sessionHostLayer)),
+        ),
+        Effect.ensuring(endHost(sessionHostId)),
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
+        }),
+      ),
+      Effect.provide(baseLayer),
+    );
+  },
+);
+
+it.live(
+  "takes over a shared process while a thread that once used it runs on another provider session",
+  () => {
+    const tempBaseDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-recovery-elsewhere-"),
+    );
+    const shared = makeSharedProcessThreads("detached_elsewhere");
+    // The second thread used the shared process before and now runs on another session.
+    const runningElsewhere = makeRunningProjection({
+      threadId: shared.second.threadId,
+      runId: shared.second.runId,
+      attemptId: RunAttemptId.make("attempt_detached_elsewhere_other"),
+      rootNodeId: NodeId.make("node_detached_elsewhere_other"),
+      providerSessionId: ProviderSessionId.make("ps_detached_elsewhere_other"),
+      providerThreadId: ProviderThreadId.make("pt_detached_elsewhere_other"),
+    });
+    const elsewhere = {
+      ...runningElsewhere,
+      providerSessions: [
+        ...shared.second.projection.providerSessions,
+        ...runningElsewhere.providerSessions,
+      ],
+      providerThreads: [
+        ...shared.second.projection.providerThreads,
+        ...runningElsewhere.providerThreads,
+      ],
+    } as unknown as OrchestrationV2ThreadProjection;
+    const baseLayer = Layer.mergeAll(
+      Sqlite.layerMemory,
+      ServerConfig.layerTest(tempBaseDir, tempBaseDir),
+    ).pipe(Layer.provideMerge(NodeServices.layer));
+
+    return Effect.gen(function* () {
+      const { childPid, sessionHostId } = yield* detachSharedProcess(shared, tempBaseDir, [
+        shared.first.threadId,
+      ]);
+      const commits: Array<Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]> = [];
+      const adopted: Array<RunId> = [];
+      const abandoned: Array<ProviderSessionId> = [];
+      let adoptedHandle: DetachedStdioHandle | undefined;
+      yield* Effect.gen(function* () {
+        const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+        yield* recovery.reconcile("startup");
+
+        assert.deepEqual(adopted, [shared.first.runId]);
+        assert.deepEqual(abandoned, []);
+        assert.isTrue(isProcessAlive(childPid), "The shared process was ended");
+        assert.isFalse(
+          commits.some((commit) => stopsSession(commit, shared.providerSessionId)),
+          "Startup marked the taken-over session stopped",
+        );
+        const effectIds = commits.flatMap((commit) => commit.effects ?? []).map((e) => e.id);
+        assert.include(effectIds, EffectOutbox.restartContinuationEffectId(shared.second.runId));
+      }).pipe(
+        Effect.provide(
+          Layer.unwrap(
+            Effect.gen(function* () {
+              const sessionHost = yield* SessionHostService.SessionHostService;
+              return buildRecoveryLayer(
+                shared.first.threadId,
+                shared.first.projection,
+                (input) => commits.push(input),
+                {
+                  otherThreads: [elsewhere],
+                  adopt: ({ runId }) =>
+                    sessionHost.takeAdoptable(shared.providerSessionId).pipe(
+                      Effect.map((taken) => {
+                        adopted.push(runId);
+                        if (Option.isSome(taken)) adoptedHandle = taken.value.handle;
+                      }),
+                    ),
+                  releaseAdoptedOutput: () =>
+                    Effect.sync(() => {
+                      adoptedHandle?.releaseOutput();
+                      return adoptedHandle !== undefined;
+                    }),
+                  onAbandonAdoption: (id) => abandoned.push(id),
+                },
+              );
+            }),
           ).pipe(Layer.provideMerge(sessionHostLayer)),
         ),
         Effect.ensuring(endHost(sessionHostId)),

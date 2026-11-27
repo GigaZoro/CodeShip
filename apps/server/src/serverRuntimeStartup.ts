@@ -26,6 +26,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 
 import * as ServerConfig from "./config.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
@@ -387,18 +388,36 @@ interface StartupOptions {
   readonly abort?: (error: ServerRuntimeStartupError) => Effect.Effect<void>;
 }
 
+/**
+ * Adds the shutdown finalizer and returns the scope to fork the effect worker into, which closes
+ * only after that finalizer. Teardown of the server's scope would otherwise stop the worker before
+ * a planned update's detach, which needs it to deliver what is queued for the kept processes.
+ */
+export const addShutdownFinalizerBeforeWorkerStops = Effect.fn(
+  "ServerRuntimeStartup.addShutdownFinalizerBeforeWorkerStops",
+)(function* (shutdown: Effect.Effect<void>) {
+  const workerScope = yield* Scope.make();
+  yield* Effect.addFinalizer((exit) => Scope.close(workerScope, exit));
+  yield* Effect.addFinalizer(() => shutdown);
+  return workerScope;
+});
+
 export const startEffectWorkerWithRelay = Effect.fn(
   "ServerRuntimeStartup.startEffectWorkerWithRelay",
 )(function* <WorkerContext, RelayContext>(input: {
   readonly runWorker: Effect.Effect<void, never, WorkerContext>;
   readonly startRelay: Effect.Effect<void, never, RelayContext>;
   readonly workerFiberRef: Ref.Ref<Fiber.Fiber<void, never> | null>;
+  readonly workerScope: Scope.Scope;
 }) {
-  const workerFiber = yield* forkParkedFiber(input.runWorker);
+  const workerFiber = yield* forkParkedFiber(input.runWorker).pipe(
+    Scope.provide(input.workerScope),
+  );
   yield* Ref.set(input.workerFiberRef, workerFiber);
   yield* input.startRelay.pipe(
     Effect.onExit((exit) => {
-      if (Exit.isSuccess(exit)) {
+      // An interrupted startup is a shutdown: its finalizer stops the worker after a detach.
+      if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) {
         return Effect.void;
       }
       return Ref.getAndSet(input.workerFiberRef, null).pipe(
@@ -489,7 +508,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const httpListening = yield* Deferred.make<void>();
   const effectWorkerFiber = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
 
-  yield* Effect.addFinalizer(() =>
+  const effectWorkerScope = yield* addShutdownFinalizerBeforeWorkerStops(
     Effect.gen(function* () {
       yield* commandGate.failCommandReady(
         new ServerRuntimeStartupError({
@@ -595,6 +614,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           runWorker: EffectWorker.runDaemon,
           startRelay: agentAwarenessRelay.start(),
           workerFiberRef: effectWorkerFiber,
+          workerScope: effectWorkerScope,
         }),
       ),
       autoBootstrap: (serverConfig.autoBootstrapProjectFromCwd

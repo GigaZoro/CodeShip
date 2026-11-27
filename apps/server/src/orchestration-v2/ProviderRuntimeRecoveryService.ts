@@ -141,14 +141,20 @@ type KeptProcessThread =
 
 /**
  * How a planned update treats one thread of a provider process it would keep. A process is kept
- * only when every thread on it is idle or has one run the next server takes over: running, on
- * this session, with a native turn.
+ * only when every thread on it is idle on it or has one run the next server takes over: running,
+ * on this session, with a native turn. A run on another session is not on this process: restart
+ * recovery continues it there.
  */
 function classifyKeptProcessThread(
   projection: ProjectionStore.ProjectionRuntimeRecoveryState,
   providerSessionId: string,
 ): KeptProcessThread {
-  const runs = nonterminalRuns(projection);
+  const runs = nonterminalRuns(projection).filter((candidate) => {
+    const runsOn = projection.providerThreads.find(
+      (providerThread) => providerThread.id === candidate.providerThreadId,
+    );
+    return runsOn === undefined || runsOn.providerSessionId === providerSessionId;
+  });
   const run = runs[0];
   if (run === undefined) return { kind: "idle" };
   if (runs.length > 1 || run.status !== "running") {
@@ -157,8 +163,8 @@ function classifyKeptProcessThread(
   const providerThread = projection.providerThreads.find(
     (candidate) => candidate.id === run.providerThreadId,
   );
-  if (providerThread?.providerSessionId !== providerSessionId) {
-    return { kind: "blocked", reason: `Run ${run.id} runs on another provider session.` };
+  if (providerThread === undefined) {
+    return { kind: "blocked", reason: `Run ${run.id} has no provider thread.` };
   }
   const providerTurn = projection.providerTurns.find(
     (turn) =>
@@ -1189,6 +1195,15 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
+    const reconcileOutbox = outbox.reconcileAfterProcessLoss.pipe(
+      Effect.mapError(
+        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+      ),
+    );
+    // Startup sweeps what the old process left before a taken-over process replays its output,
+    // since what that output queues is this server's. Shutdown sweeps after the per-thread passes,
+    // which signal the running effects they cancel.
+    const startupOutboxReconciliation = trigger === "startup" ? yield* reconcileOutbox : undefined;
     const preservedThreadIds = new Set<ThreadId>();
     const keptSessionIds = new Set<string>();
     let reattachedSessionHosts = 0;
@@ -1300,11 +1315,7 @@ export const make = Effect.gen(function* () {
       closedRequests += result.closedRequests;
       retiredEffects += result.retiredEffects;
     }
-    const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
-      Effect.mapError(
-        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
-      ),
-    );
+    const outboxReconciliation = startupOutboxReconciliation ?? (yield* reconcileOutbox);
     return {
       terminalizedRuns,
       stoppedSessions,
