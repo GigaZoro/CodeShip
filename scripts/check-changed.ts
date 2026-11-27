@@ -79,6 +79,7 @@ import {
 import {
   ARGUMENT_CHARACTERS,
   cachedTestTasks,
+  CHANGED_TEST_GROUP_SIZE,
   changedTestRequestEnv,
   changedTestRuntime,
   gitEnvironment,
@@ -1992,7 +1993,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             request,
             {
               files: vitestTests,
-              groupSize: 16,
+              groupSize: CHANGED_TEST_GROUP_SIZE,
               uncached: keepProviderEnv ? vitestTests : uncachedTests,
             },
             groups,

@@ -333,6 +333,10 @@ export function changedTestRequestEnv(
   };
 }
 
+// check:changed's groups average this many files and hold at most twice as many. A changed input
+// reruns its whole group, while each group boots its own Vitest, one at a time on the server chain.
+export const CHANGED_TEST_GROUP_SIZE = 4;
+
 // Windows cannot start a process whose command line passes 32,767 characters, and vp passes
 // its arguments on to the tool it starts, so a long list of paths runs in several steps.
 export const ARGUMENT_CHARACTERS = 24_000;
