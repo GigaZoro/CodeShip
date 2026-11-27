@@ -10298,6 +10298,7 @@ const catalog: MessageCatalog = {
     "Відновлювати чати, зупинені через втрату з’єднання, коли воно повернеться.",
   "Resume when the limit resets": "Продовжити після скидання ліміту",
   Resumed: "Відновлено",
+  "Resumed automatically": "Відновлено автоматично",
   Retry: "Повторити",
   "Retry {name}": "Повторити {name}",
   "Retry after network errors": "Повторювати після збоїв мережі",
@@ -11928,6 +11929,7 @@ const catalog: MessageCatalog = {
   "Switch tracks in About → Update track":
     "Змінити канал можна в розділі Про програму → Канал оновлень",
   "Switch WSL distro?": "Змінити дистрибутив WSL?",
+  "Switched account & continued": "Перемкнено обліковий запис і продовжено",
   "Switched off": "Вимкнено",
   "Switches the branch you are working in.": "Перемикає гілку, у якій ви працюєте.",
   "Switches the hosted app release channel.": "Перемикає канал випусків розміщеного застосунку.",

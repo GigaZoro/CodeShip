@@ -4079,7 +4079,6 @@ it("keeps the working header in place across worktree setup handoff", () => {
 describe("failed turn transcript", () => {
   it.each([
     { position: "historical", failureClass: "provider_error" },
-    { position: "historical", failureClass: "usage_limit" },
     { position: "latest", failureClass: "usage_limit" },
   ] as const)(
     "keeps $position $failureClass failures visible with preceding work grouped appropriately",
@@ -4237,6 +4236,205 @@ describe("failed turn transcript", () => {
       });
     },
   );
+
+  it("suppresses superseded usage_limit errors once a continuation run starts or completes", () => {
+    const failedRunId = RunId.make("run-limited");
+    const continuationRunId = RunId.make("run-continued");
+    const threadId = ThreadId.make("usage-limit-thread");
+    const at = DateTime.makeUnsafe("2026-09-20T12:00:00Z");
+    const base = (runId: RunId, ordinal: number) => ({
+      threadId,
+      runId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal,
+      title: null,
+      startedAt: at,
+      completedAt: at,
+      updatedAt: at,
+    });
+    const limitedItems: OrchestrationV2ProjectedTurnItem[] = [
+      {
+        position: 0,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("user-1"),
+        item: {
+          ...base(failedRunId, 0),
+          id: TurnItemId.make("user-1"),
+          type: "user_message",
+          status: "completed",
+          messageId: MessageId.make("user-1"),
+          createdBy: "user",
+          creationSource: "web",
+          inputIntent: "turn_start",
+          text: "Ship the fix",
+          attachments: [],
+        },
+      },
+      {
+        position: 1,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("cmd-1"),
+        item: {
+          ...base(failedRunId, 1),
+          id: TurnItemId.make("cmd-1"),
+          type: "command_execution",
+          status: "completed",
+          input: "pnpm test",
+          output: "",
+          exitCode: 0,
+        },
+      },
+      {
+        position: 2,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("limit-err-1"),
+        item: {
+          ...base(failedRunId, 2),
+          id: TurnItemId.make("limit-err-1"),
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "usage_limit",
+            message: "You hit your usage limit.",
+            code: null,
+            retryable: true,
+          },
+        },
+      },
+    ];
+    const continuationItems: OrchestrationV2ProjectedTurnItem[] = [
+      {
+        position: 3,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("cont-user"),
+        item: {
+          ...base(continuationRunId, 0),
+          id: TurnItemId.make("cont-user"),
+          type: "user_message",
+          status: "completed",
+          messageId: MessageId.make("limit-failover:run-limited"),
+          createdBy: "user",
+          creationSource: "server",
+          inputIntent: "turn_start",
+          text: "Continue where you left off.",
+          attachments: [],
+        },
+      },
+      {
+        position: 4,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("cont-reply"),
+        item: {
+          ...base(continuationRunId, 1),
+          id: TurnItemId.make("cont-reply"),
+          type: "assistant_message",
+          status: "completed",
+          messageId: MessageId.make("cont-reply"),
+          text: "Finished the fix.",
+          streaming: false,
+        },
+      },
+    ];
+
+    const completedRows = deriveMessagesTimelineRows({
+      timelineEntries: deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: [...limitedItems, ...continuationItems],
+        optimisticMessages: [],
+      }),
+      latestRun: {
+        runId: continuationRunId,
+        status: "completed",
+        startedAt: DateTime.formatIso(at),
+        completedAt: DateTime.formatIso(at),
+      },
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    const completedWorkIds = completedRows.flatMap((row) =>
+      row.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : [],
+    );
+    expect(completedWorkIds).not.toContain("limit-err-1");
+    expect(completedRows.map((row) => row.kind)).toEqual([
+      "message",
+      "turn-fold",
+      "message",
+      "message",
+    ]);
+
+    // If a second continuation run ALSO fails with usage_limit, only the older one collapses.
+    const secondFailedItems: OrchestrationV2ProjectedTurnItem[] = [
+      ...limitedItems,
+      continuationItems[0]!,
+      {
+        position: 4,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("limit-err-2"),
+        item: {
+          ...base(continuationRunId, 1),
+          id: TurnItemId.make("limit-err-2"),
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "usage_limit",
+            message: "Second account also hit its limit.",
+            code: null,
+            retryable: true,
+          },
+        },
+      },
+    ];
+    const secondFailedRows = deriveMessagesTimelineRows({
+      timelineEntries: deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: secondFailedItems,
+        optimisticMessages: [],
+      }),
+      latestRun: {
+        runId: continuationRunId,
+        status: "failed",
+        startedAt: DateTime.formatIso(at),
+        completedAt: DateTime.formatIso(at),
+      },
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    const secondFailedWorkIds = secondFailedRows.flatMap((row) =>
+      row.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : [],
+    );
+    expect(secondFailedWorkIds).toEqual(["limit-err-2"]);
+
+    // A queued follow-up run that has not started must NOT hide the active usage-limit error.
+    const queuedOnlyRows = deriveMessagesTimelineRows({
+      timelineEntries: deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: limitedItems,
+        optimisticMessages: [],
+      }),
+      latestRun: {
+        runId: RunId.make("run-queued"),
+        status: "queued",
+        startedAt: null,
+        completedAt: null,
+      },
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    const queuedWorkIds = queuedOnlyRows.flatMap((row) =>
+      row.kind === "work" ? row.groupedEntries.map((entry) => entry.id) : [],
+    );
+    expect(queuedWorkIds).toContain("limit-err-1");
+  });
 });
 
 describe("live subagents after their parent turn settles", () => {

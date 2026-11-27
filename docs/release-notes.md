@@ -1,3 +1,7 @@
+## 2026-11-27 — Cleaner timelines after automatic usage-limit recovery
+
+- Automatic server continuations after account failover or usage-limit recovery now render as compact timeline dividers ("Switched account & continued" or "Resumed automatically") instead of user chat bubbles, and superseded usage-limit errors and recovery banners collapse automatically once a continuation run starts or completes.
+
 ## 2026-11-27 — Tighter wake-up measurement bounds in wake-usage
 
 - The daily repeated-wake measurement report (`scripts/wake-usage.mjs`) now isolates overlapping prior turns using turn-item evidence, detects complete or end-of-file post-completion log reads, and accounts for usage-limit failed turns in start evidence and top-five chat ranking while keeping its conservative decision bounds.

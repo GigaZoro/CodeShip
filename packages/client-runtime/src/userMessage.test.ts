@@ -4,6 +4,7 @@ import { ComposerContextId, GuestMessageId, ScheduledTaskId } from "@t3tools/con
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 
 import {
+  isAutomaticServerContinuationMessage,
   resolveUserMessageFileCards,
   resolveUserMessageGrouping,
   resolveUserMessagePresentation,
@@ -28,6 +29,12 @@ describe("resolveUserMessageGrouping", () => {
       { ...own, role: "assistant" },
       { ...own, createdBy: "agent" as const },
       { ...own, createdBy: "agent" as const, creationSource: "server" as const },
+      {
+        ...own,
+        text: "Continue where you left off.",
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+      },
       { ...own, scheduledTaskId: ScheduledTaskId.make("task") },
       {
         ...own,
@@ -217,6 +224,70 @@ describe("resolveUserMessagePresentation", () => {
         attribution: "automation",
         scheduledTaskId: "task:daily-audit",
       });
+    }
+  });
+
+  it("classifies server-dispatched continuation prompts as continuation and leaves user or attached messages alone", () => {
+    for (const text of [
+      "Continue where you left off.",
+      "Continue where you left off. Your last turn was cut short, so a command or other action it started may have finished or may still be running. Before you repeat one that changes state, confirm it did not take effect and is not still running; if you cannot tell, say so instead of repeating it.",
+    ]) {
+      const serverContinuation = {
+        role: "user",
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+        text,
+      };
+      expect(isAutomaticServerContinuationMessage(serverContinuation)).toBe(true);
+      expect(resolveUserMessagePresentation(serverContinuation)).toEqual({
+        text,
+        attribution: "continuation",
+        scheduledTaskId: undefined,
+      });
+    }
+
+    for (const nonContinuation of [
+      {
+        role: "user",
+        createdBy: "user" as const,
+        creationSource: "web" as const,
+        text: "Continue where you left off.",
+      },
+      {
+        role: "user",
+        text: "Continue where you left off.",
+      },
+      {
+        role: "user",
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+        text: "Fix the failing build",
+      },
+      {
+        role: "user",
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+        text: "Continue where you left off.",
+        attachments: [{ id: "file-1" }],
+      },
+      {
+        role: "user",
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+        text: "Continue where you left off.",
+        context: {
+          records: [{ contextId: "ctx-1" }],
+        },
+      },
+      {
+        role: "user",
+        createdBy: "agent" as const,
+        creationSource: "server" as const,
+        text: "Continue where you left off.",
+      },
+    ]) {
+      expect(isAutomaticServerContinuationMessage(nonContinuation)).toBe(false);
+      expect(resolveUserMessagePresentation(nonContinuation).attribution).not.toBe("continuation");
     }
   });
 });

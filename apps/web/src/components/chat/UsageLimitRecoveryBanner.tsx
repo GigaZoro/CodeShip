@@ -42,6 +42,18 @@ type RecoveryProps = {
   signInSettings?: { environmentId: EnvironmentId; instanceId: ProviderInstanceId };
 };
 
+export function isActiveUsageLimitRecoveryState(input: {
+  readonly runtimeStatus: string | null | undefined;
+  readonly lastErrorClass: string | null | undefined;
+  readonly latestRun: { readonly status: string } | null | undefined;
+}): boolean {
+  return (
+    input.runtimeStatus === "failed" &&
+    input.lastErrorClass === "usage_limit" &&
+    input.latestRun?.status === "failed"
+  );
+}
+
 export function usageLimitRecoveryBannerItem(props: RecoveryProps): ThreadNotice {
   const { runId, errorCode, resetAt, stoppedAt, timestampFormat } = props;
   const canSchedule = resetAt !== null && Date.parse(resetAt) > Date.parse(stoppedAt);

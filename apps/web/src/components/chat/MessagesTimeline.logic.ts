@@ -1442,8 +1442,103 @@ function settleSupersededReasoning(entries: ReadonlyArray<TimelineEntry>) {
   });
 }
 
-function timelineRowEntries(entries: ReadonlyArray<TimelineEntry>) {
-  return withoutSubagentDelegationRows(settleSupersededReasoning(entries));
+function timelineEntryAnyRunId(entry: TimelineEntry): RunId | null {
+  if (entry.kind === "message") return entry.message.runId ?? null;
+  if (entry.kind === "proposed-plan") return entry.proposedPlan.runId;
+  if (entry.kind === "html-render" || entry.kind === "mcp-app") return entry.runId;
+  if (entry.kind === "work") return entry.entry.runId ?? null;
+  return entry.projectedItem.item.runId ?? null;
+}
+
+function withoutSupersededUsageLimitErrors(
+  entries: ReadonlyArray<TimelineEntry>,
+  latestRun: TimelineLatestRun | null,
+  runningRunId: RunId | null,
+): ReadonlyArray<TimelineEntry> {
+  const latestRunStarted =
+    latestRun !== null &&
+    latestRun.status !== "queued" &&
+    !(latestRun.status === "cancelled" && latestRun.startedAt === null);
+
+  let laterRunIdA: RunId | null = null;
+  let laterRunIdB: RunId | null = null;
+  const laterAttemptByRun = new Map<RunId, { first: RunAttemptId; hasMultiple: boolean }>();
+  let seenLaterResponseStart = false;
+  let suppressed: Set<number> | null = null;
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    const failedItem = timelineEntryFailedItem(entry);
+    if (failedItem !== null && failedItem.failure.class === "usage_limit") {
+      const runId = failedItem.runId;
+      let isSuperseded = false;
+      if (runId !== null) {
+        const hasLaterDifferentRun =
+          (laterRunIdA !== null && laterRunIdA !== runId) ||
+          (laterRunIdB !== null && laterRunIdB !== runId);
+        const laterAttempt = laterAttemptByRun.get(runId);
+        const hasLaterDifferentAttempt =
+          entry.attempt !== undefined &&
+          laterAttempt !== undefined &&
+          (laterAttempt.hasMultiple || laterAttempt.first !== entry.attempt.id);
+        const isSupersededAttempt = entry.attempt?.status === "superseded";
+        const supersededByRunningRun = runningRunId !== null && runningRunId !== runId;
+        const supersededByLatestRun =
+          (latestRunStarted && latestRun.runId !== runId) ||
+          (latestRun !== null &&
+            latestRun.runId === runId &&
+            (latestRun.status === "completed" ||
+              latestRun.status === "running" ||
+              latestRun.status === "starting" ||
+              latestRun.status === "waiting"));
+        isSuperseded =
+          hasLaterDifferentRun ||
+          hasLaterDifferentAttempt ||
+          isSupersededAttempt ||
+          supersededByRunningRun ||
+          supersededByLatestRun;
+      } else {
+        isSuperseded = seenLaterResponseStart || runningRunId !== null || latestRunStarted;
+      }
+      if (isSuperseded) {
+        suppressed ??= new Set<number>();
+        suppressed.add(index);
+      }
+    }
+
+    const entryRunId = timelineEntryAnyRunId(entry);
+    if (entryRunId !== null) {
+      if (laterRunIdA === null) {
+        laterRunIdA = entryRunId;
+      } else if (laterRunIdB === null && entryRunId !== laterRunIdA) {
+        laterRunIdB = entryRunId;
+      }
+      if (entry.attempt !== undefined) {
+        const seen = laterAttemptByRun.get(entryRunId);
+        if (seen === undefined) {
+          laterAttemptByRun.set(entryRunId, { first: entry.attempt.id, hasMultiple: false });
+        } else if (!seen.hasMultiple && seen.first !== entry.attempt.id) {
+          seen.hasMultiple = true;
+        }
+      }
+    }
+    if (timelineEntryStartsResponse(entry)) {
+      seenLaterResponseStart = true;
+    }
+  }
+
+  if (suppressed === null) return entries;
+  return entries.filter((_, index) => !suppressed.has(index));
+}
+
+function timelineRowEntries(
+  entries: ReadonlyArray<TimelineEntry>,
+  latestRun: TimelineLatestRun | null,
+  runningRunId: RunId | null,
+) {
+  return withoutSubagentDelegationRows(
+    withoutSupersededUsageLimitErrors(settleSupersededReasoning(entries), latestRun, runningRunId),
+  );
 }
 
 function deriveTimelineTurnFolds(
@@ -1457,7 +1552,11 @@ function deriveTimelineTurnFolds(
     | "foldFinishedWork"
   >,
 ) {
-  const timelineEntries = timelineRowEntries(input.timelineEntries);
+  const timelineEntries = timelineRowEntries(
+    input.timelineEntries,
+    input.latestRun ?? null,
+    input.runningRunId ?? null,
+  );
   const unsettledRunId = deriveUnsettledRunId(input.latestRun ?? null, input.runningRunId ?? null);
   const failedRunIds = failedTimelineRunIds(timelineEntries, input.latestRun ?? null);
   const activeVisualResponseRunIds = deriveActiveVisualResponseRunIds({
@@ -1497,7 +1596,11 @@ export function deriveMessagesTimelineRows(input: {
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
   worktreeSetup?: WorktreeSetupSnapshot | null;
 }): MessagesTimelineRow[] {
-  const timelineEntries = timelineRowEntries(input.timelineEntries);
+  const timelineEntries = timelineRowEntries(
+    input.timelineEntries,
+    input.latestRun ?? null,
+    input.runningRunId ?? null,
+  );
   const isPendingApproval = (entry: WorkLogEntry) => {
     const item = entry.projectedItem?.item;
     return (

@@ -27,6 +27,7 @@ import {
 } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  ArrowRightLeftIcon,
   CalendarClockIcon,
   ChevronDownIcon,
   DownloadIcon,
@@ -34,11 +35,13 @@ import {
   type LucideIcon,
   MessagesSquareIcon,
   Redo2Icon,
+  RotateCwIcon,
   PencilIcon,
 } from "lucide-react";
 import { Link as LinkIconNode } from "lucide";
 import { Button, InlineButton } from "../ui/button";
 import { ModelSwitchRow } from "./V2LifecycleRow";
+import { TimelineSystemDivider } from "./TimelineSystemDivider";
 import { useAssetUrlRefresh, useAssetUrls, useAssetUrlState } from "../../assets/assetUrls";
 import { AttachmentImage } from "../media/AttachmentImage";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
@@ -88,6 +91,7 @@ import {
 } from "./TimelineRowParts";
 import { UserMessageContextReferenceChip } from "./UserMessageContextChips";
 import {
+  didContinuationSwitchAccount,
   resolvePreviewAnnotationImage,
   userMessageFileLabel,
 } from "./TimelineUserMessageRow.logic";
@@ -257,6 +261,28 @@ export function UserMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mes
   const ctx = use(TimelineRowCtx);
   const item = row.projectedItem?.item;
   const modelSwitch = item?.type === "user_message" ? item.modelSwitch : undefined;
+  if (resolveUserMessagePresentation(row.message).attribution === "continuation") {
+    const switchedAccount = didContinuationSwitchAccount({
+      runId: row.message.runId ?? null,
+      messageId: row.message.id,
+      runs: ctx.runs,
+      modelSwitch,
+    });
+    const label = switchedAccount ? t("Switched account & continued") : t("Resumed automatically");
+    return (
+      <>
+        {modelSwitch ? (
+          <ModelSwitchRow environmentId={ctx.activeThreadEnvironmentId} modelSwitch={modelSwitch} />
+        ) : null}
+        <div role="separator" aria-label={label} data-user-message-attribution="continuation">
+          <TimelineSystemDivider
+            label={label}
+            icon={switchedAccount ? ArrowRightLeftIcon : RotateCwIcon}
+          />
+        </div>
+      </>
+    );
+  }
   return (
     <>
       {modelSwitch ? (

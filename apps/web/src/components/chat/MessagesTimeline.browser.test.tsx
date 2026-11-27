@@ -864,6 +864,131 @@ describe("MessagesTimeline agent messages", () => {
   });
 });
 
+describe("MessagesTimeline automatic server continuations", () => {
+  it("renders a server continuation as a compact divider when switching accounts", async () => {
+    setup();
+    const run1 = RunId.make("run-1");
+    const run2 = RunId.make("run-2");
+    await using screen = await renderTimeline(
+      [
+        message(
+          "Fix the failing build",
+          {
+            runId: run1,
+            createdBy: "user",
+            creationSource: "web",
+          },
+          "user-1",
+        ),
+        message(
+          "Continue where you left off.",
+          {
+            runId: run2,
+            createdBy: "user",
+            creationSource: "server",
+          },
+          "limit-failover:run-1",
+        ),
+      ],
+      {
+        runs: [
+          {
+            id: run1,
+            ordinal: 1,
+            providerInstanceId: ProviderInstanceId.make("claude-account-a"),
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claude-account-a"),
+              model: "claude-sonnet-4-6",
+            },
+          },
+          {
+            id: run2,
+            ordinal: 2,
+            providerInstanceId: ProviderInstanceId.make("claude-account-b"),
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claude-account-b"),
+              model: "claude-sonnet-4-6",
+            },
+          },
+        ],
+      },
+    );
+
+    const separator = screen.container.querySelector(
+      '[data-user-message-attribution="continuation"]',
+    );
+    expect(separator).not.toBeNull();
+    expect(separator?.getAttribute("role")).toBe("separator");
+    expect(separator?.textContent).toContain("Switched account & continued");
+    expect(screen.text()).not.toContain("Continue where you left off.");
+    expect(screen.container.querySelectorAll("[data-user-message-body]")).toHaveLength(1);
+  });
+
+  it("renders a same-account server continuation as Resumed automatically", async () => {
+    setup();
+    const run1 = RunId.make("run-1");
+    const run2 = RunId.make("run-2");
+    const account = ProviderInstanceId.make("claude-account-a");
+    await using screen = await renderTimeline(
+      [
+        message(
+          "Continue where you left off.",
+          {
+            runId: run2,
+            createdBy: "user",
+            creationSource: "server",
+          },
+          "limit-reset-resume:run-1",
+        ),
+      ],
+      {
+        runs: [
+          {
+            id: run1,
+            ordinal: 1,
+            providerInstanceId: account,
+            modelSelection: {
+              instanceId: account,
+              model: "claude-sonnet-4-6",
+            },
+          },
+          {
+            id: run2,
+            ordinal: 2,
+            providerInstanceId: account,
+            modelSelection: {
+              instanceId: account,
+              model: "claude-sonnet-4-6",
+            },
+          },
+        ],
+      },
+    );
+
+    const separator = screen.container.querySelector(
+      '[data-user-message-attribution="continuation"]',
+    );
+    expect(separator?.textContent).toContain("Resumed automatically");
+    expect(screen.container.querySelectorAll("[data-user-message-body]")).toHaveLength(0);
+  });
+
+  it("keeps a real user-typed 'Continue where you left off.' message as a normal user bubble", async () => {
+    setup();
+    await using screen = await renderTimeline([
+      message("Continue where you left off.", {
+        createdBy: "user",
+        creationSource: "web",
+      }),
+    ]);
+
+    expect(
+      screen.container.querySelector('[data-user-message-attribution="continuation"]'),
+    ).toBeNull();
+    expect(screen.container.querySelectorAll("[data-user-message-body]")).toHaveLength(1);
+    expect(screen.text()).toContain("Continue where you left off.");
+  });
+});
+
 describe("MessagesTimeline attachments", () => {
   it.each(["image", "file"] as const)(
     "copies only matching context records for a wordless %s attachment",

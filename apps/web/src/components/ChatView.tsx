@@ -42,7 +42,10 @@ import {
   type UnseenThreadWindow,
 } from "@t3tools/client-runtime/state/thread-visits";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
-import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
+import {
+  isActiveUsageLimitRecoveryState,
+  usageLimitRecoveryBannerItem,
+} from "./chat/UsageLimitRecoveryBanner";
 import { resolveDraftHeroState } from "./ChatView.logic";
 import { useQueuedRunEdit } from "./chat/useQueuedRunEdit";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
@@ -1021,10 +1024,16 @@ export default function ChatView(props: ChatViewProps) {
   );
   const browserAvailable = isPreviewSupportedInRuntime() || activeEnvironmentServerBrowser;
   const activeThreadShell = serverThread;
+  const latestUsageLimitRun = activeLatestRun ?? activeThreadShell?.latestRun ?? null;
+  const isActiveUsageLimitRecovery = isActiveUsageLimitRecoveryState({
+    runtimeStatus: serverRuntime?.status,
+    lastErrorClass: serverRuntime?.lastErrorClass,
+    latestRun: latestUsageLimitRun,
+  });
   const timelineThreadError =
     serverRuntime?.status === "failed" &&
     serverRuntime.lastErrorClass === "usage_limit" &&
-    activeThreadShell?.latestRun &&
+    latestUsageLimitRun !== null &&
     visibleThreadError === serverRuntime.lastError
       ? null
       : visibleThreadError;
@@ -2581,14 +2590,15 @@ export default function ChatView(props: ChatViewProps) {
     return item ? [item] : [];
   });
   const limitRecoveryBanner =
-    serverRuntime?.status === "failed" &&
-    serverRuntime.lastErrorClass === "usage_limit" &&
-    activeThreadShell?.latestRun
+    isActiveUsageLimitRecovery &&
+    serverRuntime !== null &&
+    activeThreadShell !== null &&
+    latestUsageLimitRun !== null
       ? usageLimitRecoveryBannerItem({
-          runId: activeThreadShell.latestRun.runId,
+          runId: latestUsageLimitRun.runId,
           errorCode: serverRuntime.lastErrorCode ?? null,
           resetAt: serverRuntime.usageLimitResetAt ?? null,
-          stoppedAt: activeThreadShell.latestRun.completedAt ?? activeThreadShell.updatedAt,
+          stoppedAt: latestUsageLimitRun.completedAt ?? activeThreadShell.updatedAt,
           recovery: activeThreadShell.limitRecovery ?? null,
           snoozedUntil: activeThreadShell.snoozedUntil,
           timestampFormat,

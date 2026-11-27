@@ -24,6 +24,7 @@ import {
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import { isAutomaticServerContinuationMessage } from "@t3tools/client-runtime/user-message";
 import {
   firstUnseenThreadRowIndex,
   type UnseenThreadWindow,
@@ -1697,7 +1698,11 @@ function TimelineHistoryControl(props: MessagesTimelineHistoryControls) {
 }
 
 function isMessageRow(row: MessagesTimelineRow) {
-  return row.kind === "message" && row.message.role !== "system";
+  return (
+    row.kind === "message" &&
+    row.message.role !== "system" &&
+    !isAutomaticServerContinuationMessage(row.message)
+  );
 }
 
 function keyExtractor(item: MessagesTimelineRow) {
@@ -1707,6 +1712,9 @@ function keyExtractor(item: MessagesTimelineRow) {
 // LegendList averages by type; length buckets prevent inflated estimates and nested-update loops.
 function getItemType(item: MessagesTimelineRow) {
   if (item.kind !== "message") return item.kind;
+  if (isAutomaticServerContinuationMessage(item.message)) {
+    return "message:continuation";
+  }
   const lengthBucket = Math.max(0, Math.floor(Math.log2(item.message.text.length / 1000)));
   return `message:${item.message.role}:${lengthBucket}`;
 }
@@ -1714,6 +1722,8 @@ function getItemType(item: MessagesTimelineRow) {
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
   const isExpandedToolGroup = row.kind === "work" && row.isExpandedToolGroup;
   const isSubagentGroup = row.kind === "event" && row.projectedItem.item.type === "subagent";
+  const isContinuationMessage =
+    row.kind === "message" && isAutomaticServerContinuationMessage(row.message);
   const isWorkLogRow =
     row.kind === "work" ||
     row.kind === "work-live" ||
@@ -1732,7 +1742,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
             ? "pb-(--timeline-gap-tight)"
             : row.kind === "message" && row.groupedWithNext
               ? "pb-(--timeline-gap-grouped)"
-              : (row.kind === "message" &&
+              : isContinuationMessage ||
+                  (row.kind === "message" &&
                     row.message.role === "assistant" &&
                     !row.showAssistantMeta) ||
                   row.kind === "worktree-setup" ||
