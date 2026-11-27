@@ -3,6 +3,7 @@ import {
   CommandId,
   EventId,
   MessageId,
+  orchestrationV2RunAwaitsMemory,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -633,4 +634,180 @@ it.effect("run.memory-admit is skipped while draining and leaves the run waiting
 
     yield* releaseDrain(lease);
   }).pipe(Effect.provide(makeLayerTest())),
+);
+
+it.effect(
+  "prepared-run.retry and user follow-ups during drain keep memory-waiting worktree runs out of restartHold",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const drain = yield* UpdateDrain.UpdateDrain;
+      const threadId = yield* createIdleThread("drain-retry-deadlock");
+
+      // Create a worktree-backed preparing run before drain, then simulate a restart cutting it.
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:msg:drain-retry-initial"),
+        threadId,
+        messageId: MessageId.make("message:drain-retry-initial"),
+        text: "Initial worktree task",
+        attachments: [],
+        dispatchMode: {
+          type: "defer_start",
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+        },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* recovery.reconcile("startup");
+      const afterRestart = yield* orchestrator.getThreadProjection(threadId);
+      const cutRun = afterRestart.runs[0];
+      assert.isDefined(cutRun);
+      assert.equal(cutRun.status, "cancelled");
+
+      // Clear outbox effects queued by startup reconciliation before testing drain behavior.
+      while (true) {
+        const claimed = yield* outbox.claimNext({ workerId: "test-clear-startup" });
+        if (Option.isNone(claimed)) break;
+        yield* outbox.succeed({
+          effectId: claimed.value.id,
+          workerId: "test-clear-startup",
+        });
+      }
+
+      const lease = yield* acquireDrain(drain);
+
+      // Automatic restart retry during drain puts the run into awaiting memory without blocking restartHold.
+      yield* orchestrator.dispatch({
+        type: "prepared-run.retry",
+        automatic: true,
+        commandId: CommandId.make("command:retry:drain-retry-initial"),
+        threadId,
+        runId: cutRun.id,
+      });
+
+      const afterRetry = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(afterRetry.runs[0]?.status, "preparing");
+      assert.isTrue(orchestrationV2RunAwaitsMemory(afterRetry.runs[0]!));
+
+      const holdAfterRetry = yield* recovery.restartHold;
+      assert.deepEqual(holdAfterRetry.work, []);
+      assert.deepEqual(holdAfterRetry.runningTurns, []);
+
+      // A follow-up user message sent during drain must not bypass drain via startMemoryHeldRun.
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:msg:drain-retry-followup"),
+        threadId,
+        messageId: MessageId.make("message:drain-retry-followup"),
+        text: "Follow-up during drain",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+
+      const afterFollowUp = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(afterFollowUp.runs.length, 2);
+      assert.equal(afterFollowUp.runs[0]?.status, "preparing");
+      assert.isTrue(orchestrationV2RunAwaitsMemory(afterFollowUp.runs[0]!));
+      assert.equal(afterFollowUp.runs[1]?.status, "queued");
+
+      const holdAfterFollowUp = yield* recovery.restartHold;
+      assert.deepEqual(holdAfterFollowUp.work, []);
+      assert.deepEqual(holdAfterFollowUp.runningTurns, []);
+
+      // Neither retry nor follow-up may emit workspace.prepare or provider-turn.start during drain.
+      const pendingEffects: Array<string> = [];
+      while (true) {
+        const claimed = yield* outbox.claimNext({ workerId: "test-check-drain-retry" });
+        if (Option.isNone(claimed)) break;
+        pendingEffects.push(claimed.value.request.type);
+        yield* outbox.succeed({
+          effectId: claimed.value.id,
+          workerId: "test-check-drain-retry",
+        });
+      }
+      assert.isFalse(pendingEffects.includes("workspace.prepare"));
+      assert.isFalse(pendingEffects.includes("provider-turn.start"));
+
+      yield* releaseDrain(lease);
+    }).pipe(Effect.provide(makeLayerTest())),
+);
+
+it.effect(
+  "user message.dispatch during drain revives a restart-cut run into memory-wait instead of starting it",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const drain = yield* UpdateDrain.UpdateDrain;
+      const threadId = yield* createIdleThread("drain-user-revive");
+
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:msg:drain-user-revive-initial"),
+        threadId,
+        messageId: MessageId.make("message:drain-user-revive-initial"),
+        text: "Original worktree task",
+        attachments: [],
+        dispatchMode: {
+          type: "defer_start",
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+        },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* recovery.reconcile("startup");
+      while (true) {
+        const claimed = yield* outbox.claimNext({ workerId: "test-clear-revive" });
+        if (Option.isNone(claimed)) break;
+        yield* outbox.succeed({
+          effectId: claimed.value.id,
+          workerId: "test-clear-revive",
+        });
+      }
+
+      const lease = yield* acquireDrain(drain);
+
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:msg:drain-user-revive-followup"),
+        threadId,
+        messageId: MessageId.make("message:drain-user-revive-followup"),
+        text: "User follow-up during drain",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+
+      const afterDispatch = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(afterDispatch.runs.length, 2);
+      assert.equal(afterDispatch.runs[0]?.status, "preparing");
+      assert.isTrue(orchestrationV2RunAwaitsMemory(afterDispatch.runs[0]!));
+      assert.equal(afterDispatch.runs[1]?.status, "queued");
+
+      const hold = yield* recovery.restartHold;
+      assert.deepEqual(hold.work, []);
+      assert.deepEqual(hold.runningTurns, []);
+
+      const pendingEffects: Array<string> = [];
+      while (true) {
+        const claimed = yield* outbox.claimNext({ workerId: "test-check-revive" });
+        if (Option.isNone(claimed)) break;
+        pendingEffects.push(claimed.value.request.type);
+        yield* outbox.succeed({
+          effectId: claimed.value.id,
+          workerId: "test-check-revive",
+        });
+      }
+      assert.isFalse(pendingEffects.includes("workspace.prepare"));
+      assert.isFalse(pendingEffects.includes("provider-turn.start"));
+
+      yield* releaseDrain(lease);
+    }).pipe(Effect.provide(makeLayerTest())),
 );

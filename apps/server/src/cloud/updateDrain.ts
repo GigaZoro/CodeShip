@@ -71,11 +71,13 @@ export const holdInBackgroundRef = (
   Effect.uninterruptible(
     Effect.gen(function* () {
       let released = false;
-      const releaseOnce = Effect.suspend(() => {
-        if (released) return Effect.void;
-        released = true;
-        return give(drain);
-      });
+      const releaseOnce = Effect.uninterruptible(
+        Effect.suspend(() => {
+          if (released) return Effect.void;
+          released = true;
+          return give(drain);
+        }),
+      );
       yield* take(drain);
       yield* Scope.addFinalizer(scope, releaseOnce).pipe(Effect.onError(() => releaseOnce));
       const fiber = yield* Effect.sleep(duration).pipe(
@@ -84,7 +86,7 @@ export const holdInBackgroundRef = (
         Effect.forkIn(scope),
         Effect.onError(() => releaseOnce),
       );
-      return Fiber.interrupt(fiber).pipe(Effect.andThen(releaseOnce));
+      return Effect.uninterruptible(Fiber.interrupt(fiber).pipe(Effect.andThen(releaseOnce)));
     }),
   );
 
