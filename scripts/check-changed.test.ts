@@ -2923,13 +2923,13 @@ it("reuses passes in another worktree with the same inputs and tracked environme
     JSON.stringify({ layoutVersion: 5, prunedAt: "first" }),
   );
   const firstCheckout = project.checkout(files);
-  // Two workers here and one in the retry.
+  // Two workers here and one in the retry; pass each checkout as PWD, which PowerShell leaves unset.
   const first = project.run(
     "lint",
     "",
     project.source,
     ["--concurrency", "16"],
-    passthrough,
+    { ...passthrough, PWD: firstCheckout },
     firstCheckout,
   );
   expect(first.status, first.stdout + first.stderr).toBe(1);
@@ -2945,7 +2945,7 @@ it("reuses passes in another worktree with the same inputs and tracked environme
     "",
     project.source,
     ["--concurrency", "1"],
-    { ...passthrough, INVOCATION_ID: "retry" },
+    { ...passthrough, INVOCATION_ID: "retry", PWD: retryCheckout },
     retryCheckout,
   );
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(1);

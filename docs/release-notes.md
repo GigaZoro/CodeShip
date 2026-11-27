@@ -192,6 +192,7 @@
 ## 2026-11-26 — Faster checks for test-cache regressions
 
 - The environment-variable tests now run the cached test group directly. They still verify the value each test receives after an environment change, without running unrelated checks for each variable.
+- The cross-worktree cache reuse test now passes each checkout path as `PWD`, so it passes under Windows PowerShell where `PWD` is unset and verifies that a different `PWD` does not invalidate cached passes.
 
 ## 2026-11-26 — Windows commands recover from launcher timeouts
 
