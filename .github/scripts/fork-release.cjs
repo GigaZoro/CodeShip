@@ -312,15 +312,20 @@ function recoverMacosRun(tag, sha, options) {
   }, 0);
   if (attempts >= MACOS_MAX_ATTEMPTS)
     throw new Error(`${tag} reached its ${MACOS_MAX_ATTEMPTS}-attempt limit across macOS runs.`);
-  if (
-    current &&
-    attempts >= MACOS_IMMEDIATE_ATTEMPTS &&
-    !gotNoRunner(
-      api(`${repo}/actions/runs/${current.id}/attempts/${current.run_attempt}/jobs?per_page=100`)
-        .jobs,
-    )
-  )
-    return { action: "wait" };
+  if (current) {
+    const currentJobs = api(
+      `${repo}/actions/runs/${current.id}/attempts/${current.run_attempt}/jobs?per_page=100`,
+    ).jobs;
+    // A cancellation after a runner started (for example a manual cancel) must not respawn itself.
+    const cancelledOnRunner = currentJobs.some(
+      (job) =>
+        job.conclusion === "cancelled" && (Boolean(job.runner_id) || (job.steps ?? []).length > 0),
+    );
+    if (cancelledOnRunner) return { action: "wait" };
+    if (attempts >= MACOS_IMMEDIATE_ATTEMPTS && !gotNoRunner(currentJobs)) {
+      return { action: "wait" };
+    }
+  }
   const publisher = macosPublisherRun(tag, sha, { repository, defaultBranch, api });
   // Legacy preflight logs can take 30 seconds each. Read one only for an available
   // artifact being considered for a rerun, after cheaper checks have passed.

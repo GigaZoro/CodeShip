@@ -140,11 +140,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
-        with:
-          sparse-checkout: /.github/scripts/fork-release.cjs
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
+      # Checkout's credential cleanup enumerates unrelated gitlinks in .repos.
+      - name: Fetch fork-release.cjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p .github/scripts
+          gh api --header 'Accept: application/vnd.github.raw+json' \
+            "repos/$GITHUB_REPOSITORY/contents/.github/scripts/fork-release.cjs?ref=$GITHUB_SHA" \
+            > .github/scripts/fork-release.cjs
 
       - name: Rerun or start the macOS build of the latest release
         env:

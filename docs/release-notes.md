@@ -1,3 +1,9 @@
+## 2026-11-27 — Reliable macOS fork release recovery and SEA import guard
+
+- Fixed macOS release recovery so runner-timeout cancellations retry immediately instead of being skipped, while manually cancelled builds do not respawn themselves.
+- Recovery and scheduled catch-up jobs now fetch `fork-release.cjs` directly via `gh api` instead of failing on `.repos` submodule gitlinks during `actions/checkout`.
+- Added a test guard blocking runtime ESM imports of external CLI dependencies in `apps/server/src` so single-executable builds stay protected.
+
 ## 2026-11-27 — Turn folds say what the turn did
 
 - A folded turn's summary row counts its tool calls and changed files beside its duration, such as "Worked for 8m · 14 tools · 6 files". Failed tool calls show as "2 failed" in the error color. Web, desktop, and mobile show the same text.
