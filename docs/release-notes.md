@@ -1,3 +1,9 @@
+## 2026-11-27 — Child chats nest under their parent in the sidebar
+
+- On web and desktop, click the child count beside a chat’s title, or press Right Arrow on its row, to see its side chats, subagents and delegated tasks. Children appear newest first and can have children of their own. The sidebar remembers which chats you expanded.
+- Opening a child chat expands the chats above it and highlights its row. A side chat opens beside its parent. Subagents a provider runs on its own, such as Claude's Task tool, stay in the parent's **Agents** list, and archived child chats stay out of the tree.
+- The **Settled** count stays the same when you expand a chat whose older delegated task runs on another machine.
+
 ## 2026-11-27 — Tighter wake-up measurement bounds in wake-usage
 
 - The daily repeated-wake measurement report (`scripts/wake-usage.mjs`) now isolates overlapping prior turns using turn-item evidence, detects complete or end-of-file post-completion log reads, and accounts for usage-limit failed turns in start evidence and top-five chat ranking while keeping its conservative decision bounds.
@@ -78,11 +84,6 @@
 ## 2026-11-27 — Claude turns survive a slow settings read
 
 - When a busy machine delays the worker that reads another Claude account's settings past its 30-second deadline, CodeShip reads them once more. If that read also runs out of time, the turn is retried as one whose message was never sent, instead of failing with "Claude's settings could not be resolved (account-worker: timeout)".
-
-## 2026-11-26 — Child chats nest under their parent in the sidebar
-
-- On web and desktop, click the child count beside a chat’s title, or press Right Arrow on its row, to see its side chats, subagents and delegated tasks. Children appear newest first and can have children of their own. The sidebar remembers which chats you expanded.
-- Opening a child chat expands the chats above it and highlights its row. A side chat opens beside its parent. Subagents a provider runs on its own, such as Claude's Task tool, stay in the parent's **Agents** list, and archived child chats stay out of the tree.
 
 ## 2026-11-26 — Multi-provider support across Auto mode, usage, and mobile
 
