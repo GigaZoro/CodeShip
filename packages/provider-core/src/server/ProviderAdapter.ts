@@ -657,6 +657,12 @@ export interface ProviderAdapterV2SessionRuntime {
    * running turn on the process is adopted: output for a turn not yet adopted would be dropped.
    */
   readonly releaseAdoptedOutput?: Effect.Effect<void>;
+  /**
+   * Called with the process's output held for a planned update. Succeeds once every event from
+   * output the process already sent is emitted, with how many events this runtime has emitted in
+   * all: the caller waits until it has handled that many. Without it the process is not kept.
+   */
+  readonly drainForDetach?: Effect.Effect<number>;
   readonly steerTurn: (
     input: ProviderAdapterV2SteerInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;

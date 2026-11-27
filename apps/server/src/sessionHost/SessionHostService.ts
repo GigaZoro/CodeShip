@@ -207,6 +207,13 @@ export interface SessionHostServiceShape {
     providerSessionId: string,
   ) => Effect.Effect<boolean>;
   readonly isThreadDetachedForUpdate: (threadId: ThreadId) => Effect.Effect<boolean>;
+  /**
+   * Writes a line to the reader of the session's host after the output it already got, also while
+   * output is held. False when no live host serves the session.
+   */
+  readonly injectOutputLine: (providerSessionId: string, line: string) => Effect.Effect<boolean>;
+  /** Whether a live host runs the session's process, which a planned update can keep. */
+  readonly hostsProviderSession: (providerSessionId: string) => Effect.Effect<boolean>;
   /** Ends the host's process, waits for it to exit, and forgets the host. */
   readonly terminate: (sessionHostId: string, signal?: NodeJS.Signals) => Effect.Effect<void>;
 }
@@ -1133,6 +1140,16 @@ const make = Effect.gen(function* () {
     threadId,
   ) => Effect.sync(() => detachedThreads.has(threadId));
 
+  const injectOutputLine: SessionHostServiceShape["injectOutputLine"] = (providerSessionId, line) =>
+    Effect.sync(() => {
+      const tracked = activeByProviderSession.get(providerSessionId);
+      return tracked !== undefined && tracked.handle.injectStdoutLine(line);
+    });
+
+  const hostsProviderSession: SessionHostServiceShape["hostsProviderSession"] = (
+    providerSessionId,
+  ) => Effect.sync(() => activeByProviderSession.has(providerSessionId));
+
   const awaitExitLogged = (handle: DetachedStdioHandle, sessionHostId: string) =>
     Effect.promise(() => handle.waitForExit()).pipe(
       Effect.timeoutOption(TERMINATE_EXIT_WAIT),
@@ -1210,6 +1227,8 @@ const make = Effect.gen(function* () {
     detachAllForUpdate,
     isProviderSessionDetachedForUpdate,
     isThreadDetachedForUpdate,
+    injectOutputLine,
+    hostsProviderSession,
     terminate,
   } satisfies SessionHostServiceShape;
 });
