@@ -1,6 +1,6 @@
 ## 2026-11-27 — Background commands capture their output again on macOS and Linux
 
-- Agent commands run in the background (tests, builds, landings) failed at once with "CodeShip could not capture command output" in the packaged app, because the output writer could not read its input there. They run and report their output again.
+- Agent commands run in the background (tests, builds, landings) failed at once with "CodeShip could not capture command output" in the packaged CLI and app, because the output writer could not read its input there. They run and report their output again.
 
 ## 2026-11-27 — The weekly dependency upgrade runs while Codex is out of usage
 

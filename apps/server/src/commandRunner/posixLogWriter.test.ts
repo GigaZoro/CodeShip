@@ -34,6 +34,7 @@ it.skipIf(isWindowsHost).each([
     const ready = await stdout.next();
     assert.isFalse(ready.done);
     const token = String(ready.value).trim();
+    const completes = mode === "split-complete" || mode === "bundled";
     const output =
       mode === "binary"
         ? Buffer.concat([
@@ -41,17 +42,15 @@ it.skipIf(isWindowsHost).each([
             Buffer.from(`\0${publicArgument}\0\0${token}\0`),
             Buffer.from([0xfe]),
           ])
-        : mode === "split-complete"
+        : completes
           ? Buffer.from("before\nafter\n")
           : Buffer.from("shutting down\n\0");
     if (mode === "term" || mode === "kill") child.kill("SIGTERM");
-    if (mode === "kill" || mode === "split-complete") {
+    if (mode === "kill" || completes) {
       const watcher = NodeFS.watch(log);
       try {
         const persisted = NodeEvents.EventEmitter.once(watcher, "change");
-        child.stdin.write(
-          mode === "split-complete" ? Buffer.from(`before\n\0${token.slice(0, 6)}`) : output,
-        );
+        child.stdin.write(completes ? Buffer.from(`before\n\0${token.slice(0, 6)}`) : output);
         await persisted;
         if (mode === "kill") {
           // A descendant still holds the write end when the grace period expires.
@@ -71,7 +70,7 @@ it.skipIf(isWindowsHost).each([
     }
     assert.deepEqual(await exited, mode === "kill" ? [null, "SIGKILL"] : [0, null]);
     assert.deepEqual(NodeFS.readFileSync(log), output);
-    assert.equal(NodeFS.existsSync(status), mode === "split-complete");
+    assert.equal(NodeFS.existsSync(status), completes);
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await exited;
