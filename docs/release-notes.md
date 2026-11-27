@@ -1,3 +1,8 @@
+## 2026-11-27 — `check:changed` reuses test passes across commits in smaller groups
+
+- Maintainers: `vp run check:changed` now shares its staged test cache across commits with the same install instead of starting cold on every commit or rebase. Groups whose Git commands read this checkout's repository, tracked through `GIT_TRACE2_PERF`, still key on `HEAD` and rerun on every commit; all other groups replay whenever their read files and tree state still match.
+- Test groups in `check:changed` are now hash-chunked to at most 8 files each instead of 16, keeping individual cache entries smaller and avoiding unnecessary reruns when an unrelated test file changes.
+
 ## 2026-11-27 — Landing checks tolerate concurrent marker probes on Windows
 
 - On Windows, `check:changed` runs under a landing turn no longer fail with `EPERM` when removing their `landing-wait-*.sqlite` marker file while another `check:changed` run probes it, and marker probes ignore SQLite sidecar files.
