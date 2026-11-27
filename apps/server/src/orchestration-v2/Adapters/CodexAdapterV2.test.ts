@@ -10095,3 +10095,59 @@ describe("layerAppServerClientFactory with a session host", () => {
     }),
   );
 });
+
+describe("CodexAdapterV2 item ordinals after a takeover", () => {
+  const nativeTurnId = "turn-1";
+  const turnItemIdFor = (key: string) =>
+    IdAllocator.derive.turnItemFromProviderItem({
+      driver: ProviderDriverKind.make("codex"),
+      nativeItemId: key,
+    });
+  const reasoningKey = (index: number) =>
+    JSON.stringify([nativeTurnId, "reasoning-1", "summary", index]);
+  const startedAt = DateTime.makeUnsafe(0);
+  const stored = (
+    key: string,
+    nativeItemId: string,
+    type: "reasoning" | "command_execution",
+    ordinal: number,
+  ) => ({
+    id: turnItemIdFor(key),
+    type,
+    ordinal,
+    nativeItemRef: {
+      driver: ProviderDriverKind.make("codex"),
+      nativeId: nativeItemId,
+      strength: "strong" as const,
+    },
+    startedAt,
+    updatedAt: startedAt,
+  });
+
+  it("numbers new items after every stored one when stored items share a native id", () => {
+    const positions: CodexAdapterV2.CodexItemPositions = {
+      itemPositions: new Map(),
+      nextItemOrdinal: CodexAdapterV2.firstCodexItemOrdinal(1),
+    };
+    CodexAdapterV2.seedAdoptedCodexItemPositions(positions, {
+      nativeTurnId,
+      turnItemIdFor,
+      items: [
+        stored(reasoningKey(0), "reasoning-1", "reasoning", 101),
+        stored(reasoningKey(1), "reasoning-1", "reasoning", 102),
+        stored("command-1", "command-1", "command_execution", 103),
+      ],
+    });
+    const ordinalOf = (key: string) =>
+      CodexAdapterV2.allocateCodexItemPosition(positions, key, startedAt).ordinal;
+    assert.deepEqual(
+      [
+        ordinalOf(reasoningKey(0)),
+        ordinalOf(reasoningKey(1)),
+        ordinalOf("command-1"),
+        ordinalOf("command-2"),
+      ],
+      [101, 102, 103, 104],
+    );
+  });
+});

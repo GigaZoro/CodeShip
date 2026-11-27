@@ -592,6 +592,88 @@ function codexNativeItemRef(nativeItemId: string) {
   };
 }
 
+const codexReasoningPartKey = (
+  turnId: string,
+  nativeItemId: string,
+  stream: "summary" | "content",
+  index: number,
+) => JSON.stringify([turnId, nativeItemId, stream, index]);
+
+export interface CodexItemPosition {
+  readonly ordinal: number;
+  readonly startedAt: DateTime.Utc;
+}
+
+/** A turn's item positions, keyed as its output names items; ordinals are never reused. */
+export interface CodexItemPositions {
+  readonly itemPositions: Map<string, CodexItemPosition>;
+  nextItemOrdinal: number;
+}
+
+export const firstCodexItemOrdinal = (providerTurnOrdinal: number) => providerTurnOrdinal * 100 + 1;
+
+export function allocateCodexItemPosition(
+  positions: CodexItemPositions,
+  key: string,
+  startedAt: DateTime.Utc,
+): CodexItemPosition {
+  const existing = positions.itemPositions.get(key);
+  if (existing !== undefined) return existing;
+  const position = { ordinal: positions.nextItemOrdinal, startedAt };
+  positions.nextItemOrdinal += 1;
+  positions.itemPositions.set(key, position);
+  return position;
+}
+
+/**
+ * Gives a taken-over turn's stored items back the keys its output uses for them, so continued
+ * items keep their ordinals; new items are numbered after every stored one.
+ */
+export function seedAdoptedCodexItemPositions(
+  positions: CodexItemPositions,
+  input: {
+    readonly nativeTurnId: string;
+    readonly items: ReadonlyArray<
+      Pick<
+        OrchestrationV2TurnItem,
+        "id" | "type" | "ordinal" | "nativeItemRef" | "startedAt" | "updatedAt"
+      >
+    >;
+    readonly turnItemIdFor: (key: string) => string;
+  },
+): void {
+  const sharingNativeId = new Map<string, number>();
+  for (const item of input.items) {
+    const nativeItemId = item.nativeItemRef?.nativeId;
+    if (nativeItemId != null) {
+      sharingNativeId.set(nativeItemId, (sharingNativeId.get(nativeItemId) ?? 0) + 1);
+    }
+  }
+  for (const item of input.items) {
+    const nativeItemId = item.nativeItemRef?.nativeId;
+    const candidates =
+      nativeItemId == null
+        ? []
+        : item.type === "reasoning"
+          ? (["summary", "content"] as const).flatMap((stream) =>
+              Array.from({ length: sharingNativeId.get(nativeItemId) ?? 0 }, (_unused, index) =>
+                codexReasoningPartKey(input.nativeTurnId, nativeItemId, stream, index),
+              ),
+            )
+          : [nativeItemId];
+    const key =
+      candidates.find((candidate) => input.turnItemIdFor(candidate) === item.id) ??
+      `t3-adopted:${item.id}`;
+    if (!positions.itemPositions.has(key)) {
+      positions.itemPositions.set(key, {
+        ordinal: item.ordinal,
+        startedAt: item.startedAt ?? item.updatedAt,
+      });
+    }
+    positions.nextItemOrdinal = Math.max(positions.nextItemOrdinal, item.ordinal + 1);
+  }
+}
+
 function trimText(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
@@ -1264,7 +1346,7 @@ function failureResetAt(
 const isChatGptSharingLimit = (failure: OrchestrationV2ProviderFailure) =>
   classifyCodexManagedError(failure.code)?.code === "subscription_sharing_usage_limit_exceeded";
 
-interface ActiveCodexTurnContext {
+interface ActiveCodexTurnContext extends CodexItemPositions {
   hookStopReason?: string;
   capacityRetryAttempt?: number;
   capacityRetryPending?: Deferred.Deferred<ActiveCodexTurnContext | undefined>;
@@ -1292,10 +1374,6 @@ interface ActiveCodexTurnContext {
   readonly runningCompactionItemIds: Set<string>;
   // Modern approval requests omit paths; keep the kinds without retaining patch bodies.
   readonly fileChangeKindsByItem: Map<string, CodexFileChangeKinds>;
-  readonly itemPositions: Map<
-    string,
-    { readonly ordinal: number; readonly startedAt: DateTime.Utc }
-  >;
 }
 
 interface ActiveCodexProviderRetry {
@@ -2453,6 +2531,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             subagent: null,
             startedAt: input.startedAt,
             itemPositions: new Map(),
+            nextItemOrdinal: firstCodexItemOrdinal(input.turnInput.providerTurnOrdinal),
             fileChangeKindsByItem: new Map(),
             runningCompactionItemIds: new Set(),
           };
@@ -2871,16 +2950,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             // Read the clock first so the lookup and the insert run without yielding.
             const now = startedAt ?? (yield* DateTime.now);
-            const existing = context.itemPositions.get(nativeItemId);
-            if (existing !== undefined) {
-              return existing;
-            }
-            const position = {
-              ordinal: context.providerTurnOrdinal * 100 + context.itemPositions.size + 1,
-              startedAt: now,
-            };
-            context.itemPositions.set(nativeItemId, position);
-            return position;
+            return allocateCodexItemPosition(context, nativeItemId, now);
           });
 
         const resolveItemOrdinal = (context: ActiveCodexTurnContext, nativeItemId: string) =>
@@ -3051,6 +3121,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               subagent,
               startedAt: turn.startedAt,
               itemPositions: new Map(),
+              nextItemOrdinal: firstCodexItemOrdinal(providerTurnOrdinal),
               fileChangeKindsByItem: new Map(),
               runningCompactionItemIds: new Set(),
             };
@@ -3788,7 +3859,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           stream: "summary" | "content",
           index: number,
         ) => {
-          const key = JSON.stringify([turnId, nativeItemId, stream, index]);
+          const key = codexReasoningPartKey(turnId, nativeItemId, stream, index);
           reasoningParts.set(key, { turnId, nativeItemId, stream, index });
           return key;
         };
@@ -6973,6 +7044,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             subagent: null,
             startedAt: now,
             itemPositions: new Map(),
+            nextItemOrdinal: firstCodexItemOrdinal(turnInput.providerTurnOrdinal),
             fileChangeKindsByItem: new Map(),
             runningCompactionItemIds: new Set(),
           };
@@ -7652,16 +7724,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   `Codex turn ${nativeTurnId} maps to provider turn ${context.providerTurnId}, not ${adoptInput.providerTurn.id}.`,
                 );
               }
-              // Items keep the ordinals the projection gave them; new items continue after them.
               const items = adoptInput.turnItems
                 .filter((item) => item.providerTurnId === adoptInput.providerTurn.id)
                 .toSorted((left, right) => left.ordinal - right.ordinal);
+              seedAdoptedCodexItemPositions(context, {
+                nativeTurnId,
+                items,
+                turnItemIdFor: (key) =>
+                  idAllocator.derive.turnItemFromProviderItem({
+                    driver: CODEX_PROVIDER,
+                    nativeItemId: key,
+                  }),
+              });
               for (const item of items) {
                 const nativeItemId = item.nativeItemRef?.nativeId;
-                context.itemPositions.set(nativeItemId ?? `t3-adopted:${item.id}`, {
-                  ordinal: item.ordinal,
-                  startedAt: item.startedAt ?? item.updatedAt,
-                });
                 if (nativeItemId == null || !isOrchestrationV2WorkActive(item.status)) continue;
                 // Output after the update continues these items, so it extends what is persisted.
                 if (item.type === "assistant_message") {
