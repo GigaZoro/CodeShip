@@ -161,25 +161,24 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
   // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds a marker file's
   // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the marker with
   // its process, so a crashed landing blocks nobody.
-  const markerPrefix = "landing-wait-";
+  const markerFile = NodePath.join(directory, `landing-wait-${process.pid}.sqlite`);
+  // Only the marker itself: SQLite keeps a -journal file beside a marker while a process
+  // holds it, and opening that journal as a database fails with "file is not a database".
+  const isMarker = (name: string) => /^landing-wait-\d+\.sqlite$/u.test(name);
   let marker: NodeSqlite.DatabaseSync | undefined;
   const markLanding = () => {
     if (!landing || marker) return;
-    marker = new NodeSqlite.DatabaseSync(
-      NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`),
-    );
+    marker = new NodeSqlite.DatabaseSync(markerFile);
     marker.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
   };
   const unmarkLanding = () => {
     marker?.close();
     marker = undefined;
-    NodeFS.rmSync(NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`), {
-      force: true,
-    });
+    NodeFS.rmSync(markerFile, { force: true });
   };
   const landingWaits = () =>
     NodeFS.readdirSync(directory)
-      .filter((name) => name.startsWith(markerPrefix))
+      .filter(isMarker)
       .some((name) => {
         const file = NodePath.join(directory, name);
         const db = new NodeSqlite.DatabaseSync(file);

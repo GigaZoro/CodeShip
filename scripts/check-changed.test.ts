@@ -672,6 +672,33 @@ describe("check:changed", () => {
       }),
   );
 
+  it.effect(
+    "skips the SQLite journal beside a landing's marker when it looks for a waiting landing",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* slotDirectory;
+        // A run holding a marker that another run has already unlinked leaves only its journal listed.
+        const held = new NodeSqlite.DatabaseSync(NodePath.join(directory, "landing-wait-1.sqlite"));
+        held.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+        NodeFS.copyFileSync(
+          NodePath.join(directory, "landing-wait-1.sqlite-journal"),
+          NodePath.join(directory, "landing-wait-2.sqlite-journal"),
+        );
+        held.close();
+        NodeFS.rmSync(NodePath.join(directory, "landing-wait-1.sqlite"));
+
+        const results = yield* runSteps(
+          [{ name: "runs", run: () => Effect.succeed({ ok: true, output: "" }) }],
+          { concurrency: 1, timeoutSeconds: 10, slotDirectory: directory },
+        );
+
+        assert.deepStrictEqual(
+          results.map((result) => result.outcome),
+          ["pass"],
+        );
+      }),
+  );
+
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
     Effect.gen(function* () {
       let interrupted = false;
