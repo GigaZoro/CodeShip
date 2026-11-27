@@ -1,3 +1,7 @@
+## 2026-11-28 — Agents check unmerged work before saying a chat can settle
+
+- Asked whether a chat can settle, agents now check the same thing the Settle button warns about: commits in the chat's worktree that are not on the default branch, and uncommitted files. Work that is only filed or scheduled no longer counts as done.
+
 ## 2026-11-28 — Landing telemetry records inner `check:changed` slot-wait time
 
 - Maintainers: `vp run check:changed` now tracks cumulative time spent stalled with zero budget slots held while waiting on other runs (`slotWaitMs`), logs it in live summary output without baking it into the pass cache, and emits it to `CHECK_CHANGED_METRICS_FILE` when set (clearing the variable from child processes).
