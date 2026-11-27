@@ -200,10 +200,14 @@ const buildRecoveryLayer = (
   threadId: ThreadId,
   projection: OrchestrationV2ThreadProjection,
   onCommit: (input: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]) => void,
-  adopt?: AdoptTurn,
-  onPruneRestored?: (keepThreadIds: ReadonlySet<ThreadId>) => void,
-) =>
-  ProviderRuntimeRecovery.layer.pipe(
+  hooks: {
+    readonly adopt?: AdoptTurn;
+    readonly onPruneRestored?: (keepThreadIds: ReadonlySet<ThreadId>) => void;
+    readonly onReconcileOutbox?: (preservedThreadIds: ReadonlySet<ThreadId>) => void;
+  } = {},
+) => {
+  const { adopt, onPruneRestored, onReconcileOutbox } = hooks;
+  return ProviderRuntimeRecovery.layer.pipe(
     Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })),
     Layer.provide(
       Layer.mergeAll(
@@ -236,11 +240,16 @@ const buildRecoveryLayer = (
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           cancelUnsettled: () => Effect.succeed([]),
           signalCancellations: () => Effect.void,
-          reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          reconcileAfterProcessLoss: ({ preservedThreadIds }) =>
+            Effect.sync(() => {
+              onReconcileOutbox?.(preservedThreadIds);
+              return { requeued: 0, cancelled: 0 };
+            }),
         }),
       ),
     ),
   );
+};
 
 it.live(
   "preserves a live detached session across planned update restart without cancelling the run or queuing CONTINUE_PROMPT",
@@ -273,6 +282,9 @@ it.live(
       const commitsDuringStartup: Array<
         Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]
       > = [];
+
+      // Queued answers, interrupts and steers stay for the thread whose process survives.
+      const outboxPreserved: Array<ReadonlyArray<ThreadId>> = [];
 
       // Server instance 1: spawn a detached provider session and detach for planned update.
       const firstHostLayer = sessionHostLayer;
@@ -311,9 +323,9 @@ it.live(
         assert.equal(commitsDuringShutdown.length, 0);
       }).pipe(
         Effect.provide(
-          buildRecoveryLayer(threadId, projection, (input) =>
-            commitsDuringShutdown.push(input),
-          ).pipe(Layer.provideMerge(firstHostLayer)),
+          buildRecoveryLayer(threadId, projection, (input) => commitsDuringShutdown.push(input), {
+            onReconcileOutbox: (preserved) => outboxPreserved.push([...preserved]),
+          }).pipe(Layer.provideMerge(firstHostLayer)),
         ),
       );
 
@@ -334,6 +346,7 @@ it.live(
         assert.deepEqual(adoptRequests, [{ threadId, runId }]);
         // Credentials are pruned after the takeover, so the taken-over thread keeps its own.
         assert.deepEqual(prunedKeep, [[threadId]]);
+        assert.deepEqual(outboxPreserved, [[threadId], [threadId]]);
 
         const reattachedHandle = adoptedHandle;
         assert.isDefined(reattachedHandle);
@@ -361,17 +374,20 @@ it.live(
                 threadId,
                 projection,
                 (input) => commitsDuringStartup.push(input),
-                (request) =>
-                  sessionHost.takeAdoptable(providerSessionId).pipe(
-                    Effect.map((taken) => {
-                      adoptRequests.push(request);
-                      if (Option.isSome(taken)) {
-                        adoptedHandle = taken.value.handle;
-                        taken.value.handle.releaseOutput();
-                      }
-                    }),
-                  ),
-                (keepThreadIds) => prunedKeep.push([...keepThreadIds]),
+                {
+                  adopt: (request) =>
+                    sessionHost.takeAdoptable(providerSessionId).pipe(
+                      Effect.map((taken) => {
+                        adoptRequests.push(request);
+                        if (Option.isSome(taken)) {
+                          adoptedHandle = taken.value.handle;
+                          taken.value.handle.releaseOutput();
+                        }
+                      }),
+                    ),
+                  onPruneRestored: (keepThreadIds) => prunedKeep.push([...keepThreadIds]),
+                  onReconcileOutbox: (preserved) => outboxPreserved.push([...preserved]),
+                },
               );
             }),
           ).pipe(Layer.provideMerge(sessionHostLayer)),
@@ -461,19 +477,16 @@ it.live(
         assert.deepEqual(rows, [], "An ended host stays recorded");
       }).pipe(
         Effect.provide(
-          buildRecoveryLayer(
-            threadId,
-            projection,
-            (input) => commits.push(input),
-            ({ runId: failedRunId }) =>
+          buildRecoveryLayer(threadId, projection, (input) => commits.push(input), {
+            adopt: ({ runId: failedRunId }) =>
               Effect.fail(
                 new ProviderTurnStart.ProviderTurnStartError({
                   runId: failedRunId,
                   cause: "This provider cannot take over a running turn.",
                 }),
               ),
-            (keepThreadIds) => prunedKeep.push([...keepThreadIds]),
-          ).pipe(Layer.provideMerge(sessionHostLayer)),
+            onPruneRestored: (keepThreadIds) => prunedKeep.push([...keepThreadIds]),
+          }).pipe(Layer.provideMerge(sessionHostLayer)),
         ),
       );
     }).pipe(

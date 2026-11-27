@@ -1137,11 +1137,13 @@ export const make = Effect.gen(function* () {
       closedRequests += result.closedRequests;
       retiredEffects += result.retiredEffects;
     }
-    const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
-      Effect.mapError(
-        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
-      ),
-    );
+    const outboxReconciliation = yield* outbox
+      .reconcileAfterProcessLoss({ preservedThreadIds })
+      .pipe(
+        Effect.mapError(
+          (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+        ),
+      );
     return {
       terminalizedRuns,
       stoppedSessions,
