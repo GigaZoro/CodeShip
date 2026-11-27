@@ -5383,8 +5383,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             decode: (payload) => decodeContextTransferPayload(payload),
           },
         ];
-        const providerThreadSql = yield* selectProviderThreadPayloadSql();
         const pageSize = 500;
+        // Provider threads are scanned as plain payload_json: their pin lives in TEXT columns that
+        // cannot make a row unreadable, so rebuilding every pin into the payload at boot is waste.
         for (const table of tables) {
           let afterRowId = 0;
           while (true) {
@@ -5398,15 +5399,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT rowid AS row_id, ${sql(table.id)} AS entity_id,
                 ${sql(table.name === "context_transfers" ? "source_thread_id" : "thread_id")} AS thread_id,
                 ${table.name === "context_transfers" ? sql`target_thread_id` : sql`NULL`} AS target_thread_id,
-                ${
-                  table.name === "nodes"
-                    ? sql.literal(`${nodePayloadSql()} AS payload_json`)
-                    : table.name === "turn_items"
-                      ? sql.literal(`${turnItemPayloadSql()} AS payload_json`)
-                      : table.name === "provider_threads"
-                        ? sql.literal(`${providerThreadSql} AS payload_json`)
-                        : sql`payload_json`
-                }
+                ${table.name === "nodes" ? sql.literal(`${nodePayloadSql()} AS payload_json`) : table.name === "turn_items" ? sql.literal(`${turnItemPayloadSql()} AS payload_json`) : sql`payload_json`}
               FROM ${sql(`orchestration_v2_projection_${table.name}`)}
               WHERE rowid > ${afterRowId}
               ORDER BY rowid ASC LIMIT ${pageSize}
