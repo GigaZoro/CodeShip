@@ -1895,6 +1895,9 @@ const make = Effect.gen(function* () {
     if (existing) return existing;
     const snapshot = await runPromise(listedServerSession(threadId, tabId));
     if (!snapshot) return undefined;
+    // Only a tab that will wait for the desktop is slow for the desktop's sake; others are starting.
+    const waitsForDesktop =
+      !snapshot.headless && desktopChannel.available && !adoptedPages.has(tabKey(threadId, tabId));
     const started = await runPromise(
       Effect.tryPromise({
         // A tab closed while it waited is no longer open: requireTab says so.
@@ -1909,7 +1912,9 @@ const make = Effect.gen(function* () {
     if (Option.isSome(started)) return started.value;
     throw new ServerBrowserPage.ServerBrowserOperationError(
       "PreviewAutomationExecutionError",
-      `The desktop app has not shown this tab yet, so it has no page to act on. CodeShip waits up to ${DESKTOP_BROWSER_ATTACH_WAIT_MS / 1000} seconds for it, then closes the tab rather than run it in the server's headless browser without the desktop profile's sign-ins. Try again shortly, or call preview_open.`,
+      waitsForDesktop
+        ? `The desktop app has not shown this tab yet, so it has no page to act on. CodeShip waits up to ${DESKTOP_BROWSER_ATTACH_WAIT_MS / 1000} seconds for it, then closes the tab rather than run it in the server's headless browser without the desktop profile's sign-ins. Try again shortly, or call preview_open.`
+        : "This tab is still starting, so it has no page to act on yet. Try again shortly.",
     );
   };
 
@@ -2007,13 +2012,7 @@ const make = Effect.gen(function* () {
 
         const found =
           reuse && request.tabId !== undefined
-            ? await runPromise(
-                findTab(request.threadId, request.tabId).pipe(
-                  Effect.catchTags({
-                    ServerBrowserTabNotFoundError: () => Effect.void,
-                  }),
-                ),
-              )
+            ? await listedTab(request.threadId, request.tabId, deadlineMs)
             : undefined;
         if (reuse && request.tabIdExplicit && !found) {
           const { sessions } = await runPromise(

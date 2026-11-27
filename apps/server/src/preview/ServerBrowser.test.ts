@@ -871,9 +871,19 @@ it.effect(
             input: {},
           })
           .pipe(Effect.flip, Effect.forkChild);
+        const reusing = yield* broker
+          .invoke<PreviewAutomationStatus>({
+            scope,
+            tabId: PreviewTabId.make(opened.tabId!),
+            operation: "open",
+            input: { reuseExistingTab: true, show: false },
+            timeoutMs: 15_000,
+          })
+          .pipe(Effect.flip, Effect.forkChild);
         yield* Effect.promise(() => desktopAttachWaits.promise);
         yield* TestClock.adjust("15 seconds");
         const error = yield* Fiber.join(acting);
+        const reuseError = yield* Fiber.join(reusing);
         yield* TestClock.adjust("45 seconds");
         yield* PubSub.take(events).pipe(
           Effect.repeat({
@@ -884,6 +894,8 @@ it.effect(
 
         expect(error).toMatchObject({ _tag: "PreviewAutomationExecutionError" });
         expect(error.message).toContain("has not shown this tab");
+        expect(reuseError).toMatchObject({ _tag: "PreviewAutomationExecutionError" });
+        expect(reuseError.message).toContain("has not shown this tab");
         expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
       }),
     ).pipe(Effect.provide(layer)),
