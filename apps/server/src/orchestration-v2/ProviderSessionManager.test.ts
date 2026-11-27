@@ -44,6 +44,7 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SessionHostService from "../sessionHost/SessionHostService.ts";
+import { UpdateShutdownState } from "../cloud/updateHandoff.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -518,6 +519,7 @@ function layerTest(input: {
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
   readonly sessionHostLayer?: Layer.Layer<SessionHostService.SessionHostService>;
+  readonly updateShutdownLayer?: Layer.Layer<UpdateShutdownState>;
   readonly drainForDetach?: Effect.Effect<number>;
 }) {
   const layerConfiguredEventSink =
@@ -606,6 +608,7 @@ function layerTest(input: {
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
           ...(input.sessionHostLayer === undefined ? [] : [input.sessionHostLayer]),
+          ...(input.updateShutdownLayer === undefined ? [] : [input.updateShutdownLayer]),
         ),
       ),
     ),
@@ -3255,6 +3258,107 @@ it.effect(
           }),
         ),
       );
+    }),
+);
+
+/** Whether a hosted session's event that arrives after SIGTERM still reaches its subscribers. */
+const deliversHostedEventAfterSigterm = (plannedUpdate: boolean) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const listenersBefore = new Set(process.listeners("SIGTERM"));
+    const effect = Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const projectId = yield* idAllocator.allocate.project({
+        fixtureName: "provider-session-manager-sigterm",
+      });
+      const threadId = yield* idAllocator.allocate.thread({
+        fixtureName: "provider-session-manager-sigterm",
+        projectId,
+      });
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const runtime = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const received = yield* runtime.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+
+      const onSigterm = process
+        .listeners("SIGTERM")
+        .filter((listener) => !listenersBefore.has(listener));
+      assert.lengthOf(onSigterm, 1);
+      onSigterm[0]!("SIGTERM");
+      const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+      assert.isDefined(queue);
+      const providerThread = makeProviderThread({
+        idAllocator,
+        threadId,
+        providerSessionId,
+        now,
+        nativeThreadId: "native-sigterm",
+      });
+      yield* Queue.offer(queue!, {
+        type: "turn.terminal",
+        driver: CODEX_DRIVER,
+        providerThreadId: providerThread.id,
+        providerTurnId: idAllocator.derive.providerTurn({
+          driver: CODEX_DRIVER,
+          nativeTurnId: "native-turn-sigterm",
+        }),
+        runOrdinal: 1,
+        status: "completed",
+        failure: null,
+        threadDisposition: "reusable",
+      });
+      for (let i = 0; i < 10; i += 1) yield* Effect.yieldNow;
+      return received.pollUnsafe() !== undefined;
+    });
+    return yield* effect.pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          sessionHostLayer: Layer.mock(SessionHostService.SessionHostService)({
+            isProviderSessionDetachedForUpdate: () => Effect.succeed(false),
+            isThreadDetachedForUpdate: () => Effect.succeed(false),
+            hostsProviderSession: () => Effect.succeed(true),
+          }),
+          updateShutdownLayer: Layer.succeed(UpdateShutdownState, {
+            isPlannedUpdateShutdown: Effect.succeed(plannedUpdate),
+          }),
+        }),
+      ),
+    );
+  });
+
+it.effect(
+  "ProviderSessionManagerV2 keeps a hosted session's events after SIGTERM for an update",
+  () =>
+    Effect.gen(function* () {
+      assert.isTrue(yield* deliversHostedEventAfterSigterm(true));
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 drops a hosted session's events after an ordinary SIGTERM",
+  () =>
+    Effect.gen(function* () {
+      assert.isFalse(yield* deliversHostedEventAfterSigterm(false));
     }),
 );
 

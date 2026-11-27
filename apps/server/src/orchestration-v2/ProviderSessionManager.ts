@@ -52,6 +52,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SessionHostService from "../sessionHost/SessionHostService.ts";
+import { UpdateShutdownState } from "../cloud/updateHandoff.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
@@ -482,6 +483,10 @@ export const layerWithOptions = (
       );
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
       const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+      const isPlannedUpdateShutdown = Option.match(
+        yield* Effect.serviceOption(UpdateShutdownState),
+        { onNone: () => Effect.succeed(false), onSome: (state) => state.isPlannedUpdateShutdown },
+      );
       const isEntryDetachedForUpdate = (entry: LiveSessionEntry): Effect.Effect<boolean> => {
         if (Option.isNone(sessionHostOption)) return Effect.succeed(false);
         const sessionHost = sessionHostOption.value;
@@ -2503,13 +2508,21 @@ export const layerWithOptions = (
         let stoppedByProvider = false;
         // A session host's process is outside the server's process group, so the signal does not
         // stop it, and a planned update keeps it: its events up to the detach must be persisted.
-        const keepsEventsAfterShutdownSignal =
+        const hostedOutsideProcessGroup =
           Option.isSome(sessionHostOption) &&
           (yield* sessionHostOption.value.hostsProviderSession(entry.runtime.providerSessionId));
         const handlePumpedEvent = (
           event: ProviderAdapter.ProviderAdapterV2Event,
         ): Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error> => {
-          if (shutdownSignal.received && !keepsEventsAfterShutdownSignal) return Effect.void;
+          if (!shutdownSignal.received) return persistPumpedEvent(event);
+          if (!hostedOutsideProcessGroup) return Effect.void;
+          return Effect.flatMap(isPlannedUpdateShutdown, (planned) =>
+            planned ? persistPumpedEvent(event) : Effect.void,
+          );
+        };
+        const persistPumpedEvent = (
+          event: ProviderAdapter.ProviderAdapterV2Event,
+        ): Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error> => {
           // Live output bypasses persistence and subscribers so floods cannot delay domain events.
           if (event.type === "command_output.delta") {
             return commandOutput.append(event);
