@@ -97,10 +97,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Function from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Random from "effect/Random";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Clock from "effect/Clock";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -1445,6 +1447,11 @@ export interface CodexAppServerClientFactoryShape {
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly privateMcpSignIns?: boolean;
+    /**
+     * Take over the app server a session host kept through a planned update instead of starting
+     * one. Its output waits for `outputReady`, so the adopted turn is registered first.
+     */
+    readonly adoptRunningProcess?: { readonly outputReady: Effect.Effect<void> };
   }) => Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
     ProviderAdapter.ProviderAdapterOpenSessionError,
@@ -1690,7 +1697,41 @@ export const layerAppServerClientFactory: Layer.Layer<
         );
         const binaryCommand = input.settings.binaryPath || "codex";
         let handle: ChildProcessSpawner.ChildProcessHandle;
-        if (Option.isSome(sessionHostOption)) {
+        let requestIdPrefix: string | undefined;
+        if (input.adoptRunningProcess !== undefined) {
+          const outputReady = input.adoptRunningProcess.outputReady;
+          const adoptable = Option.isSome(sessionHostOption)
+            ? yield* sessionHostOption.value.takeAdoptable(input.providerSessionId)
+            : Option.none();
+          if (Option.isNone(adoptable) || Option.isNone(sessionHostOption)) {
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: CODEX_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "No running Codex app server is left to take over for this session.",
+            });
+          }
+          const sessionHost = sessionHostOption.value;
+          const adopted = adoptable.value;
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.gen(function* () {
+              if (adopted.handle.detachingForUpdate) {
+                yield* Effect.promise(() => adopted.handle.detach());
+                return;
+              }
+              yield* sessionHost.terminate(adopted.handle.sessionHostId);
+            }),
+          );
+          yield* outputReady.pipe(
+            Effect.andThen(Effect.sync(() => adopted.handle.releaseOutput())),
+            Effect.forkIn(scope),
+          );
+          // Replies to what the previous server asked must not resolve this client's requests.
+          const startedAt = yield* Clock.currentTimeMillis;
+          const salt = yield* Random.nextInt;
+          requestIdPrefix = `t3-${startedAt.toString(36)}-${Math.abs(salt).toString(36)}:`;
+          handle = adopted.childProcess;
+        } else if (Option.isSome(sessionHostOption)) {
           const sessionHost = sessionHostOption.value;
           const launch = yield* resolveCodexAppServerLaunch({
             command: binaryCommand,
@@ -1756,14 +1797,12 @@ export const layerAppServerClientFactory: Layer.Layer<
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
         });
-        const clientOptions: CodexClient.CodexAppServerClientOptions =
-          protocolLogger === undefined
+        const clientOptions: CodexClient.CodexAppServerClientOptions = {
+          ...(protocolLogger === undefined
             ? {}
-            : {
-                logIncoming: true,
-                logOutgoing: true,
-                logger: protocolLogger,
-              };
+            : { logIncoming: true, logOutgoing: true, logger: protocolLogger }),
+          ...(requestIdPrefix === undefined ? {} : { requestIdPrefix }),
+        };
         const context = yield* Layer.build(CodexClient.layerChildProcess(handle, clientOptions));
         return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
           Effect.provide(context),
@@ -2005,7 +2044,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        // A taken-over app server's buffered output waits until adoptTurn has registered the
+        // running turn: notifications for a turn this adapter does not know are dropped.
+        const adoptedOutputReady =
+          input.adoptRunningProcess === true ? yield* Deferred.make<void>() : undefined;
         const client = yield* clientFactory.open({
+          ...(adoptedOutputReady === undefined
+            ? {}
+            : { adoptRunningProcess: { outputReady: Deferred.await(adoptedOutputReady) } }),
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
@@ -2066,7 +2112,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             ),
         );
-        const initialized = yield* Ref.make(false);
+        // A taken-over app server was initialized by the server that started it.
+        const initialized = yield* Ref.make(adoptedOutputReady !== undefined);
         // Codex rejects a second initialize on the shared app-server.
         const initializePermit = yield* Semaphore.make(1);
         const ensureInitialized = initializePermit.withPermit(
@@ -7541,6 +7588,55 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             );
           },
+          adoptTurn: Effect.fn("CodexAdapterV2.adoptTurn")(
+            function* (adoptInput) {
+              if (adoptedOutputReady === undefined) {
+                return yield* toProtocolError(
+                  "This Codex session started its own app server; there is no running turn to take over.",
+                );
+              }
+              const nativeTurnId = adoptInput.providerTurn.nativeTurnRef?.nativeId;
+              if (nativeTurnId == null) {
+                return yield* toProtocolError(
+                  `Provider turn ${adoptInput.providerTurn.id} has no Codex turn id to take over.`,
+                );
+              }
+              const context = yield* registerRootTurn({
+                turnInput: adoptInput.turnInput,
+                nativeTurnId,
+                startedAt: adoptInput.providerTurn.startedAt ?? (yield* DateTime.now),
+              });
+              if (context.providerTurnId !== adoptInput.providerTurn.id) {
+                return yield* toProtocolError(
+                  `Codex turn ${nativeTurnId} maps to provider turn ${context.providerTurnId}, not ${adoptInput.providerTurn.id}.`,
+                );
+              }
+              // Items keep the ordinals the projection gave them; new items continue after them.
+              const items = adoptInput.turnItems
+                .filter((item) => item.providerTurnId === adoptInput.providerTurn.id)
+                .toSorted((left, right) => left.ordinal - right.ordinal);
+              for (const item of items) {
+                context.itemPositions.set(item.nativeItemRef?.nativeId ?? `t3-adopted:${item.id}`, {
+                  ordinal: item.ordinal,
+                  startedAt: item.startedAt ?? item.updatedAt,
+                });
+              }
+              yield* Deferred.succeed(adoptedOutputReady, undefined);
+            },
+            (effect, adoptInput) =>
+              effect.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterTurnStartError({
+                      driver: CODEX_PROVIDER,
+                      threadId: adoptInput.turnInput.threadId,
+                      providerThreadId: adoptInput.turnInput.providerThread.id,
+                      runId: adoptInput.turnInput.runId,
+                      cause,
+                    }),
+                ),
+              ),
+          ),
           steerTurn: Effect.fn("CodexAdapterV2.steerTurn")(
             function* (turnInput) {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);

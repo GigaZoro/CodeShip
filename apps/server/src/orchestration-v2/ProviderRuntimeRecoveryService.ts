@@ -31,6 +31,8 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SessionHostService from "../sessionHost/SessionHostService.ts";
+import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import {
   answerableAfterRestart,
   continuesAfterRestart,
@@ -399,6 +401,62 @@ export const make = Effect.gen(function* () {
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+  const turnStartOption = yield* Effect.serviceOption(
+    ProviderTurnStartService.ProviderTurnStartServiceV2,
+  );
+  const mcpRegistryOption = yield* Effect.serviceOption(McpSessionRegistry.McpSessionRegistry);
+  /**
+   * Hands a host reattached after a planned update to the run its process is still working on.
+   * False means its process was stopped and the thread recovers as after any restart.
+   */
+  const adoptReattachedHost = Effect.fn("ProviderRuntimeRecovery.adoptReattachedHost")(function* (
+    sessionHost: SessionHostService.SessionHostServiceShape,
+    record: SessionHostService.SessionHostRecord,
+  ) {
+    const giveUp = (reason: string, cause?: unknown) =>
+      Effect.logError("Could not take over a provider process kept running through the update", {
+        sessionHostId: record.id,
+        threadId: record.threadId,
+        providerSessionId: record.providerSessionId,
+        reason,
+        ...(cause === undefined ? {} : { cause }),
+      }).pipe(Effect.andThen(sessionHost.terminate(record.id)), Effect.as(false));
+    if (Option.isNone(turnStartOption)) {
+      return yield* giveUp("This server cannot start provider turns.");
+    }
+    const projection = yield* projections
+      .getRuntimeRecoveryProjection(record.threadId)
+      .pipe(Effect.result);
+    if (projection._tag === "Failure") {
+      return yield* giveUp("The thread could not be read.", projection.failure);
+    }
+    const providerThreadIds = new Set(
+      projection.success.providerThreads
+        .filter((providerThread) => providerThread.providerSessionId === record.providerSessionId)
+        .map((providerThread) => providerThread.id),
+    );
+    const run = projection.success.runs.find(
+      (candidate) =>
+        candidate.status === "running" &&
+        candidate.providerThreadId !== null &&
+        providerThreadIds.has(candidate.providerThreadId),
+    );
+    if (run === undefined) {
+      return yield* giveUp("The thread has no running run on this provider session.");
+    }
+    const adopted = yield* turnStartOption.value
+      .adopt({ threadId: record.threadId, runId: run.id })
+      .pipe(Effect.result);
+    if (adopted._tag === "Failure") {
+      return yield* giveUp("The running turn could not be taken over.", adopted.failure);
+    }
+    yield* Effect.logInfo("Took over a provider process kept running through the update", {
+      sessionHostId: record.id,
+      threadId: record.threadId,
+      runId: run.id,
+    });
+    return true;
+  });
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -991,7 +1049,6 @@ export const make = Effect.gen(function* () {
         const reattached = yield* sessionHost.reattachAllDetachedForUpdate();
         for (const entry of reattached) {
           if (entry.status === "reattached") {
-            preservedThreadIds.add(entry.record.threadId);
             reattachedSessionHosts += 1;
             yield* Effect.logInfo("Reattached detached provider session host after restart", {
               sessionHostId: entry.record.id,
@@ -1014,6 +1071,12 @@ export const make = Effect.gen(function* () {
             );
           }
         }
+        for (const entry of reattached) {
+          if (entry.status !== "reattached") continue;
+          if (yield* adoptReattachedHost(sessionHost, entry.record)) {
+            preservedThreadIds.add(entry.record.threadId);
+          }
+        }
       } else {
         for (const threadId of threadIds) {
           if (yield* sessionHost.isThreadDetachedForUpdate(threadId)) {
@@ -1021,6 +1084,10 @@ export const make = Effect.gen(function* () {
           }
         }
       }
+    }
+    // Credentials restored from before the restart stay only for processes taken over above.
+    if (trigger === "startup" && Option.isSome(mcpRegistryOption)) {
+      yield* mcpRegistryOption.value.pruneRestored(preservedThreadIds);
     }
     let terminalizedRuns = 0;
     let stoppedSessions = 0;

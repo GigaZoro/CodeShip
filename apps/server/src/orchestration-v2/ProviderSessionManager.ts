@@ -176,6 +176,8 @@ export interface ProviderSessionManagerV2Shape {
     readonly resumeFromSession?: OrchestrationV2ProviderSession;
     readonly initialNativeThreadId?: string;
     readonly initialProviderItemIdentityVersion?: 2;
+    /** Take over the process a session host kept running through a planned update. */
+    readonly adoptRunningProcess?: true;
   }) => Effect.Effect<
     ProviderAdapter.ProviderAdapterV2SessionRuntime,
     ProviderSessionManagerV2Error
@@ -264,6 +266,8 @@ interface LiveSessionEntry {
   readonly idleThreadUnloads: ReadonlyMap<ThreadId, IdleThreadUnload>;
   /** When the runtime opened or last sent an event, command output included. */
   readonly lastProviderEventAtMs: Ref.Ref<number>;
+  /** A process taken over after a planned update, which lacks this server's MCP token and instructions. */
+  readonly adoptedProcess: boolean;
 }
 
 interface IdleThreadUnload {
@@ -624,6 +628,34 @@ export const layerWithOptions = (
                 return { mcpCredentialId: credential.config.providerSessionId, issued: true };
               }),
             );
+      /** A taken-over process still holds the raw token of the credential restored for its thread. */
+      const prepareAdoptedMcpSession = Effect.fn("ProviderSessionManager.prepareAdoptedMcpSession")(
+        function* (input: {
+          readonly threadId: ThreadId;
+          readonly providerSessionId: ProviderSessionId;
+          readonly instanceId: ProviderInstanceId;
+        }) {
+          if (options.configureMcp === false) {
+            return { mcpCredentialId: undefined, issued: false } satisfies PreparedMcpCredential;
+          }
+          const restored = yield* mcpSessionRegistry.restoredCredentialForThread(input.threadId);
+          if (restored._tag === "Unusable") {
+            return yield* new ProviderSessionOpenError({
+              instanceId: input.instanceId,
+              providerSessionId: input.providerSessionId,
+              cause: restored.reason,
+            });
+          }
+          if (restored._tag === "None") {
+            return { mcpCredentialId: undefined, issued: false } satisfies PreparedMcpCredential;
+          }
+          reserveMcpCredential(input.threadId, restored.mcpCredentialId);
+          return {
+            mcpCredentialId: restored.mcpCredentialId,
+            issued: false,
+          } satisfies PreparedMcpCredential;
+        },
+      );
       const clearMcpSession = (threadId: ThreadId, mcpCredentialId?: string) =>
         mcpCredentialId === undefined
           ? mcpSessionRegistry
@@ -2473,6 +2505,9 @@ export const layerWithOptions = (
           Effect.flatMap((exit) =>
             Effect.gen(function* () {
               if (shutdownSignal.received) return;
+              // The detach for an update ends the stream; the next server takes the process over,
+              // so the shutdown owns this session and its run stays running.
+              if (yield* isEntryDetachedForUpdate(entry)) return;
               const current = (yield* Ref.get(sessions)).get(
                 sessionKey(entry.runtime.providerSessionId),
               );
@@ -2569,7 +2604,25 @@ export const layerWithOptions = (
                   }
                 }
                 const key = sessionKey(input.providerSessionId);
-                const existing = (yield* Ref.get(sessions)).get(key);
+                let existing = (yield* Ref.get(sessions)).get(key);
+                if (input.adoptRunningProcess === true && existing !== undefined) {
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause:
+                      "This provider session is already live; there is no process left to take over.",
+                  });
+                }
+                // A taken-over process only finishes the turn it was running; later turns get a process
+                // started with this server's MCP credential and instructions.
+                if (existing?.adoptedProcess === true && existing.busyTurns.size === 0) {
+                  yield* releaseEntry({
+                    providerSessionId: input.providerSessionId,
+                    reason: "idle_timeout",
+                    detail: "The provider process taken over after the update finished its turn.",
+                  }).pipe(logReleaseFailure(input.providerSessionId));
+                  existing = undefined;
+                }
                 if (existing !== undefined) {
                   const attached = existing.attachedThreadIds.has(input.threadId);
                   if (!attached && !existing.supportsMultipleProviderThreads) {
@@ -2604,7 +2657,13 @@ export const layerWithOptions = (
                 return yield* Effect.uninterruptibleMask((restore) =>
                   Effect.gen(function* () {
                     const prepared = yield* restore(
-                      prepareMcpSession(input.threadId, input.modelSelection.instanceId),
+                      input.adoptRunningProcess === true
+                        ? prepareAdoptedMcpSession({
+                            threadId: input.threadId,
+                            providerSessionId: input.providerSessionId,
+                            instanceId: input.modelSelection.instanceId,
+                          })
+                        : prepareMcpSession(input.threadId, input.modelSelection.instanceId),
                     );
                     const mcpCredentialId = prepared.mcpCredentialId;
                     let reservationDropped = mcpCredentialId === undefined;
@@ -2637,6 +2696,9 @@ export const layerWithOptions = (
                                 initialProviderItemIdentityVersion:
                                   input.initialProviderItemIdentityVersion,
                               }),
+                          ...(input.adoptRunningProcess === true
+                            ? { adoptRunningProcess: true as const }
+                            : {}),
                         })
                         .pipe(Effect.provideService(Scope.Scope, sessionScope)),
                     ).pipe(
@@ -2694,6 +2756,7 @@ export const layerWithOptions = (
                       pinnedSinceMs: null,
                       idleThreadUnloads: new Map(),
                       lastProviderEventAtMs: yield* Ref.make(yield* Clock.currentTimeMillis),
+                      adoptedProcess: input.adoptRunningProcess === true,
                     };
                     yield* Ref.update(sessions, (current) => {
                       const updated = new Map(current);

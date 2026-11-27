@@ -481,9 +481,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       }
       if (Option.isSome(sessionHostOption)) {
         if (yield* updateShutdownState.isPlannedUpdateShutdown) {
-          const detached = yield* sessionHostOption.value
-            .detachAllForUpdate()
-            .pipe(Effect.orElseSucceed(() => []));
+          const detached = yield* sessionHostOption.value.detachAllForUpdate();
           if (detached.length > 0) {
             yield* Effect.logInfo("Detached live provider session hosts for planned update", {
               count: detached.length,

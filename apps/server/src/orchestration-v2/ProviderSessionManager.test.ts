@@ -43,6 +43,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SessionHostService from "../sessionHost/SessionHostService.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -510,6 +511,7 @@ function layerTest(input: {
   readonly scopeCloseMayEnd?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
+  readonly sessionHostLayer?: Layer.Layer<SessionHostService.SessionHostService>;
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -595,6 +597,7 @@ function layerTest(input: {
           layerTestStores,
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
+          ...(input.sessionHostLayer === undefined ? [] : [input.sessionHostLayer]),
         ),
       ),
     ),
@@ -3099,6 +3102,111 @@ it.effect("ProviderSessionManagerV2 releases sessions when provider event stream
       ),
     );
   }),
+);
+
+// regression: the server's own detach for an update ended the stream, which failed the run the
+// next server takes over.
+it.effect(
+  "ProviderSessionManagerV2 keeps a session whose stream ended because its host detached for an update",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const projectId = yield* idAllocator.allocate.project({
+          fixtureName: "provider-session-manager-detached-stream-end",
+        });
+        const threadId = yield* idAllocator.allocate.thread({
+          fixtureName: "provider-session-manager-detached-stream-end",
+          projectId,
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const subscriber = yield* runtime.events.pipe(Stream.runDrain, Effect.forkScoped);
+        yield* Effect.yieldNow;
+
+        const projection = yield* projectionStore.getThreadProjection(threadId);
+        assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        assert.notEqual(projection.providerSessions.at(-1)?.status, "error");
+        // Its run is left to the shutdown, not failed by a stream error.
+        assert.isUndefined(subscriber.pollUnsafe());
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1000,
+            failEventStream: true,
+            sessionHostLayer: Layer.mock(SessionHostService.SessionHostService)({
+              isProviderSessionDetachedForUpdate: () => Effect.succeed(true),
+              isThreadDetachedForUpdate: () => Effect.succeed(true),
+            }),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 starts a fresh process for the turn after a taken-over one",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const projectId = yield* idAllocator.allocate.project({
+          fixtureName: "provider-session-manager-adopted-retire",
+        });
+        const threadId = yield* idAllocator.allocate.thread({
+          fixtureName: "provider-session-manager-adopted-retire",
+          projectId,
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          adoptRunningProcess: true,
+        });
+        // Its turn is over: the next open must not reuse the process the old server started.
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+
+        const runtimeState = yield* Ref.get(state);
+        assert.equal(runtimeState.openCount, 2);
+        assert.equal(runtimeState.closeCount, 1);
+      });
+
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 marks pending runtime requests non-live on release", () =>

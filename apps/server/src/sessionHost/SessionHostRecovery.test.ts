@@ -18,20 +18,25 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "../orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import * as ProviderTurnStart from "../orchestration-v2/ProviderTurnStartService.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import type { DetachedStdioHandle } from "./DetachedStdioHandle.ts";
 import * as SessionHostService from "./SessionHostService.ts";
 
 const sessionHostLayer = SessionHostService.layer.pipe(Layer.provide(ServerSecretStore.layer));
@@ -43,6 +48,13 @@ const rl = readline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   process.stdout.write(JSON.stringify({ kind: "echo", pid: process.pid, line }) + "\\n");
 });
+`;
+
+// Ignores SIGTERM, so it ends only when the broker escalates to SIGKILL after its grace period.
+const STUBBORN_CHILD_SCRIPT = `
+process.on("SIGTERM", () => {});
+process.stdout.write(JSON.stringify({ kind: "ready", pid: process.pid }) + "\\n");
+process.stdin.resume();
 `;
 
 // Writes a burst of output on each "burst" line from a TCP control socket, so a test can make
@@ -177,15 +189,27 @@ const makeRunningProjection = (input: {
     turnItems: [],
   }) as unknown as OrchestrationV2ThreadProjection;
 
+type AdoptTurn = ProviderTurnStart.ProviderTurnStartServiceV2["Service"]["adopt"];
+
 const buildRecoveryLayer = (
   threadId: ThreadId,
   projection: OrchestrationV2ThreadProjection,
   onCommit: (input: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]) => void,
+  adopt?: AdoptTurn,
+  onPruneRestored?: (keepThreadIds: ReadonlySet<ThreadId>) => void,
 ) =>
   ProviderRuntimeRecovery.layer.pipe(
     Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })),
     Layer.provide(
       Layer.mergeAll(
+        adopt === undefined
+          ? Layer.empty
+          : Layer.mock(ProviderTurnStart.ProviderTurnStartServiceV2)({ adopt }),
+        onPruneRestored === undefined
+          ? Layer.empty
+          : Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+              pruneRestored: (keepThreadIds) => Effect.sync(() => onPruneRestored(keepThreadIds)),
+            }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
@@ -289,6 +313,10 @@ it.live(
       );
 
       // Server instance 2 (fresh SessionHostService + RecoveryService against the same SQLite DB):
+      // the turn start service takes the reattached process over, as the Codex adapter does.
+      const adoptRequests: Array<Parameters<AdoptTurn>[0]> = [];
+      const prunedKeep: Array<ReadonlyArray<ThreadId>> = [];
+      let adoptedHandle: DetachedStdioHandle | undefined;
       yield* Effect.gen(function* () {
         const sessionHost = yield* SessionHostService.SessionHostService;
         const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
@@ -298,11 +326,18 @@ it.live(
         assert.equal(startupSummary.terminalizedRuns, 0);
         assert.equal(startupSummary.stoppedSessions, 0);
         assert.equal(commitsDuringStartup.length, 0);
+        assert.deepEqual(adoptRequests, [{ threadId, runId }]);
+        // Credentials are pruned after the takeover, so the taken-over thread keeps its own.
+        assert.deepEqual(prunedKeep, [[threadId]]);
 
-        const reattachedHandle =
-          yield* sessionHost.getActiveHandleByProviderSession(providerSessionId);
+        const reattachedHandle = adoptedHandle;
         assert.isDefined(reattachedHandle);
         if (reattachedHandle !== undefined) {
+          // Frames from the last seconds before the detach replay, so the taker sees them again.
+          const replayed = JSON.parse(
+            yield* Effect.promise(() => readNextLine(reattachedHandle.stdout)),
+          ) as { kind: string; pid: number };
+          assert.deepEqual(replayed, { kind: "ready", pid: originalChildPid });
           reattachedHandle.stdin.write("hello-after-restart\n");
           const echo = JSON.parse(
             yield* Effect.promise(() => readNextLine(reattachedHandle.stdout)),
@@ -316,8 +351,126 @@ it.live(
         yield* sessionHost.terminateByProviderSession(providerSessionId);
       }).pipe(
         Effect.provide(
-          buildRecoveryLayer(threadId, projection, (input) =>
-            commitsDuringStartup.push(input),
+          Layer.unwrap(
+            Effect.gen(function* () {
+              const sessionHost = yield* SessionHostService.SessionHostService;
+              return buildRecoveryLayer(
+                threadId,
+                projection,
+                (input) => commitsDuringStartup.push(input),
+                (request) =>
+                  sessionHost.takeAdoptable(providerSessionId).pipe(
+                    Effect.map((taken) => {
+                      adoptRequests.push(request);
+                      if (Option.isSome(taken)) {
+                        adoptedHandle = taken.value.handle;
+                        taken.value.handle.releaseOutput();
+                      }
+                    }),
+                  ),
+                (keepThreadIds) => prunedKeep.push([...keepThreadIds]),
+              );
+            }),
+          ).pipe(Layer.provideMerge(sessionHostLayer)),
+        ),
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
+        }),
+      ),
+      Effect.provide(baseLayer),
+    );
+  },
+);
+
+it.live(
+  "ends a reattached process whose turn cannot be taken over and continues the run instead",
+  () => {
+    const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-recovery-noadopt-"));
+    const threadId = ThreadId.make("thread_detached_noadopt");
+    const runId = RunId.make("run_detached_noadopt");
+    const attemptId = RunAttemptId.make("attempt_detached_noadopt");
+    const rootNodeId = NodeId.make("node_detached_noadopt");
+    const providerSessionId = ProviderSessionId.make("ps_detached_noadopt");
+    const providerThreadId = ProviderThreadId.make("pt_detached_noadopt");
+    const projection = makeRunningProjection({
+      threadId,
+      runId,
+      attemptId,
+      rootNodeId,
+      providerSessionId,
+      providerThreadId,
+    });
+
+    const baseLayer = Layer.mergeAll(
+      Sqlite.layerMemory,
+      ServerConfig.layerTest(tempBaseDir, tempBaseDir),
+    ).pipe(Layer.provideMerge(NodeServices.layer));
+
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      let childPid = 0;
+
+      yield* Effect.gen(function* () {
+        const sessionHost = yield* SessionHostService.SessionHostService;
+        const handle = yield* sessionHost.spawn({
+          providerSessionId,
+          providerThreadId,
+          threadId,
+          driver: "codex",
+          command: process.execPath,
+          args: ["-e", STUBBORN_CHILD_SCRIPT],
+          cwd: tempBaseDir,
+          env: process.env,
+        });
+        const ready = JSON.parse(yield* Effect.promise(() => readNextLine(handle.stdout))) as {
+          kind: string;
+          pid: number;
+        };
+        childPid = ready.pid;
+        yield* sessionHost.detachAllForUpdate();
+      }).pipe(Effect.provide(sessionHostLayer));
+
+      const commits: Array<Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]> = [];
+      const prunedKeep: Array<ReadonlyArray<ThreadId>> = [];
+      yield* Effect.gen(function* () {
+        const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+        const startupSummary = yield* recovery.reconcile("startup");
+        // The thread whose process was not taken over loses its restored credential.
+        assert.deepEqual(prunedKeep, [[]]);
+
+        // The old process is gone before the continuation can start a new one on the thread.
+        assert.isFalse(
+          isProcessAlive(childPid),
+          "The process the old server left running still runs",
+        );
+        assert.equal(startupSummary.terminalizedRuns, 1);
+        const effects = commits.flatMap((commit) => commit.effects ?? []);
+        assert.isTrue(
+          effects.some((effect) => effect.id === EffectOutbox.restartContinuationEffectId(runId)),
+          "Expected the run whose process was not taken over to get a RestartContinuation",
+        );
+        const rows = yield* sql<{ readonly status: string }>`
+          SELECT status FROM session_hosts WHERE provider_session_id = ${providerSessionId}
+        `;
+        assert.notEqual(rows[0]?.status, "detached_for_update");
+        assert.notEqual(rows[0]?.status, "active");
+      }).pipe(
+        Effect.provide(
+          buildRecoveryLayer(
+            threadId,
+            projection,
+            (input) => commits.push(input),
+            ({ runId: failedRunId }) =>
+              Effect.fail(
+                new ProviderTurnStart.ProviderTurnStartError({
+                  runId: failedRunId,
+                  cause: "This provider cannot take over a running turn.",
+                }),
+              ),
+            (keepThreadIds) => prunedKeep.push([...keepThreadIds]),
           ).pipe(Layer.provideMerge(sessionHostLayer)),
         ),
       );
@@ -581,6 +734,49 @@ it.live("keeps the broker auth token in the secret store and removes it when the
     Effect.provide(sessionHostLayer),
     Effect.ensuring(
       Effect.sync(() => NodeFS.rmSync(tempBaseDir, { recursive: true, force: true })),
+    ),
+    Effect.provide(baseLayer),
+  );
+});
+
+// regression: ack flushes ran outside the service and failed once its database had closed.
+it.live("writes a running host's pending acked seq when the service closes", () => {
+  const tempBaseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-session-host-ack-"));
+  const baseLayer = Layer.mergeAll(
+    Sqlite.layerMemory,
+    ServerConfig.layerTest(tempBaseDir, tempBaseDir),
+  ).pipe(Layer.provideMerge(NodeServices.layer));
+  let brokerPid: number | null = null;
+
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const sessionHostId = yield* Effect.gen(function* () {
+      const sessionHost = yield* SessionHostService.SessionHostService;
+      const handle = yield* sessionHost.spawn({
+        providerSessionId: ProviderSessionId.make("ps_ack_on_close"),
+        threadId: ThreadId.make("thread_ack_on_close"),
+        driver: "codex",
+        command: process.execPath,
+        args: ["-e", ECHO_CHILD_SCRIPT],
+        cwd: tempBaseDir,
+        env: process.env,
+      });
+      yield* Effect.promise(() => readNextLine(handle.stdout));
+      return handle.sessionHostId;
+    }).pipe(Effect.provide(sessionHostLayer));
+
+    const rows = yield* sql<{ readonly last_acked_seq: number; readonly broker_pid: number }>`
+      SELECT last_acked_seq, broker_pid FROM session_hosts WHERE id = ${sessionHostId}
+    `;
+    brokerPid = rows[0]?.broker_pid ?? null;
+    assert.isAbove(rows[0]?.last_acked_seq ?? 0, 0);
+  }).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        // The broker the closed service left running; its pid was recorded at spawn.
+        if (brokerPid !== null && isProcessAlive(brokerPid)) process.kill(brokerPid, "SIGTERM");
+        NodeFS.rmSync(tempBaseDir, { recursive: true, force: true });
+      }),
     ),
     Effect.provide(baseLayer),
   );

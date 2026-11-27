@@ -638,6 +638,14 @@ export interface RunExecutionServiceV2StartRootRunInput {
     turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
     compact: boolean,
   ) => Effect.Effect<RunExecutionServiceV2PreparedTurn, ProviderAdapter.ProviderAdapterV2Error>;
+  /**
+   * Continue the provider turn a taken-over process was running before a planned update, instead
+   * of starting one. Its baseline and prompt belong to the server that started it.
+   */
+  readonly adoptRunningTurn?: {
+    readonly providerTurn: OrchestrationV2ProviderTurn;
+    readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+  };
 }
 
 export interface RunExecutionServiceV2Shape {
@@ -1015,7 +1023,7 @@ export const layer: Layer.Layer<
           );
           // Side chats share the parent's worktree; a snapshot would capture the parent's edits.
           yield* (
-            input.appThread.lineage.sideChat === true
+            input.appThread.lineage.sideChat === true || input.adoptRunningTurn !== undefined
               ? Effect.void
               : checkpointService.captureBaseline({
                   scope: input.checkpointScope,
@@ -1085,11 +1093,19 @@ export const layer: Layer.Layer<
           return;
         }
         const terminalEvent = yield* Ref.make<ProviderTerminalEvent | null>(null);
-        const latestTurnItemOrdinal = yield* Ref.make(input.providerTurnOrdinal * 100);
+        const adopted = input.adoptRunningTurn;
+        const latestTurnItemOrdinal = yield* Ref.make(
+          Math.max(
+            input.providerTurnOrdinal * 100,
+            ...(adopted?.turnItems.map((item) => item.ordinal) ?? []),
+          ),
+        );
         const latestProviderThread = yield* Ref.make(input.providerThread);
-        const latestRootProviderTurn = yield* Ref.make<OrchestrationV2ProviderTurn | null>(null);
+        const latestRootProviderTurn = yield* Ref.make<OrchestrationV2ProviderTurn | null>(
+          adopted?.providerTurn ?? null,
+        );
         // Later root turns in one attempt are provider continuations, such as Codex goal turns.
-        let firstRootProviderTurnId: ProviderTurnId | undefined;
+        let firstRootProviderTurnId: ProviderTurnId | undefined = adopted?.providerTurn.id;
         const analyticsContext = {
           runId: input.run.id,
           modelSelection: input.modelSelection,
@@ -1810,9 +1826,23 @@ export const layer: Layer.Layer<
           }),
         );
         const compact =
+          adopted === undefined &&
           input.message.attachments.length === 0 &&
           input.message.text.trim().toLowerCase() === "/compact";
-        const callProvider = compact ? input.session.compactThread : input.session.startTurn;
+        const adoptTurn = input.session.adoptTurn;
+        const callProvider =
+          adopted === undefined
+            ? compact
+              ? input.session.compactThread
+              : input.session.startTurn
+            : adoptTurn === undefined
+              ? undefined
+              : (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+                  adoptTurn({
+                    turnInput,
+                    providerTurn: adopted.providerTurn,
+                    turnItems: adopted.turnItems,
+                  });
         // Ingestion can settle the run while the context read or the preparation awaits, so ownership
         // is checked after each. A failed ownership read fails the start below like a failed preparation.
         const stillOwned = Effect.exit(
@@ -1880,11 +1910,14 @@ export const layer: Layer.Layer<
                     threadId: input.run.threadId,
                     providerThreadId: input.providerThread.id,
                     runId: input.run.id,
-                    cause: "This provider does not support context compaction.",
+                    cause:
+                      adopted === undefined
+                        ? "This provider does not support context compaction."
+                        : "This provider cannot take over a running turn.",
                   }),
                 )
               : (
-                  input.prepareTurn?.(turnInput, compact) ??
+                  (adopted === undefined ? input.prepareTurn?.(turnInput, compact) : undefined) ??
                   Effect.succeed<RunExecutionServiceV2PreparedTurn>({
                     turnInput,
                     accepted: Effect.void,

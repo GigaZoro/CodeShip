@@ -907,6 +907,7 @@ describe("CodexAdapterV2 session initialize", () => {
       CodexAdapterV2.CodexAdapterV2Options,
       "onAuthenticationFailed" | "readSignedOut"
     > = {},
+    openOptions: { readonly adoptRunningProcess?: true } = {},
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -967,6 +968,7 @@ describe("CodexAdapterV2 session initialize", () => {
         providerSessionId: ProviderSessionId.make(`provider-session-${transcript.scenario}`),
         modelSelection: CODEX_TEST_MODEL_SELECTION,
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        ...openOptions,
       });
       return {
         ensureThread: (threadId: string) =>
@@ -1026,6 +1028,35 @@ describe("CodexAdapterV2 session initialize", () => {
         providerThreads.map((providerThread) => providerThread.nativeThreadRef?.nativeId),
         ["concurrent-first", "concurrent-second"],
       );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("sends no initialize to an app server it took over", () =>
+    Effect.gen(function* () {
+      // The server that started the app server initialized it; Codex rejects a second handshake.
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: "adopted-no-initialize",
+          entries: replayPreamble("adopted-no-initialize")
+            .slice(3, 5)
+            .map((entry) => withReplayRequestId(entry, 1)),
+        }),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {},
+        { adoptRunningProcess: true },
+      );
+
+      const providerThread = yield* session.ensureThread("thread-adopted-no-initialize");
+      assert.equal(providerThread.nativeThreadRef?.nativeId, "adopted-no-initialize");
+      assert.equal(session.initializeRequests(), 0);
     }).pipe(
       Effect.scoped,
       Effect.provide(

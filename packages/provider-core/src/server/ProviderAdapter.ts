@@ -445,6 +445,18 @@ export interface ProviderAdapterV2OpenSessionInput {
   readonly resumeFromSession?: OrchestrationV2ProviderSession;
   readonly initialNativeThreadId?: string;
   readonly initialProviderItemIdentityVersion?: 2;
+  /**
+   * Take over the provider process a session host kept running through a planned update
+   * instead of starting one. Only adapters whose runtime has `adoptTurn` support it.
+   */
+  readonly adoptRunningProcess?: true;
+}
+
+/** The running turn a taken-over provider process is still working on, as the projection last saw it. */
+export interface ProviderAdapterV2AdoptTurnInput {
+  readonly turnInput: ProviderAdapterV2TurnInput;
+  readonly providerTurn: OrchestrationV2ProviderTurn;
+  readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {
@@ -632,6 +644,13 @@ export interface ProviderAdapterV2SessionRuntime {
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly compactThread?: (
     input: ProviderAdapterV2TurnInput,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Continue a turn the taken-over process was running before the update, without sending a
+   * new turn. The process's buffered and live output reaches `events` only after this succeeds.
+   */
+  readonly adoptTurn?: (
+    input: ProviderAdapterV2AdoptTurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly steerTurn: (
     input: ProviderAdapterV2SteerInput,

@@ -127,6 +127,7 @@ function layerExecutorFor(input: {
     Layer.succeed(
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
+        adopt: (request) => record(`adopt:${request.runId}`),
         failUnstartedRun: (request) => record(`fail-unstarted:${request.runId}`),
         start:
           input.start ??
