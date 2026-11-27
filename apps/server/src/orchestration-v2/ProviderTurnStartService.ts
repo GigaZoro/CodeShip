@@ -3280,13 +3280,15 @@ export const layer: Layer.Layer<
         yield* release;
         return true;
       }),
-      abandonAdoption: (providerSessionId: ProviderSessionId) =>
-        providerSessions.close(providerSessionId).pipe(
-          Effect.ignore({
-            log: "Error",
-            message: "Could not close a provider session whose takeover failed.",
-          }),
-        ),
+      abandonAdoption: Effect.fn("ProviderTurnStartServiceV2.abandonAdoption")(
+        (providerSessionId: ProviderSessionId) =>
+          providerSessions.close(providerSessionId).pipe(
+            Effect.ignore({
+              log: "Error",
+              message: "Could not close a provider session whose takeover failed.",
+            }),
+          ),
+      ),
       failUnstartedRun,
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {

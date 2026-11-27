@@ -578,6 +578,7 @@ const endHost = (sessionHostId: string) =>
   SessionHostService.SessionHostService.pipe(
     Effect.flatMap((sessionHost) => sessionHost.terminate(sessionHostId)),
     Effect.provide(sessionHostLayer),
+    Effect.orDie,
   );
 
 it.live(
