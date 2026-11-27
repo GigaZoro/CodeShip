@@ -63,6 +63,7 @@ import * as Stream from "effect/Stream";
 import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
 import * as PlatformError from "effect/PlatformError";
 import { TestClock } from "effect/testing";
@@ -81,6 +82,7 @@ import { CHATGPT_TOKEN_REVOKED } from "../../provider/CodexLoginRejected.ts";
 import * as ModelManifest from "../../provider/ModelManifest.ts";
 import { resolveProviderCompatibility } from "../../provider/providerCompatibility.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import type { DetachedStdioHandle } from "../../sessionHost/DetachedStdioHandle.ts";
 import * as SessionHostService from "../../sessionHost/SessionHostService.ts";
 import { AgentScope, type AgentScopeShape } from "@t3tools/shared/AgentScope";
 import { withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
@@ -10021,6 +10023,76 @@ describe("layerAppServerClientFactory with a session host", () => {
       assert.equal(spawned[0]?.command, "codex-bin");
       assert.equal(spawned[0]?.threadId, threadId);
       assert.equal(spawned[0]?.shell, false);
+    }),
+  );
+
+  it.effect("ignores a reply to the previous server's request in a session it takes over", () =>
+    Effect.gen(function* () {
+      const stdout = yield* Queue.unbounded<Uint8Array>();
+      const written = yield* Queue.unbounded<string>();
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      const childProcess = ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(1),
+        stdout: Stream.fromQueue(stdout),
+        stderr: Stream.empty,
+        all: Stream.empty,
+        stdin: Sink.forEach((chunk: Uint8Array) => Queue.offer(written, decoder.decode(chunk))),
+        exitCode: Effect.never,
+        isRunning: Effect.succeed(true),
+        kill: () => Effect.void,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      });
+      const handle = {
+        sessionHostId: "host-adopted",
+        detachingForUpdate: false,
+        releaseOutput: () => undefined,
+      } as unknown as DetachedStdioHandle;
+      const sessionHost = Layer.mock(SessionHostService.SessionHostService)({
+        takeAdoptable: () => Effect.succeed(Option.some({ handle, childProcess })),
+        terminate: () => Effect.void,
+      });
+      const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+        Effect.provide(
+          CodexAdapterV2.layerAppServerClientFactory.pipe(
+            Layer.provide(sessionHost),
+            Layer.provide(
+              Layer.succeed(
+                ProviderEventLoggers.ProviderEventLoggers,
+                ProviderEventLoggers.NoOpProviderEventLoggers,
+              ),
+            ),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        const client = yield* factory.open({
+          instanceId: ProviderInstanceId.make("codex"),
+          threadId: ThreadId.make("thread-adopted"),
+          providerSessionId: ProviderSessionId.make("provider-session-adopted"),
+          runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+          settings: sessionHostCodexSettings,
+          environment: {},
+          adoptRunningProcess: { outputReady: Effect.void },
+        });
+        const response = yield* client.raw
+          .request("thread/read", { threadId: "thread-1" })
+          .pipe(Effect.forkScoped);
+        const sent = JSON.parse((yield* Queue.take(written)).split("\n")[0] ?? "") as {
+          readonly id: unknown;
+        };
+        assert.isString(sent.id);
+        // The previous server's request 1 is answered after the takeover.
+        const reply = (id: unknown, owner: string) =>
+          encoder.encode(`${JSON.stringify({ id, result: { owner } })}\n`);
+        yield* Queue.offer(stdout, reply(1, "previous"));
+        yield* Queue.offer(stdout, reply(sent.id, "adopted"));
+        assert.deepEqual(yield* Fiber.join(response), { owner: "adopted" });
+      }).pipe(Effect.scoped);
     }),
   );
 });
