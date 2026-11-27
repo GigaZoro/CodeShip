@@ -836,6 +836,22 @@ const make = Effect.gen(function* () {
       ),
     );
 
+    // Upgrade a missing or fallback window identity (Windows, or a failed broker ps read)
+    // to the exact OS creation time read by the server, provided it agrees with the broker's window.
+    let brokerIdentity = attached.brokerIdentity;
+    if (
+      attached.brokerPid > 0 &&
+      (brokerIdentity === null || brokerIdentity.startsWith("window:"))
+    ) {
+      const observed = yield* identityOfBroker(attached.brokerPid);
+      if (
+        observed !== undefined &&
+        (brokerIdentity === null || compareIdentity(brokerIdentity, observed) === "same")
+      ) {
+        brokerIdentity = observed;
+      }
+    }
+
     yield* insertHostRow({
       id,
       providerSessionId: input.providerSessionId,
@@ -844,7 +860,7 @@ const make = Effect.gen(function* () {
       driver: input.driver,
       socketPath,
       brokerPid: attached.brokerPid,
-      brokerIdentity: attached.brokerIdentity,
+      brokerIdentity,
       childPid: attached.childPid,
       status: "running",
     }).pipe(
