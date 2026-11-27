@@ -1,3 +1,7 @@
+## 2026-11-27 — Background commands capture their output again on macOS and Linux
+
+- Agent commands run in the background (tests, builds, landings) failed at once with "CodeShip could not capture command output" in the packaged app, because the output writer could not read its input there. They run and report their output again.
+
 ## 2026-11-27 — The weekly dependency upgrade runs while Codex is out of usage
 
 - Maintainers: the "CodeShip: weekly dependency upgrade" scheduled task now lists only its own provider (Claude) in `delegate_providers`. Listing Codex made CodeShip skip every run while all Codex accounts were out of usage, although the task only needs a second reviewer from any provider that has usage. Machines pick up the change with `schedule_task` and `delegateProviders`, as `machine-config.mjs check` reports.

@@ -13,12 +13,15 @@ it.skipIf(isWindowsHost).each([
   ["drains command shutdown diagnostics after the group receives SIGTERM", "term"],
   ["keeps the last byte already read when a timeout escalates to SIGKILL", "kill"],
   ["strips a completion frame split across writes before publishing status", "split-complete"],
+  // The bundled CLI imports node:process before the writer starts, which makes stdin non-blocking.
+  ["reads its input after node:process made stdin non-blocking", "bundled"],
 ] as const)("%s", async (_scenario, mode) => {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-command-writer-"));
   const log = NodePath.join(directory, "output.log");
   const status = NodePath.join(directory, "status");
   const publicArgument = "from-the-command-line";
   const child = NodeChildProcess.spawn(process.execPath, [
+    ...(mode === "bundled" ? ["--import", 'data:text/javascript,import "node:process";'] : []),
     NodeURL.fileURLToPath(new URL("../bin.ts", import.meta.url)),
     "__command-log",
     log,
