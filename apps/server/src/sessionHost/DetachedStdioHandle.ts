@@ -20,6 +20,13 @@ import {
 } from "./protocol.ts";
 
 const DETACH_ACK_TIMEOUT_MS = 500;
+/**
+ * A frame reaches the projection through the Codex client, the adapter and the run's ingestion,
+ * and a planned shutdown stops those after it detaches. The replay point for the next server is
+ * the newest frame received this long before the detach, so frames that may still have been in
+ * flight are sent again rather than lost; the adopting adapter ignores what it already has.
+ */
+export const DETACH_REPLAY_OVERLAP_MS = 5_000;
 const ATTACH_TIMEOUT_MS = 10_000;
 
 export interface DetachedAttachedInfo {
@@ -43,6 +50,10 @@ export interface DetachedStdioHandleOptions {
   readonly onAckSeq?: (seq: number) => void;
   readonly onStderr?: (chunk: string) => void;
   readonly onExit?: (exitCode: number | null, signal: NodeJS.Signals | null) => void;
+  /** Keep stdout until releaseOutput: an adopted turn must be registered before its frames run. */
+  readonly holdOutput?: boolean;
+  /** Monotonic milliseconds; tests replace it. */
+  readonly now?: () => number;
 }
 
 type PendingClientAction =
@@ -70,6 +81,10 @@ export class DetachedStdioHandle {
   private exitCodeValue: number | null = null;
   private signalCodeValue: NodeJS.Signals | null = null;
   private pendingActions: Array<PendingClientAction> = [];
+  private heldOutput: Array<string> | null;
+  private readonly now: () => number;
+  private readonly recentFrames: Array<{ readonly seq: number; readonly receivedAt: number }> = [];
+  private settledSeqValue: number;
 
   private readonly onAckSeq: ((seq: number) => void) | undefined;
   private readonly onStderr: ((chunk: string) => void) | undefined;
@@ -103,6 +118,9 @@ export class DetachedStdioHandle {
     this.socketPath = options.socketPath;
     this.authToken = options.authToken;
     this.lastAckedSeqValue = options.initialAfterSeq ?? 0;
+    this.settledSeqValue = this.lastAckedSeqValue;
+    this.heldOutput = options.holdOutput === true ? [] : null;
+    this.now = options.now ?? (() => performance.now());
     this.onAckSeq = options.onAckSeq;
     this.onStderr = options.onStderr;
     this.onExit = options.onExit;
@@ -208,6 +226,37 @@ export class DetachedStdioHandle {
     readonly signal: NodeJS.Signals | null;
   }> {
     return this.exitPromise;
+  }
+
+  /** The replay point for the server after a planned update; see DETACH_REPLAY_OVERLAP_MS. */
+  replayPointForUpdate(): number {
+    this.settleFrames();
+    return this.settledSeqValue;
+  }
+
+  releaseOutput(): void {
+    const held = this.heldOutput;
+    if (held === null) return;
+    this.heldOutput = null;
+    for (const chunk of held) this.writeStdout(chunk);
+    if (this.exitedFlag && !this.stdout.writableEnded) this.stdout.end();
+  }
+
+  private writeStdout(chunk: string): void {
+    if (this.heldOutput !== null) {
+      this.heldOutput.push(chunk);
+      return;
+    }
+    if (!this.stdout.writableEnded) {
+      this.stdout.write(chunk, "utf8");
+    }
+  }
+
+  private settleFrames(): void {
+    const settledBefore = this.now() - DETACH_REPLAY_OVERLAP_MS;
+    while (this.recentFrames.length > 0 && this.recentFrames[0]!.receivedAt <= settledBefore) {
+      this.settledSeqValue = this.recentFrames.shift()!.seq;
+    }
   }
 
   markDetachingForUpdate(): void {
@@ -579,12 +628,12 @@ export class DetachedStdioHandle {
       case "frame": {
         if (message.seq > this.lastAckedSeqValue) {
           this.lastAckedSeqValue = message.seq;
+          this.recentFrames.push({ seq: message.seq, receivedAt: this.now() });
+          this.settleFrames();
           this.onAckSeq?.(message.seq);
         }
         if (message.stream === "stdout") {
-          if (!this.stdout.writableEnded) {
-            this.stdout.write(message.chunk, "utf8");
-          }
+          this.writeStdout(message.chunk);
         } else if (message.stream === "stderr") {
           this.onStderr?.(message.chunk);
           if (!this.stderr.writableEnded) {
@@ -600,9 +649,7 @@ export class DetachedStdioHandle {
         break;
       }
       case "pending_request": {
-        if (!this.stdout.writableEnded) {
-          this.stdout.write(message.chunk, "utf8");
-        }
+        this.writeStdout(message.chunk);
         break;
       }
       case "replay_complete": {
@@ -646,7 +693,8 @@ export class DetachedStdioHandle {
     this.exitedFlag = true;
     this.exitCodeValue = exitCode;
     this.signalCodeValue = signal;
-    if (!this.stdout.writableEnded) this.stdout.end();
+    // Held output ends when it is released, after its last frames.
+    if (this.heldOutput === null && !this.stdout.writableEnded) this.stdout.end();
     if (!this.stderr.writableEnded) this.stderr.end();
     this.resolveExit({ exitCode, signal });
     this.onExit?.(exitCode, signal);

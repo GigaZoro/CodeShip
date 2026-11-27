@@ -14,7 +14,7 @@ import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
-import { DetachedStdioHandle } from "./DetachedStdioHandle.ts";
+import { DETACH_REPLAY_OVERLAP_MS, DetachedStdioHandle } from "./DetachedStdioHandle.ts";
 import {
   ensurePrivateSocketDirectory,
   resolveSessionHostSocketPath,
@@ -152,6 +152,7 @@ const spawnTestBroker = async (
     readonly orphanTtlMs?: number;
     readonly maxBufferBytes?: number;
     readonly maxBufferFrames?: number;
+    readonly childScript?: string;
   } = {},
 ): Promise<SpawnedTestBroker> => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-session-host-test-"));
@@ -167,7 +168,7 @@ const spawnTestBroker = async (
     socketPath,
     authToken,
     command: process.execPath,
-    args: ["-e", MOCK_PROVIDER_SCRIPT],
+    args: ["-e", overrides.childScript ?? MOCK_PROVIDER_SCRIPT],
     cwd: dir,
     env: Object.fromEntries(
       Object.entries(process.env).filter(
@@ -528,6 +529,107 @@ describe("Detached session host broker (__session-host)", () => {
       await host.cleanup();
     }
   });
+
+  it("replays the frames of the last seconds before a detach and holds them for the taker", async () => {
+    const host = await spawnTestBroker();
+    let childPid: number | null = null;
+    let nowMs = 0;
+    try {
+      const handle1 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: 0,
+        now: () => nowMs,
+      });
+      const stdout1 = createLineReader(handle1.stdout);
+      childPid = (JSON.parse(await stdout1.nextLine()) as { pid: number }).pid;
+      const readySeq = handle1.lastAckedSeq;
+
+      nowMs = DETACH_REPLAY_OVERLAP_MS * 2;
+      handle1.stdin.write(`${JSON.stringify({ cmd: "echo", tag: "recent" })}\n`);
+      assert.equal((JSON.parse(await stdout1.nextLine()) as { tag: string }).tag, "recent");
+      // The echo may still be in flight to a server that dies now, so it is not settled yet.
+      nowMs += DETACH_REPLAY_OVERLAP_MS - 1;
+      const replayFromSeq = handle1.replayPointForUpdate();
+      assert.equal(replayFromSeq, readySeq);
+      await handle1.detach();
+
+      const handle2 = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: replayFromSeq,
+        holdOutput: true,
+      });
+      await handle2.waitForReplayComplete();
+      assert.equal(handle2.stdout.readableLength, 0, "Output reached the taker before release");
+      const stdout2 = createLineReader(handle2.stdout);
+      handle2.releaseOutput();
+      assert.equal((JSON.parse(await stdout2.nextLine()) as { tag: string }).tag, "recent");
+
+      await handle2.terminate();
+      await host.exited;
+    } finally {
+      if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
+      await host.cleanup();
+    }
+  });
+
+  it("tells its client the child ended before it closes on terminate", async () => {
+    const host = await spawnTestBroker();
+    let childPid: number | null = null;
+    try {
+      const handle = await DetachedStdioHandle.connect({
+        sessionHostId: host.id,
+        socketPath: host.socketPath,
+        authToken: host.authToken,
+        initialAfterSeq: 0,
+      });
+      childPid = (JSON.parse(await createLineReader(handle.stdout).nextLine()) as { pid: number })
+        .pid;
+
+      await handle.terminate();
+      const exit = await handle.waitForExit();
+      assert.equal(exit.signal, "SIGTERM");
+      assert.isFalse(isProcessAlive(childPid));
+      await host.exited;
+    } finally {
+      if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
+      await host.cleanup();
+    }
+  });
+
+  // Windows ends the process tree at once; only POSIX has a grace period before SIGKILL.
+  it.skipIf(isWindowsHost)(
+    "tells its client a child it had to SIGKILL ended before it closes",
+    async () => {
+      // The child ignores SIGTERM, so the broker kills it after the grace period.
+      const host = await spawnTestBroker({
+        childScript: `process.on("SIGTERM", () => {});\n${MOCK_PROVIDER_SCRIPT}`,
+      });
+      let childPid: number | null = null;
+      try {
+        const handle = await DetachedStdioHandle.connect({
+          sessionHostId: host.id,
+          socketPath: host.socketPath,
+          authToken: host.authToken,
+          initialAfterSeq: 0,
+        });
+        childPid = (JSON.parse(await createLineReader(handle.stdout).nextLine()) as { pid: number })
+          .pid;
+
+        await handle.terminate();
+        const exit = await handle.waitForExit();
+        assert.equal(exit.signal, "SIGKILL");
+        assert.isFalse(isProcessAlive(childPid));
+        await host.exited;
+      } finally {
+        if (childPid !== null && isProcessAlive(childPid)) process.kill(childPid, "SIGKILL");
+        await host.cleanup();
+      }
+    },
+  );
 
   it("kills the child when its client disconnects without a detach", async () => {
     // Far beyond the test timeout, so only the disconnect itself can stop the child in time.

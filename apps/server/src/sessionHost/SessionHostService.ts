@@ -17,6 +17,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -40,6 +41,8 @@ import {
   DEFAULT_MAX_BUFFER_BYTES,
   DEFAULT_MAX_BUFFER_FRAMES,
   DEFAULT_ORPHAN_TTL_MS,
+  DEFAULT_TERMINATE_GRACE_MS,
+  KILL_CONFIRM_MS,
   ensurePrivateSocketDirectory,
   resolveSessionHostSocketPath,
   type SessionHostConfig,
@@ -48,6 +51,8 @@ import {
 } from "./protocol.ts";
 
 const BROKER_START_TIMEOUT_MS = 10_000;
+// The broker escalates to SIGKILL after its grace period; the last second covers the exit frame's trip.
+const TERMINATE_EXIT_WAIT = Duration.millis(DEFAULT_TERMINATE_GRACE_MS + KILL_CONFIRM_MS + 1_000);
 const BROKER_CONNECT_RETRY_MS = 25;
 const ACK_FLUSH_INTERVAL_MS = 500;
 const SW_HIDE = 0;
@@ -160,6 +165,16 @@ export interface SessionHostServiceShape {
   readonly probeDetachedForUpdate: () => Effect.Effect<ReadonlyArray<ProbedDetachedHost>>;
   readonly reattachAllDetachedForUpdate: () => Effect.Effect<ReadonlyArray<ReattachedDetachedHost>>;
   readonly listDetachedForUpdate: () => Effect.Effect<ReadonlyArray<SessionHostRecord>>;
+  /**
+   * Hands a host reattached at startup to the session that takes over its process, once. Its
+   * output stays held until the taker calls releaseOutput on the handle.
+   */
+  readonly takeAdoptable: (providerSessionId: string) => Effect.Effect<
+    Option.Option<{
+      readonly handle: DetachedStdioHandle;
+      readonly childProcess: ChildProcessSpawner.ChildProcessHandle;
+    }>
+  >;
   readonly detachAllForUpdate: () => Effect.Effect<ReadonlyArray<DetachedHostSummary>>;
   readonly isProviderSessionDetachedForUpdate: (
     providerSessionId: string,
@@ -276,6 +291,7 @@ const make = Effect.gen(function* () {
   const activeById = new Map<string, ActiveTrackedHost>();
   const activeByProviderSession = new Map<string, ActiveTrackedHost>();
   const detachedProviderSessions = new Set<string>();
+  const adoptableByProviderSession = new Map<string, DetachedStdioHandle>();
   const detachedThreads = new Set<ThreadId>();
 
   const nowIso = () => Effect.map(DateTime.now, DateTime.formatIso);
@@ -370,6 +386,23 @@ const make = Effect.gen(function* () {
       Effect.andThen(status === "exited" || status === "dead" ? removeAuthToken(id) : Effect.void),
     );
 
+  // Sets the seq rather than raising it: the replay point is older than the last flushed ack.
+  const markDetachedForUpdate = (id: string, replayFromSeq: number) =>
+    nowIso().pipe(
+      Effect.flatMap(
+        (updatedAt) =>
+          sql`
+            UPDATE session_hosts
+            SET status = 'detached_for_update',
+                last_acked_seq = ${replayFromSeq},
+                updated_at = ${updatedAt}
+            WHERE id = ${id}
+          `,
+      ),
+      Effect.asVoid,
+      Effect.ignore({ log: "Error", message: `Failed to mark session host ${id} detached` }),
+    );
+
   const clearTrackedHost = (tracked: ActiveTrackedHost) => {
     if (tracked.ackFiber.current !== null) {
       const fiber = tracked.ackFiber.current;
@@ -381,6 +414,9 @@ const make = Effect.gen(function* () {
     }
     if (activeByProviderSession.get(tracked.providerSessionId) === tracked) {
       activeByProviderSession.delete(tracked.providerSessionId);
+    }
+    if (adoptableByProviderSession.get(tracked.providerSessionId) === tracked.handle) {
+      adoptableByProviderSession.delete(tracked.providerSessionId);
     }
   };
 
@@ -717,9 +753,19 @@ const make = Effect.gen(function* () {
     return { id, authToken, socketPath, configPath, readyFilePath };
   };
 
-  const runForkWithContext = Effect.runForkWith(yield* Effect.context<never>());
+  // Background writes end with the service, before the database it writes to closes.
+  const runForkInService = yield* FiberSet.makeRuntime<never, void, never>();
   const runFork = <E>(effect: Effect.Effect<void, E>): Fiber.Fiber<void, never> =>
-    runForkWithContext(effect.pipe(Effect.ignoreCause));
+    runForkInService(effect.pipe(Effect.ignoreCause));
+  // Added after the fiber set, so it runs first: acks still waiting for their flush are written
+  // while the database is open, and a reattach after the restart replays from them.
+  yield* Effect.addFinalizer(() =>
+    Effect.forEach(
+      [...activeById.values()].filter((tracked) => tracked.ackFiber.current !== null),
+      (tracked) => persistAckSeq(tracked.id, tracked.handle.lastAckedSeq),
+      { discard: true },
+    ),
+  );
 
   const spawn: SessionHostServiceShape["spawn"] = Effect.fn("SessionHostService.spawn")(function* (
     input: SpawnSessionHostInput,
@@ -798,6 +844,15 @@ const make = Effect.gen(function* () {
 
     return handle;
   });
+
+  const takeAdoptable: SessionHostServiceShape["takeAdoptable"] = (providerSessionId) =>
+    Effect.sync(() => {
+      const handle = adoptableByProviderSession.get(providerSessionId);
+      adoptableByProviderSession.delete(providerSessionId);
+      return handle === undefined || activeById.get(handle.sessionHostId) === undefined
+        ? Option.none()
+        : Option.some({ handle, childProcess: handle.asChildProcessHandle() });
+    });
 
   const spawnChildProcessHandle: SessionHostServiceShape["spawnChildProcessHandle"] = Effect.fn(
     "SessionHostService.spawnChildProcessHandle",
@@ -918,6 +973,9 @@ const make = Effect.gen(function* () {
         socketPath: record.socketPath,
         authToken,
         initialAfterSeq: record.lastAckedSeq,
+        // The replay must wait for the session that takes the process over: run now, its
+        // notifications would find no turn to belong to.
+        holdOutput: true,
         onAckSeq: (seq) => {
           if (trackedRef !== undefined) {
             scheduleAckFlush(trackedRef, seq, runFork);
@@ -963,6 +1021,7 @@ const make = Effect.gen(function* () {
       }
 
       yield* updateRowStatus(record.id, attachedInfo.exited ? "exited" : "running");
+      adoptableByProviderSession.set(record.providerSessionId, handle);
 
       return { record, handle, attachedInfo };
     },
@@ -1011,9 +1070,10 @@ const make = Effect.gen(function* () {
       detachedProviderSessions.add(tracked.providerSessionId);
       detachedThreads.add(tracked.threadId);
       tracked.handle.markDetachingForUpdate();
-      const lastAckedSeq = yield* Effect.promise(() => tracked.handle.detach());
+      yield* Effect.promise(() => tracked.handle.detach());
+      const lastAckedSeq = tracked.handle.replayPointForUpdate();
       clearTrackedHost(tracked);
-      yield* updateRowStatus(tracked.id, "detached_for_update", lastAckedSeq);
+      yield* markDetachedForUpdate(tracked.id, lastAckedSeq);
       summaries.push({
         id: tracked.id,
         providerSessionId: tracked.providerSessionId,
@@ -1073,6 +1133,18 @@ const make = Effect.gen(function* () {
         detachedThreads.delete(tracked.threadId);
         clearTrackedHost(tracked);
         yield* Effect.promise(() => tracked.handle.terminate(signal));
+        // A caller that starts a replacement must not find the old process still running.
+        if (!tracked.handle.detachingForUpdate) {
+          const exited = yield* Effect.promise(() => tracked.handle.waitForExit()).pipe(
+            Effect.timeoutOption(TERMINATE_EXIT_WAIT),
+          );
+          if (Option.isNone(exited)) {
+            yield* Effect.logError("A session host did not confirm its process ended", {
+              sessionHostId,
+              waitedMs: Duration.toMillis(TERMINATE_EXIT_WAIT),
+            });
+          }
+        }
         yield* updateRowStatus(sessionHostId, "exited", tracked.handle.lastAckedSeq);
         if (tracked.unit !== null && Option.isSome(agentScopeOption)) {
           yield* agentScopeOption.value.stop(tracked.unit).pipe(Effect.ignore);
@@ -1172,6 +1244,7 @@ const make = Effect.gen(function* () {
     reattach,
     probeDetachedForUpdate,
     reattachAllDetachedForUpdate,
+    takeAdoptable,
     listDetachedForUpdate,
     detachAllForUpdate,
     isProviderSessionDetachedForUpdate,

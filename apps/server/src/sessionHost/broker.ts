@@ -19,6 +19,7 @@ import {
   DEFAULT_MAX_BUFFER_FRAMES,
   DEFAULT_ORPHAN_TTL_MS,
   DEFAULT_TERMINATE_GRACE_MS,
+  KILL_CONFIRM_MS,
   encodeBrokerMessage,
   ensurePrivateSocketDirectory,
   parseBrokerClientMessage,
@@ -429,17 +430,6 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     shuttingDown = true;
     clearOrphanTimer();
 
-    if (activeClient !== null) {
-      const client = activeClient;
-      activeClient = null;
-      try {
-        client.end();
-        client.destroy();
-      } catch {
-        // Ignore socket teardown errors.
-      }
-    }
-
     if (config.platform === "win32") {
       if (windowsChildRoot !== undefined) {
         await killWindowsProcessTree(windowsChildRoot);
@@ -451,18 +441,35 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
           resolve();
           return;
         }
-        const timer = setTimeout(() => {
+        let killTimer: ReturnType<typeof setTimeout> | undefined;
+        const graceTimer = setTimeout(() => {
           if (!childExited) {
             signalChildTree(child, "SIGKILL", config.platform);
           }
-          resolve();
+          // SIGKILL cannot be ignored; the cap covers only stdio a grandchild keeps open, so the
+          // exit frame still reaches the client before it is closed.
+          killTimer = setTimeout(resolve, KILL_CONFIRM_MS);
+          killTimer.unref();
         }, graceMs);
-        timer.unref();
+        graceTimer.unref();
         child.once("close", () => {
-          clearTimeout(timer);
+          clearTimeout(graceTimer);
+          if (killTimer !== undefined) clearTimeout(killTimer);
           resolve();
         });
       });
+    }
+
+    // The client goes after the child, so it receives the exit frame and knows the process is gone.
+    if (activeClient !== null) {
+      const client = activeClient;
+      activeClient = null;
+      try {
+        client.end();
+        client.destroy();
+      } catch {
+        // Ignore socket teardown errors.
+      }
     }
 
     await new Promise<void>((resolve) => {

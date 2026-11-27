@@ -13,6 +13,8 @@ export const DEFAULT_ORPHAN_TTL_MS = 15 * 60 * 1000;
 export const DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MAX_BUFFER_FRAMES = 20_000;
 export const DEFAULT_TERMINATE_GRACE_MS = 2_000;
+/** How long a broker waits for its child to close after SIGKILL before it closes its client. */
+export const KILL_CONFIRM_MS = 2_000;
 
 /**
  * macOS caps Unix domain socket `sun_path` at 104 bytes (Linux at 108). Keep a safety margin so
