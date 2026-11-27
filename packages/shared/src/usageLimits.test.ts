@@ -22,7 +22,12 @@ import {
   findLimitAccountWindow,
   elapsedShare,
   limitsFreshness,
+  DEFAULT_SOFT_DRAIN_5H_PERCENT,
+  DEFAULT_SOFT_DRAIN_WEEKLY_PERCENT,
+  accountHeadroomPercent,
+  compareAccountsByHeadroom,
   exhaustedUsageWindow,
+  softDrainingUsageWindow,
   paceOf,
   paceRemainingPercent,
   poolResetSummary,
@@ -2338,5 +2343,489 @@ describe("accountFailoverStatus", () => {
         }),
       ),
     ).toEqual({ kind: "ready", active: "a" });
+  });
+});
+
+describe("softDrainingUsageWindow", () => {
+  const checkedAt = "2026-09-03T11:00:00.000Z";
+  const sessionWindow = {
+    id: "five_hour",
+    kind: "session" as const,
+    label: "Session",
+    windowDurationMins: 300,
+    resetsAt: "2026-09-03T14:00:00.000Z",
+  };
+  const weeklyWindow = {
+    id: "seven_day",
+    kind: "weekly" as const,
+    label: "Weekly",
+    windowDurationMins: 10_080,
+    resetsAt: "2026-09-08T12:00:00.000Z",
+  };
+
+  it("exports the expected default thresholds", () => {
+    expect(DEFAULT_SOFT_DRAIN_5H_PERCENT).toBe(88);
+    expect(DEFAULT_SOFT_DRAIN_WEEKLY_PERCENT).toBe(92);
+  });
+
+  it("returns undefined when provider or usageLimits is absent", () => {
+    expect(softDrainingUsageWindow(undefined, now, "gpt-5.4")).toBeUndefined();
+    expect(softDrainingUsageWindow(provider({}), now, "gpt-5.4")).toBeUndefined();
+  });
+
+  it("triggers at and above default thresholds before hitting 100%", () => {
+    const below = provider({
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, usedPercent: 87 },
+          { ...weeklyWindow, usedPercent: 91 },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(below, now, "gpt-5.4")).toBeUndefined();
+
+    const sessionDraining = provider({
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, usedPercent: 88 },
+          { ...weeklyWindow, usedPercent: 40 },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(sessionDraining, now, "gpt-5.4")?.id).toBe("five_hour");
+    expect(exhaustedUsageWindow(sessionDraining, now, "gpt-5.4")).toBeUndefined();
+
+    const weeklyDraining = provider({
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, usedPercent: 40 },
+          { ...weeklyWindow, usedPercent: 92 },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(weeklyDraining, now, "gpt-5.4")?.id).toBe("seven_day");
+    expect(exhaustedUsageWindow(weeklyDraining, now, "gpt-5.4")).toBeUndefined();
+  });
+
+  it("supports custom thresholds", () => {
+    const mid = provider({
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, usedPercent: 75 },
+          { ...weeklyWindow, usedPercent: 80 },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(mid, now, "gpt-5.4")).toBeUndefined();
+    expect(
+      softDrainingUsageWindow(mid, now, "gpt-5.4", { sessionPercent: 75, weeklyPercent: 95 })?.id,
+    ).toBe("five_hour");
+    expect(
+      softDrainingUsageWindow(mid, now, "gpt-5.4", { sessionPercent: 90, weeklyPercent: 80 })?.id,
+    ).toBe("seven_day");
+  });
+
+  it("ignores expired, spending-cap, and unknown windows", () => {
+    const ignored = provider({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, usedPercent: 99, resetsAt: "2026-09-03T11:30:00.000Z" },
+          { ...weeklyWindow, id: "monthly_spend", usedPercent: 99 },
+          { ...weeklyWindow, id: "other_unknown", scope: "unknown", usedPercent: 99 },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(ignored, now, "claude-opus-4-6")).toBeUndefined();
+  });
+
+  it("respects model scoping and returns the latest-ending draining window", () => {
+    const claude = provider({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, usedPercent: 60 },
+          { ...weeklyWindow, id: "seven_day_opus", usedPercent: 94 },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(claude, now, "claude-sonnet-4-6")).toBeUndefined();
+    expect(softDrainingUsageWindow(claude, now, null)).toBeUndefined();
+    expect(softDrainingUsageWindow(claude, now, "claude-opus-4-6")?.id).toBe("seven_day_opus");
+    expect(softDrainingUsageWindow(claude, now)?.id).toBe("seven_day_opus");
+  });
+
+  it("honors usageAllowed=true unless a newer soft-drain/exhaustion reading exists", () => {
+    const allowedNoNewer = provider({
+      usageLimits: {
+        checkedAt,
+        usageAllowed: true,
+        windows: [{ ...sessionWindow, usedPercent: 95 }],
+      },
+    });
+    expect(softDrainingUsageWindow(allowedNoNewer, now, "gpt-5.4")).toBeUndefined();
+
+    const allowedWithNewer = provider({
+      usageLimits: {
+        checkedAt: "2026-09-03T11:30:00.000Z",
+        accountReadAt: "2026-09-03T11:00:00.000Z",
+        usageAllowed: true,
+        windows: [{ ...sessionWindow, usedPercent: 90, observedAt: "2026-09-03T11:30:00.000Z" }],
+      },
+    });
+    expect(softDrainingUsageWindow(allowedWithNewer, now, "gpt-5.4")?.id).toBe("five_hour");
+  });
+
+  it("treats usageAllowed=false as draining even when percentages are below threshold", () => {
+    const blocked = provider({
+      usageLimits: {
+        checkedAt,
+        usageAllowed: false,
+        windows: [
+          { ...sessionWindow, usedPercent: 40 },
+          { ...weeklyWindow, usedPercent: 70 },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(blocked, now, "gpt-5.4")?.id).toBe("seven_day");
+  });
+
+  it("handles Cursor dual-pool fallback consistently with exhaustedUsageWindow", () => {
+    const autoDrainingOnly = provider({
+      driver: ProviderDriverKind.make("cursor"),
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, id: "autoPercentUsed", usedPercent: 95 },
+          { ...sessionWindow, id: "apiPercentUsed", usedPercent: 30 },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(autoDrainingOnly, now, "composer-2.5")).toBeUndefined();
+    expect(softDrainingUsageWindow(autoDrainingOnly, now, "claude-opus-4-6")).toBeUndefined();
+
+    const bothDraining = provider({
+      driver: ProviderDriverKind.make("cursor"),
+      usageLimits: {
+        checkedAt,
+        windows: [
+          {
+            ...sessionWindow,
+            id: "autoPercentUsed",
+            usedPercent: 95,
+            resetsAt: "2026-09-03T14:00:00.000Z",
+          },
+          {
+            ...sessionWindow,
+            id: "apiPercentUsed",
+            usedPercent: 92,
+            resetsAt: "2026-09-03T16:00:00.000Z",
+          },
+        ],
+      },
+    });
+    expect(softDrainingUsageWindow(bothDraining, now, "composer-2.5")?.id).toBe("autoPercentUsed");
+    expect(softDrainingUsageWindow(bothDraining, now, "claude-opus-4-6")?.id).toBe(
+      "apiPercentUsed",
+    );
+  });
+});
+
+describe("accountHeadroomPercent", () => {
+  const checkedAt = "2026-09-03T11:00:00.000Z";
+  const sessionWindow = {
+    id: "five_hour",
+    kind: "session" as const,
+    label: "Session",
+    windowDurationMins: 300,
+    resetsAt: "2026-09-03T14:00:00.000Z",
+  };
+  const weeklyWindow = {
+    id: "seven_day",
+    kind: "weekly" as const,
+    label: "Weekly",
+    windowDurationMins: 10_080,
+    resetsAt: "2026-09-08T12:00:00.000Z",
+  };
+
+  it("returns 100 when no live applicable windows are reported", () => {
+    expect(accountHeadroomPercent(undefined, now, "gpt-5.4")).toBe(100);
+    expect(accountHeadroomPercent(provider({}), now, "gpt-5.4")).toBe(100);
+    expect(
+      accountHeadroomPercent(
+        provider({
+          usageLimits: {
+            checkedAt,
+            windows: [
+              { ...sessionWindow, usedPercent: 90, resetsAt: "2026-09-03T11:30:00.000Z" },
+              { ...weeklyWindow, id: "individual", usedPercent: 95 },
+            ],
+          },
+        }),
+        now,
+        "gpt-5.4",
+      ),
+    ).toBe(100);
+  });
+
+  it("returns remaining headroom from the fullest live applicable window", () => {
+    const account = provider({
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, usedPercent: 35 },
+          { ...weeklyWindow, usedPercent: 72 },
+        ],
+      },
+    });
+    expect(accountHeadroomPercent(account, now, "gpt-5.4")).toBe(28);
+  });
+
+  it("returns 0 when usageAllowed is false or any applicable window is >= 100", () => {
+    expect(
+      accountHeadroomPercent(
+        provider({
+          usageLimits: {
+            checkedAt,
+            usageAllowed: false,
+            windows: [{ ...sessionWindow, usedPercent: 20 }],
+          },
+        }),
+        now,
+        "gpt-5.4",
+      ),
+    ).toBe(0);
+    expect(
+      accountHeadroomPercent(
+        provider({
+          usageLimits: {
+            checkedAt,
+            windows: [{ ...sessionWindow, usedPercent: 105 }],
+          },
+        }),
+        now,
+        "gpt-5.4",
+      ),
+    ).toBe(0);
+  });
+
+  it("scopes headroom to windows that apply to the requested model", () => {
+    const claude = provider({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      usageLimits: {
+        checkedAt,
+        windows: [
+          { ...sessionWindow, usedPercent: 25 },
+          { ...weeklyWindow, id: "seven_day_opus", usedPercent: 96 },
+        ],
+      },
+    });
+    expect(accountHeadroomPercent(claude, now, "claude-opus-4-6")).toBe(4);
+    expect(accountHeadroomPercent(claude, now, "claude-sonnet-4-6")).toBe(75);
+  });
+
+  it("does not return 0 when usageAllowed is false and every window has expired", () => {
+    const expired = provider({
+      usageLimits: {
+        checkedAt,
+        usageAllowed: false,
+        windows: [
+          {
+            ...sessionWindow,
+            usedPercent: 100,
+            resetsAt: "2026-09-03T11:30:00.000Z",
+          },
+        ],
+      },
+    });
+    expect(exhaustedUsageWindow(expired, now, "gpt-5.4")).toBeUndefined();
+    expect(softDrainingUsageWindow(expired, now, "gpt-5.4")).toBeUndefined();
+    expect(accountHeadroomPercent(expired, now, "gpt-5.4")).toBe(100);
+  });
+
+  it("ignores stale 100% readings predating accountReadAt when usageAllowed is true", () => {
+    const allowedAfterReset = provider({
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        accountReadAt: "2026-09-03T11:30:00.000Z",
+        usageAllowed: true,
+        windows: [
+          {
+            ...sessionWindow,
+            usedPercent: 100,
+            observedAt: "2026-09-03T11:00:00.000Z",
+          },
+          {
+            ...weeklyWindow,
+            usedPercent: 35,
+            observedAt: "2026-09-03T11:30:00.000Z",
+          },
+        ],
+      },
+    });
+    expect(exhaustedUsageWindow(allowedAfterReset, now, "gpt-5.4")).toBeUndefined();
+    expect(softDrainingUsageWindow(allowedAfterReset, now, "gpt-5.4")).toBeUndefined();
+    expect(accountHeadroomPercent(allowedAfterReset, now, "gpt-5.4")).toBe(65);
+
+    const onlyStaleExhausted = provider({
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        accountReadAt: "2026-09-03T11:30:00.000Z",
+        usageAllowed: true,
+        windows: [
+          {
+            ...sessionWindow,
+            usedPercent: 100,
+            exhaustedSince: "2026-09-03T11:00:00.000Z",
+          },
+        ],
+      },
+    });
+    expect(accountHeadroomPercent(onlyStaleExhausted, now, "gpt-5.4")).toBe(100);
+  });
+});
+
+describe("compareAccountsByHeadroom", () => {
+  const checkedAt = "2026-09-03T11:00:00.000Z";
+  const makeAccount = (
+    id: string,
+    opts: {
+      readonly sessionUsed: number;
+      readonly weeklyUsed?: number;
+      readonly weeklyResetsAt?: string;
+    },
+  ) =>
+    provider({
+      instanceId: ProviderInstanceId.make(id),
+      usageLimits: {
+        checkedAt,
+        windows: [
+          {
+            id: "five_hour",
+            kind: "session",
+            label: "Session",
+            usedPercent: opts.sessionUsed,
+            windowDurationMins: 300,
+            resetsAt: "2026-09-03T14:00:00.000Z",
+          },
+          ...(opts.weeklyUsed === undefined
+            ? []
+            : [
+                {
+                  id: "seven_day",
+                  kind: "weekly" as const,
+                  label: "Weekly",
+                  usedPercent: opts.weeklyUsed,
+                  windowDurationMins: 10_080,
+                  resetsAt: opts.weeklyResetsAt ?? "2026-09-08T12:00:00.000Z",
+                },
+              ]),
+        ],
+      },
+    });
+
+  it("strictly prefers non-soft-draining accounts over soft-draining accounts", () => {
+    const healthyBusy = {
+      provider: makeAccount("healthy", { sessionUsed: 85 }),
+      activeRuns: 10,
+      model: "gpt-5.4",
+    };
+    const drainingIdle = {
+      provider: makeAccount("draining", { sessionUsed: 88 }),
+      activeRuns: 0,
+      model: "gpt-5.4",
+    };
+    expect(compareAccountsByHeadroom(healthyBusy, drainingIdle, now)).toBeLessThan(0);
+    expect(compareAccountsByHeadroom(drainingIdle, healthyBusy, now)).toBeGreaterThan(0);
+  });
+
+  it("prefers higher effective headroom and penalizes active concurrent runs by 6 per run", () => {
+    // Account A: 80% headroom - 3 * 6 = 62 effective
+    // Account B: 70% headroom - 0 * 6 = 70 effective -> B wins
+    const busyA = {
+      provider: makeAccount("a", { sessionUsed: 20 }),
+      activeRuns: 3,
+      model: "gpt-5.4",
+    };
+    const idleB = {
+      provider: makeAccount("b", { sessionUsed: 30 }),
+      activeRuns: 0,
+      model: "gpt-5.4",
+    };
+    expect(compareAccountsByHeadroom(busyA, idleB, now)).toBeGreaterThan(0);
+    expect(compareAccountsByHeadroom(idleB, busyA, now)).toBeLessThan(0);
+  });
+
+  it("breaks effective-headroom ties by soonest weekly reset", () => {
+    const sooner = {
+      provider: makeAccount("sooner", {
+        sessionUsed: 40,
+        weeklyUsed: 40,
+        weeklyResetsAt: "2026-09-05T12:00:00.000Z",
+      }),
+      activeRuns: 1,
+      model: "gpt-5.4",
+    };
+    const later = {
+      provider: makeAccount("later", {
+        sessionUsed: 40,
+        weeklyUsed: 40,
+        weeklyResetsAt: "2026-09-09T12:00:00.000Z",
+      }),
+      activeRuns: 1,
+      model: "gpt-5.4",
+    };
+    const noReset = {
+      provider: makeAccount("no-reset", { sessionUsed: 40 }),
+      activeRuns: 1,
+      model: "gpt-5.4",
+    };
+    expect(compareAccountsByHeadroom(sooner, later, now)).toBeLessThan(0);
+    expect(compareAccountsByHeadroom(later, sooner, now)).toBeGreaterThan(0);
+    expect(compareAccountsByHeadroom(later, noReset, now)).toBeLessThan(0);
+    expect(compareAccountsByHeadroom(noReset, noReset, now)).toBe(0);
+  });
+
+  it("spreads accounts in expected priority order when sorting a fleet", () => {
+    const fleet = [
+      { provider: makeAccount("draining", { sessionUsed: 90 }), activeRuns: 0, model: "gpt-5.4" },
+      {
+        provider: makeAccount("busy-high", {
+          sessionUsed: 20,
+          weeklyUsed: 20,
+          weeklyResetsAt: "2026-09-09T12:00:00.000Z",
+        }),
+        activeRuns: 4, // 80 - 24 = 56
+        model: "gpt-5.4",
+      },
+      {
+        provider: makeAccount("tie-later", {
+          sessionUsed: 30,
+          weeklyUsed: 30,
+          weeklyResetsAt: "2026-09-08T12:00:00.000Z",
+        }),
+        activeRuns: 0, // 70
+        model: "gpt-5.4",
+      },
+      {
+        provider: makeAccount("tie-sooner", {
+          sessionUsed: 30,
+          weeklyUsed: 30,
+          weeklyResetsAt: "2026-09-04T12:00:00.000Z",
+        }),
+        activeRuns: 0, // 70, resets sooner
+        model: "gpt-5.4",
+      },
+    ];
+    const sorted = fleet
+      .toSorted((a, b) => compareAccountsByHeadroom(a, b, now))
+      .map((entry) => entry.provider.instanceId);
+    expect(sorted).toEqual(["tie-sooner", "tie-later", "busy-high", "draining"]);
   });
 });

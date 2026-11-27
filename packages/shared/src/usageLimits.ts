@@ -254,6 +254,168 @@ export function exhaustedUsageWindow(
   );
 }
 
+/** Default soft-drain threshold (%) for non-weekly / short session windows (e.g. 5-hour). */
+export const DEFAULT_SOFT_DRAIN_5H_PERCENT = 88;
+/** Default soft-drain threshold (%) for weekly quota windows. */
+export const DEFAULT_SOFT_DRAIN_WEEKLY_PERCENT = 92;
+
+/** Headroom penalty applied per active concurrent run on an account to avoid dogpiling. */
+const ACTIVE_RUN_HEADROOM_PENALTY = 6;
+
+function liveRateWindows(provider: ServerProvider, now: number) {
+  const limits = provider.usageLimits;
+  if (limits === undefined) return null;
+  const end = (window: ServerProviderUsageWindow) => usageWindowLimitEnd(limits, window);
+  const live = limits.windows.filter((window) => {
+    const scope = usageWindowScope(provider.driver, window);
+    return scope !== "spending-cap" && scope !== "unknown" && end(window) > now;
+  });
+  return { limits, live, end };
+}
+
+/**
+ * First live, applicable usage window at or above the soft-drain threshold (88% session / 92% weekly).
+ * Returns `undefined` while `usageAllowed === true` with no newer reading.
+ */
+export function softDrainingUsageWindow(
+  provider: ServerProvider | undefined,
+  now: number,
+  model?: string | null,
+  thresholds?: {
+    readonly sessionPercent?: number;
+    readonly weeklyPercent?: number;
+  },
+): ServerProviderUsageWindow | undefined {
+  if (provider === undefined) return undefined;
+  const rated = liveRateWindows(provider, now);
+  if (rated === null) return undefined;
+  const { limits, live, end } = rated;
+  const sessionPercent = thresholds?.sessionPercent ?? DEFAULT_SOFT_DRAIN_5H_PERCENT;
+  const weeklyPercent = thresholds?.weeklyPercent ?? DEFAULT_SOFT_DRAIN_WEEKLY_PERCENT;
+  const exceedsThreshold = (window: ServerProviderUsageWindow) =>
+    window.usedPercent >= (window.kind === "weekly" ? weeklyPercent : sessionPercent);
+  const accountWide = (window: ServerProviderUsageWindow) =>
+    usageWindowAppliesToModel(provider, window, null);
+  const overThreshold = live.filter(exceedsThreshold);
+  let windows: ReadonlyArray<ServerProviderUsageWindow>;
+  if (limits.usageAllowed === true) {
+    const allowedAt = Date.parse(limits.accountReadAt ?? limits.checkedAt);
+    windows = overThreshold.filter(
+      (window) => Date.parse(window.exhaustedSince ?? window.observedAt ?? "") > allowedAt,
+    );
+  } else if (limits.usageAllowed === false && !overThreshold.some(accountWide)) {
+    const held = live.filter(accountWide);
+    const fullest = Math.max(...held.map((window) => window.usedPercent));
+    windows = [...overThreshold, ...held.filter((window) => window.usedPercent === fullest)];
+  } else {
+    windows = overThreshold;
+  }
+  if (model === undefined) return latestEnding(windows, end);
+  if (provider.driver === "cursor") {
+    const api = windows.find((window) => window.id === "apiPercentUsed");
+    const auto = windows.find((window) => window.id === "autoPercentUsed");
+    const pooled =
+      model !== null && !usesCursorAutoPool(model)
+        ? api
+        : auto && api && (end(auto) < end(api) ? auto : api);
+    return latestEnding(
+      windows.filter((window) =>
+        window === auto || window === api
+          ? window === pooled
+          : usageWindowAppliesToModel(provider, window, model),
+      ),
+      end,
+    );
+  }
+  return latestEnding(
+    windows.filter((window) => usageWindowAppliesToModel(provider, window, model)),
+    end,
+  );
+}
+
+/**
+ * Remaining quota headroom (`0..100`) across all live applicable usage windows for `model`.
+ * Returns `100` if no live applicable windows are reported, and `0` if `usageAllowed === false`
+ * or any live applicable window is `>= 100`.
+ */
+export function accountHeadroomPercent(
+  provider: ServerProvider | undefined,
+  now: number,
+  model?: string | null,
+): number {
+  if (provider === undefined) return 100;
+  const rated = liveRateWindows(provider, now);
+  if (rated === null) return 100;
+  const { limits, live } = rated;
+  const applicable =
+    model === undefined
+      ? live
+      : live.filter((window) => usageWindowAppliesToModel(provider, window, model));
+  if (applicable.length === 0) return 100;
+  const accountWide = (window: ServerProviderUsageWindow) =>
+    usageWindowAppliesToModel(provider, window, null);
+  if (limits.usageAllowed === false && live.some(accountWide)) return 0;
+  const allowedAt =
+    limits.usageAllowed === true ? Date.parse(limits.accountReadAt ?? limits.checkedAt) : null;
+  const effectiveApplicable =
+    allowedAt === null
+      ? applicable
+      : applicable.filter(
+          (window) =>
+            window.usedPercent < 100 ||
+            Date.parse(window.exhaustedSince ?? window.observedAt ?? "") > allowedAt,
+        );
+  if (effectiveApplicable.length === 0) return 100;
+  let usedPercents: ReadonlyArray<number>;
+  if (
+    provider.driver === "cursor" &&
+    model !== undefined &&
+    (model === null || usesCursorAutoPool(model))
+  ) {
+    const auto = effectiveApplicable.find((window) => window.id === "autoPercentUsed");
+    const api = effectiveApplicable.find((window) => window.id === "apiPercentUsed");
+    if (auto !== undefined && api !== undefined) {
+      usedPercents = [
+        Math.min(auto.usedPercent, api.usedPercent),
+        ...effectiveApplicable
+          .filter((window) => window !== auto && window !== api)
+          .map((window) => window.usedPercent),
+      ];
+    } else {
+      usedPercents = effectiveApplicable.map((window) => window.usedPercent);
+    }
+  } else {
+    usedPercents = effectiveApplicable.map((window) => window.usedPercent);
+  }
+  const maxUsedPercent = Math.max(...usedPercents);
+  return Math.max(0, Math.min(100, 100 - maxUsedPercent));
+}
+
+/**
+ * Ranks non-soft-draining accounts first, then highest effective headroom
+ * (`accountHeadroomPercent - activeRuns * 6`), breaking ties by soonest weekly reset.
+ */
+export function compareAccountsByHeadroom(
+  a: { readonly provider: ServerProvider; readonly activeRuns?: number; readonly model: string },
+  b: { readonly provider: ServerProvider; readonly activeRuns?: number; readonly model: string },
+  now: number,
+): number {
+  const aDraining = softDrainingUsageWindow(a.provider, now, a.model) !== undefined;
+  const bDraining = softDrainingUsageWindow(b.provider, now, b.model) !== undefined;
+  if (aDraining !== bDraining) return aDraining ? 1 : -1;
+  const aEffectiveHeadroom =
+    accountHeadroomPercent(a.provider, now, a.model) -
+    Math.max(0, a.activeRuns ?? 0) * ACTIVE_RUN_HEADROOM_PENALTY;
+  const bEffectiveHeadroom =
+    accountHeadroomPercent(b.provider, now, b.model) -
+    Math.max(0, b.activeRuns ?? 0) * ACTIVE_RUN_HEADROOM_PENALTY;
+  if (aEffectiveHeadroom !== bEffectiveHeadroom) return bEffectiveHeadroom - aEffectiveHeadroom;
+  const aReset = nextWeeklyResetMs(a.provider, now, a.model) ?? Infinity;
+  const bReset = nextWeeklyResetMs(b.provider, now, b.model) ?? Infinity;
+  if (aReset === bReset) return 0;
+  return aReset - bReset;
+}
+
 /** Codex's spend control: the most of its prepaid credits a workspace member may spend each month. */
 const CODEX_CREDIT_LIMIT_WINDOW_ID = "individual";
 

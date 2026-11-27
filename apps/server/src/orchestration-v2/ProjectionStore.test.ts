@@ -8930,4 +8930,82 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }
     }),
   );
+
+  it.effect(
+    "remembers silent usage_limit refusals durably without visible error items and honors reset, hold, scope, and lifts",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const refusedAt = DateTime.makeUnsafe("2026-11-27T12:00:00.000Z");
+        const resetAt = DateTime.makeUnsafe("2026-11-27T14:00:00.000Z");
+        const coversScope = () => true;
+        const primary = ProviderInstanceId.make("codex_silent_primary");
+        const scoped = ProviderInstanceId.make("claude_silent_scoped");
+        const appCapped = ProviderInstanceId.make("codex_silent_app_cap");
+
+        yield* store.recordUsageLimitRefusal({
+          providerInstanceId: primary,
+          refusedAt,
+          resetAt: DateTime.formatIso(resetAt),
+          code: "usage_limit_reached",
+        });
+        yield* store.recordUsageLimitRefusal({
+          providerInstanceId: scoped,
+          refusedAt,
+          modelScope: "opus",
+        });
+        yield* store.recordUsageLimitRefusal({
+          providerInstanceId: appCapped,
+          refusedAt,
+          resetAt: DateTime.formatIso(resetAt),
+          code: "chatgpt_app_cap",
+        });
+
+        const active = yield* store.getUsageLimitedProviderInstances(
+          DateTime.add(refusedAt, { minutes: 1 }),
+          coversScope,
+        );
+        assert.deepEqual(active.get(primary), [
+          {
+            resetAt: DateTime.formatIso(resetAt),
+            refusedAt: DateTime.formatIso(refusedAt),
+          },
+        ]);
+        assert.deepEqual(active.get(scoped), [
+          {
+            resetAt: null,
+            refusedAt: DateTime.formatIso(refusedAt),
+            modelScope: "opus",
+          },
+        ]);
+        assert.deepEqual(active.get(appCapped), [
+          {
+            resetAt: DateTime.formatIso(resetAt),
+            refusedAt: DateTime.formatIso(refusedAt),
+            appCap: true,
+          },
+        ]);
+
+        // Once resetAt passes, explicit-reset refusals expire while the unknown-reset hold stays
+        // until usageHoldMs(undefined) elapses.
+        const afterReset = yield* store.getUsageLimitedProviderInstances(resetAt, coversScope);
+        assert.isFalse(afterReset.has(primary));
+        assert.isFalse(afterReset.has(appCapped));
+        assert.isTrue(afterReset.has(scoped));
+
+        const holdEnd = DateTime.add(refusedAt, { milliseconds: usageHoldMs(undefined) });
+        assert.isFalse(
+          (yield* store.getUsageLimitedProviderInstances(holdEnd, coversScope)).has(scoped),
+        );
+
+        // Lifting usage-limit holds clears prior silent refusals too.
+        yield* store.liftUsageLimitHolds(primary, DateTime.add(refusedAt, { seconds: 1 }));
+        assert.isFalse(
+          (yield* store.getUsageLimitedProviderInstances(
+            DateTime.add(refusedAt, { minutes: 1 }),
+            coversScope,
+          )).has(primary),
+        );
+      }),
+  );
 });

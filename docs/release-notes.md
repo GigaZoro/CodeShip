@@ -1,3 +1,8 @@
+## 2026-11-27 — Transparent in-run usage-limit failover and headroom helpers
+
+- When a provider session or thread start refuses immediately with a usage limit and automatic failover is enabled, turns now transparently switch to another eligible account (up to two alternates), durably record refused accounts across retries and restarts without emitting a visible error item, preserve concurrent thread edits, and fall back cleanly to the original account's usage-limit error if no alternate can carry the conversation.
+- Added shared soft-drain and quota headroom helper utilities (`softDrainingUsageWindow`, `accountHeadroomPercent`, and `compareAccountsByHeadroom`) in `@t3tools/shared` for upcoming headroom-aware account routing.
+
 ## 2026-11-27 — One notice above the composer at a time
 
 - A thread shows its most urgent notice in a single line above the composer instead of stacking every notice. What stops sending comes first, then what needs you, failures, usage-limit recovery and information; equally urgent notices show the newest first.

@@ -2738,4 +2738,63 @@ describe("MCP sign-ins in the layer", () => {
       );
     }),
   );
+
+  it.effect(
+    "skips an account whose usage_limit refusal was recorded silently in SQLite without a visible error item",
+    () =>
+      Effect.gen(function* () {
+        const dbLayer = ProjectionStore.layer.pipe(
+          Layer.provideMerge(SqlitePersistence.layerMemory),
+        );
+        const routingLayer = AccountRouting.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              dbLayer,
+              ServerSettings.layerTest(settings([primary, second, third])),
+              Layer.mock(ProviderMcp.ProviderMcp)({
+                discover: () => Effect.succeedSome([]),
+                listLoaded: () => Effect.succeedSome([]),
+              }),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([
+                  provider(primary),
+                  provider(second),
+                  provider(third),
+                ]),
+              }),
+            ),
+          ),
+        );
+        const fullLayer = Layer.mergeAll(dbLayer, routingLayer);
+        const result = yield* Effect.gen(function* () {
+          const store = yield* ProjectionStore.ProjectionStoreV2;
+          const routing = yield* AccountRouting.AccountRouting;
+          const refusedAt = yield* DateTime.now;
+          yield* store.recordUsageLimitRefusal({
+            providerInstanceId: primary,
+            refusedAt,
+            resetAt: DateTime.formatIso(DateTime.add(refusedAt, { hours: 2 })),
+            code: "usage_limit_reached",
+          });
+          const withRoom = yield* routing.accountsWithRoom({
+            driver: claude,
+            projectId,
+            model: "claude-opus-5-5",
+          });
+          const routed = yield* routing.route({
+            selection: auto,
+            projectId,
+            currentInstanceId: null,
+            started: false,
+          });
+          return {
+            withRoom: withRoom.map((candidate) => candidate.instanceId),
+            routed: routed.instanceId,
+          };
+        }).pipe(Effect.provide(fullLayer));
+
+        assert.deepEqual(result.withRoom, [second, third]);
+        assert.equal(result.routed, second);
+      }),
+  );
 });

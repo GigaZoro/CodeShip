@@ -218,6 +218,7 @@ it.effect(
           getRunTurnItemIdentities: () => Effect.die("unused getRunTurnItemIdentities"),
           getRunsWithLostBackgroundWork: () => Effect.die("unused getRunsWithLostBackgroundWork"),
           liftUsageLimitHolds: () => Effect.die("unused liftUsageLimitHolds"),
+          recordUsageLimitRefusal: () => Effect.die("unused recordUsageLimitRefusal"),
           getScheduledTaskRecoveryState: () => Effect.die("unused"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
           getSignedOutCandidates: () => Effect.die("unused getSignedOutCandidates"),
