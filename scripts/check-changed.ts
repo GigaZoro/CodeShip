@@ -1350,27 +1350,26 @@ const gitNames = (root: string, objects: string, args: ReadonlyArray<string>) =>
     (stdout) => Effect.try({ try: () => gitPaths(stdout), catch: String }),
   );
 
-// Cached passes key on the files tests read, which leave out modes. Git's modes leave out the
-// execute bits of files it trusts the index for, of symlinks it checks out as files, and of the
-// files in embedded repositories, so also key on HEAD, working-tree types and modes, and the
-// on-disk execute bits and access of every file outside .git and installed node_modules.
+// Cached passes key on the files tests read, which leave out modes, link targets and gitlink
+// commits. Git's modes leave out the execute bits of files it trusts the index for, of symlinks it
+// checks out as files, and of files in embedded repositories, so also key on the on-disk execute
+// bits and access of every file outside .git and installed node_modules.
 export const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (input: {
   readonly root: string;
   readonly objects: string;
-  readonly head: string;
   readonly tree: string;
 }) {
-  const { root, objects, head, tree } = input;
+  const { root, objects, tree } = input;
   const inRoot = (file: string) => NodePath.join(root, file);
   const names = (args: ReadonlyArray<string>) => gitNames(root, objects, args);
-  const hash = NodeCrypto.createHash("sha256").update(`${head}\0`);
-  const fields = yield* names(["diff-tree", "-r", "-z", "--no-renames", head, tree]);
-  for (let index = 0; index + 1 < fields.length; index += 2) {
-    const [from, to] = fields[index]!.slice(1).split(" ");
-    const modeChanged = from !== "000000" && to !== "000000" && from !== to;
-    if (modeChanged || (from === "000000" && to !== "100644")) {
-      hash.update(`${to}\0${fields[index + 1]}\0`);
-    }
+  const hash = NodeCrypto.createHash("sha256");
+  for (const entry of yield* names(["ls-tree", "-r", "-z", tree])) {
+    const tab = entry.indexOf("\t");
+    if (tab < 0) continue;
+    const [mode, , object] = entry.slice(0, tab).split(" ");
+    if (mode === "100644") continue;
+    const content = mode === "120000" || mode === "160000" ? object : "";
+    hash.update(`${mode}\0${content}\0${entry.slice(tab + 1)}\0`);
   }
   // Windows files carry no execute bits.
   if ((yield* HostProcess.Platform) === "win32") return hash.digest("hex");
@@ -1780,7 +1779,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const installed = () => Effect.try({ try: () => installFingerprint(root), catch: String });
   const testInputs = Effect.fn("checkChanged.testInputs")(function* (head: string, git: string) {
     const install = yield* installed();
-    const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+    const state = yield* checkoutState({ root, objects, tree: yield* checkedTree });
     const { hash, bytes: sources } = yield* sourceFingerprint(head);
     const ignored = yield* addFiles(
       NodeCrypto.createHash("sha256"),
@@ -2066,7 +2065,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           const { install, state } = started;
           const cache = path.join(temp, "cache");
           const { finish } = yield* stageTestCache(
-            yield* testCachePartition(path.join(slotDirectory, "tests"), head),
+            yield* testCachePartition(path.join(slotDirectory, "tests"), install),
             cache,
             Effect.gen(function* () {
               const current = yield* gitCommit(root, "HEAD");
@@ -2081,7 +2080,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           const groups = Math.max(1, Math.floor(slots / 3));
           const workers = Math.floor(slots / groups);
           const env = {
-            ...changedTestRequestEnv(request, testRuntime, workers, cache, state, install),
+            ...changedTestRequestEnv(request, testRuntime, workers, cache, state, head, install),
             ...hostCapabilitiesEnv(hostCapabilities),
             ...tempDirEnv(stepTmp),
           };

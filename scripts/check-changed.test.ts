@@ -569,14 +569,14 @@ describe("check:changed", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("marks the HEAD's test cache used and removes those unused for three days", () =>
+  it.effect("marks the install's test cache used and removes those unused for three days", () =>
     Effect.gen(function* () {
       const partitions = NodePath.join(yield* slotDirectory, "tests");
       const day = 24 * 60 * 60 * 1000;
       const now = Date.UTC(2026, 0, 10);
       yield* TestClock.setTime(now);
       for (const [entry, age] of [
-        ["head", 5 * day],
+        ["install.0", 5 * day],
         ["recent", 2 * day],
         ["unused", 4 * day],
       ] as const) {
@@ -584,17 +584,40 @@ describe("check:changed", () => {
         const used = (now - age) / 1000;
         NodeFS.utimesSync(NodePath.join(partitions, entry), used, used);
       }
-      const current = yield* testCachePartition(partitions, "head");
-      assert.strictEqual(current, NodePath.join(partitions, "head"));
-      assert.deepStrictEqual(NodeFS.readdirSync(partitions).toSorted(), ["head", "recent"]);
-      assert.strictEqual(NodeFS.statSync(NodePath.join(partitions, "head")).mtimeMs, now);
+      const current = yield* testCachePartition(partitions, "install");
+      assert.strictEqual(current, NodePath.join(partitions, "install.0"));
+      assert.deepStrictEqual(NodeFS.readdirSync(partitions).toSorted(), ["install.0", "recent"]);
+      assert.strictEqual(NodeFS.statSync(current!).mtimeMs, now);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("marks its HEAD's test cache used only after another run's removal of it ends", () =>
+  it.effect("starts the install's next test cache once its newest reaches the size limit", () =>
     Effect.gen(function* () {
       const partitions = NodePath.join(yield* slotDirectory, "tests");
-      const partition = NodePath.join(partitions, "head");
+      for (const [entry, bytes] of [
+        ["install.0", 64],
+        ["install.1", 24],
+        ["other.7", 0],
+      ] as const) {
+        NodeFS.mkdirSync(NodePath.join(partitions, entry, "v18"), { recursive: true });
+        NodeFS.writeFileSync(
+          NodePath.join(partitions, entry, "v18", "cache.db"),
+          "x".repeat(bytes),
+        );
+      }
+      const below = yield* testCachePartition(partitions, "install", 32);
+      const full = yield* testCachePartition(partitions, "install", 24);
+      assert.deepStrictEqual(
+        [below, full],
+        [NodePath.join(partitions, "install.1"), NodePath.join(partitions, "install.2")],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("marks its install's test cache used only after another run's removal of it ends", () =>
+    Effect.gen(function* () {
+      const partitions = NodePath.join(yield* slotDirectory, "tests");
+      const partition = NodePath.join(partitions, "install.0");
       const now = Date.UTC(2026, 0, 10);
       yield* TestClock.setTime(now);
       NodeFS.mkdirSync(NodePath.join(partition, "v18"), { recursive: true });
@@ -603,7 +626,7 @@ describe("check:changed", () => {
       // Another run's cleanup holds the lock and has found the partition unused.
       using cleanup = new NodeSqlite.DatabaseSync(`${partitions}.sqlite`);
       cleanup.exec("BEGIN EXCLUSIVE");
-      const run = yield* testCachePartition(partitions, "head").pipe(Effect.forkChild);
+      const run = yield* testCachePartition(partitions, "install").pipe(Effect.forkChild);
       yield* TestClock.adjust("1 second");
       NodeFS.rmSync(partition, { recursive: true });
       cleanup.exec("ROLLBACK");
@@ -619,7 +642,7 @@ describe("check:changed", () => {
       NodeFS.mkdirSync(partitions, { recursive: true });
       using stalled = new NodeSqlite.DatabaseSync(`${partitions}.sqlite`);
       stalled.exec("BEGIN EXCLUSIVE");
-      const run = yield* testCachePartition(partitions, "head").pipe(Effect.forkChild);
+      const run = yield* testCachePartition(partitions, "install").pipe(Effect.forkChild);
       yield* TestClock.adjust("1 minute");
       assert.isUndefined(yield* Fiber.join(run));
       stalled.exec("ROLLBACK");
@@ -630,8 +653,8 @@ describe("check:changed", () => {
     Effect.gen(function* () {
       const partitions = NodePath.join(yield* slotDirectory, "tests");
       NodeFS.mkdirSync(partitions, { recursive: true });
-      NodeFS.writeFileSync(NodePath.join(partitions, "head"), "");
-      assert.isUndefined(yield* testCachePartition(partitions, "head"));
+      NodeFS.writeFileSync(NodePath.join(partitions, "install.0"), "");
+      assert.isUndefined(yield* testCachePartition(partitions, "install"));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -3087,15 +3110,42 @@ const stateChangesWithMode = (
     git("config", "core.fileMode", String(fileMode));
     const objects = NodePath.join(root, ".git", "checked-objects");
     NodeFS.mkdirSync(objects);
-    const head = git("rev-parse", "HEAD");
     const state = Effect.suspend(() =>
-      checkoutState({ root, objects, head, tree: workingTree(root, objects) }),
+      checkoutState({ root, objects, tree: workingTree(root, objects) }),
     ).pipe(Effect.provide(NodeServices.layer));
     const before = yield* state;
     expect(yield* state).toBe(before);
     NodeFS.chmodSync(tool, mode);
     expect(yield* state).not.toBe(before);
   });
+
+// A rebase that leaves a group's inputs alone moves HEAD, so the state keys on the tree instead.
+it.effect("keys the checkout state on the checked tree's link targets, not on its commit", () =>
+  Effect.gen(function* () {
+    isolateGit();
+    const project = yield* Effect.acquireRelease(
+      Effect.sync(() => fixture({})),
+      (project) => Effect.sync(() => project[Symbol.dispose]()),
+    );
+    const { git, root, write } = project;
+    // Git checks a symlink out as a file holding its target where core.symlinks is false.
+    git("config", "core.symlinks", "false");
+    write("link", "first-target");
+    const blob = git("hash-object", "-w", "link");
+    git("update-index", "--add", "--cacheinfo", `120000,${blob},link`);
+    git("commit", "-m", "link");
+    const objects = NodePath.join(root, ".git", "checked-objects");
+    NodeFS.mkdirSync(objects);
+    const state = Effect.suspend(() =>
+      checkoutState({ root, objects, tree: workingTree(root, objects) }),
+    ).pipe(Effect.provide(NodeServices.layer));
+    const before = yield* state;
+    git("commit", "--allow-empty", "-m", "same tree");
+    expect(yield* state).toBe(before);
+    write("link", "second-target");
+    expect(yield* state).not.toBe(before);
+  }),
+);
 
 // Git for Windows records no executable bit.
 describe.skipIf(isWindowsHost)("checkoutState", () => {
@@ -3393,18 +3443,25 @@ it("passes kept provider variables to every test", () => {
   expect(result.status, result.stdout + result.stderr).toBe(0);
 });
 
-it("discards test results when HEAD moves to a different commit with the same tree", () => {
+it("discards test results recorded while HEAD moved, and replays them at a commit that leaves their inputs alone", () => {
   using project = launcherFixture();
   project.write("fixture.test.ts", `import { it } from "vite-plus/test"; it("passes", () => {});`);
 
   const first = project.run("", "", project.source, [], { MOVE_HEAD: "1" });
   expect(first.status, first.stdout + first.stderr).toBe(1);
   expect(first.stdout).toContain("FAIL  test (1 files)");
+  expect(summaryOf(first.stdout)).toContain("HEAD, which moved from");
   const repeat = project.run();
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(0);
   expect(repeat.stdout).toContain("pass  test (1 files)");
   expect(repeat.stdout).not.toContain("cache hit, replaying");
-  expect(summaryOf(first.stdout)).toContain("HEAD, which moved from");
+  // As a rebase onto a commit that changed a file the test does not read.
+  project.write(project.source, "export const value = 2;\n");
+  project.git("add", project.source);
+  project.git("commit", "-m", "unread change");
+  const rebased = project.run();
+  expect(rebased.status, rebased.stdout + rebased.stderr).toBe(0);
+  expect(rebased.stdout).toContain("cache hit, replaying");
 });
 
 it("reports failures from every selected test group", () => {
