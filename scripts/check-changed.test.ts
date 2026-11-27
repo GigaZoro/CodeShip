@@ -704,7 +704,13 @@ describe("check:changed", () => {
               return { ok: true, output: "" };
             }),
         });
-        const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: yield* slotDirectory };
+        const directory = yield* slotDirectory;
+        // A marker's journal with no database before it in the listing: no run may open it.
+        NodeFS.writeFileSync(
+          NodePath.join(directory, "landing-wait-0.sqlite-journal"),
+          Buffer.alloc(512, 0xff),
+        );
+        const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory };
         const holder = yield* runSteps([step("holder", 3)], options).pipe(Effect.forkChild);
         yield* TestClock.adjust("100 millis");
         const earlier = yield* runSteps([step("earlier", 1)], options).pipe(Effect.forkChild);
