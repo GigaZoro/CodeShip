@@ -159,8 +159,8 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
   });
 
   // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds a marker file's
-  // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the marker with
-  // its process, so a crashed landing blocks nobody.
+  // transaction from its first take until `close`; other runs start no step meanwhile, so its load-sensitive
+  // tests get the machine. The OS drops the marker with its process, so a crashed landing blocks nobody.
   const markerPrefix = "landing-wait-";
   let marker: NodeSqlite.DatabaseSync | undefined;
   const markLanding = () => {
@@ -171,7 +171,8 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
     marker.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
   };
   const unmarkLanding = () => {
-    marker?.close();
+    if (!marker) return;
+    marker.close();
     marker = undefined;
     NodeFS.rmSync(NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`), {
       force: true,
@@ -179,7 +180,8 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
   };
   const landingWaits = () =>
     NodeFS.readdirSync(directory)
-      .filter((name) => name.startsWith(markerPrefix))
+      // A held marker's -journal file is not a database.
+      .filter((name) => /^landing-wait-\d+\.sqlite$/.test(name))
       .some((name) => {
         const file = NodePath.join(directory, name);
         const db = new NodeSqlite.DatabaseSync(file);
@@ -226,6 +228,7 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
 
   /** Waits for a free slot, then holds as many free ones as it can, up to `max`, until the scope closes. */
   const take = Effect.fnUntraced(function* (max: number) {
+    yield* Effect.try({ try: markLanding, catch: String });
     for (;;) {
       const signal = freed;
       const held = yield* Effect.uninterruptible(
@@ -235,11 +238,7 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
           ),
         ),
       );
-      if (held.length > 0) {
-        unmarkLanding();
-        return held.length;
-      }
-      yield* Effect.try({ try: markLanding, catch: String });
+      if (held.length > 0) return held.length;
       if (holding === 0 && !announced) {
         announced = true;
         yield* Console.log(
@@ -252,7 +251,7 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
       });
     }
   });
-  return { take };
+  return { take, close: unmarkLanding };
 };
 
 export type Outcome = "pass" | "FAIL" | "TIMEOUT" | "STOPPED";
@@ -318,7 +317,7 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
     readonly timeoutSeconds: number;
     // An existing directory holding the machine's budget slots; every run given the same one shares them.
     readonly slotDirectory: string;
-    // Set for the run that holds main's landing turn: it gets the next free slots ahead of other runs,
+    // Set for the run that holds main's landing turn: other runs start no step until it ends,
     // and its first failing step stops the rest.
     readonly landing?: boolean;
   },
@@ -397,7 +396,7 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
       return step.serial ? serial.withPermit(limited) : limited;
     },
     { concurrency: "unbounded" },
-  );
+  ).pipe(Effect.ensuring(Effect.sync(budget.close)));
 });
 
 const CacheEntry = Schema.fromJsonString(
