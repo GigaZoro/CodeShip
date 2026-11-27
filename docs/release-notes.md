@@ -1,3 +1,8 @@
+## 2026-11-27 — Faster landing-turn tests and release-notes-only changes
+
+- Maintainers: the landing-turn tests now run as six files in parallel, so their `node --test` step takes about a minute instead of five, within the check budget's free slots. A new lint rule keeps each `.github/scripts` test file under 1,500 lines.
+- A change to `docs/release-notes.md` no longer marks the web app affected, so `vp run check:changed` and CI skip the web and scripts typechecks it never needed.
+
 ## 2026-11-27 — Provider status and quota warnings read the same everywhere
 
 - Quota bars turn amber at 25% left and red at 10% left in the thread details, the sidebar and the mobile usage screen alike, and the home-screen widgets turn red at the same 10%.
