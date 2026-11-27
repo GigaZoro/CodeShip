@@ -18,9 +18,11 @@ export function materializeReplayTranscriptRuntimeInstructions(
         if (turnStart === undefined) return entry;
         const { frame, params, input } = turnStart;
         const instructions = { type: "text", text: museInstructions(params, runtime.model) };
+        const rest =
+          promptPartText(input[0])?.startsWith("<runtime_info>") === true ? input.slice(1) : input;
         return {
           ...entry,
-          frame: { ...frame, params: { ...params, input: [instructions, ...input] } },
+          frame: { ...frame, params: { ...params, input: [instructions, ...rest] } },
         };
       }),
     };

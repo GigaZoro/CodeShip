@@ -1534,7 +1534,7 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
     runtimePolicy,
   });
   const now = yield* DateTime.now;
-  const startTurn = (ordinal: number, continuation: boolean) =>
+  const startTurn = (ordinal: number, continuation: boolean, messageId?: MessageId) =>
     session.startTurn({
       appThread: {
         createdBy: "user",
@@ -1570,7 +1570,7 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
         ...(continuation
           ? { createdBy: "agent" as const, creationSource: "provider" as const }
           : { createdBy: "user" as const, creationSource: "web" as const }),
-        messageId: MessageId.make(`message-antigravity-wake-${ordinal}`),
+        messageId: messageId ?? MessageId.make(`message-antigravity-wake-${ordinal}`),
         text: "chart the throughput",
         attachments: [],
       },
@@ -1644,7 +1644,7 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
         { requestId: "permission-1", method: "session/request_permission" },
       ).pipe(Effect.forkScoped({ startImmediately: true }));
       yield* offers[0]!.dispatchIfCurrent!(Effect.void);
-      yield* startTurn(2, true);
+      yield* startTurn(2, true, offers[0]!.messageId);
       assert.deepEqual(yield* Fiber.join(permission), {
         outcome: { outcome: "selected", optionId: "allow" },
       });
@@ -2259,7 +2259,7 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
       });
       assert.lengthOf(offers, 1, "the finished daemon must wake the thread");
       yield* offers[0]!.dispatchIfCurrent!(Effect.void);
-      yield* startTurn(2, true);
+      yield* startTurn(2, true, offers[0]!.messageId);
       const followUp = { toolCallId: "call_build", kind: "execute", title: "vp run build" };
       yield* send({ sessionUpdate: "tool_call", ...followUp, status: "in_progress" });
       const continued = yield* until(
@@ -2806,7 +2806,7 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
       yield* send(usage);
       assert.lengthOf(offers, 1, "the agent's own reply must wake the thread");
       yield* offers[0]!.dispatchIfCurrent!(Effect.void);
-      yield* startTurn(2, true);
+      yield* startTurn(2, true, offers[0]!.messageId);
       yield* TestClock.adjust("3 seconds");
       const terminal = (yield* throughTerminal).at(-1);
       assert.equal(terminal?.type === "turn.terminal" && terminal.status, "completed");

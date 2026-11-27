@@ -1816,7 +1816,6 @@ export const layerQueryRunner: Layer.Layer<
   ClaudeAgentSdkQueryRunner,
   never,
   | ChildProcessSpawner.ChildProcessSpawner
-  | FileSystem.FileSystem
   | SecureRandom.SecureRandom
   | Path.Path
   | PortScanner.PortDiscovery
@@ -1826,7 +1825,6 @@ export const layerQueryRunner: Layer.Layer<
   Effect.gen(function* () {
     const random = yield* SecureRandom.SecureRandom;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
     const agentScope = yield* AgentScope;
@@ -1841,24 +1839,6 @@ export const layerQueryRunner: Layer.Layer<
     );
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
-    // A failed open leaves no transcript until a prompt was sent, but the CLI refuses a fresh ID
-    // that names one, even one without messages.
-    const canReopen = (options: ClaudeAgentSdkQueryOpenInput["options"]) =>
-      options.resume !== undefined || options.sessionId === undefined
-        ? Effect.succeed(true)
-        : findClaudeTranscripts(fileSystem, path, {
-            configDir: (options.env ?? hostEnvironment).CLAUDE_CONFIG_DIR,
-            cwd: options.cwd ?? ".",
-            sessionId: options.sessionId,
-          }).pipe(
-            Effect.map((transcripts) => transcripts.length === 0),
-            Effect.catch((cause) =>
-              Effect.logWarning("orchestration-v2.claude-mcp-registration-retry-lookup-failed", {
-                sessionId: options.sessionId,
-                cause,
-              }).pipe(Effect.as(false)),
-            ),
-          );
     const processRunner = yield* ProcessRunner.make();
     const psProcessTable = processRunner
       .run({
@@ -2545,13 +2525,10 @@ export const layerQueryRunner: Layer.Layer<
         // the adapter adopts it from the init message, as it does after /clear.
         return yield* openQuery(input).pipe(
           Effect.catchIf(
-            (error) =>
-              isClaudeMcpRegistrationTimeoutError(error.cause) &&
-              error.cause.phase !== "initialize",
+            (error) => isClaudeMcpRegistrationTimeoutError(error.cause),
             Effect.fnUntraced(function* () {
               const { resume, ...options } = input.options;
-              if (resume !== undefined || (yield* canReopen(input.options)))
-                return yield* openQuery(input);
+              if (resume !== undefined) return yield* openQuery(input);
               const sessionId = yield* random.uuidV4();
               return yield* openQuery({ ...input, options: { ...options, sessionId } });
             }),
@@ -3374,38 +3351,6 @@ const isClaudeConversationLine = (line: string): boolean =>
     onNone: () => false,
     onSome: (entry) => entry.type === "user" || entry.type === "assistant",
   });
-
-/** The files under `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/*` that hold a session's transcript. */
-const findClaudeTranscripts = Effect.fn("ClaudeAdapterV2.findClaudeTranscripts")(function* (
-  fileSystem: FileSystem.FileSystem,
-  path: Path.Path,
-  input: {
-    readonly configDir: string | undefined;
-    readonly cwd: string;
-    readonly sessionId: string;
-  },
-) {
-  const configuredDir = input.configDir?.trim() ?? "";
-  const projectsDir = path.join(
-    configuredDir.length > 0
-      ? path.resolve(input.cwd, configuredDir)
-      : path.join(yield* HostProcess.HomeDirectory, ".claude"),
-    "projects",
-  );
-  if (!(yield* fileSystem.exists(projectsDir))) return [];
-  const transcripts: string[] = [];
-  for (const project of yield* fileSystem.readDirectory(projectsDir)) {
-    const transcriptPath = path.join(projectsDir, project, `${input.sessionId}.jsonl`);
-    // Stray files beside the project dirs fail with ENOTDIR; other failures leave it unknown.
-    const exists = yield* fileSystem
-      .exists(transcriptPath)
-      .pipe(Effect.catchReason("PlatformError", "BadResource", () => Effect.succeed(false)));
-    if (exists) {
-      transcripts.push(transcriptPath);
-    }
-  }
-  return transcripts;
-});
 
 const getNativeThreadId = Effect.fnUntraced(function* (
   providerThread: OrchestrationV2ProviderThread,
@@ -8275,12 +8220,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // already buffered for the next wake. They end with that process.
         const unfinishedBackgroundTasks = Effect.fnUntraced(function* (nativeThreadId: string) {
           const reported = yield* bufferedTaskNotificationIds(nativeThreadId);
-          return [
-            ...rosterForNativeThread(
+          return claudePendingBackgroundTasksFromRoster(
+            rosterForNativeThread(
               yield* Ref.get(pendingBackgroundTasksByNativeThread),
               nativeThreadId,
-            ).values(),
-          ].filter((task) => !reported.has(task.taskId));
+            ),
+            taskIdSetForNativeThread(
+              yield* Ref.get(awaitedBackgroundTasksByNativeThread),
+              nativeThreadId,
+            ),
+          ).filter((task) => !reported.has(task.taskId));
         });
 
         // Background subagents a process still runs: not in its roster, but they end with it too.

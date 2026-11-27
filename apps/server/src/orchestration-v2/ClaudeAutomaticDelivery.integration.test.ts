@@ -290,6 +290,7 @@ it.effect.each(deliveries)(
                   prompt: "Background work",
                   title: "Child",
                   model: null,
+                  ...(parent.demandId === undefined ? {} : { demandId: parent.demandId }),
                   completionWake: "always",
                   completionDelivery: { state: "claimed", observedByRunId: null },
                   status: "completed",

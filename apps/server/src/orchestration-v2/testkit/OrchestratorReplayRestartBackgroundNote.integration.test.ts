@@ -353,7 +353,9 @@ describe("restart-cancelled background work", () => {
 const LOST_SCENARIO = "claude_background_task_after_root";
 const LOST_SESSION_ID = "ec24a006-617b-4324-b516-57a7afff15a4";
 const LOST_TASK_ID = "bc9gkn8ei";
-const LOST_TASK_LABEL = "sleep 25 && echo L2_BG_DONE (id bc9gkn8ei)";
+const LOST_RECORDED_COMMAND = "sleep 25 && echo L2_BG_DONE";
+const LOST_UNAWAITED_COMMAND = "npm run dev";
+const LOST_TASK_LABEL = `${LOST_UNAWAITED_COMMAND} (id ${LOST_TASK_ID})`;
 const LOST_WORK = {
   kind: "shell",
   label: LOST_TASK_LABEL,
@@ -390,6 +392,7 @@ const LOST_COMMAND: LostWork = {
 };
 
 /** No roster lists a background subagent; only the process that runs it knows it. */
+const LOST_SUBAGENT_LABEL = "Background subagent test (id a2995bfced8019363)";
 const LOST_SUBAGENT: LostWork = {
   name: "a background subagent",
   scenario: SCENARIO,
@@ -398,11 +401,14 @@ const LOST_SUBAGENT: LostWork = {
   rootResultLabel: "result",
   work: {
     kind: "subagent",
-    label: "Background subagent test (id a2995bfced8019363)",
+    label: LOST_SUBAGENT_LABEL,
     id: "a2995bfced8019363",
     nativeItemId: "toolu_01AS7YtghJ9Knkp7QuuGTo7j",
   },
-  note: NOTE,
+  note: [
+    "Note: this background work was cancelled before it finished, because the T3 server restarted or the agent process running it ended. It will not report back on its own, so resume or restart what you still need and wait for its result:",
+    `- subagent: ${LOST_SUBAGENT_LABEL}`,
+  ].join("\n"),
 };
 
 type SessionRelease = Exclude<
@@ -440,7 +446,15 @@ const readLostTaskTranscript = Effect.fn("readLostTaskTranscript")(function* (
   return yield* ClaudeOrchestratorReplayHarness.decodeTranscript({
     ...recorded,
     entries: [
-      ...recorded.entries.slice(0, label(lost.rootResultLabel) + 1),
+      ...recorded.entries
+        .slice(0, label(lost.rootResultLabel) + 1)
+        .map((entry) =>
+          lost.work.kind === "shell" && entry.type === "emit_inbound"
+            ? (JSON.parse(
+                JSON.stringify(entry).replaceAll(LOST_RECORDED_COMMAND, LOST_UNAWAITED_COMMAND),
+              ) as ProviderReplayEntry)
+            : entry,
+        ),
       // Holds the process until the test lets it go; it then ends unprompted.
       // The frame carries nothing, so no event races the process exit.
       ...(processExits === "idle"

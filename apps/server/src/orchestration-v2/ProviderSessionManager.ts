@@ -61,11 +61,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
-import {
-  awaitingProviderThreadId,
-  cancelledTurnItemWork,
-  mergeRestartCancelledBackgroundWork,
-} from "./RestartBackgroundNote.ts";
+import { awaitingProviderThreadId, cancelledTurnItemWork } from "./RestartBackgroundNote.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
@@ -1519,9 +1515,13 @@ export const layerWithOptions = (
           released: Pick<
             ReleasedProviderThread,
             "threadId" | "providerSessionId" | "providerThreadId" | "lostTasks" | "lostItems"
-          >,
+          > & {
+            readonly cause: BackgroundWorkStop;
+            readonly wakes?: boolean;
+          },
         ) {
-          const { threadId, providerSessionId, lostTasks, lostItems } = released;
+          const { threadId, providerSessionId, lostTasks, lostItems, cause } = released;
+          const wakes = released.wakes ?? true;
           if (lostTasks.length === 0 && lostItems.length === 0) return;
           const { runs, turnItems } = yield* projectionStore.getThreadRecords(
             threadId,
@@ -1556,6 +1556,7 @@ export const layerWithOptions = (
           const events: Array<OrchestrationV2DomainEvent> = [];
           const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = [];
           for (const { run, work } of workByRun.values()) {
+            const record = lostBackgroundWorkRecord({ run, cause, work, now });
             events.push({
               id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
               type: "run.background-work-cancelled",
@@ -1565,22 +1566,33 @@ export const layerWithOptions = (
               occurredAt: now,
               payload: {
                 runId: run.id,
-                restartCancelledBackgroundWork: mergeRestartCancelledBackgroundWork(
-                  run.restartCancelledBackgroundWork ?? [],
-                  work,
-                ),
+                restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
               },
             });
-            effects.push({
-              id: `effect:restart-continuation:${run.id}`,
-              commandId: CommandId.make(`command:provider-exit-continuation:${run.id}`),
-              threadId,
-              request: {
-                type: "provider-runtime.continue",
-                sourceRunId: run.id,
-                cause: "provider_exit",
-              },
-            });
+            if (record.notice !== undefined) {
+              events.push({
+                id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
+                type: "turn-item.updated",
+                threadId,
+                runId: run.id,
+                ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: record.notice,
+              });
+            }
+            if (wakes) {
+              effects.push({
+                id: `effect:restart-continuation:${run.id}`,
+                commandId: CommandId.make(`command:provider-exit-continuation:${run.id}`),
+                threadId,
+                request: {
+                  type: "provider-runtime.continue",
+                  sourceRunId: run.id,
+                  cause: "provider_exit",
+                },
+              });
+            }
           }
           yield* eventSink.writeWithEffects({ events, effects });
         },
@@ -1685,7 +1697,14 @@ export const layerWithOptions = (
                   (thread) =>
                     writeReleasedToolCallEvents(thread, releasedAt).pipe(
                       Effect.andThen(writeReleasedSubagentEvents(thread, releasedAt)),
-                      Effect.andThen(writeReleasedWorkNote({ ...thread, lostTasks: [] })),
+                      Effect.andThen(
+                        writeReleasedWorkNote({
+                          ...thread,
+                          lostTasks: [],
+                          cause: RELEASED_BACKGROUND_WORK[reason].cause,
+                          wakes: RELEASED_BACKGROUND_WORK[reason].wakes !== "never",
+                        }),
+                      ),
                     ),
                   { discard: true },
                 ),
@@ -3424,6 +3443,7 @@ export const layerWithOptions = (
                 providerThreadId: nativeEvent.providerThreadId,
                 lostTasks: nativeEvent.tasks,
                 lostItems: [],
+                cause: "process-ended",
               }).pipe(
                 Effect.mapError(
                   (cause) =>

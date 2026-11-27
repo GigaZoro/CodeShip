@@ -549,46 +549,48 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
-  if (options.runEffectWorker === false && options.recoverOnStartup !== true) {
-    return layerReplayRuntime;
-  }
-  // Build recovery before runtime so it commits before the effect worker claims work.
-  const layerStartupRecovery: Layer.Layer<
-    never,
-    MigrationError | PlatformError.PlatformError | SqlError
-  > =
-    options.recoverOnStartup === true
-      ? Layer.effectDiscard(
-          ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService.use(
-            (recovery) => recovery.recover,
-          ).pipe(Effect.orDie),
-        ).pipe(
-          Layer.provide(ProviderRuntimeRecoveryService.layer),
-          Layer.provide(
-            Layer.mergeAll(
-              layerStores,
-              layerEventSinkProvided,
-              IdAllocator.layer,
-              layerServerSettings,
-            ),
-          ),
-        )
-      : Layer.empty;
-  const layerOrchestrator = Layer.effect(
-    Orchestrator.OrchestratorV2,
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      yield* orchestrator.recoverDelegatedTasks;
-      if (options.runEffectWorker !== false) {
-        yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
-      }
-      return orchestrator;
-    }),
-  ).pipe(Layer.provideMerge(layerReplayRuntime), Layer.provide(layerStartupRecovery));
+  const layerRuntimeWithWorker =
+    options.runEffectWorker === false && options.recoverOnStartup !== true
+      ? layerReplayRuntime
+      : (() => {
+          // Build recovery before runtime so it commits before the effect worker claims work.
+          const layerStartupRecovery: Layer.Layer<
+            never,
+            MigrationError | PlatformError.PlatformError | SqlError
+          > =
+            options.recoverOnStartup === true
+              ? Layer.effectDiscard(
+                  ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService.use(
+                    (recovery) => recovery.recover,
+                  ).pipe(Effect.orDie),
+                ).pipe(
+                  Layer.provide(ProviderRuntimeRecoveryService.layer),
+                  Layer.provide(
+                    Layer.mergeAll(
+                      layerStores,
+                      layerEventSinkProvided,
+                      IdAllocator.layer,
+                      layerServerSettings,
+                    ),
+                  ),
+                )
+              : Layer.empty;
+          return Layer.effect(
+            Orchestrator.OrchestratorV2,
+            Effect.gen(function* () {
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
+              yield* orchestrator.recoverDelegatedTasks;
+              if (options.runEffectWorker !== false) {
+                yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
+              }
+              return orchestrator;
+            }),
+          ).pipe(Layer.provideMerge(layerReplayRuntime), Layer.provide(layerStartupRecovery));
+        })();
   // Held automatic starts go as they do in production, with memory always to spare here, also
   // when the test drives the effect worker itself.
   return MemoryAdmissionQueue.layer.pipe(
     Layer.provide(Layer.merge(Scheduler.layer, MemoryAdmission.layerTest())),
-    Layer.provideMerge(layerOrchestrator),
+    Layer.provideMerge(layerRuntimeWithWorker),
   );
 }

@@ -18,7 +18,6 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as TestClock from "effect/testing/TestClock";
@@ -212,40 +211,13 @@ it.effect("forked Claude sessions keep their compaction chain", () =>
   ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-const queryRunnerNeedingPlatform = layerQueryRunner.pipe(
+const realQueryRunner = layerQueryRunner.pipe(
   Layer.provide(PortScanner.layerTest),
   Layer.provide(
     Layer.succeed(ProviderEventLoggers, {
       native: undefined,
       canonical: undefined,
     }),
-  ),
-);
-const realQueryRunner = queryRunnerNeedingPlatform.pipe(
-  Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-);
-const unreadableForkTranscriptQueryRunner = queryRunnerNeedingPlatform.pipe(
-  Layer.provide(
-    Layer.effect(
-      FileSystem.FileSystem,
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        return {
-          ...fileSystem,
-          exists: (path) =>
-            path.endsWith(`${FORK_SESSION_ID}.jsonl`)
-              ? Effect.fail(
-                  PlatformError.systemError({
-                    _tag: "PermissionDenied",
-                    module: "FileSystem",
-                    method: "exists",
-                    pathOrDescriptor: path,
-                  }),
-                )
-              : fileSystem.exists(path),
-        } satisfies FileSystem.FileSystem;
-      }),
-    ),
   ),
   Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
@@ -821,77 +793,6 @@ it.effect.each([
         "Claude timed out while starting up. Retry the turn; if it keeps failing, check Claude and the server logs.",
       );
   }).pipe(Effect.provide(realQueryRunner)),
-);
-
-it.effect.each([
-  { transcript: "absent", reopens: true },
-  { transcript: "present", reopens: false },
-  { transcript: "unreadable", reopens: false },
-] as const)(
-  "reopens a fresh session ID after MCP registration times out only without a transcript: $transcript",
-  ({ transcript, reopens }) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const configDir = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-claude-fresh-reopen-",
-        });
-        const projectDir = path.join(configDir, "projects", "-repo");
-        yield* fileSystem.makeDirectory(projectDir, { recursive: true });
-        if (transcript === "present") {
-          yield* fileSystem.writeFileString(
-            path.join(projectDir, `${FORK_SESSION_ID}.jsonl`),
-            `${JSON.stringify({ type: "last-prompt", sessionId: FORK_SESSION_ID })}\n`,
-          );
-        }
-        const firstRegistration = Promise.withResolvers<void>();
-        const disposed = vi.fn(async () => {});
-        const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(() => {
-          const first = querySpy.mock.calls.length === 1;
-          return {
-            initializationResult: async () => ({}),
-            setMcpServers: () => {
-              if (!first) return Promise.resolve({ added: ["t3-code"], removed: [], errors: {} });
-              firstRegistration.resolve();
-              return new Promise<ClaudeSdk.McpSetServersResult>(() => {});
-            },
-            close: vi.fn(),
-            mcpServerStatus: async () => connectedT3McpStatus,
-            [Symbol.asyncDispose]: disposed,
-          } as unknown as ClaudeSdk.Query;
-        });
-        yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
-        const runner = yield* ClaudeAgentSdkQueryRunner;
-        const { resume, ...options } = resumedMcpQueryInput.options;
-        const opening = yield* runner
-          .open({
-            ...resumedMcpQueryInput,
-            options: {
-              ...options,
-              sessionId: resume,
-              cwd: "/repo",
-              env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
-            },
-          })
-          .pipe(Effect.exit, Effect.forkChild);
-        yield* Effect.promise(() => firstRegistration.promise);
-        yield* TestClock.adjust("90 seconds");
-        const result = yield* Fiber.join(opening);
-        if (Exit.isSuccess(result)) yield* result.value.close;
-
-        assert.equal(Exit.isSuccess(result), reopens);
-        assert.deepEqual(
-          querySpy.mock.calls.map(([call]) => call.options?.sessionId),
-          reopens ? [FORK_SESSION_ID, FORK_SESSION_ID] : [FORK_SESSION_ID],
-        );
-        assert.equal(disposed.mock.calls.length, 1);
-      }).pipe(
-        Effect.provide(
-          transcript === "unreadable" ? unreadableForkTranscriptQueryRunner : realQueryRunner,
-        ),
-      ),
-    ).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect.each([

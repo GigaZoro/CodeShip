@@ -513,7 +513,9 @@ describe("AcpRegistryAdapterV2", () => {
       assert.lengthOf(session.offers, offers, "late output must only wake agy");
       if (offers === 0) return;
       yield* session.offers[0]!.dispatchIfCurrent!(Effect.void);
-      yield* session.runtime.startTurn(session.turnInput(2, { continuation: true }));
+      yield* session.runtime.startTurn(
+        session.turnInput(2, { continuation: true, messageId: session.offers[0]!.messageId! }),
+      );
       yield* TestClock.adjust("3 seconds");
       const continued = yield* session.until((event) => event.type === "turn.terminal");
       assert.include(JSON.stringify(continued), "Background work finished.");
@@ -611,7 +613,9 @@ describe("AcpRegistryAdapterV2", () => {
         yield* session.throughMarker("late permission received");
         assert.lengthOf(session.offers, 1, "a permission request must offer a continuation");
         yield* session.offers[0]!.dispatchIfCurrent!(Effect.void);
-        yield* session.runtime.startTurn(session.turnInput(2, { continuation: true }));
+        yield* session.runtime.startTurn(
+          session.turnInput(2, { continuation: true, messageId: session.offers[0]!.messageId! }),
+        );
         if (runtimeMode === "approval-required") {
           const events = yield* session.until(
             (event) =>
@@ -2210,7 +2214,10 @@ describe("AcpRegistryAdapterV2", () => {
         session.offers.length > 0 || JSON.stringify(wake).includes("Agent 1 finished"),
         "the woken root reply is shown or opens a continuation run",
       );
-      yield* session.runtime.startTurn(session.turnInput(2, { continuation: true }));
+      yield* session.offers[0]!.dispatchIfCurrent!(Effect.void);
+      yield* session.runtime.startTurn(
+        session.turnInput(2, { continuation: true, messageId: session.offers[0]!.messageId! }),
+      );
       const continuation = yield* session.until((event) => event.type === "turn.terminal");
       assert.include(JSON.stringify(continuation), "Agent 1 finished");
       assert.include(JSON.stringify(continuation.at(-1)), '"status":"completed"');
@@ -2290,7 +2297,9 @@ describe("AcpRegistryAdapterV2", () => {
       yield* Queue.take(session.offered);
       yield* session.throughMarker("after completion reply");
       yield* session.offers[0]!.dispatchIfCurrent!(Effect.void);
-      yield* session.runtime.startTurn(session.turnInput(2, { continuation: true }));
+      yield* session.runtime.startTurn(
+        session.turnInput(2, { continuation: true, messageId: session.offers[0]!.messageId! }),
+      );
       yield* TestClock.adjust("10 seconds");
       const continuation = yield* session.until((event) => event.type === "turn.terminal");
       assert.include(JSON.stringify(continuation), "printed DONE");
