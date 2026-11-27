@@ -2167,6 +2167,7 @@ export const layerWithOptions = (
               ),
             ),
           );
+          let barrierFlush: Effect.Effect<void> = Effect.void;
           // One signal per pull: a barrier is taken only once the reader asks for the next event.
           const nextEvent: Effect.Effect<
             ProviderAdapter.ProviderAdapterV2Event,
@@ -2177,7 +2178,8 @@ export const layerWithOptions = (
                 case "event":
                   return Effect.succeed(signal.event);
                 case "barrier":
-                  return Deferred.succeed(signal.passed, undefined).pipe(
+                  return Effect.suspend(() => barrierFlush).pipe(
+                    Effect.ensuring(Deferred.succeed(signal.passed, undefined)),
                     Effect.andThen(Effect.suspend(() => nextEvent)),
                   );
                 case "failure":
@@ -2186,7 +2188,15 @@ export const layerWithOptions = (
             }),
           );
           const events = Stream.fromEffectRepeat(nextEvent).pipe(Stream.ensuring(close));
-          return { events, close } satisfies ProviderAdapter.ProviderAdapterV2EventSubscription;
+          const setBarrierFlush = (flush: Effect.Effect<void>) =>
+            Effect.sync(() => {
+              barrierFlush = flush;
+            });
+          return {
+            events,
+            close,
+            setBarrierFlush,
+          } satisfies ProviderAdapter.ProviderAdapterV2EventSubscription;
         },
       );
 

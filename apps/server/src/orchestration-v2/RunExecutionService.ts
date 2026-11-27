@@ -1463,6 +1463,133 @@ export const layer: Layer.Layer<
           }
           return Deferred.succeed(rootTerminalIngested, undefined);
         });
+        // Runs for every provider event, including streamed text updates; avoid a per-event span.
+        const storeAcceptedEvent = Effect.fnUntraced(function* (
+          event: ProviderAdapter.ProviderAdapterV2Event,
+          deliver: (
+            event: ProviderAdapter.ProviderAdapterV2Event,
+            now: number,
+          ) => ProviderAdapter.ProviderAdapterV2Event | null,
+        ) {
+          if (
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.runAttemptId === input.attempt.id &&
+            event.providerTurn.providerThreadId === input.providerThread.id
+          ) {
+            yield* Ref.set(latestRootProviderTurn, event.providerTurn);
+          }
+          let storedEventCount = 0;
+          const deliveredEvent = deliver(event, DateTime.toEpochMillis(yield* DateTime.now));
+          if (deliveredEvent) {
+            const rootTerminalAlreadySeen = yield* Ref.get(rootTerminalSeen);
+            const isRootProviderThreadUpdate =
+              event.type === "provider_thread.updated" &&
+              event.providerThread.id === input.providerThread.id;
+            const nativeChildTurn =
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.providerThreadId !== input.providerThread.id;
+            if (event.type === "provider_turn.updated" && !nativeChildTurn) {
+              firstRootProviderTurnId ??= event.providerTurn.id;
+            }
+            const storedEvents = yield* providerEventIngestor.ingestNormalized({
+              analyticsContext: nativeChildTurn
+                ? {
+                    ...analyticsContext,
+                    origin: NATIVE_SUBAGENT_TURN_ORIGIN,
+                    segment: "native_child",
+                  }
+                : {
+                    ...analyticsContext,
+                    segment:
+                      event.type === "provider_turn.updated" &&
+                      event.providerTurn.id !== firstRootProviderTurnId
+                        ? "continuation"
+                        : input.attempt.reason,
+                  },
+              providerSessionId: input.providerSessionId,
+              providerInstanceId: input.run.providerInstanceId,
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              nodeId: input.rootNode.id,
+              event: deliveredEvent,
+              ...(isRootProviderThreadUpdate
+                ? rootTerminalAlreadySeen
+                  ? {
+                      writeIfProviderThreadOwner: {
+                        providerThreadId: input.providerThread.id,
+                        runId: input.run.id,
+                        activeAttemptId: input.attempt.id,
+                        expectedLastRunOrdinal: input.run.ordinal,
+                      },
+                    }
+                  : {
+                      writeIfRunCurrent: {
+                        runId: input.run.id,
+                        activeAttemptId: input.attempt.id,
+                        expectedStatus: "running" as const,
+                      },
+                    }
+                : {}),
+            });
+            storedEventCount = storedEvents.length;
+            yield* trackOpenToolTurnItems(storedEvents);
+            if (isRootProviderThreadUpdate && rootTerminalAlreadySeen && storedEventCount === 0) {
+              yield* Ref.set(providerThreadOwnerLost, true);
+            }
+          } else if (
+            event.type === "turn_item.updated" &&
+            (event.turnItem.type === "assistant_message" || event.turnItem.type === "reasoning") &&
+            event.turnItem.streaming &&
+            !reservedHeldTurnItemIds.has(event.turnItem.id)
+          ) {
+            yield* turnItemPositions.allocate({
+              threadId: event.turnItem.threadId,
+              turnItemId: event.turnItem.id,
+              runId: event.turnItem.runId,
+            });
+            reservedHeldTurnItemIds.add(event.turnItem.id);
+          }
+          if (event.type === "provider_thread.updated") {
+            if (event.providerThread.id === input.providerThread.id && storedEventCount > 0) {
+              yield* Ref.set(latestProviderThread, event.providerThread);
+            }
+          }
+          if (
+            event.type === "turn_item.updated" &&
+            event.turnItem.providerTurnId === (yield* Ref.get(eventRouting)).rootProviderTurnId
+          ) {
+            yield* Ref.update(latestTurnItemOrdinal, (current) =>
+              Math.max(current, event.turnItem.ordinal),
+            );
+          }
+          if (event.type === "turn.terminal") {
+            yield* Ref.set(terminalEvent, event);
+            yield* Ref.set(rootTerminalSeen, true);
+            yield* finalizeRootRun(event);
+            yield* settleRootTerminal;
+          }
+          if (event.type === "background_work.updated") {
+            if (event.pending) {
+              pendingBackgroundProviderTurns.add(event.providerTurnId);
+            } else {
+              pendingBackgroundProviderTurns.delete(event.providerTurnId);
+            }
+          }
+          yield* trackChildLifecycle(event, deliveredEvent !== null);
+        });
+        // Text held back for streaming is stored in full before a detach records its replay point.
+        yield* (
+          eventSubscription.setBarrierFlush?.(
+            Effect.gen(function* () {
+              const held = filterAssistantEvent.flushHeld(
+                DateTime.toEpochMillis(yield* DateTime.now),
+              );
+              yield* Effect.forEach(held, (event) => storeAcceptedEvent(event, (event) => event), {
+                discard: true,
+              });
+            }),
+          ) ?? Effect.void
+        );
         const providerEventFiber = yield* eventSubscription.events.pipe(
           Stream.mapEffect((event) =>
             Effect.gen(function* () {
@@ -1545,122 +1672,7 @@ export const layer: Layer.Layer<
             }),
           ),
           Stream.tap(({ event, accepted }) =>
-            Effect.gen(function* () {
-              if (!accepted) return;
-              if (
-                event.type === "provider_turn.updated" &&
-                event.providerTurn.runAttemptId === input.attempt.id &&
-                event.providerTurn.providerThreadId === input.providerThread.id
-              ) {
-                yield* Ref.set(latestRootProviderTurn, event.providerTurn);
-              }
-              let storedEventCount = 0;
-              const deliveredEvent = filterAssistantEvent(
-                event,
-                DateTime.toEpochMillis(yield* DateTime.now),
-              );
-              if (deliveredEvent) {
-                const rootTerminalAlreadySeen = yield* Ref.get(rootTerminalSeen);
-                const isRootProviderThreadUpdate =
-                  event.type === "provider_thread.updated" &&
-                  event.providerThread.id === input.providerThread.id;
-                const nativeChildTurn =
-                  event.type === "provider_turn.updated" &&
-                  event.providerTurn.providerThreadId !== input.providerThread.id;
-                if (event.type === "provider_turn.updated" && !nativeChildTurn) {
-                  firstRootProviderTurnId ??= event.providerTurn.id;
-                }
-                const storedEvents = yield* providerEventIngestor.ingestNormalized({
-                  analyticsContext: nativeChildTurn
-                    ? {
-                        ...analyticsContext,
-                        origin: NATIVE_SUBAGENT_TURN_ORIGIN,
-                        segment: "native_child",
-                      }
-                    : {
-                        ...analyticsContext,
-                        segment:
-                          event.type === "provider_turn.updated" &&
-                          event.providerTurn.id !== firstRootProviderTurnId
-                            ? "continuation"
-                            : input.attempt.reason,
-                      },
-                  providerSessionId: input.providerSessionId,
-                  providerInstanceId: input.run.providerInstanceId,
-                  threadId: input.run.threadId,
-                  runId: input.run.id,
-                  nodeId: input.rootNode.id,
-                  event: deliveredEvent,
-                  ...(isRootProviderThreadUpdate
-                    ? rootTerminalAlreadySeen
-                      ? {
-                          writeIfProviderThreadOwner: {
-                            providerThreadId: input.providerThread.id,
-                            runId: input.run.id,
-                            activeAttemptId: input.attempt.id,
-                            expectedLastRunOrdinal: input.run.ordinal,
-                          },
-                        }
-                      : {
-                          writeIfRunCurrent: {
-                            runId: input.run.id,
-                            activeAttemptId: input.attempt.id,
-                            expectedStatus: "running" as const,
-                          },
-                        }
-                    : {}),
-                });
-                storedEventCount = storedEvents.length;
-                yield* trackOpenToolTurnItems(storedEvents);
-                if (
-                  isRootProviderThreadUpdate &&
-                  rootTerminalAlreadySeen &&
-                  storedEventCount === 0
-                ) {
-                  yield* Ref.set(providerThreadOwnerLost, true);
-                }
-              } else if (
-                event.type === "turn_item.updated" &&
-                (event.turnItem.type === "assistant_message" ||
-                  event.turnItem.type === "reasoning") &&
-                event.turnItem.streaming &&
-                !reservedHeldTurnItemIds.has(event.turnItem.id)
-              ) {
-                yield* turnItemPositions.allocate({
-                  threadId: event.turnItem.threadId,
-                  turnItemId: event.turnItem.id,
-                  runId: event.turnItem.runId,
-                });
-                reservedHeldTurnItemIds.add(event.turnItem.id);
-              }
-              if (event.type === "provider_thread.updated") {
-                if (event.providerThread.id === input.providerThread.id && storedEventCount > 0) {
-                  yield* Ref.set(latestProviderThread, event.providerThread);
-                }
-              }
-              if (
-                event.type === "turn_item.updated" &&
-                event.turnItem.providerTurnId === (yield* Ref.get(eventRouting)).rootProviderTurnId
-              ) {
-                yield* Ref.update(latestTurnItemOrdinal, (current) =>
-                  Math.max(current, event.turnItem.ordinal),
-                );
-              }
-              if (event.type === "turn.terminal") {
-                yield* Ref.set(terminalEvent, event);
-                yield* Ref.set(rootTerminalSeen, true);
-                yield* finalizeRootRun(event);
-                yield* settleRootTerminal;
-              }
-              if (event.type === "background_work.updated") {
-                if (event.pending) {
-                  pendingBackgroundProviderTurns.add(event.providerTurnId);
-                } else {
-                  pendingBackgroundProviderTurns.delete(event.providerTurnId);
-                }
-              }
-              yield* trackChildLifecycle(event, deliveredEvent !== null);
-            }),
+            accepted ? storeAcceptedEvent(event, filterAssistantEvent) : Effect.void,
           ),
           // Also after events this run does not accept, such as a child handed to another run.
           Stream.tap(() =>

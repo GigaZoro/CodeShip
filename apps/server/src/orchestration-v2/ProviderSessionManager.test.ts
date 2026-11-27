@@ -4520,6 +4520,40 @@ it.effect(
     }),
 );
 
+it.effect("ProviderSessionManagerV2 lets a run store held-back text before a drain passes it", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const { manager, providerSessionId, runtime } = yield* openDrainableSession(
+        "provider-session-manager-drain-flush",
+      );
+      const subscription = yield* runtime.subscribeEvents!;
+      const flushStarted = yield* Deferred.make<void>();
+      const mayFinishFlush = yield* Deferred.make<void>();
+      assert.isDefined(subscription.setBarrierFlush);
+      yield* subscription.setBarrierFlush!(
+        Deferred.succeed(flushStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(mayFinishFlush)),
+        ),
+      );
+      yield* subscription.events.pipe(Stream.runDrain, Effect.forkScoped);
+
+      const preparation = yield* manager.prepareDetachForUpdate(providerSessionId);
+      const drained = yield* preparation!.drain.pipe(Effect.forkScoped);
+      yield* Deferred.await(flushStarted);
+      // The barrier passes only once the run stored what it held back.
+      assert.isUndefined(drained.pollUnsafe());
+      yield* Deferred.succeed(mayFinishFlush, undefined);
+      yield* Fiber.join(drained);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        layerTest({ state, idleTimeoutMs: 60_000, drainForDetach: Effect.succeed(0) }),
+      ),
+    );
+  }),
+);
+
 it.effect("ProviderSessionManagerV2 does not wait on a run that stopped reading events", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);

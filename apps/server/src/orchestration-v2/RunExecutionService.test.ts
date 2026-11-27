@@ -1032,6 +1032,141 @@ it.effect.each(["fails", "unsupported"] as const)(
     }),
 );
 
+it.effect.each(["paragraph", "turn"] as const)(
+  "stores the %s-streamed text it held back when a detach barrier reaches it",
+  (responseStreamingMode) =>
+    Effect.gen(function* () {
+      const key = `run-execution-barrier-flush-${responseStreamingMode}`;
+      const threadId = ThreadId.make(`thread:${key}`);
+      const runId = RunId.make(`run:${key}`);
+      const attemptId = RunAttemptId.make(`attempt:${key}`);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const providerThreadId = ProviderThreadId.make(`provider-thread:${key}`);
+      const fullText = "First paragraph.\n\nAn unfinished tail";
+      const stored = yield* Ref.make<ReadonlyArray<string>>([]);
+      const consumed = yield* Deferred.make<void>();
+      const barrierFlush = yield* Deferred.make<Effect.Effect<void>>();
+      const now = DateTime.makeUnsafe("2026-11-27T12:00:00.000Z");
+      const streamingEvent = {
+        type: "turn_item.updated",
+        driver,
+        turnItem: {
+          id: TurnItemId.make(`turn-item:${key}`),
+          threadId,
+          runId,
+          nodeId: NodeId.make(`node:${key}`),
+          providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "running",
+          title: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+          type: "assistant_message",
+          messageId: MessageId.make(`message:${key}:assistant`),
+          text: fullText,
+          streaming: true,
+        },
+      } as ProviderAdapter.ProviderAdapterV2Event;
+      const layerTest = RunExecutionService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ThreadCommandExecutor.layer,
+            McpAppModelContext.layerEmpty,
+            PreviewAgentActivity.layer,
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+            layerTurnItemPositionsTest,
+            Layer.mock(EventSink.EventSinkV2)({
+              write: () => Effect.succeed([]),
+              writeWithEffects: () => Effect.succeed([]),
+              writeIfRunCurrent: () => Effect.succeed({ committed: true, storedEvents: [] }),
+            }),
+            IdAllocator.layer,
+            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+              ingestNormalized: (input) =>
+                Effect.gen(function* () {
+                  const event = input.event;
+                  if (
+                    event.type === "turn_item.updated" &&
+                    event.turnItem.type === "assistant_message"
+                  ) {
+                    const text = event.turnItem.text;
+                    yield* Ref.update(stored, (current) => [...current, text]);
+                  }
+                  return [];
+                }),
+            }),
+            ServerSettings.layerTest({ responseStreamingMode }),
+          ),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+        yield* runExecution.startRootRun({
+          commandId: CommandId.make(`command:${key}`),
+          appThread: rootAppThread(threadId),
+          providerSessionId: ProviderSessionId.make(`session:${key}`),
+          session: {
+            driver,
+            events: Stream.never,
+            subscribeEvents: Effect.succeed({
+              events: Stream.make(streamingEvent).pipe(
+                Stream.concat(
+                  Stream.fromEffect(Deferred.succeed(consumed, undefined)).pipe(Stream.drain),
+                ),
+                Stream.concat(Stream.never),
+              ),
+              close: Effect.void,
+              setBarrierFlush: (flush: Effect.Effect<void>) =>
+                Deferred.succeed(barrierFlush, flush).pipe(Effect.asVoid),
+            }),
+            startTurn: () => Effect.void,
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+          run: { id: runId, threadId, ordinal: 1, providerInstanceId } as OrchestrationV2Run,
+          rootNode: { id: NodeId.make(`node:${key}`) } as OrchestrationV2ExecutionNode,
+          checkpointScope: {
+            id: CheckpointScopeId.make(`checkpoint-scope:${key}`),
+          } as OrchestrationV2CheckpointScope,
+          providerThread: { id: providerThreadId, driver } as OrchestrationV2ProviderThread,
+          attempt: { id: attemptId, providerTurnId: null } as OrchestrationV2RunAttempt,
+          attemptId,
+          providerTurnOrdinal: 1,
+          startFailure: recordStartFailure,
+          message: {
+            messageId: MessageId.make(`message:${key}`),
+            text: "Stream a reply.",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: process.cwd(),
+            approvalPolicy: "never",
+            sandboxPolicy: {
+              type: "readOnly",
+              access: { type: "fullAccess" },
+              networkAccess: false,
+            },
+          },
+        });
+        yield* Deferred.await(consumed);
+        assert.notInclude(yield* Ref.get(stored), fullText);
+        // A detach barrier runs the flush between two pulls, as the session manager does.
+        yield* yield* Deferred.await(barrierFlush);
+        assert.strictEqual((yield* Ref.get(stored)).at(-1), fullText);
+      }).pipe(Effect.scoped, Effect.provide(layerTest));
+    }),
+);
+
 it.effect("fails the run when its ownership check cannot be read before calling the provider", () =>
   Effect.gen(function* () {
     const guardCalls = yield* Ref.make(0);

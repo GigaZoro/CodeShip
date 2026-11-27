@@ -555,6 +555,11 @@ export interface ProviderAdapterV2ForkThreadInput {
 export interface ProviderAdapterV2EventSubscription {
   readonly events: Stream.Stream<ProviderAdapterV2Event, ProviderAdapterV2Error>;
   readonly close: Effect.Effect<void>;
+  /**
+   * Sets what runs when a detach barrier reaches this reader, after every earlier event and
+   * before the barrier passes, so text the reader held back is stored before the replay point.
+   */
+  readonly setBarrierFlush?: (flush: Effect.Effect<void>) => Effect.Effect<void>;
 }
 
 export interface ProviderAdapterV2HistoricalContext {
