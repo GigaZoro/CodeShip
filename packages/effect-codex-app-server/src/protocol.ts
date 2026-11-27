@@ -48,6 +48,11 @@ export interface CodexAppServerPatchedProtocolOptions {
   readonly logOutgoing?: boolean;
   // Test override; production uses MAX_INCOMING_MESSAGE_BYTES.
   readonly maxIncomingMessageBytes?: number;
+  /**
+   * Sends string request ids `<prefix><n>` instead of numbers. A client that takes over a running
+   * app server sets it, so replies to requests its predecessor sent cannot resolve its own.
+   */
+  readonly requestIdPrefix?: string;
   readonly logger?: (event: CodexAppServerProtocolLogEvent) => Effect.Effect<void, never>;
   readonly onNotification?: (
     notification: CodexAppServerIncomingNotification,
@@ -517,10 +522,12 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       method: string,
       payload?: unknown,
     ) {
-      const requestId = yield* Ref.modify(
+      const sequence = yield* Ref.modify(
         nextRequestId,
         (current) => [current, current + 1] as const,
       );
+      const requestId =
+        options.requestIdPrefix === undefined ? sequence : `${options.requestIdPrefix}${sequence}`;
       const attributes = {
         "rpc.system": "jsonrpc",
         "rpc.method": method,

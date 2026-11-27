@@ -617,6 +617,30 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }),
   );
 
+  it.effect(
+    "ignores replies to requests a client before it sent, when given a request id prefix",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input, output } = yield* makeInMemoryStdio();
+        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+          stdio,
+          requestIdPrefix: "adopted:",
+        });
+        const response = yield* transport
+          .request("thread/read", { threadId: "thread-1" })
+          .pipe(Effect.forkScoped);
+        assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), {
+          id: "adopted:1",
+          method: "thread/read",
+          params: { threadId: "thread-1" },
+        });
+        // The previous client's request 1 is answered after the takeover.
+        yield* Queue.offer(input, encodeJsonl({ id: 1, result: { owner: "previous" } }));
+        yield* Queue.offer(input, encodeJsonl({ id: "adopted:1", result: { owner: "adopted" } }));
+        assert.deepEqual(yield* Fiber.join(response), { owner: "adopted" });
+      }),
+  );
+
   it.effect("interrupts pending request handlers when the protocol terminates", () =>
     Effect.gen(function* () {
       const { stdio, input } = yield* makeInMemoryStdio();
