@@ -1,3 +1,8 @@
+## 2026-11-27 — Two badges on the side rail
+
+- The side rail shows at most two counts. **Threads** counts what needs you, now including money decisions in Manual steps. Every failure (providers, MCP servers, failing or conflicting pull requests, failed scheduled runs, unreadable Manual steps) moves into one **Problems** icon that appears only while something has failed. Click it to list each one and open the page that fixes it.
+- Pull requests with requested changes no longer badge the rail; they still show on the Pull requests page.
+
 ## 2026-11-27 — Quieter composer controls and meters
 
 - The model picker is now the composer's one run chip, at every width. It names the permission mode only when it differs from your default, and its popover holds model, effort and permissions together. **Full access** and a thread that runs on another machine always show on the chip, with an icon. `mod+shift+a` opens the popover on **Permissions**.

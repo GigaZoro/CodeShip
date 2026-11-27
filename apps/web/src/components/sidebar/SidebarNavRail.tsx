@@ -46,15 +46,9 @@ import {
   useNavigateToMainApp,
 } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
-import { useScheduledTasksRailBadge } from "./useScheduledTasksRailBadge";
+import { SidebarNavRailProblemsItem } from "./SidebarNavRailProblems";
 import { useSidebarMachines } from "./useSidebarMachines";
-import {
-  useExtensionsRailBadge,
-  useManualStepsRailBadge,
-  usePullRequestsRailBadge,
-  useSettingsRailBadge,
-  useThreadsRailBadge,
-} from "./useSidebarNavRailBadges";
+import { useThreadsRailBadge } from "./useSidebarNavRailBadges";
 
 import { t } from "~/i18n";
 function resolveActiveDestination(pathname: string): SidebarNavDestination | null {
@@ -224,11 +218,6 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
   const active = useLocation({ select: (location) => resolveActiveDestination(location.pathname) });
   const pullRequestsSupported = usePullRequestsSupported();
   const threads = useThreadsRailBadge();
-  const pullRequests = usePullRequestsRailBadge();
-  const scheduledTasks = useScheduledTasksRailBadge();
-  const extensions = useExtensionsRailBadge();
-  const manualSteps = useManualStepsRailBadge();
-  const settings = useSettingsRailBadge();
   const go = (destination: () => unknown) => () => {
     if (isMobile) setOpenMobile(false);
     void destination();
@@ -262,8 +251,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           <SidebarNavRailItem
             destination="pull-requests"
             icon={<PullRequestGlyph.pullRequest />}
-            label={pullRequests.label}
-            badge={pullRequests.badge}
+            label={t("Pull requests")}
             isActive={active === "pull-requests"}
             onClick={go(() =>
               navigate({ to: "/pull-requests", search: readPullRequestListPreferences() }),
@@ -273,16 +261,14 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         <SidebarNavRailItem
           destination="scheduled-tasks"
           icon={<CalendarClockIcon />}
-          label={scheduledTasks.label}
-          badge={scheduledTasks.badge}
+          label={t("Scheduled tasks")}
           isActive={active === "scheduled-tasks"}
           onClick={go(() => navigate({ to: "/scheduled-tasks" }))}
         />
         <SidebarNavRailItem
           destination="extensions"
           icon={<PuzzleIcon />}
-          label={extensions.label}
-          badge={extensions.badge}
+          label={t("Extensions")}
           isActive={active === "extensions"}
           onClick={go(() => navigate({ to: "/extensions" }))}
         />
@@ -296,8 +282,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         <SidebarNavRailItem
           destination="manual-steps"
           icon={<HandIcon />}
-          label={manualSteps.label}
-          badge={manualSteps.badge}
+          label={t("Manual steps")}
           isActive={active === "manual-steps"}
           onClick={go(() => navigate({ to: "/manual-steps" }))}
         />
@@ -313,6 +298,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         ) : null}
       </SidebarMenu>
       <SidebarMenu className="items-center">
+        <SidebarNavRailProblemsItem go={go} />
         <SidebarUpdatePill />
         <SidebarNavRailMachinesItem
           isActive={active === "machines"}
@@ -329,8 +315,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         <SidebarNavRailItem
           destination="settings"
           icon={<SettingsIcon />}
-          label={settings.label}
-          badge={settings.badge}
+          label={t("Settings")}
           isActive={active === "settings"}
           onClick={go(() => navigate({ to: "/settings/general" }))}
         />

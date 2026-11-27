@@ -7,7 +7,11 @@ import {
   countNeedsYouReasons,
   manualStepsBadge,
   mcpProblemSummary,
-  pullRequestAttention,
+  pullRequestProblems,
+  RAIL_BADGE_SOURCES,
+  railNeedsYou,
+  railProblemCount,
+  railProblems,
 } from "./sidebarNavRailCounts";
 
 const link = (
@@ -40,12 +44,13 @@ describe("sidebar rail counts", () => {
 
   it.each([
     {
-      name: "counts failing checks, conflicts and changes requested; a PR in two buckets counts once",
+      name: "counts failing checks and conflicts; a PR in both counts once; changes requested is not a failure",
       links: [
         link(1, { checksState: "failing", mergeability: "conflicting" }),
         link(2, { reviewDecision: "changes-requested" }),
+        link(3, { mergeability: "conflicting" }),
       ],
-      expected: { count: 2, failingChecks: 1, conflicts: 1, changesRequested: 1 },
+      expected: { count: 2, failingChecks: 1, conflicts: 2 },
     },
     {
       name: "skips snapshotless, closed, merged and healthy pull requests",
@@ -55,7 +60,7 @@ describe("sidebar rail counts", () => {
         link(3, { state: "merged", mergeability: "conflicting" }),
         link(4, { checksState: "pending", mergeability: "unknown", reviewDecision: "approved" }),
       ],
-      expected: { count: 0, failingChecks: 0, conflicts: 0, changesRequested: 0 },
+      expected: { count: 0, failingChecks: 0, conflicts: 0 },
     },
     {
       name: "counts one pull request linked from two threads once, not across hosts",
@@ -64,10 +69,10 @@ describe("sidebar rail counts", () => {
         link(1, { checksState: "failing" }),
         link(1, { checksState: "failing" }, "ghe.example.com"),
       ],
-      expected: { count: 2, failingChecks: 2, conflicts: 0, changesRequested: 0 },
+      expected: { count: 2, failingChecks: 2, conflicts: 0 },
     },
-  ])("pullRequestAttention $name", ({ links, expected }) => {
-    expect(pullRequestAttention(links)).toEqual(expected);
+  ])("pullRequestProblems $name", ({ links, expected }) => {
+    expect(pullRequestProblems(links)).toEqual(expected);
   });
 
   it.each([
@@ -114,6 +119,15 @@ describe("sidebar rail counts", () => {
     {
       view: {
         status: "listed",
+        count: 1,
+        groups: [{ machine: "Mac", steps: [], detected: [{}] }],
+        threadPageIssue: "unreachable",
+      },
+      expected: { kind: "failed", reason: "unreachable" },
+    },
+    {
+      view: {
+        status: "listed",
         count: 3,
         groups: [
           { machine: "Mac", steps: [{ kind: "needs-you" }, { kind: "hands-on" }] },
@@ -148,5 +162,49 @@ describe("sidebar rail counts", () => {
       { name: "Broken", environmentLabel: "Mac" },
       { name: "Signed out", environmentLabel: "Mac" },
     ]);
+  });
+
+  it("the rail shows at most two badge sources", () => {
+    expect(RAIL_BADGE_SOURCES).toEqual(["needs-you", "problems"]);
+  });
+
+  it("railNeedsYou adds money decisions from manual steps to the threads that need you", () => {
+    const breakdown = { approval: 1, input: 0, request: 0, failed: 2, limited: 0 };
+    expect(railNeedsYou(breakdown, { kind: "count", count: 4, moneyDecisions: 1 })).toEqual({
+      count: 4,
+      breakdown,
+      moneyDecisions: 1,
+    });
+    expect(railNeedsYou(breakdown, { kind: "failed", reason: "unreachable" }).count).toBe(3);
+  });
+
+  it("railProblems lists each failing source once, most blocking first", () => {
+    const problems = railProblems({
+      providers: [{ name: "Codex", environmentLabel: "Mac" }],
+      mcp: { count: 2, names: ["X", "Y"] },
+      manualSteps: { kind: "failed", reason: "unreachable" },
+      pullRequests: { count: 3, failingChecks: 2, conflicts: 1 },
+      scheduledTaskFailures: 4,
+    });
+    expect(problems.map((problem) => problem.kind)).toEqual([
+      "providers",
+      "mcp",
+      "manual-steps",
+      "pull-requests",
+      "scheduled-tasks",
+    ]);
+    expect(railProblemCount(problems)).toBe(1 + 2 + 1 + 3 + 4);
+  });
+
+  it("railProblems is empty when nothing failed; hands-on manual steps are not problems", () => {
+    expect(
+      railProblems({
+        providers: [],
+        mcp: { count: 0, names: [] },
+        manualSteps: { kind: "count", count: 2, moneyDecisions: 1 },
+        pullRequests: { count: 0, failingChecks: 0, conflicts: 0 },
+        scheduledTaskFailures: 0,
+      }),
+    ).toEqual([]);
   });
 });

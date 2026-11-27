@@ -113,12 +113,12 @@ The count also shows on the **Threads** icon in the side rail, the desktop dock 
 and the mobile app icon. On web and desktop the window or tab title starts with it, like
 `(3) Fix login - T3.CodeShip`, and drops it at zero, whatever your notification settings.
 
-On web and desktop, other rail icons carry a count too: **Pull requests** (open pull requests with
-failing checks, conflicts or requested changes), **Scheduled tasks** (latest run failed),
-**Extensions** (MCP servers that failed or need sign-in when last checked), **Manual steps** (steps
-waiting on you, highlighted when one is a money decision, or a red dot when ThreadPage cannot be
-read) and **Settings** (installed providers with an error or signed out). Hover an icon to see what
-its number means.
+On web and desktop the rail's **Threads** count also includes money decisions waiting in
+**Manual steps**. Failures share one **Problems** icon, which appears at the bottom of the rail only
+while something has failed: installed providers with an error or signed out, MCP servers that failed
+or need sign-in when last checked, open pull requests with failing checks or conflicts, scheduled
+tasks whose latest run failed, and Manual steps when ThreadPage cannot be read. Its count is the
+total; click it to see each failure and open the page that fixes it.
 
 ## Choose where scheduled tasks show
 

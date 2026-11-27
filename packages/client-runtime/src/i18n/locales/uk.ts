@@ -216,7 +216,6 @@ const catalog: MessageCatalog = {
     many: "{count} змінених файлів",
     other: "{count} зміненого файлу",
   },
-  "{count} changes requested": "{count}: запрошено зміни",
   "{count} chats": {
     one: "{count} чат",
     few: "{count} чати",
@@ -726,6 +725,12 @@ const catalog: MessageCatalog = {
     few: "{count} людини",
     many: "{count} людей",
     other: "{count} людини",
+  },
+  "{count} problems need attention": {
+    one: "{count} проблема потребує уваги",
+    few: "{count} проблеми потребують уваги",
+    many: "{count} проблем потребують уваги",
+    other: "{count} проблеми потребують уваги",
   },
   "{count} processes": {
     one: "{count} процес",
@@ -7529,8 +7534,6 @@ const catalog: MessageCatalog = {
   "Manual steps": "Ручні кроки",
   "Manual steps ({count})": "Ручні кроки ({count})",
   "Manual steps breadcrumb": "Навігація ручних кроків",
-  "Manual steps: {count}": "Ручні кроки: {count}",
-  "Manual steps: {count}, {money}": "Ручні кроки: {count}, {money}",
   "Manual steps: {reason}": "Ручні кроки: {reason}",
   "Manual update required": "Потрібне ручне оновлення",
   "Map {model} to model": "Зіставити {model} з моделлю",
@@ -9302,6 +9305,7 @@ const catalog: MessageCatalog = {
     other: "Pro · до {count} тунеля.",
   },
   "proactive panels": "автоматичні панелі",
+  Problems: "Проблеми",
   process: "процес",
   Process: "Процес",
   "Process already exited": "Процес уже завершився",

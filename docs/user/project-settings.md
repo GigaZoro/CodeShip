@@ -185,9 +185,9 @@ which releases are due. **Run history** in a task's menu lists each time it
 fired: runs that started a thread, runs that failed before one existed, and
 missed or skipped times, with the reason. Select a task's **Last run** to open
 that run's thread. In the mobile Tasks tab, tapping a task opens its last run;
-edit it from its menu. The **Scheduled tasks** item in the side rail shows a
-red dot while any task's latest run failed; it clears when the next run starts,
-or when you pause the task.
+edit it from its menu. On web and desktop, a task whose latest run failed
+shows under the **Problems** icon in the side rail; it clears when the next run
+starts, or when you pause the task.
 
 You can edit, duplicate, pause, resume, run immediately, change where it shows,
 or delete a task from the list. See [Choose where scheduled tasks show](thread-sidebar.md#choose-where-scheduled-tasks-show).
