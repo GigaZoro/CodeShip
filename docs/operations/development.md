@@ -255,11 +255,14 @@ force-killed run leaves its unpublished results in the private copy. Retries and
 worktrees and chats, each with its own install, reuse a group when the tree's file modes, link
 targets and gitlinks, execute access, the group's inputs, install state, tracked environment, user,
 umask, and host capabilities match, at any commit. A group's inputs are the checkout files its tests
-read, hashed when the group ends. A group in which Git opens this checkout's repository, as Git's
-trace2 events report, also keys on HEAD, so it reruns at every commit; Git run with `GIT_*`
-variables removed or replaced, or a test that reads `.git` itself, escapes that and needs an
-uncached task. The machine's programs, network interfaces and cgroups, the read and write
-permissions of checkout files, and files another process rewrites during the run are not
+read, hashed when the group ends. A group in which a Git process opens, clones or fetches from this
+checkout, or names it or its Git directories in an argument or a `GIT_DIR`-style variable, as Git's
+trace2 events report, also keys on HEAD, so it reruns at every commit. Git run with `GIT_*`
+variables removed or replaced, Git given a relative path to the checkout from a folder outside it,
+or a test that reads `.git` itself escapes that and needs an uncached task. The machine's programs,
+network interfaces and cgroups, Git state beyond the commit (the index, refs, config and other
+branches, which a group that reads Git does not key on either), the read and write permissions of
+checkout files, and files another process rewrites during the run are not
 inputs, so a pass still replays after a program its tests run
 changes or goes away. A test whose coverage they decide, such as one that skips cases without a
 program or a cgroup it may join, or runs a program a variable names, or that writes a report another
