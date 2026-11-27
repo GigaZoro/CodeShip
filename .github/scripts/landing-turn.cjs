@@ -1266,8 +1266,9 @@ async function runCheck(
   budgetSeconds,
   signal,
   {
-    // The private checkout has no node_modules; the store's hardlinks make this install cheap.
-    command = `vp i --frozen-lockfile --offline && vp run check:changed ${base}`,
+    // The private checkout has no node_modules; the store's hardlinks make this install cheap. A package the store
+    // lacks, as after a rebase across a lockfile change, is fetched.
+    command = `vp i --frozen-lockfile --prefer-offline && vp run check:changed ${base}`,
     stdio = "inherit",
     onSpawn = () => {},
   } = {},
