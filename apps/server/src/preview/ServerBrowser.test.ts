@@ -62,6 +62,8 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       return makeEncoderPage() as unknown as Page;
     }
     async connectDesktopPage(endpoint: string) {
+      desktopConnecting.resolve();
+      await desktopConnectGate?.promise;
       const context = makeContext(undefined, desktopPageUrl);
       context.page.viewportSize.mockReturnValue(null);
       desktopConnections.push({ endpoint, context });
@@ -344,6 +346,9 @@ let cdpSessionFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
 let desktopPageUrl = "about:blank";
+/** Holds connecting to a desktop page the desktop already shows, once `desktopConnecting` resolves. */
+let desktopConnectGate: PromiseWithResolvers<void> | null = null;
+let desktopConnecting = Promise.withResolvers<void>();
 /** Replaces the answer to the desktop page's size reads. */
 let desktopSizeAnswer: (() => Promise<Record<string, unknown>>) | null = null;
 const desktopDetaches = new NodeEvents.EventEmitter();
@@ -541,6 +546,8 @@ beforeEach(() => {
   desktopAttachWaits = Promise.withResolvers<string>();
   desktopAttachTaken = Promise.withResolvers<void>();
   desktopPageUrl = "about:blank";
+  desktopConnectGate = null;
+  desktopConnecting = Promise.withResolvers<void>();
   desktopSizeAnswer = null;
   desktopDetachReady = Promise.withResolvers<void>();
   desktopReleased = Promise.withResolvers<void>();
@@ -897,6 +904,50 @@ it.effect(
         expect(reuseError).toMatchObject({ _tag: "PreviewAutomationExecutionError" });
         expect(reuseError.message).toContain("has not shown this tab");
         expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent acting on a tab the desktop shows again while its page connects hears it is starting",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        desktopRendersNext = true;
+        const opened = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        const tabId = PreviewTabId.make(opened.tabId!);
+        yield* Effect.promise(() => desktopDetachReady.promise);
+        desktopTabs.delete(tabId);
+        desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId });
+        yield* Effect.promise(() => desktopReleased.promise);
+        desktopTabs.add(tabId);
+        desktopConnecting = Promise.withResolvers<void>();
+        desktopConnectGate = Promise.withResolvers<void>();
+
+        const acting = yield* broker
+          .invoke<PreviewAutomationStatus>({ scope, tabId, operation: "snapshot", input: {} })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Effect.promise(() => desktopConnecting.promise);
+        yield* TestClock.adjust("15 seconds");
+        const error = yield* Fiber.join(acting);
+        desktopConnectGate.resolve();
+        yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+        const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+
+        expect(error).toMatchObject({ _tag: "PreviewAutomationExecutionError" });
+        expect(error.message).toContain("still starting");
+        expect(sessions.map((session) => session.tabId)).toContain(tabId);
       }),
     ).pipe(Effect.provide(layer)),
 );

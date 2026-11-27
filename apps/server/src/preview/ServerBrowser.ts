@@ -346,11 +346,14 @@ interface PendingTab {
   readonly agentId: string | null;
   /** Aborted when the tab's session closes, which ends its wait for the desktop at once. */
   readonly closed: AbortController;
+  /** True only while the start waits for the desktop app to show the tab. */
+  awaitingDesktop: boolean;
   promise?: Promise<ServerTab>;
 }
 const pendingTab = (agentId: string | undefined): PendingTab => ({
   agentId: agentId ?? null,
   closed: new AbortController(),
+  awaitingDesktop: false,
 });
 
 // A headless page would lack the desktop profile's sign-ins while the desktop shows its own page.
@@ -781,17 +784,20 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const awaitDesktop = async (snapshot: PreviewSessionSnapshot, closed: AbortSignal) => {
+  const awaitDesktop = async (snapshot: PreviewSessionSnapshot, pending: PendingTab) => {
     if (snapshot.headless) return "declined" as const;
+    pending.awaitingDesktop = true;
     const exit = await runPromiseExit(
       desktopChannel.awaitAttached(
         { threadId: snapshot.threadId, tabId: snapshot.tabId },
         DESKTOP_BROWSER_ATTACH_WAIT_MS,
       ),
-      { signal: closed },
-    );
+      { signal: pending.closed.signal },
+    ).finally(() => {
+      pending.awaitingDesktop = false;
+    });
     if (Exit.isSuccess(exit)) return exit.value;
-    throw closed.aborted
+    throw pending.closed.signal.aborted
       ? new ServerBrowserTabNotFoundError({ threadId: snapshot.threadId, tabId: snapshot.tabId })
       : Cause.squash(exit.cause);
   };
@@ -1019,11 +1025,12 @@ const make = Effect.gen(function* () {
 
   const createTab = async (
     snapshot: PreviewSessionSnapshot,
-    closed: AbortSignal,
+    pending: PendingTab,
   ): Promise<ServerTab> => {
+    const closed = pending.closed.signal;
     const adopted = adoptedPages.get(tabKey(snapshot.threadId, snapshot.tabId));
     adoptedPages.delete(tabKey(snapshot.threadId, snapshot.tabId));
-    const attach = adopted === undefined ? await awaitDesktop(snapshot, closed) : "declined";
+    const attach = adopted === undefined ? await awaitDesktop(snapshot, pending) : "declined";
     if (attach === "timedOut") throw new DesktopAttachTimeoutError();
     const desktop = attach === "attached" ? await connectDesktop(snapshot) : null;
     // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
@@ -1406,7 +1413,7 @@ const make = Effect.gen(function* () {
     if (existing) return Promise.resolve(existing);
     // openTab's reservation keeps its signal, so a close that came before the page started still counts.
     const entry = pending ?? pendingTab(snapshot.automationOwner);
-    const opening = createTab(snapshot, entry.closed.signal)
+    const opening = createTab(snapshot, entry)
       .catch((cause: unknown) => {
         runFork(
           Effect.logWarning(
@@ -1895,9 +1902,6 @@ const make = Effect.gen(function* () {
     if (existing) return existing;
     const snapshot = await runPromise(listedServerSession(threadId, tabId));
     if (!snapshot) return undefined;
-    // Only a tab that will wait for the desktop is slow for the desktop's sake; others are starting.
-    const waitsForDesktop =
-      !snapshot.headless && desktopChannel.available && !adoptedPages.has(tabKey(threadId, tabId));
     const started = await runPromise(
       Effect.tryPromise({
         // A tab closed while it waited is no longer open: requireTab says so.
@@ -1910,10 +1914,11 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.timeoutOption(Duration.millis(Math.max(0, deadlineMs - performance.now())))),
     );
     if (Option.isSome(started)) return started.value;
+    // Read when the deadline passes: only a start still waiting for the desktop is slow on its account.
     throw new ServerBrowserPage.ServerBrowserOperationError(
       "PreviewAutomationExecutionError",
-      waitsForDesktop
-        ? `The desktop app has not shown this tab yet, so it has no page to act on. CodeShip waits up to ${DESKTOP_BROWSER_ATTACH_WAIT_MS / 1000} seconds for it, then closes the tab rather than run it in the server's headless browser without the desktop profile's sign-ins. Try again shortly, or call preview_open.`
+      pendingTabs.get(tabKey(threadId, tabId))?.awaitingDesktop
+        ? `The desktop app has not shown this tab yet, so it has no page to act on. CodeShip waits up to ${DESKTOP_BROWSER_ATTACH_WAIT_MS / 1000} seconds for it, then closes the tab rather than run it in the server's headless browser without the desktop profile's sign-ins. Try again shortly, or call preview_open with reuseExistingTab=false to open a new tab.`
         : "This tab is still starting, so it has no page to act on yet. Try again shortly.",
     );
   };
