@@ -871,6 +871,9 @@ const make = Effect.gen(function* () {
       /** Where the turn runs when not in `threadId`'s project: a task in another project's worktree. */
       readonly projectId?: ProjectId | undefined;
       readonly scheduled: boolean;
+      readonly requestPrompt?: AccountRouting.AutoRequestPrompt | undefined;
+      readonly preservePreviousSelection?: boolean | undefined;
+      readonly steersActiveRun?: boolean | undefined;
     }) {
       if (input.newThread && input.selection?.autoAccount !== true) return command;
       const thread = yield* orchestrator.getThreadShell(input.threadId);
@@ -898,6 +901,9 @@ const make = Effect.gen(function* () {
           discoverMcpSignIns: false,
           // The thread itself, or the parent a delegated task is for.
           requesterThreadId: input.threadId,
+          ...(selection.autoAccount === true && input.requestPrompt !== undefined
+            ? { requestPrompt: input.requestPrompt }
+            : {}),
         });
         if (launch.failover?.reason === "usageLimit") {
           const from = launch.failover.crossProviderFrom;
@@ -916,6 +922,28 @@ const make = Effect.gen(function* () {
         }
       }
       if (selection.autoAccount !== true) return command;
+      const started = !input.newThread && thread.latestRunId !== null;
+      let previousSelection = started ? thread.modelSelection : undefined;
+      if (
+        started &&
+        input.steersActiveRun !== true &&
+        (thread.activeRunId != null || thread.queueHeld === true)
+      ) {
+        const records = yield* orchestrator
+          .getThreadRecords(input.threadId, ["runs"])
+          .pipe(Effect.orElseSucceed(() => null));
+        const latestQueued = records?.runs
+          ?.filter((run) => run.status === "queued")
+          .toSorted(
+            (left, right) =>
+              (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal) ||
+              left.ordinal - right.ordinal,
+          )
+          .at(-1);
+        if (latestQueued !== undefined) {
+          previousSelection = latestQueued.modelSelection;
+        }
+      }
       const routed = yield* routing.route({
         ...(observe && { observe }),
         selection,
@@ -925,9 +953,12 @@ const make = Effect.gen(function* () {
           input.newThread || thread.activeProviderThreadId === null
             ? null
             : thread.providerInstanceId,
-        started: !input.newThread && thread.latestRunId !== null,
+        started,
         scheduled: input.scheduled,
         requesterThreadId: input.threadId,
+        ...(previousSelection !== undefined ? { previousSelection } : {}),
+        ...(input.preservePreviousSelection === true ? { preservePreviousSelection: true } : {}),
+        ...(input.requestPrompt !== undefined ? { requestPrompt: input.requestPrompt } : {}),
       });
       // A recorded continuation pins the account it was routed to, so the evidence names where it ran.
       return routed === selection && !(observe && input.selection === undefined)
@@ -935,18 +966,37 @@ const make = Effect.gen(function* () {
         : { ...command, modelSelection: routed };
     });
     switch (command.type) {
-      case "message.dispatch":
+      case "message.dispatch": {
         // A buffered wake is a turn the provider already started in its live session; another
         // account would restart that session and find nothing to drain. A limit fails over instead.
         if (command.createdBy === "agent" && command.creationSource === "provider") {
           return Effect.succeed(command);
         }
+        const isServerContinuationOrWake =
+          command.restartContinuationOfRunId !== undefined ||
+          command.usageLimitContinuationOfRunId !== undefined ||
+          command.automaticContinuationOfRunId !== undefined ||
+          (command.creationSource === "server" && command.scheduledTaskId === undefined);
         return route({
           threadId: command.threadId,
           selection: command.modelSelection,
           newThread: false,
           scheduled: command.scheduledTaskId !== undefined,
+          steersActiveRun:
+            command.dispatchMode.type === "steer_active" ||
+            command.dispatchMode.type === "restart_active" ||
+            (command.dispatchMode.type === "start_immediately" &&
+              (command.deliveryIntent === "steer" || command.deliveryIntent === "restart")),
+          ...(isServerContinuationOrWake
+            ? { preservePreviousSelection: true }
+            : {
+                requestPrompt: {
+                  text: command.text,
+                  attachmentCount: command.attachments.length,
+                },
+              }),
         });
+      }
       case "delegated_task.request":
         return route({
           threadId: command.parentThreadId,
@@ -954,6 +1004,13 @@ const make = Effect.gen(function* () {
           newThread: true,
           projectId: command.projectId,
           scheduled: false,
+          ...(command.modelSelection.autoAccount === true
+            ? {
+                requestPrompt: {
+                  text: command.task,
+                },
+              }
+            : {}),
         });
     }
   };

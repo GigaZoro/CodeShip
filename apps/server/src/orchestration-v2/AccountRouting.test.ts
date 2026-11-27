@@ -3521,3 +3521,182 @@ describe("soft-drain avoidance and headroom spreading", () => {
     );
   });
 });
+
+describe("Auto request complexity routing", () => {
+  const effortCaps = {
+    optionDescriptors: [
+      {
+        id: "effort",
+        label: "Effort",
+        type: "select" as const,
+        options: [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High" },
+        ],
+      },
+    ],
+  };
+
+  const claudeWithSonnet = provider(primary, {
+    models: [
+      {
+        slug: "claude-opus-5-5",
+        name: "Claude Opus 5.5",
+        aliases: ["opus", "primary"],
+        isCustom: false,
+        capabilities: effortCaps,
+      },
+      {
+        slug: "claude-sonnet-5-5",
+        name: "Claude Sonnet 5.5",
+        aliases: ["sonnet"],
+        isCustom: false,
+        capabilities: effortCaps,
+      },
+    ],
+  });
+
+  const baseCtx = (): AccountRoutingContext & {
+    readonly mcpSignInsNeeded: Map<ProviderInstanceId, ReadonlyArray<string>>;
+  } => ({
+    settings: {
+      ...settings([primary]),
+      autoModeModels: {
+        [claude]: { model: "claude-opus-5-5", options: [{ id: "effort", value: "high" }] },
+      },
+    },
+    providers: [claudeWithSonnet],
+    recordedLimits: new Map(),
+    mcpSignInsNeeded: signIns(),
+    nowMs,
+  });
+
+  it("keeps started Sonnet thread on Sonnet even when web command carries Opus, and preserves model/effort on server continuations", () => {
+    const webPrimarySelection: ModelSelection = {
+      instanceId: primary,
+      model: "claude-opus-5-5",
+      autoAccount: true,
+      options: [{ id: "effort", value: "high" }],
+    };
+
+    const fresh = routeAutoAccount({
+      ...baseCtx(),
+      selection: webPrimarySelection,
+      projectId,
+      currentInstanceId: null,
+      started: false,
+      requestPrompt: { text: "What is the default port?" },
+    });
+    assert.deepEqual(fresh, {
+      instanceId: primary,
+      model: "claude-sonnet-5-5",
+      autoAccount: true,
+      options: [{ id: "effort", value: "low" }],
+    });
+
+    // Web composer sends primary Opus selection, but server previousSelection is Sonnet
+    const followupClosing = routeAutoAccount({
+      ...baseCtx(),
+      selection: webPrimarySelection,
+      previousSelection: fresh,
+      projectId,
+      currentInstanceId: primary,
+      started: true,
+      requestPrompt: { text: "thanks!" },
+    });
+    assert.equal(followupClosing.model, "claude-sonnet-5-5");
+    assert.deepEqual(followupClosing.options, [{ id: "effort", value: "low" }]);
+
+    // Server continuation / wake preserves Sonnet + low effort (no silent Opus upgrade)
+    const serverContinuation = routeAutoAccount({
+      ...baseCtx(),
+      selection: fresh,
+      previousSelection: fresh,
+      preservePreviousSelection: true,
+      projectId,
+      currentInstanceId: primary,
+      started: true,
+    });
+    assert.deepEqual(serverContinuation, fresh);
+
+    // Approval ("go ahead") is standard, so it upgrades to primary + medium (never low effort)
+    const approvalTurn = routeAutoAccount({
+      ...baseCtx(),
+      selection: webPrimarySelection,
+      previousSelection: fresh,
+      projectId,
+      currentInstanceId: primary,
+      started: true,
+      requestPrompt: { text: "go ahead" },
+    });
+    assert.equal(approvalTurn.model, "claude-opus-5-5");
+    assert.deepEqual(approvalTurn.options, [{ id: "effort", value: "medium" }]);
+
+    // Deep prompt on Sonnet upgrades to Opus + high
+    const followupDeep = routeAutoAccount({
+      ...baseCtx(),
+      selection: webPrimarySelection,
+      previousSelection: fresh,
+      projectId,
+      currentInstanceId: primary,
+      started: true,
+      requestPrompt: { text: "Investigate why this concurrency race condition happens." },
+    });
+    assert.equal(followupDeep.model, "claude-opus-5-5");
+    assert.deepEqual(followupDeep.options, [{ id: "effort", value: "high" }]);
+
+    // Closing message on started Opus stays on Opus (KV cache safe) and drops effort to low
+    const opusFollowupClosing = routeAutoAccount({
+      ...baseCtx(),
+      selection: webPrimarySelection,
+      previousSelection: followupDeep,
+      projectId,
+      currentInstanceId: primary,
+      started: true,
+      requestPrompt: { text: "thanks, got it" },
+    });
+    assert.equal(opusFollowupClosing.model, "claude-opus-5-5");
+    assert.deepEqual(opusFollowupClosing.options, [{ id: "effort", value: "low" }]);
+
+    // Server wake on started Opus preserves high effort instead of dropping to medium
+    const opusServerWake = routeAutoAccount({
+      ...baseCtx(),
+      selection: webPrimarySelection,
+      previousSelection: followupDeep,
+      preservePreviousSelection: true,
+      projectId,
+      currentInstanceId: primary,
+      started: true,
+    });
+    assert.equal(opusServerWake.model, "claude-opus-5-5");
+    assert.deepEqual(opusServerWake.options, [{ id: "effort", value: "high" }]);
+  });
+
+  it("preserves legacy behavior when requestPrompt is omitted or selection is non-Auto", () => {
+    const legacy = routeAutoAccount({
+      ...baseCtx(),
+      selection: { instanceId: primary, model: "claude-opus-5-5", autoAccount: true },
+      projectId,
+      currentInstanceId: null,
+      started: false,
+    });
+    assert.equal(legacy.model, "claude-opus-5-5");
+    assert.deepEqual(legacy.options, [{ id: "effort", value: "high" }]);
+
+    const explicit: ModelSelection = {
+      instanceId: primary,
+      model: "claude-opus-5-5",
+      options: [{ id: "effort", value: "high" }],
+    };
+    const routedExplicit = routeAutoAccount({
+      ...baseCtx(),
+      selection: explicit,
+      projectId,
+      currentInstanceId: null,
+      started: false,
+      requestPrompt: { text: "git status" },
+    });
+    assert.strictEqual(routedExplicit, explicit);
+  });
+});

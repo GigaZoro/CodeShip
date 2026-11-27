@@ -12,6 +12,8 @@ import {
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
+  DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -385,6 +387,7 @@ it.effect.each([{ scheduled: false }, { scheduled: true }])(
           started: false,
           scheduled,
           requesterThreadId: threadId,
+          requestPrompt: { text: "First message", attachmentCount: 0 },
         },
       ]);
       expect(firstLaunchChecks).toHaveLength(scheduled ? 0 : 1);
@@ -1040,4 +1043,346 @@ it.effect("Force stop refuses once a newer run has started, before killing anyth
     expect(error.reason).toBe("superseded");
     expect(killed).toBe(false);
   }),
+);
+
+it.effect(
+  "routes web follow-ups, continuations, and server wakes through real routeAutoAccount without losing Sonnet or effort",
+  () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const claudeMain = ProviderInstanceId.make("claude_main");
+    const projectId = ProjectId.make("project:thread-management:chokepoint");
+    const threadId = ThreadId.make("thread:thread-management:chokepoint");
+    const effortCaps = {
+      optionDescriptors: [
+        {
+          id: "effort",
+          label: "Effort",
+          type: "select" as const,
+          options: [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High" },
+          ],
+        },
+      ],
+    };
+    const providers = [
+      {
+        instanceId: claudeMain,
+        driver: claude,
+        enabled: true,
+        installed: true,
+        version: null,
+        status: "ready" as const,
+        auth: { status: "authenticated" as const },
+        checkedAt: "2026-11-26T00:00:00.000Z",
+        models: [
+          {
+            slug: "claude-opus-5-5",
+            name: "Claude Opus 5.5",
+            aliases: ["opus", "primary"],
+            isCustom: false,
+            capabilities: effortCaps,
+          },
+          {
+            slug: "claude-sonnet-5-5",
+            name: "Claude Sonnet 5.5",
+            aliases: ["sonnet"],
+            isCustom: false,
+            capabilities: effortCaps,
+          },
+        ],
+        slashCommands: [],
+        skills: [],
+      },
+    ];
+    const routingSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: { [claudeMain]: { driver: claude, enabled: true } },
+      providerInstanceFailoverOrder: [claudeMain],
+      failoverLimitedThreads: true,
+      autoModeProvider: claude,
+      autoModeModels: {
+        [claude]: { model: "claude-opus-5-5", options: [{ id: "effort", value: "high" }] },
+      },
+    };
+    const sonnetRunning = {
+      instanceId: claudeMain,
+      model: "claude-sonnet-5-5",
+      autoAccount: true as const,
+      options: [{ id: "effort", value: "low" }],
+    };
+    const webOpusSelection = {
+      instanceId: claudeMain,
+      model: "claude-opus-5-5",
+      autoAccount: true as const,
+      options: [{ id: "effort", value: "high" }],
+    };
+    const thread: {
+      id: ThreadId;
+      projectId: ProjectId;
+      providerInstanceId: ProviderInstanceId;
+      activeProviderThreadId: string;
+      latestRunId: RunId;
+      activeRunId: RunId | null;
+      queueHeld?: boolean;
+      deletedAt: null;
+      modelSelection: typeof sonnetRunning;
+    } = {
+      id: threadId,
+      projectId,
+      providerInstanceId: claudeMain,
+      activeProviderThreadId: "provider-thread:sonnet",
+      latestRunId: RunId.make("run:initial-sonnet"),
+      activeRunId: RunId.make("run:initial-sonnet"),
+      deletedAt: null,
+      modelSelection: sonnetRunning,
+    };
+    const queuedRuns: Array<{
+      readonly id: RunId;
+      readonly ordinal: number;
+      readonly queuePosition?: number | null;
+      readonly status: "queued";
+      readonly modelSelection: typeof webOpusSelection;
+    }> = [];
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadRecords: (_threadId, fields) =>
+            Effect.sync(() => {
+              const requested = new Set<string>(fields.map((field) => field));
+              return {
+                thread,
+                ...(requested.has("runs") ? { runs: queuedRuns } : {}),
+              } as unknown as OrchestrationV2ThreadProjection;
+            }),
+          getThreadShell: () => Effect.succeed(thread as unknown as OrchestrationV2ThreadShell),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              dispatched.push(command);
+              return { sequence: 1, storedEvents: [] } as never;
+            }),
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(AccountRouting.AccountRouting, {
+          accountsWithRoom: () => Effect.succeed([]),
+          scheduledRunBlock: () => Effect.succeed(null),
+          releaseAllowedHolds: Effect.succeed(false),
+          route: (input) =>
+            Effect.succeed(
+              AccountRouting.routeAutoAccount({
+                ...input,
+                settings: routingSettings,
+                providers,
+                recordedLimits: new Map(),
+                mcpSignInsNeeded: new Map(),
+                nowMs: Date.parse("2026-11-26T00:01:00.000Z"),
+              }),
+            ),
+          limits: () =>
+            Effect.succeed({
+              accounts: new Map(),
+              estimated: new Set<never>(),
+              models: new Map(),
+              credits: new Map(),
+              grants: new Map(),
+            }),
+          retryAccount: () => Effect.succeed({}),
+          creditRefusal: () => Effect.succeed(null),
+          creditAccess: () => Effect.succeed({ spent: new Map(), requesters: [] }),
+          creditOverruns: Effect.succeed([]),
+          holds: Effect.succeed([]),
+          launchLimit: () => Effect.succeed(null),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+      ),
+      Layer.provide(ServerSettings.layerTest(routingSettings)),
+      Layer.provide(layerReceiptsTest),
+    );
+
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      // 1. Web composer sends primary Opus with closing "thanks" -> stays on Sonnet + low
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-web-thanks"),
+        threadId,
+        messageId: MessageId.make("message:e2e-web-thanks"),
+        text: "thanks!",
+        attachments: [],
+        modelSelection: webOpusSelection,
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      // 2. Restart continuation -> stays on Sonnet + low
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-restart-cont"),
+        threadId,
+        messageId: MessageId.make("message:e2e-restart-cont"),
+        text: "Continue where you left off.",
+        attachments: [],
+        modelSelection: sonnetRunning,
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "server",
+        restartContinuationOfRunId: RunId.make("run:initial-sonnet"),
+      });
+      // 3. Usage-limit continuation -> stays on Sonnet + low
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-limit-cont"),
+        threadId,
+        messageId: MessageId.make("message:e2e-limit-cont"),
+        text: "Continue where you left off.",
+        attachments: [],
+        modelSelection: sonnetRunning,
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "server",
+        usageLimitContinuationOfRunId: RunId.make("run:initial-sonnet"),
+      });
+      // 4. Delegated-task completion wake (creationSource: "server", no continuation flags) -> stays on Sonnet + low
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-delegate-wake"),
+        threadId,
+        messageId: MessageId.make("message:e2e-delegate-wake"),
+        text: "Delegated task finished with summary of changes across two files.",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+      });
+      // 5. Web approval ("go ahead") -> upgrades to Opus + medium (never low effort)
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-web-go-ahead"),
+        threadId,
+        messageId: MessageId.make("message:e2e-web-go-ahead"),
+        text: "go ahead",
+        attachments: [],
+        modelSelection: webOpusSelection,
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      // Simulate run 5 entering the queue at queuePosition 2 (Opus), plus a higher-ordinal
+      // redispatched Sonnet run moved ahead of it at queuePosition 1:
+      queuedRuns.push(
+        {
+          id: RunId.make("run:queued-opus"),
+          ordinal: 2,
+          queuePosition: 2,
+          status: "queued",
+          modelSelection: {
+            instanceId: claudeMain,
+            model: "claude-opus-5-5",
+            autoAccount: true,
+            options: [{ id: "effort", value: "medium" }],
+          },
+        },
+        {
+          id: RunId.make("run:reordered-earlier-sonnet"),
+          ordinal: 3,
+          queuePosition: 1,
+          status: "queued",
+          modelSelection: sonnetRunning,
+        },
+      );
+      // 6. Queued closing "thanks!" behind the reordered queue follows delivery order (queuePosition 2 = Opus)
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-queued-thanks-after-opus"),
+        threadId,
+        messageId: MessageId.make("message:e2e-queued-thanks-after-opus"),
+        text: "thanks!",
+        attachments: [],
+        modelSelection: webOpusSelection,
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      // 7. Steered closing "thanks!" joins the active Sonnet run instead of inheriting queued Opus
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-steered-thanks"),
+        threadId,
+        messageId: MessageId.make("message:e2e-steered-thanks"),
+        text: "thanks!",
+        attachments: [],
+        modelSelection: webOpusSelection,
+        dispatchMode: { type: "steer_active", targetRunId: RunId.make("run:initial-sonnet") },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      // 7b. Client steer via start_immediately + deliveryIntent: "steer" also stays on active Sonnet
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-client-steered-thanks"),
+        threadId,
+        messageId: MessageId.make("message:e2e-client-steered-thanks"),
+        text: "thanks!",
+        attachments: [],
+        modelSelection: webOpusSelection,
+        dispatchMode: { type: "start_immediately" },
+        deliveryIntent: "steer",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      // 8. Held queue with no active run still uses the last queued Opus run as previousSelection
+      thread.activeRunId = null;
+      thread.queueHeld = true;
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:tms:e2e-held-queue-thanks"),
+        threadId,
+        messageId: MessageId.make("message:e2e-held-queue-thanks"),
+        text: "thanks!",
+        attachments: [],
+        modelSelection: webOpusSelection,
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+
+      // Case 4 omitted modelSelection on the wake, and routing left it untouched (preserving thread.modelSelection).
+      expect(
+        dispatched[3]?.type === "message.dispatch" ? dispatched[3].modelSelection : "unexpected",
+      ).toBeUndefined();
+      const selections = dispatched.map((cmd) =>
+        cmd.type === "message.dispatch" ? (cmd.modelSelection ?? thread.modelSelection) : undefined,
+      );
+      expect(selections).toEqual([
+        sonnetRunning,
+        sonnetRunning,
+        sonnetRunning,
+        sonnetRunning,
+        {
+          instanceId: claudeMain,
+          model: "claude-opus-5-5",
+          autoAccount: true,
+          options: [{ id: "effort", value: "medium" }],
+        },
+        {
+          instanceId: claudeMain,
+          model: "claude-opus-5-5",
+          autoAccount: true,
+          options: [{ id: "effort", value: "low" }],
+        },
+        sonnetRunning,
+        sonnetRunning,
+        {
+          instanceId: claudeMain,
+          model: "claude-opus-5-5",
+          autoAccount: true,
+          options: [{ id: "effort", value: "low" }],
+        },
+      ]);
+    }).pipe(Effect.provide(layerTest));
+  },
 );

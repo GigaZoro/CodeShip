@@ -1,3 +1,9 @@
+## 2026-11-27 — Auto mode matches model and reasoning effort to request complexity
+
+- New **Auto** threads start on a faster model (such as Sonnet or GPT-6.2 Sol) at low effort for short lookups, utility slash commands, and tiny mechanical edits, then upgrade monotonically to the configured coordinator model when a deeper request arrives.
+- Started **Auto** threads never downgrade models mid-thread (keeping prompt caches warm), adjust reasoning effort per turn based on request complexity, and keep their running model and options across server continuations and wakes.
+- Auto coordinator instructions match delegated effort to task complexity and skip independent review only for trivial, low-risk edits.
+
 ## 2026-11-27 — Assignment-isolated reviews on Claude
 
 - `delegate_task` with `isolation: { type: "assignment", handle }` now starts a Claude review that can only read the material its registered assignment allows. The session has no built-in tools, settings files, plugins, skills, hooks or other MCP servers, and it runs in an empty folder outside every checkout.
