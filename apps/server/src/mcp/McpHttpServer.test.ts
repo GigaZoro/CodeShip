@@ -16,6 +16,7 @@ import {
   RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
+import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -45,6 +46,7 @@ import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
+import * as ReviewAssignmentRegistry from "./ReviewAssignmentRegistry.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
@@ -1425,4 +1427,199 @@ it.effect(
         expect(yield* start("root/default")).toBe(400);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "keeps the review assignment's read tool and credentials off /mcp, and ordinary ones off its route",
+  () => {
+    const handle = "assignment-route";
+    const pin = { handle, side: "head", path: "src/app.ts" } as const;
+    const reviewThread = ThreadId.make("thread-review-route");
+    const strangerThread = ThreadId.make("thread-review-route-stranger");
+    const claude = ProviderInstanceId.make("claudeAgent");
+    const digest = McpProviderSession.reviewEvidenceDigest("x");
+    const PingToolkit = Toolkit.make(
+      Tool.make("ping", {
+        description: "Answers.",
+        success: Schema.Struct({ pong: Schema.Boolean }),
+        failure: OrchestratorMcpFailure,
+        failureMode: "return",
+        dependencies: [
+          McpInvocationContext.McpInvocationContext,
+          ThreadManagementService.ThreadManagementService,
+        ],
+      }),
+    );
+    const layerRegistries = Layer.mergeAll(
+      McpSessionRegistry.layer,
+      ReviewAssignmentRegistry.layer,
+    ).pipe(
+      Layer.provideMerge(
+        Layer.mock(ServerEnvironment.ServerEnvironment)({
+          getEnvironmentId: Effect.succeed(environmentId),
+        }),
+      ),
+      Layer.provideMerge(Sqlite.layerMemory),
+      Layer.provide(ServerSecretStore.layer),
+      Layer.provide(ManagedPolicy.layerTest()),
+      Layer.provideMerge(ServerEnvironment.layerIdentity),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-review-route-test-" })),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const credentials = yield* McpSessionRegistry.McpSessionRegistry;
+        const assignments = yield* ReviewAssignmentRegistry.ReviewAssignmentRegistry;
+        yield* assignments.register({
+          handle,
+          allowedReads: [pin],
+          read: async () => new TextEncoder().encode("const answer = 42;\n"),
+          record: async () => undefined,
+        });
+        const openReview = (thread: ThreadId) =>
+          Effect.gen(function* () {
+            const session = yield* assignments.openSession({
+              threadId: thread,
+              handle,
+              providerInstanceId: claude,
+            });
+            const issued = yield* credentials.issue({
+              threadId: thread,
+              providerInstanceId: claude,
+              browserToolsAvailable: false,
+              capabilities: new Set(),
+              subagent: true,
+              reviewAssignment: session,
+            });
+            return { session, token: issued.config.authorizationHeader.slice("Bearer ".length) };
+          });
+        const review = yield* openReview(reviewThread);
+        const stranger = yield* openReview(strangerThread);
+        const ordinary = (yield* credentials.issue({
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        })).config.authorizationHeader.slice("Bearer ".length);
+
+        yield* HttpRouter.serve(
+          Layer.merge(
+            McpHttpServer.toolkitRegistration(
+              PingToolkit,
+              McpToolAccess.toLayer(PingToolkit, {
+                ping: McpToolAccess.reads(() => Effect.succeed({ pong: true })),
+              }),
+            ).pipe(Layer.provideMerge(McpHttpServer.layerMcpTransport)),
+            McpHttpServer.layerReviewAssignment,
+          ).pipe(
+            Layer.provide(ServerSettings.layerTest()),
+            Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+          ),
+          { disableListenLog: true, disableLogger: true },
+        ).pipe(Layer.build);
+        const httpClient = yield* HttpClient.HttpClient;
+        const connect = (path: string, token: string) =>
+          Effect.gen(function* () {
+            const headers = {
+              accept: "application/json, text/event-stream",
+              authorization: `Bearer ${token}`,
+            };
+            const initialize = yield* httpClient.post(path, {
+              headers,
+              body: HttpBody.text(
+                `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
+                "application/json",
+              ),
+            });
+            const rpc = (method: string, params: object) =>
+              httpClient
+                .post(path, {
+                  headers: {
+                    ...headers,
+                    "mcp-session-id": initialize.headers["mcp-session-id"]!,
+                    "mcp-protocol-version": "2025-06-18",
+                  },
+                  body: HttpBody.text(
+                    JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }),
+                    "application/json",
+                  ),
+                })
+                .pipe(Effect.flatMap((response) => response.json));
+            const listed = rpc("tools/list", {}).pipe(
+              Effect.map((body) =>
+                (body as { result: { tools: ReadonlyArray<{ name: string }> } }).result.tools.map(
+                  (tool) => tool.name,
+                ),
+              ),
+            );
+            const read = (args: object) =>
+              rpc("tools/call", {
+                name: McpProviderSession.REVIEW_ASSIGNMENT_TOOL,
+                arguments: args,
+              }).pipe(
+                Effect.map(
+                  (body) =>
+                    (
+                      body as {
+                        result: {
+                          isError?: boolean;
+                          structuredContent?: unknown;
+                          content: ReadonlyArray<{ text: string }>;
+                        };
+                      }
+                    ).result,
+                ),
+              );
+            return { status: initialize.status, listed, read };
+          });
+        const unavailable = {
+          isError: true,
+          content: [{ text: expect.stringContaining("Material read unavailable.") }],
+        };
+
+        const ordinaryOnMcp = yield* connect("/mcp", ordinary);
+        expect(ordinaryOnMcp.status).toBe(200);
+        expect(yield* ordinaryOnMcp.listed).toEqual(["ping"]);
+        expect((yield* connect("/mcp", review.token)).status).toBe(401);
+        expect(
+          (yield* connect(McpSessionRegistry.REVIEW_ASSIGNMENT_MCP_PATH, ordinary)).status,
+        ).toBe(401);
+
+        const reviewer = yield* connect(
+          McpSessionRegistry.REVIEW_ASSIGNMENT_MCP_PATH,
+          review.token,
+        );
+        expect(reviewer.status).toBe(200);
+        expect(yield* reviewer.listed).toEqual([McpProviderSession.REVIEW_ASSIGNMENT_TOOL]);
+        // Unattested, the session reads nothing.
+        expect(yield* reviewer.read(pin)).toMatchObject(unavailable);
+
+        const evidence = (cwd: string): McpProviderSession.ReviewAssignmentSessionEvidence => ({
+          runId: "run-route",
+          driver: "claudeAgent",
+          nativeAccount: digest,
+          model: "claude-sonnet-4-6",
+          effort: "high",
+          effectiveTools: [
+            `${McpProviderSession.REVIEW_ASSIGNMENT_MCP_SERVER}/${McpProviderSession.REVIEW_ASSIGNMENT_TOOL}`,
+          ],
+          mcpServers: [McpProviderSession.REVIEW_ASSIGNMENT_MCP_SERVER],
+          cwd,
+          instructionDigest: digest,
+          promptDigest: digest,
+        });
+        yield* review.session.attest(evidence(review.session.cwd));
+        expect((yield* reviewer.read(pin)).structuredContent).toEqual({
+          text: "const answer = 42;\n",
+        });
+        expect(yield* reviewer.read({ ...pin, handle: "assignment-foreign" })).toMatchObject(
+          unavailable,
+        );
+        // Another session of the same assignment stays dark until it passes its own check.
+        const strangerReader = yield* connect(
+          McpSessionRegistry.REVIEW_ASSIGNMENT_MCP_PATH,
+          stranger.token,
+        );
+        expect(yield* strangerReader.read(pin)).toMatchObject(unavailable);
+      }),
+    ).pipe(Effect.provide(layerRegistries.pipe(Layer.provideMerge(NodeHttpServer.layerTest))));
+  },
 );

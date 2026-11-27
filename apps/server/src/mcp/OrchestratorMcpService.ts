@@ -1410,6 +1410,37 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * A clientRequestId keeps the isolation it was accepted with, so a retry can neither return an
+   * ordinary task as a restricted review nor turn one review into another assignment's.
+   */
+  const requireAcceptedIsolation = Effect.fn("OrchestratorMcpService.requireAcceptedIsolation")(
+    function* (input: {
+      readonly accepted: { readonly remote: true } | { readonly childThreadId: ThreadId | null };
+      readonly requested: OrchestrationV2ReviewAssignment | undefined;
+    }) {
+      if ("remote" in input.accepted) {
+        if (input.requested === undefined) return;
+        return yield* failure(
+          "restricted_review_unsupported",
+          "This clientRequestId was accepted as a task in another environment, where assignment isolation does not run. Use a new clientRequestId.",
+        );
+      }
+      const childThreadId = input.accepted.childThreadId;
+      const accepted =
+        childThreadId === null
+          ? undefined
+          : (yield* threadManagement
+              .getThreadRecords(childThreadId, [])
+              .pipe(Effect.mapError(threadManagementFailure))).thread.reviewAssignment;
+      if (accepted?.handle === input.requested?.handle) return;
+      return yield* failure(
+        "invalid_request",
+        "This clientRequestId was accepted with different isolation. Use a new clientRequestId for a different task.",
+      );
+    },
+  );
+
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
       Effect.mapError((error) =>
@@ -3610,6 +3641,15 @@ const make = Effect.gen(function* () {
         }
         original = sharedSequence < legacySequence ? current : legacy;
       }
+      if (original !== undefined) {
+        yield* requireAcceptedIsolation({
+          accepted:
+            original.remoteChild !== undefined
+              ? { remote: true }
+              : { childThreadId: original.childThreadId },
+          requested: reviewAssignment,
+        });
+      }
       // A retained task without its receipt is still readable, but its creation cannot be safely dispatched again.
       if (
         original !== undefined &&
@@ -3656,6 +3696,13 @@ const make = Effect.gen(function* () {
             .getThreadShell(derive.delegatedTaskThread({ commandId }))
             .pipe(Effect.mapError(threadManagementFailure))
         : null;
+      if (original === undefined && isRetryOfAcceptedDelegation) {
+        // Without the child the accepted isolation is unknown, so only an ordinary retry goes on.
+        yield* requireAcceptedIsolation({
+          accepted: { childThreadId: committedThread?.id ?? null },
+          requested: reviewAssignment,
+        });
+      }
       // The child runs in its own project, so that project's accounts and Auto settings apply.
       const projectId = foreignProjectId ?? parent.thread.projectId;
       // The role's provider and the parent's, its fallback, share the request's one wait.

@@ -21,7 +21,9 @@ import * as MemoryAdmission from "../../resourceTelemetry/MemoryAdmission.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import type * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
+import type * as ReviewAssignmentRegistry from "../../mcp/ReviewAssignmentRegistry.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -196,6 +198,13 @@ export function layerWithRegistry<Error>(
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
     readonly managedPolicy?: ManagedPolicyDocument;
+    /**
+     * Real MCP credentials, and the review read broker when the layer has one. Without it the
+     * session manager configures no MCP and refuses every restricted review.
+     */
+    readonly mcp?: Layer.Layer<
+      McpSessionRegistry.McpSessionRegistry | ReviewAssignmentRegistry.ReviewAssignmentRegistry
+    >;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
@@ -298,7 +307,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerEventSinkProvided, layerStores)),
   );
   const layerProviderSessionManagerProvided = ProviderSessionManager.layerWithOptions({
-    configureMcp: false,
+    configureMcp: options.mcp !== undefined,
   }).pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -307,7 +316,7 @@ export function layerWithRegistry<Error>(
         layerEventSinkProvided,
         IdAllocator.layer,
         McpProviderSessions.layer,
-        McpSessionRegistryTestkit.layer,
+        options.mcp ?? McpSessionRegistryTestkit.layer,
         layerProviderEventIngestorProvided,
         layerStores,
       ),

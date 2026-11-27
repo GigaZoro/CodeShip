@@ -3410,37 +3410,52 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         readonly evidence: McpProviderSession.ReviewAssignmentSessionEvidence;
         readonly promptsOffered: number;
       }> = [];
-      yield* (yield* McpProviderSessions.McpProviderSessions).set({
-        environmentId: EnvironmentId.make("environment-claude-review"),
-        threadId: harness.threadId,
-        providerSessionId: "mcp-session-claude-review",
-        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
-        endpoint: "http://127.0.0.1:43123/mcp/review",
-        authorizationHeader: "Bearer review-token",
-        browserToolsAvailable: false,
-        reviewAssignment: {
-          handle: "assignment-1",
-          cwd,
-          attest: (evidence) =>
-            Effect.sync(() => {
-              attested.push({ evidence, promptsOffered: harness.offeredMessages.length });
-            }).pipe(Effect.andThen(attest(evidence))),
-        },
-      });
-      const turnInput = makeClaudeTestTurnInput({
-        threadId: harness.threadId,
-        providerThread: harness.providerThread,
-        now: yield* DateTime.now,
-        attemptId: RunAttemptId.make("review-0"),
-        text: "Review the assignment",
-        attachments: [],
-        nativeThreadHasTurns: false,
-        runtimePolicy: {
-          ...CLAUDE_TEST_RUNTIME_POLICY,
-          reviewAssignment: { handle: "assignment-1" },
-        },
-      });
-      return { harness, cwd, attested, closes, turnInput };
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      // Each prepare opens the assignment in a new workspace under the same credential.
+      const useWorkspace = (workspace: string) =>
+        mcpSessions.set({
+          environmentId: EnvironmentId.make("environment-claude-review"),
+          threadId: harness.threadId,
+          providerSessionId: "mcp-session-claude-review",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          endpoint: "http://127.0.0.1:43123/mcp/review",
+          authorizationHeader: "Bearer review-token",
+          browserToolsAvailable: false,
+          reviewAssignment: {
+            handle: "assignment-1",
+            cwd: workspace,
+            attest: (evidence) =>
+              Effect.sync(() => {
+                attested.push({ evidence, promptsOffered: harness.offeredMessages.length });
+              }).pipe(Effect.andThen(attest(evidence))),
+          },
+        });
+      yield* useWorkspace(cwd);
+      const now = yield* DateTime.now;
+      const makeTurn = (attempt: string, providerTurnOrdinal = 1) =>
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make(attempt),
+          text: "Review the assignment",
+          attachments: [],
+          providerTurnOrdinal,
+          nativeThreadHasTurns: providerTurnOrdinal > 1,
+          runtimePolicy: {
+            ...CLAUDE_TEST_RUNTIME_POLICY,
+            reviewAssignment: { handle: "assignment-1" },
+          },
+        });
+      return {
+        harness,
+        cwd,
+        attested,
+        closes,
+        useWorkspace,
+        makeTurn,
+        turnInput: makeTurn("review-0"),
+      };
     });
 
   it.effect("attests a restricted review's session before its prompt reaches Claude", () =>
@@ -3576,6 +3591,178 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       );
       assert.lengthOf(review.harness.offeredMessages, 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  const reviewTurnChanges: ReadonlyArray<
+    readonly [
+      string,
+      string,
+      (
+        input: ProviderAdapter.ProviderAdapterV2TurnInput,
+      ) => ProviderAdapter.ProviderAdapterV2TurnInput,
+    ]
+  > = [
+    [
+      "an attachment",
+      "a restricted review takes no attachments",
+      (input) => ({
+        ...input,
+        message: {
+          ...input.message,
+          attachments: [
+            ChatFileAttachment.make({
+              type: "file",
+              id: ChatAttachmentId.make("review-attachment"),
+              name: "notes.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 1024,
+            }),
+          ],
+        },
+      }),
+    ],
+    [
+      "auto mode",
+      "auto mode is not supported",
+      (input) => ({ ...input, autoModeInstructions: "Auto: coordinate as Opus." }),
+    ],
+    [
+      "ultracode",
+      "ultracode is not supported",
+      (input) => ({
+        ...input,
+        modelSelection: {
+          instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+          model: "claude-opus-5-5",
+          options: [{ id: "ultracode", value: true }],
+        },
+      }),
+    ],
+  ];
+  it.effect.each(reviewTurnChanges)(
+    "refuses a restricted review turn with %s before Claude starts",
+    ([, reason, change]) =>
+      Effect.gen(function* () {
+        const review = yield* makeReviewHarness(Effect.succeed(reviewInspection));
+
+        const refused = yield* review.harness.runtime
+          .startTurn(change(review.turnInput))
+          .pipe(Effect.flip);
+
+        assert.equal(reviewRefusalIn(refused)?.reason, reason);
+        assert.isUndefined(review.harness.getOpenedOptions());
+        assert.lengthOf(review.attested, 0);
+        assert.lengthOf(review.harness.offeredMessages, 0);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  // A continuation this session never asked for arrives as a fresh prompt, so only a requested one
+  // could reach the process; a review requests none, and the check refuses one anyway.
+  it.effect("refuses to continue a restricted review's interrupted turn", () =>
+    Effect.gen(function* () {
+      const review = yield* makeReviewHarness(Effect.succeed(reviewInspection));
+      const mcpSession = yield* (yield* McpProviderSessions.McpProviderSessions).read(
+        review.harness.threadId,
+      );
+
+      const refused = yield* ClaudeAdapterV2.restrictedClaudeReview({
+        turnInput: {
+          ...review.turnInput,
+          message: { ...review.turnInput.message, createdBy: "agent", creationSource: "provider" },
+        },
+        mcpSession,
+      }).pipe(Effect.flip);
+
+      assert.equal(refused.reason, "a restricted review does not continue an interrupted turn");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("launches a restricted review without reading any settings", () =>
+    Effect.gen(function* () {
+      const review = yield* makeReviewHarness(Effect.succeed(reviewInspection));
+      vi.mocked(ClaudeSdk.resolveSettings).mockClear();
+
+      yield* review.harness.runtime.startTurn(review.turnInput);
+
+      assert.lengthOf(review.attested, 1);
+      // The host checkout's settings, the server's and the account's never reach the review.
+      assert.lengthOf(vi.mocked(ClaudeSdk.resolveSettings).mock.calls, 0);
+      assert.deepEqual(review.harness.getOpenedOptions()?.env, {});
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("retires a restricted review's process when its check is interrupted", () =>
+    Effect.gen(function* () {
+      const inspecting = yield* Deferred.make<void>();
+      let inspections = 0;
+      const review = yield* makeReviewHarness(
+        Effect.suspend(() =>
+          inspections++ === 0
+            ? Deferred.succeed(inspecting, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.succeed(reviewInspection),
+        ),
+      );
+      const starting = yield* Effect.forkChild(review.harness.runtime.startTurn(review.turnInput));
+      yield* Deferred.await(inspecting);
+      const interrupted = review.harness.getOpenedOptions();
+      yield* Fiber.interrupt(starting);
+
+      assert.equal(yield* Ref.get(review.closes), 1);
+      assert.lengthOf(review.attested, 0);
+      assert.lengthOf(review.harness.offeredMessages, 0);
+
+      yield* review.harness.runtime.startTurn(review.makeTurn("review-retry"));
+
+      const reopened = review.harness.getOpenedOptions();
+      assert.notStrictEqual(reopened, interrupted);
+      // The interrupted process took no prompt, so its session id was never created to resume.
+      assert.deepInclude(reopened, { sessionId: WAKE_NATIVE_SESSION });
+      assert.notProperty(reopened, "resume");
+      assert.lengthOf(review.attested, 1);
+      assert.lengthOf(review.harness.offeredMessages, 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("starts a new Claude process when the review's workspace changes", () =>
+    Effect.gen(function* () {
+      const review = yield* makeReviewHarness(Effect.succeed(reviewInspection));
+      yield* review.harness.runtime.startTurn(review.turnInput);
+      yield* review.harness.offerAndWait(turnOneResult);
+      yield* Queue.take(review.harness.terminalReceipts);
+      const workspace = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+        prefix: "t3-claude-review-next-",
+      });
+      yield* review.useWorkspace(workspace);
+
+      yield* review.harness.runtime.startTurn(review.makeTurn("review-1", 2));
+
+      assert.equal(yield* Ref.get(review.closes), 1);
+      assert.equal(review.harness.getOpenedOptions()?.cwd, workspace);
+      assert.deepEqual(
+        review.attested.map((entry) => entry.evidence.cwd),
+        [review.cwd, workspace],
+      );
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

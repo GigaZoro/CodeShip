@@ -381,6 +381,8 @@ function makeLocalCommandHarness(input: {
   readonly limitsReadFailure?: boolean;
   /** The thread is a delegated task's child. */
   readonly delegatedChild?: boolean;
+  /** The thread is an assignment-isolated review. */
+  readonly reviewAssignment?: boolean;
   /** A restart cut this run before its provider turn was recorded, and it starts again. */
   readonly restartRetry?: RestartRetryDelivery;
   /** The thread's provider session was already running when this turn started. */
@@ -468,6 +470,7 @@ function makeLocalCommandHarness(input: {
             rootThreadId: ThreadId.make("thread-parent"),
           }
         : { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      ...(input.reviewAssignment ? { reviewAssignment: { handle: "assignment-1" } } : {}),
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
       ...(input.previousNativeSession
@@ -2048,6 +2051,25 @@ effectIt.effect.each(["unavailable", "tooLarge"] as const)(
         },
       ]);
     }),
+);
+
+effectIt.effect("starts a restricted review without loading a shared skill", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "$review",
+      nativeTurn: true,
+      reviewAssignment: true,
+      skillFailure: new ProviderSkills.ProviderSkillInvocationError({
+        skillName: "review",
+        reason: "unavailable",
+      }),
+    });
+    yield* harness.start;
+    expect(harness.startRootRun).toHaveBeenCalledTimes(1);
+    expect(harness.projection().turnItems).not.toContainEqual(
+      expect.objectContaining({ title: "Shared skill could not be loaded" }),
+    );
+  }),
 );
 
 effectIt.effect.each([

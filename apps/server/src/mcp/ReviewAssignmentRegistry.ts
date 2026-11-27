@@ -194,37 +194,42 @@ const make = Effect.gen(function* () {
     }
     sessions.delete(input.threadId);
     // The same path for every session of a thread, so a provider can resume its own transcript.
-    const cwd = yield* Effect.gen(function* () {
-      const base = yield* workspaceRoot;
-      const workspace = path.join(
-        base,
-        NodeCrypto.createHash("sha256").update(input.threadId).digest("hex"),
-      );
-      yield* fileSystem.remove(workspace, { recursive: true, force: true });
-      yield* fileSystem.makeDirectory(workspace);
-      return workspace;
-    }).pipe(
-      Effect.mapError(
-        () =>
-          new McpProviderSession.ReviewAssignmentRefusedError({
-            reason: "could not create an isolated workspace",
-          }),
+    // Uninterruptible, so a workspace on disk always has the session closeSession removes it by.
+    const session = yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        const base = yield* workspaceRoot;
+        const workspace = path.join(
+          base,
+          NodeCrypto.createHash("sha256").update(input.threadId).digest("hex"),
+        );
+        yield* fileSystem.remove(workspace, { recursive: true, force: true });
+        yield* fileSystem.makeDirectory(workspace);
+        const opened: OpenSession = {
+          handle: input.handle,
+          providerInstanceId: input.providerInstanceId,
+          cwd: workspace,
+          attestedRunId: undefined,
+        };
+        sessions.set(input.threadId, opened);
+        recordFor(input.threadId);
+        return opened;
+      }).pipe(
+        Effect.mapError(
+          () =>
+            new McpProviderSession.ReviewAssignmentRefusedError({
+              reason: "could not create an isolated workspace",
+            }),
+        ),
       ),
     );
-    const session: OpenSession = {
-      handle: input.handle,
-      providerInstanceId: input.providerInstanceId,
-      cwd,
-      attestedRunId: undefined,
-    };
-    sessions.set(input.threadId, session);
-    recordFor(input.threadId);
 
     const attest = Effect.fn("ReviewAssignmentRegistry.attest")(function* (
       evidence: McpProviderSession.ReviewAssignmentSessionEvidence,
     ) {
       const refuse = (reason: string) =>
         Effect.fail(new McpProviderSession.ReviewAssignmentRefusedError({ reason }));
+      // A new run disarms reads until it passes, so a failed check never inherits an earlier pass.
+      session.attestedRunId = undefined;
       if (sessions.get(input.threadId) !== session) {
         return yield* refuse("the restricted session was closed");
       }
@@ -254,6 +259,17 @@ const make = Effect.gen(function* () {
         return yield* refuse("the session evidence is incomplete");
       }
       const verified = decoded.value;
+      // The assignment's own record comes first: evidence and reads exist only for a session it holds.
+      const recordSession = brokers.get(session.handle)?.recordSession;
+      if (recordSession !== undefined) {
+        yield* Effect.tryPromise(() => recordSession(verified)).pipe(
+          Effect.catch(() => refuse("the assignment could not record the session")),
+        );
+      }
+      // The session can close, or the assignment end, while its record is written.
+      if (sessions.get(input.threadId) !== session || !brokers.has(session.handle)) {
+        return yield* refuse("the restricted session was closed");
+      }
       const record = recordFor(input.threadId);
       if (!record.sessions.some((entry) => entry.runId === verified.runId)) {
         record.sessions.push(verified);
@@ -268,17 +284,11 @@ const make = Effect.gen(function* () {
         instructionDigest: verified.instructionDigest,
         promptDigest: verified.promptDigest,
       });
-      const recordSession = brokers.get(session.handle)?.recordSession;
-      if (recordSession !== undefined) {
-        yield* Effect.tryPromise(() => recordSession(verified)).pipe(
-          Effect.catch(() => refuse("the assignment could not record the session")),
-        );
-      }
     });
 
     return {
       handle: input.handle,
-      cwd,
+      cwd: session.cwd,
       attest,
     } satisfies McpProviderSession.ReviewAssignmentSession;
   });

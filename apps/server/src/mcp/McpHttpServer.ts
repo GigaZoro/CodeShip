@@ -1244,7 +1244,7 @@ const layerReviewAssignmentTransport = McpServer.layerHttp({
  * The restricted reviewer's server serves `read_material` and nothing else.
  * `Layer.fresh` gives it its own `McpServer`: the memoized one holds every `/mcp` tool.
  */
-const layerReviewAssignment = Layer.fresh(
+export const layerReviewAssignment = Layer.fresh(
   toolkitRegistration(ReviewAssignmentToolkit, ReviewAssignmentHandlers.layer).pipe(
     Layer.provide(layerReviewAssignmentTransport),
   ),

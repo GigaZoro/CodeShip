@@ -1772,8 +1772,9 @@ export const layer: Layer.Layer<
         });
         let effectiveHandoffs = handoffs;
         let resumeFellBack = false;
+        // A restricted review's prompt reaches the model as attested, so no host skill expands into it.
         const expandedText = yield* Effect.result(
-          message.createdBy === "user"
+          message.createdBy === "user" && projection.thread.reviewAssignment === undefined
             ? providerSkills.expandSkillMentions({
                 text: message.text,
                 instanceId: activeRun.providerInstanceId,

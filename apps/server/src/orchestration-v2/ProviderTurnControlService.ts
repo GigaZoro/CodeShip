@@ -412,7 +412,8 @@ export const layer: Layer.Layer<
               yield* settings.getSettings,
               thread.projectId,
             ).settings;
-            if (effective.skillAvailability === "shared") {
+            // A restricted review loads no host skill; its adapter refuses the steer as sent.
+            if (effective.skillAvailability === "shared" && thread.reviewAssignment === undefined) {
               const project =
                 thread.worktreePath === null
                   ? yield* projects.getById(thread.projectId)

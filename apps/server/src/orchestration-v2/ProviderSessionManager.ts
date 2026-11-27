@@ -571,29 +571,51 @@ export const layerWithOptions = (
           if (driver === undefined || !RESTRICTED_REVIEW_DRIVERS.has(driver)) {
             return yield* refuse("this provider cannot verify its session before inference");
           }
+          const assignments = reviewAssignments.value;
           return yield* mcpPrepareLock.withLock(
             input.threadId,
-            Effect.gen(function* () {
-              const session = yield* reviewAssignments.value.openSession({
-                threadId: input.threadId,
-                handle: input.assignment.handle,
-                providerInstanceId: input.providerInstanceId,
+            // A prepare that fails or is interrupted leaves no workspace, credential or reservation.
+            Effect.uninterruptibleMask((restore) => {
+              let opened = false;
+              let revoked = false;
+              const rollback = Effect.gen(function* () {
+                if (revoked) {
+                  // Everything issued since the revoke is this prepare's, so a thread revoke removes it.
+                  yield* mcpSessionRegistry.revokeThread(input.threadId);
+                  yield* mcpSessions.clear(input.threadId);
+                }
+                if (opened) yield* closeReviewSession(input.threadId);
               });
-              yield* mcpSessionRegistry.revokeThread(input.threadId);
-              const credential = yield* mcpSessionRegistry.issue({
-                threadId: input.threadId,
-                providerInstanceId: input.providerInstanceId,
-                browserToolsAvailable: false,
-                capabilities: new Set(),
-                subagent: true,
-                reviewAssignment: session,
-              });
-              yield* mcpSessions.set(credential.config);
-              reserveMcpCredential(input.threadId, credential.config.providerSessionId);
-              return {
-                mcpCredentialId: credential.config.providerSessionId,
-                issued: true,
-              } satisfies PreparedMcpCredential;
+              return Effect.gen(function* () {
+                // Bounded file work, uninterruptible so the rollback always knows the session opened.
+                const session = yield* assignments.openSession({
+                  threadId: input.threadId,
+                  handle: input.assignment.handle,
+                  providerInstanceId: input.providerInstanceId,
+                });
+                opened = true;
+                const credential = yield* restore(
+                  Effect.gen(function* () {
+                    revoked = true;
+                    yield* mcpSessionRegistry.revokeThread(input.threadId);
+                    const issued = yield* mcpSessionRegistry.issue({
+                      threadId: input.threadId,
+                      providerInstanceId: input.providerInstanceId,
+                      browserToolsAvailable: false,
+                      capabilities: new Set(),
+                      subagent: true,
+                      reviewAssignment: session,
+                    });
+                    yield* mcpSessions.set(issued.config);
+                    return issued;
+                  }),
+                );
+                reserveMcpCredential(input.threadId, credential.config.providerSessionId);
+                return {
+                  mcpCredentialId: credential.config.providerSessionId,
+                  issued: true,
+                } satisfies PreparedMcpCredential;
+              }).pipe(Effect.onError(() => rollback));
             }),
           );
         },
@@ -682,6 +704,9 @@ export const layerWithOptions = (
                     );
                   if (
                     resolved !== undefined &&
+                    // A review credential reaches only its assignment, never ordinary tools.
+                    !resolved.capabilities.has("review-assignment") &&
+                    resolved.assignment === undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
