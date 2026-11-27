@@ -1,3 +1,7 @@
+## 2026-11-27 — Saved usage stays bounded over long histories
+
+- Usage's saved scan cache no longer grows without limit. It forgets deleted or expired transcripts about six months after it last read them, and drops other peers' records of a transcript once those records pass the 92-day window. Two CodeShip instances that share a data folder now save the same usage whichever order they read each other's saves in, at any time.
+
 ## 2026-11-27 — Thread title generation skips retries on non-retryable provider errors
 
 - Initial thread title generation no longer retries usage-limit, rate-limit, authentication, or disabled-provider errors, avoiding redundant provider spawns when a retry cannot succeed.

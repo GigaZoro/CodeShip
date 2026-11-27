@@ -82,6 +82,7 @@ import {
   mergeScanEntry,
   pruneSuperseded,
   retainedSuperseded,
+  settleTailGroups,
   PREVIOUS_SCAN_CACHE_DIRECTORY_NAME,
   SCAN_CACHE_DIRECTORY_NAME,
   scanCacheDocumentPieces,
@@ -267,6 +268,28 @@ export const make = Effect.gen(function* () {
   // Keep its per-path cutoff after the records themselves have been evicted.
   const evictedReads = new Map<string, EvictedRead>();
   const unsavedEvictions = new Map<string, EvictedRead>();
+  /**
+   * Saved cutoffs a full save that retires every input listed at `listedAtMs` drops. Eviction
+   * comes a retention period after the read; the second period covers a retired snapshot that
+   * comes back, from a peer that saves late or a restored copy.
+   */
+  const retirableCutoffs = (listedAtMs: number) => {
+    const retirableThrough = listedAtMs - 2 * CACHE_RETENTION_MS;
+    const retired = new Map<string, EvictedRead>();
+    for (const [filePath, read] of evictedReads) {
+      const throughMs = evictedThrough(read);
+      if (
+        Number.isFinite(throughMs) &&
+        throughMs < retirableThrough &&
+        !unsavedEvictions.has(filePath)
+      ) {
+        retired.set(filePath, read);
+      }
+    }
+    return retired;
+  };
+  /** Peer tail reads before this were all merged and retired, so their groups are settled. */
+  let settledThroughMs = -Infinity;
   const batchTimestamps = new WeakMap<readonly UsageRecord[], number>();
   const latestRecordTime = (records: readonly UsageRecord[]) => {
     const cached = batchTimestamps.get(records);
@@ -862,7 +885,10 @@ export const make = Effect.gen(function* () {
     const nowMs = yield* Clock.currentTimeMillis;
     const retentionCutoffMs = nowMs - CACHE_RETENTION_MS;
     for (const [filePath, held] of fileCache) {
-      const entry = pruneSuperseded(held, nowMs, retentionCutoffMs);
+      const entry = settleTailGroups(
+        pruneSuperseded(held, nowMs, retentionCutoffMs),
+        settledThroughMs,
+      );
       const { missingSinceMs, presentSinceMs } = entry;
       if (
         missingSinceMs !== undefined &&
@@ -915,12 +941,19 @@ export const make = Effect.gen(function* () {
     return chars;
   });
 
-  /** A full save is due by isFullSaveDue; a name whose delete failed does not keep it due. */
-  const fullSaveDue = (changedRows: number) =>
+  /**
+   * A full save is due by isFullSaveDue; a name whose delete failed does not keep it due. The
+   * cutoffs it would retire count as stale rows. Live evicted reads are a few bytes each, so they
+   * do not count as live rows: that would let stale file rows grow past the bound.
+   */
+  const fullSaveDue = (changedRows: number, retiringListedAtMs: number | undefined) =>
     [...olderFormatInputs].some((name) => !failedDeletes.has(name)) ||
     isFullSaveDue({
       liveRows: fileCache.size,
-      staleRows: changedRows + droppedRows.size,
+      staleRows:
+        changedRows +
+        droppedRows.size +
+        (retiringListedAtMs === undefined ? 0 : retirableCutoffs(retiringListedAtMs).size),
       retirableChars: [...ownSnapshots, ...retirable]
         .filter((name) => !failedDeletes.has(name))
         .map((name) => storedChars.get(name) ?? 0),
@@ -928,23 +961,43 @@ export const make = Effect.gen(function* () {
 
   /**
    * Saves the rows and sources that differ from saved ones, or every live one when a full save
-   * is due. Only a full save deletes: it holds every row the names it retires held.
+   * is due. Only a full save deletes: it holds every row the names it retires held. After a sync
+   * that merged every saved input, listed at `retiringListedAtMs`, it also drops what only they
+   * could still need.
    */
-  const writeSnapshot = Effect.fn("UsageService.writeScanCacheSnapshot")(function* () {
+  const writeSnapshot = Effect.fn("UsageService.writeScanCacheSnapshot")(function* (
+    retiringListedAtMs: number | undefined,
+  ) {
     yield* dropExpired();
-    const capturedGeneration = generation;
-    const files = new Map(fileCache);
-    const sources = new Map(sourceCache);
     for (const file of durableFiles.keys()) {
-      if (files.has(file)) continue;
+      if (fileCache.has(file)) continue;
       durableFiles.delete(file);
       droppedRows.add(file);
     }
+    let changedRows = 0;
+    for (const [file, entry] of fileCache) if (durableFiles.get(file) !== entry) changedRows += 1;
+    const full = fullSaveDue(changedRows, retiringListedAtMs);
+    const retiring = full && retiringListedAtMs !== undefined;
+    const retiredCutoffs = retiring
+      ? retirableCutoffs(retiringListedAtMs)
+      : new Map<string, EvictedRead>();
+    if (retiring) {
+      // A snapshot written after the listing comes from a writer that pruned the reads before it.
+      settledThroughMs = Math.max(settledThroughMs, retiringListedAtMs - CACHE_RETENTION_MS);
+      for (const [file, entry] of fileCache) {
+        const settled = settleTailGroups(entry, settledThroughMs);
+        if (settled === entry) continue;
+        fileCache.set(file, settled);
+        generation += 1;
+      }
+    }
+    const capturedGeneration = generation;
+    const files = new Map(fileCache);
+    const sources = new Map(sourceCache);
     const changedFiles = [...files].filter(([file, entry]) => durableFiles.get(file) !== entry);
     const changedSources = [...sources].filter(
       ([key, source]) => durableSources.get(key) !== source,
     );
-    const full = fullSaveDue(changedFiles.length);
     if (
       !full &&
       changedFiles.length === 0 &&
@@ -958,6 +1011,11 @@ export const make = Effect.gen(function* () {
     const covered = [...retirable];
     const imports = [...(full ? importedV11 : unsavedImports)];
     const evictions = new Map(full ? evictedReads : unsavedEvictions);
+    for (const [filePath, read] of retiredCutoffs) {
+      const recordMs = evictedRecordTime(read);
+      if (Number.isFinite(recordMs)) evictions.set(filePath, [null, recordMs]);
+      else evictions.delete(filePath);
+    }
     snapshotSeq += 1;
     const name = scanCacheSnapshotName(writerId, snapshotSeq);
     const file = path.join(storeDir, name);
@@ -992,18 +1050,28 @@ export const make = Effect.gen(function* () {
     durableSources = sources;
     droppedRows.clear();
     // Only now is everything these names held durable in a snapshot of ours.
+    let retiredAll = true;
     for (const own of ownSnapshots) {
-      if (own !== file && (yield* deleteSavedUsage(own))) {
+      if (own === file) continue;
+      if (yield* deleteSavedUsage(own)) {
         ownSnapshots.delete(own);
         storedChars.delete(own);
-      }
+      } else retiredAll = false;
     }
     for (const input of covered) {
       if (yield* deleteSavedUsage(input)) {
         retirable.delete(input);
         olderFormatInputs.delete(input);
         storedChars.delete(input);
-      }
+      } else retiredAll = false;
+    }
+    for (const [filePath, read] of retiredCutoffs) {
+      if (evictedReads.get(filePath) !== read || unsavedEvictions.has(filePath)) continue;
+      const kept = evictions.get(filePath);
+      // A name left behind can still hold a row the cutoff trims, so the next save publishes it.
+      if (!retiredAll) unsavedEvictions.set(filePath, read);
+      else if (kept === undefined) evictedReads.delete(filePath);
+      else evictedReads.set(filePath, kept);
     }
     return true;
   });
@@ -1051,6 +1119,7 @@ export const make = Effect.gen(function* () {
       return inputs;
     });
 
+    const listedAtMs = yield* Clock.currentTimeMillis;
     let pending = yield* listStores;
     let missing = false;
     const stateNames = yield* list(config.stateDir);
@@ -1136,8 +1205,21 @@ export const make = Effect.gen(function* () {
         if (!present.has(path.join(previousStoreDir, name))) importedV11.delete(name);
       }
     }
-    const needsWrite = write && (generation !== savedGeneration || fullSaveDue(0));
-    const saved = needsWrite ? yield* writeSnapshot() : true;
+    // A full save after this sync retires every saved input, so nothing but its own rows remains.
+    const retiresEveryInput =
+      listedStores.size === 2 &&
+      mergedAllComplete &&
+      savedUsageGaps.size === 0 &&
+      failedDeletes.size === 0 &&
+      [...present].every((name) =>
+        path.dirname(name) === previousStoreDir
+          ? importedV11.has(path.basename(name))
+          : ownSnapshots.has(name) || retirable.has(name),
+      );
+    const retiringListedAtMs = retiresEveryInput ? listedAtMs : undefined;
+    const needsWrite =
+      write && (generation !== savedGeneration || fullSaveDue(0, retiringListedAtMs));
+    const saved = needsWrite ? yield* writeSnapshot(retiringListedAtMs) : true;
 
     for (const dir of recoveredLists) {
       if (mergedAllComplete && !savedUsageGaps.has(gapKey("list", dir))) {

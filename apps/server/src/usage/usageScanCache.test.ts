@@ -21,6 +21,7 @@ import {
 import type { UsageRecord } from "@t3tools/provider-core/server/usage";
 
 import { TEST_FORMAT_MAP } from "./usageTestFormats.ts";
+import { seededRandom } from "../testUtils/seededRandom.ts";
 import { initialCodexScanState, parseCodexLine } from "../provider/Drivers/codexUsage.ts";
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
@@ -869,17 +870,6 @@ describe("scan cache retention", () => {
   const answers = (entry: CachedFile, cutoffMs: number) =>
     [cutoffMs, cutoffMs + 5, cutoffMs + 15].map((at) => retainedSuperseded(entry, at, "muse"));
 
-  /** Mulberry32, so every failure replays from its seed. */
-  function random(seed: number) {
-    let state = seed;
-    return () => {
-      state = (state + 0x6d2b79f5) | 0;
-      let value = Math.imul(state ^ (state >>> 15), 1 | state);
-      value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
-      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-
   function fileVersion(next: () => number, atMs: number): CachedFile {
     const records = KEYS.filter(() => next() < 0.4).map((id) =>
       museCall(id, 1 + Math.floor(next() * 3)),
@@ -919,7 +909,7 @@ describe("scan cache retention", () => {
    * A full save that leaves no unmerged peer snapshot settles everything before its cutoff.
    */
   function runPeers(seed: number, steps: number, visits: PeerVisits) {
-    const next = random(seed);
+    const next = seededRandom(seed);
     const held: (CachedFile | undefined)[] = [undefined, undefined, undefined];
     const settledThroughMs = held.map(() => -Infinity);
     const merged = held.map(() => new Set<CachedFile>());
