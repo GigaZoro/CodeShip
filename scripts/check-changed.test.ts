@@ -119,7 +119,8 @@ describe("check:changed", () => {
       "apps/server/src/cloud/ConnectReachability.test.ts",
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
-    assert.isTrue(decide(["docs/release-notes.md"], packages, false).outputs.test_web);
+    // Every landing prepends to the notes: affecting the web app would typecheck it each time.
+    assert.deepStrictEqual(decide(["docs/release-notes.md"], packages, false).affected, []);
   });
 
   it("keeps every test that starts bash with bash's own flags out of the file tracker", () => {
