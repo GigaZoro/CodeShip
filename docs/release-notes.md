@@ -36,6 +36,11 @@
 - **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
 - Applying the preset leaves notification settings untouched, lists each setting it changed, and offers **Undo** (inline in Settings, in the confirmation toast on web and desktop, and as **Undo Calm preset** in the mobile command palette) to restore your prior values.
 
+## 2026-11-27 — Agents see the usage reset decision for each limit
+
+- `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.
+- Each Claude and Codex account now also lists `resetDecisions`: what the usage reset rule calls for on each limit, first the account's own and then each model-scoped meter at 100%. Each says whether to run, wait or claim a banked reset, why, and until when. The rule decides with the server's maximum wait, as of the moment the answer is given, whether or not usage resets are redeemed automatically, so an agent no longer works the rule out itself.
+
 ## 2026-11-27 — Antigravity quota holds wait for their reset
 
 - When Antigravity refuses a turn because a quota ran out, T3.CodeShip holds only the models on that quota (Claude and GPT, Gemini, or Gemini Argon) until the reset Google reports. Work on another quota of the same account no longer ends the hold early, so a waiting chat is no longer resumed every few minutes only to be refused again.
@@ -413,11 +418,6 @@
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
-
-## 2026-11-25 — Agents see the usage reset decision for each limit
-
-- `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.
-- Each Claude and Codex account now also lists `resetDecisions`: what the usage reset rule calls for on each limit, first the account's own and then each model-scoped meter at 100%. Each says whether to run, wait or claim a banked reset, why, and until when. The rule decides with the server's maximum wait, as of the moment the answer is given, whether or not usage resets are redeemed automatically, so an agent no longer works the rule out itself.
 
 ## 2026-11-25 — Landers wait for their Windows check
 
