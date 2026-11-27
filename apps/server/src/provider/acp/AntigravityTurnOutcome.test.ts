@@ -68,13 +68,10 @@ describe("watchAntigravityPromptOutcome", () => {
       const turn = (
         steps: ReadonlyArray<readonly [number, Uint8Array]>,
         result: EffectAcpSchema.PromptResponse = { stopReason: "end_turn" },
+        model = "gemini-4-neon",
       ) =>
         Effect.gen(function* () {
-          const check = yield* watchAntigravityPromptOutcome(
-            profileDirectory,
-            sessionId,
-            ANTIGRAVITY_DEFAULT_MODEL,
-          );
+          const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId, model);
           appendSteps(steps);
           return yield* check(result);
         });
@@ -122,6 +119,17 @@ describe("watchAntigravityPromptOutcome", () => {
           [ERROR_MESSAGE, UNKNOWN_MODEL_QUOTA_ERROR],
         ]))?.modelScope,
         "gemini-default",
+      );
+      // An unresolved default could run on any quota, so its refusal holds the whole account.
+      assert.isUndefined(
+        (yield* turn(
+          [
+            [USER_INPUT, input],
+            [ERROR_MESSAGE, QUOTA_ERROR],
+          ],
+          undefined,
+          ANTIGRAVITY_DEFAULT_MODEL,
+        ))?.modelScope,
       );
       // The earlier error step is outside this turn.
       assert.isUndefined(

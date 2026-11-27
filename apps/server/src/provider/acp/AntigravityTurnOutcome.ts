@@ -3,7 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
-import type { OrchestrationV2ProviderFailure } from "@t3tools/contracts";
+import { ANTIGRAVITY_DEFAULT_MODEL, type OrchestrationV2ProviderFailure } from "@t3tools/contracts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { antigravityQuotaMeter } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
@@ -102,11 +102,12 @@ function turnFailure(
   const text = errorText ?? "";
   const apiError = API_ERROR.exec(text);
   // A refusal holds only the quota meter it names, so work on another meter of the account does
-  // not lift it. The error names the refused model; else it is the turn's. Neither known: the account.
+  // not lift it. The error names the refused model; else it is the turn's. Neither known (an
+  // unresolved default could run on any quota): the account.
   const refused = QUOTA_MODEL.exec(text)?.[1];
   const modelScope =
     (refused === undefined ? undefined : antigravityQuotaMeter([], refused)) ??
-    antigravityQuotaMeter([], model);
+    (model === ANTIGRAVITY_DEFAULT_MODEL ? undefined : antigravityQuotaMeter([], model));
   if (stopReason === "refusal" || QUOTA_EXHAUSTED.test(text)) {
     return makeProviderFailure({
       class: "usage_limit",
