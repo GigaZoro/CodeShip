@@ -4132,7 +4132,7 @@ const make = Effect.gen(function* () {
                   const routed =
                     accountRouting.value.routeWithDetails !== undefined
                       ? yield* accountRouting.value.routeWithDetails(routeInput)
-                      : { selection: yield* accountRouting.value.route(routeInput) };
+                      : yield* accountRouting.value.route(routeInput);
                   return {
                     selection: routed.selection,
                     crossProviderFailoverFrom: undefined,

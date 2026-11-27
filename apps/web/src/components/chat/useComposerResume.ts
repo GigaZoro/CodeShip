@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type ModelSelection,
   type ProviderInteractionMode,
   type RunId,
   type RuntimeMode,
@@ -85,7 +86,8 @@ export function useComposerResume(input: ComposerResumeInput) {
   const isResuming = resumingThreadKeys.has(routeThreadKey);
   const { sendInFlight: sendInFlightRef } = draftSendState(routeThreadKey);
 
-  const onResume = async () => {
+  /** `modelSelection` replaces the composer's, for a switch the composer has not rendered yet. */
+  const resumeOn = async (modelSelection?: ModelSelection) => {
     if (
       !activeThread ||
       (resumableRunId === null && !hasHeldQueuedRuns) ||
@@ -109,7 +111,8 @@ export function useComposerResume(input: ComposerResumeInput) {
       }
       // Read before the first await: the composer follows the route, so after the user switches
       // threads it holds the other thread's model.
-      const modelSelection = composerRef.current?.getSendContext().selectedModelSelection;
+      const resumeSelection =
+        modelSelection ?? composerRef.current?.getSendContext().selectedModelSelection;
       const createdAt = new Date().toISOString();
       const settingsResult = await persistThreadSettingsForNextTurn({
         threadId,
@@ -126,7 +129,7 @@ export function useComposerResume(input: ComposerResumeInput) {
         input: {
           threadId,
           manualContinuationOfRunId: resumableRunId,
-          ...(modelSelection ? { modelSelection } : {}),
+          ...(resumeSelection ? { modelSelection: resumeSelection } : {}),
           message: {
             messageId: newMessageId(),
             role: "user",
@@ -163,5 +166,7 @@ export function useComposerResume(input: ComposerResumeInput) {
     });
   };
 
-  return { onResume, isResuming };
+  const onResume = () => resumeOn();
+
+  return { onResume, resumeOn, isResuming };
 }

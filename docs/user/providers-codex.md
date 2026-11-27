@@ -138,13 +138,29 @@ that reads the account's limits, so choose **Read limits** for the account under
 When a thread hits a usage limit**. A stopped thread moves to an account with room or resumes
 at the reset.
 
+With that setting on and the thread's model set to **Auto**, a thread that has already run moves to
+another provider when no Codex account has plan usage left for its next turn. It continues on the
+other provider's Auto model, with the conversation handed over, and its queued messages run there.
+The thread shows which provider it left, when the first Codex account gets plan usage back, and
+where it continued. It stays there when Codex has room again. If every eligible account is out,
+the Auto thread waits for the earliest reset across those providers.
+
+A thread pinned to an account or provider, and a delegate told to use a provider, stay on that
+provider until you choose another. The composer shows the first reset and offers **Continue on**
+for accounts that can run now. Choosing one resumes the conversation and sends queued messages
+that followed the old selection to the new account. Messages queued with their own pick keep it.
+
 ### Keep working on prepaid credits
 
 When an account's plan usage is used up but it still has prepaid credits, T3.CodeShip starts no
 turn on it, because that turn would spend your money. To allow it, enter how many credits it may
 spend under **Spend prepaid credits** for the account in **Settings → Providers & models**, on
 each machine that runs its threads. New work still goes first to an account whose plan has room,
-and runs on this account's credits only when none has.
+and runs on this account's credits only when none has. With **Switch to another account, else
+resume when the limit resets** on, that includes other providers: a new thread, and an **Auto**
+thread that has already run, move to another provider's account with plan usage left before they
+spend the credits. The credits are spent only when no provider has plan usage left, or for a thread
+pinned to this account.
 
 T3.CodeShip counts how far the account's balance falls from then on, from any use of the account,
 and starts no new turn on credits once it has fallen by the cap. Before a turn starts on the
@@ -158,7 +174,8 @@ shows under it in Settings, and on the account in the mobile app's provider sett
 
 A thread that may spend the credits and was stopped by the plan's usage limit continues on them,
 or moves to another account it may spend them on, without waiting for the reset, when stopped
-threads resume or switch accounts for you (**Settings → Threads → When a thread hits a usage
+threads resume or switch accounts for you. An **Auto** thread moves to another provider's plan
+usage first, when one has it left (**Settings → Threads → When a thread hits a usage
 limit**).
 
 To let only some threads spend the credits, add their ids to the account's `spendCredits` entry

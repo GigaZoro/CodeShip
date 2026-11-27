@@ -281,6 +281,7 @@ export const make = Effect.gen(function* () {
       manualSteps: true,
       detectedManualSteps: true,
       usageHolds: true,
+      threadLimitStand: true,
       creditGrants: true,
       manualStepReviews: true,
       manualStepChats: true,

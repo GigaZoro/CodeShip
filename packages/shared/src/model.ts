@@ -151,20 +151,25 @@ export function withModelSelectionOptions(
   return options?.length ? { ...pick, options: cloneSelections(options) } : pick;
 }
 
-/**
- * Whether a composer's draft model pick is what the thread already runs. Web sends
- * `fastMode: false` for models with a fast toggle while mobile omits it, so off counts as unset.
- * Two Auto picks match: the server runs both on the model and account Auto settles on.
- */
-export function draftModelPickMatchesThread(pick: ModelSelection, thread: ModelSelection): boolean {
-  const intent = modelRoutingIntent(pick);
-  if (intent !== "pinned" && intent === modelRoutingIntent(thread)) return true;
+/** Web includes fastMode=false for an off toggle that mobile omits. Other option and account choices must match. */
+export function composerModelPicksEqual(left: ModelSelection, right: ModelSelection): boolean {
   const withoutFastModeOff = (selection: ModelSelection) =>
     withModelSelectionOptions(
       selection,
       selection.options?.filter((option) => option.id !== "fastMode" || option.value !== false),
     );
-  return modelPicksEqual(withoutFastModeOff(pick), withoutFastModeOff(thread));
+  return modelPicksEqual(withoutFastModeOff(left), withoutFastModeOff(right));
+}
+
+/**
+ * Whether a composer's draft model pick is what the thread already runs. Web sends
+ * `fastMode: false` for models with a fast toggle while mobile omits it, so off counts as unset.
+ * Two matching Auto picks match: the server runs both on the model and account Auto settles on.
+ */
+export function draftModelPickMatchesThread(pick: ModelSelection, thread: ModelSelection): boolean {
+  const intent = modelRoutingIntent(pick);
+  if (intent !== "pinned" && intent === modelRoutingIntent(thread)) return true;
+  return composerModelPicksEqual(pick, thread);
 }
 
 function resolveDescriptorChoiceValue(

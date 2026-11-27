@@ -2629,6 +2629,10 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.providerUsageHolds]: () =>
           accountRouting.holds.pipe(Effect.map((holds) => ({ holds }))),
+        [WS_METHODS.providerThreadLimitStand]: (input) =>
+          accountRouting
+            .threadLimitStand(input.threadId)
+            .pipe(Effect.map((stand) => (stand === null ? {} : { limited: stand }))),
         [WS_METHODS.providerCreditGrants]: () =>
           accountRouting.limits().pipe(
             Effect.map(({ grants }) => ({

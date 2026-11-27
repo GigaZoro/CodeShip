@@ -1,3 +1,4 @@
+import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import {
   type ThreadLinkedPullRequest,
@@ -10,6 +11,7 @@ import {
   type ChatAttachment,
   MessageId,
   type ModelSelection,
+  type ProviderInstanceId,
   type NodeId,
   type OrchestrationV2Command,
   type OrchestrationV2CreationSource,
@@ -131,6 +133,10 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly limitRecovery?: import("@t3tools/contracts").OrchestrationV2LimitRecoveryUpdate | null;
   readonly title?: string;
   readonly modelSelection?: ModelSelection;
+  /** The provider instance the thread runs on now; a `modelSelection` on another one is a provider switch. */
+  readonly currentInstanceId?: ProviderInstanceId;
+  /** Continue queued messages that used this pick when switching a limited chat. */
+  readonly continueQueuedFrom?: ModelSelection;
   readonly branch?: string | null;
   /** Reject the update unless the thread is still on this branch. */
   readonly expectedBranch?: string | null;
@@ -690,8 +696,15 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
       });
     }
     if (input.modelSelection !== undefined) {
+      const previousInstanceId = input.continueQueuedFrom?.instanceId ?? input.currentInstanceId;
       result = yield* dispatch({
-        type: "thread.model-selection.set",
+        type:
+          previousInstanceId === undefined
+            ? "thread.model-selection.set"
+            : modelSelectionCommandType(previousInstanceId, input.modelSelection),
+        ...(input.continueQueuedFrom === undefined
+          ? {}
+          : { continueQueuedFrom: input.continueQueuedFrom }),
         commandId: result === null ? commandId : CommandId.make(`${commandId}:model-selection`),
         threadId: input.threadId,
         modelSelection: input.modelSelection,

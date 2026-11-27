@@ -43,9 +43,11 @@ import {
   type AccountRoutingContext,
   accountsWithRoom,
   automaticAccountEligibility,
+  autoRoute,
   failoverLimitedLaunch,
   routeAutoAccount,
   routeAutoAccountWithDetails,
+  threadLimitStand,
   usageBlock,
 } from "./AccountRouting.ts";
 
@@ -1763,6 +1765,186 @@ describe("cross-provider launch routing", () => {
   });
 });
 
+describe("a thread whose provider has no account with room", () => {
+  const codex = ProviderDriverKind.make("codex");
+  const codexMain = ProviderInstanceId.make("codex_main");
+  const codexSpare = ProviderInstanceId.make("codex_spare");
+  const codexModel = "gpt-main";
+  const mainReset = "2026-11-29T19:31:00.000Z";
+  const spareReset = "2026-11-28T08:59:00.000Z";
+  const claudeReset = "2026-11-30T00:00:00.000Z";
+  const codexAccount = (instanceId: ProviderInstanceId) =>
+    provider(instanceId, {
+      driver: codex,
+      models: [{ ...provider(primary).models[0]!, slug: codexModel, aliases: [] }],
+    });
+  const onCodex = (autoAccount: boolean): ModelSelection => ({
+    instanceId: codexMain,
+    model: codexModel,
+    ...(autoAccount ? { autoAccount: true } : {}),
+  });
+  const input = (
+    limited: ReadonlyArray<readonly [ProviderInstanceId, string]>,
+    overrides: {
+      readonly selection?: ModelSelection;
+      readonly switching?: boolean;
+      readonly needingSignIn?: ReadonlyArray<ProviderInstanceId>;
+      readonly currentInstanceId?: ProviderInstanceId | null;
+    } = {},
+  ) => ({
+    selection: overrides.selection ?? onCodex(true),
+    projectId,
+    nowMs,
+    started: true,
+    currentInstanceId:
+      overrides.currentInstanceId === undefined ? codexMain : overrides.currentInstanceId,
+    mcpSignInsNeeded: signIns(overrides.needingSignIn),
+    providers: [
+      codexAccount(codexMain),
+      codexAccount(codexSpare),
+      provider(primary, { displayName: "akucheri" }),
+      provider(second),
+    ],
+    settings: {
+      ...settings([codexMain, codexSpare, primary, second]),
+      failoverLimitedThreads: overrides.switching ?? true,
+      providerInstances: {
+        [codexMain]: { driver: codex, enabled: true },
+        [codexSpare]: { driver: codex, enabled: true },
+        [primary]: { driver: claude, enabled: true },
+        [second]: { driver: claude, enabled: true },
+      },
+      autoModeModels: {
+        [codex]: { model: codexModel },
+        [claude]: { model: "claude-opus-5-5" },
+      },
+    },
+    recordedLimits: new Map(
+      limited.map(([id, resetAt]) => [id, [{ resetAt, refusedAt: "2026-11-03T11:00:00Z" }]]),
+    ),
+  });
+  const codexOut = [
+    [codexMain, mainReset],
+    [codexSpare, spareReset],
+  ] as const;
+
+  describe("autoRoute", () => {
+    it("moves a started Auto thread to the other provider and names why", () => {
+      const routed = autoRoute(input(codexOut));
+      assert.deepEqual(
+        {
+          selection: routed.selection,
+          from: routed.move?.from,
+          until: routed.move?.until,
+          notice: routed.move?.notice,
+        },
+        {
+          selection: { instanceId: primary, model: "claude-opus-5-5", autoAccount: true },
+          from: codexMain,
+          until: spareReset,
+          notice:
+            "Every Codex account is out of plan usage until 2026-11-28 08:59 UTC. Continued on Claude account akucheri (claude-opus-5-5).",
+        },
+      );
+    });
+
+    it("does not move back once the old provider has room again", () => {
+      const moved = autoRoute(input(codexOut)).selection;
+      const later = autoRoute(input([], { selection: moved, currentInstanceId: primary }));
+      assert.deepEqual(
+        { instanceId: later.selection.instanceId, move: later.move },
+        { instanceId: primary, move: null },
+      );
+    });
+
+    it("keeps the thread on its provider while one of its accounts has room", () => {
+      const routed = autoRoute(input([[codexMain, mainReset]]));
+      assert.deepEqual(
+        { instanceId: routed.selection.instanceId, move: routed.move },
+        { instanceId: codexSpare, move: null },
+      );
+    });
+
+    it("tries accounts that need no MCP sign-in before the ones that do", () => {
+      assert.equal(
+        autoRoute(input(codexOut, { needingSignIn: [primary] })).selection.instanceId,
+        second,
+      );
+    });
+
+    it.each([
+      ["a pinned selection", { selection: onCodex(false) }],
+      ["account switching off", { switching: false }],
+    ] as const)("keeps %s on its provider", (_, overrides) => {
+      const routed = autoRoute(input(codexOut, overrides));
+      assert.deepEqual(
+        { onCodex: routed.selection.instanceId.startsWith("codex"), move: routed.move },
+        { onCodex: true, move: null },
+      );
+    });
+
+    it("moves no thread that never ran, which starts where Auto puts it", () => {
+      assert.isNull(
+        autoRoute({ ...input(codexOut, { currentInstanceId: null }), started: false }).move,
+      );
+    });
+
+    it("stays when no provider has room", () => {
+      const routed = autoRoute(input([...codexOut, [primary, claudeReset], [second, claudeReset]]));
+      assert.deepEqual(
+        { provider: routed.selection.instanceId.startsWith("claude"), move: routed.move },
+        { provider: false, move: null },
+      );
+    });
+
+    it("leaves the move to the caller when told to stay on the provider", () => {
+      assert.isNull(autoRoute(input(codexOut), false).move);
+    });
+  });
+
+  describe("threadLimitStand", () => {
+    const stand = (
+      limited: ReadonlyArray<readonly [ProviderInstanceId, string]>,
+      overrides: Parameters<typeof input>[1] = { selection: onCodex(false) },
+    ) => threadLimitStand(input(limited, overrides));
+
+    it("offers the other provider's account with room to a pinned chat", () => {
+      assert.deepEqual(stand(codexOut), {
+        driver: codex,
+        until: spareReset,
+        alternatives: [
+          { instanceId: primary, driver: claude, model: "claude-opus-5-5" },
+          { instanceId: second, driver: claude, model: "claude-opus-5-5" },
+        ],
+      });
+    });
+
+    it("offers it when account switching is off for an Auto chat, which waits on its own account", () => {
+      assert.deepEqual(stand(codexOut, { switching: false })?.until, mainReset);
+    });
+
+    it("names the earliest reset and offers nothing when no account anywhere has room", () => {
+      const earlierClaudeReset = "2026-11-27T12:00:00.000Z";
+      const limited = [...codexOut, [primary, earlierClaudeReset], [second, claudeReset]] as const;
+      assert.deepEqual(stand(limited), {
+        driver: codex,
+        until: spareReset,
+        alternatives: [],
+      });
+      assert.equal(stand(limited, { selection: onCodex(true) })?.until, earlierClaudeReset);
+      assert.equal(stand(limited, { switching: false })?.until, mainReset);
+    });
+
+    it("shows no limit while another account of the chat's provider can run", () => {
+      assert.isNull(stand([[codexMain, mainReset]]));
+    });
+
+    it("shows none when an Auto chat's next turn moves on its own", () => {
+      assert.isNull(stand(codexOut, { selection: onCodex(true) }));
+    });
+  });
+});
+
 describe("usageBlock", () => {
   const codexDriver = ProviderDriverKind.make("codex");
   const codexMain = ProviderInstanceId.make("codex_main");
@@ -2610,6 +2792,166 @@ describe("prepaid Codex credits", () => {
     });
   });
 
+  describe("a started Auto thread leaving its provider", () => {
+    const claudeThread: ModelSelection = {
+      instanceId: primary,
+      model: "claude-opus-5-5",
+      autoAccount: true,
+    };
+    const crossing = (
+      providers: ReadonlyArray<ServerProvider>,
+      optedIn: ReadonlyArray<ProviderInstanceId>,
+    ) => {
+      const base = context([provider(primary), ...providers], optedIn);
+      return autoRoute({
+        ...base,
+        selection: claudeThread,
+        currentInstanceId: primary,
+        started: true,
+        settings: {
+          ...base.settings,
+          providerInstances: { ...base.settings.providerInstances, [primary]: { driver: claude } },
+          providerInstanceFailoverOrder: [primary, paid, spare],
+          autoModeProvider: claude,
+          autoModeModels: {
+            [claude]: { model: "claude-opus-5-5" },
+            [ProviderDriverKind.make("codex")]: { model },
+          },
+        },
+        recordedLimits: new Map([
+          [primary, [{ resetAt: "2026-11-03T20:00:00.000Z", refusedAt: "2026-11-03T11:00:00Z" }]],
+        ]),
+      });
+    };
+
+    it("spends prepaid credits on the other provider only where the user allowed it", () => {
+      assert.deepEqual(
+        [
+          crossing([codexAccount(paid)], [paid]).selection.instanceId,
+          crossing([codexAccount(paid)], []).selection.instanceId,
+        ],
+        [paid, primary],
+      );
+    });
+
+    it("prefers an account with plan usage left over one on credits", () => {
+      assert.equal(
+        crossing([codexAccount(paid), codexAccount(spare, { weeklyUsed: 30 })], [paid]).selection
+          .instanceId,
+        spare,
+      );
+    });
+  });
+
+  describe("plan usage on any provider before prepaid credits", () => {
+    const muse = ProviderDriverKind.make("muse");
+    const museMain = ProviderInstanceId.make("muse_main");
+    const codexThread: ModelSelection = { instanceId: paid, model, autoAccount: true };
+    const claudeThread: ModelSelection = {
+      instanceId: primary,
+      model: "claude-opus-5-5",
+      autoAccount: true,
+    };
+    /** A Codex account on the credits the user allowed, after it a Claude one, then a Muse one. */
+    const planFirst = (options: { readonly claudeOut?: boolean; readonly muse?: boolean } = {}) => {
+      const museAccount = provider(museMain, {
+        driver: muse,
+        models: [{ ...provider(primary).models[0]!, slug: "muse-main", aliases: [] }],
+      });
+      const base = context(
+        [codexAccount(paid), provider(primary), ...(options.muse === true ? [museAccount] : [])],
+        [paid],
+      );
+      return {
+        ...base,
+        settings: {
+          ...base.settings,
+          providerInstances: {
+            ...base.settings.providerInstances,
+            [primary]: { driver: claude },
+            [museMain]: { driver: muse, enabled: true },
+          },
+          providerInstanceFailoverOrder: [paid, primary, museMain],
+          autoModeModels: {
+            [codexDriver]: { model },
+            [claude]: { model: "claude-opus-5-5" },
+            [muse]: { model: "muse-main" },
+          },
+        },
+        recordedLimits: new Map(
+          options.claudeOut === true
+            ? [[primary, [{ resetAt: "2026-11-03T20:00:00Z", refusedAt: "2026-11-03T11:00:00Z" }]]]
+            : [],
+        ),
+      };
+    };
+    const started = (selection: ModelSelection) => ({
+      selection,
+      currentInstanceId: selection.instanceId,
+      started: true,
+    });
+
+    it("moves a started Auto thread off its credits to another provider's plan and says why", () => {
+      const input = { ...planFirst(), ...started(codexThread) };
+      const routed = autoRoute(input);
+      assert.deepEqual(
+        { selection: routed.selection, move: routed.move },
+        {
+          selection: claudeThread,
+          move: {
+            from: paid,
+            until: weeklyReset,
+            notice:
+              "Every Codex account is out of plan usage until 2026-11-06 00:00 UTC. Continued on Claude account claude_primary (claude-opus-5-5).",
+          },
+        },
+      );
+      for (const resetAt of ["2026-11-03T20:00:00.000Z", "2026-11-07T12:00:00.000Z"]) {
+        const refused = autoRoute({
+          ...input,
+          recordedLimits: new Map([[paid, [{ resetAt, refusedAt: "2026-11-03T11:00:00Z" }]]]),
+        });
+        assert.equal(refused.move?.until, resetAt > weeklyReset ? resetAt : weeklyReset);
+      }
+    });
+
+    it.each([
+      [
+        "a named launch",
+        { instanceId: paid, model },
+        { instanceId: primary, model: claudeThread.model },
+      ],
+      ["an Auto launch", codexThread, claudeThread],
+    ] as const)("fails %s over from credits to another provider's plan", (_, selection, to) => {
+      assert.deepEqual(failoverLimitedLaunch({ ...planFirst(), selection }), {
+        selection: to,
+        failover: { reason: "usageLimit", crossProviderFrom: paid },
+      });
+    });
+
+    it("keeps a thread and a launch on their credits when no other provider has plan usage", () => {
+      const input = planFirst({ claudeOut: true });
+      const routed = autoRoute({ ...input, ...started(codexThread) });
+      assert.deepEqual(
+        {
+          thread: routed.selection.instanceId,
+          move: routed.move,
+          launch: failoverLimitedLaunch({ ...input, selection: codexThread }).selection.instanceId,
+        },
+        { thread: paid, move: null, launch: paid },
+      );
+    });
+
+    it("takes a later provider's plan usage over an earlier provider's credits", () => {
+      const input = planFirst({ claudeOut: true, muse: true });
+      assert.deepEqual(autoRoute({ ...input, ...started(claudeThread) }).selection, {
+        instanceId: museMain,
+        model: "muse-main",
+        autoAccount: true,
+      });
+    });
+  });
+
   const shell = (lineage: {
     readonly parentThreadId: ThreadId | null;
     readonly relationshipToParent: "fork" | "subagent" | null;
@@ -3121,7 +3463,7 @@ describe("MCP sign-ins in the layer", () => {
             started: true,
           });
         }).pipe(Effect.provide(layer));
-        assert.equal(routed.instanceId, billingPriority ? second : primary);
+        assert.equal(routed.selection.instanceId, billingPriority ? second : primary);
         assert.deepEqual(
           (yield* Ref.get(reads)).filter((read) => !read.startsWith("loaded:")),
           [],
@@ -3170,7 +3512,7 @@ describe("MCP sign-ins in the layer", () => {
           return { launched, routed };
         }).pipe(Effect.provide(layer));
         assert.deepEqual(launched, { selection: auto, failover: null });
-        assert.equal(routed.instanceId, primary);
+        assert.equal(routed.selection.instanceId, primary);
         assert.includeMembers([...(yield* Ref.get(reads))], [`discover:${third}`]);
       }),
   );
@@ -3247,7 +3589,7 @@ describe("MCP sign-ins in the layer", () => {
           });
           return {
             withRoom: withRoom.map((candidate) => candidate.instanceId),
-            routed: routed.instanceId,
+            routed: routed.selection.instanceId,
           };
         }).pipe(Effect.provide(fullLayer));
 

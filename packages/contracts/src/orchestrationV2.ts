@@ -3865,6 +3865,8 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     modelSelection: ModelSelection,
+    /** Continue queued messages that used this pick when the person switched away from it. */
+    continueQueuedFrom: Schema.optional(ModelSelection),
   }),
 ]);
 export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
@@ -4177,12 +4179,19 @@ type LaunchCommand =
       readonly sendToProjectId?: ProjectId;
       readonly demandId?: string | null;
       readonly demandSourceRunId?: RunId;
+      readonly expectedHeldAttemptId?: RunAttemptId;
     })
   | Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>;
 export type OrchestrationV2ServerCommand =
   | Exclude<OrchestrationV2Command, LaunchCommand>
   | (LaunchCommand & {
       readonly crossProviderFailoverFrom?: ProviderInstanceId;
+      /** A thread that already ran moved to another provider because every account of its own was out of usage. */
+      readonly usageLimitMove?: {
+        readonly expectedSourceSelection: ModelSelection;
+        readonly from: ProviderInstanceId;
+        readonly notice: string;
+      };
       readonly requestedModelSelection?: ModelSelection;
       readonly launchAlreadyRouted?: true;
       /** Server-only: the delegate tool validated it, so a client cannot start a restricted child. */

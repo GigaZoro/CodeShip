@@ -33,6 +33,8 @@ import { useRightPanelActions } from "./chat/useRightPanelActions";
 import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useChatTerminalActions";
 import { useComposerSend } from "./chat/useComposerSend";
 import { useComposerResume } from "./chat/useComposerResume";
+import { limitAlternativeSelection } from "@t3tools/client-runtime/usage-holds";
+import { providerLimitBannerItem, useThreadLimitStand } from "./chat/ProviderLimitBanner";
 import { useImplementPlanInNewThread } from "./chat/useProposedPlanSend";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
@@ -2633,7 +2635,7 @@ export default function ChatView(props: ChatViewProps) {
           },
         })
       : null;
-  const composerBannerItems = ((): ThreadNotice[] => {
+  const baseComposerBannerItems = ((): ThreadNotice[] => {
     const fallbackSelection = draftFallback?.selection;
     const defaultSelection =
       draftDefaultModelSelection ??
@@ -2991,19 +2993,7 @@ export default function ChatView(props: ChatViewProps) {
     setPendingServerThreadStartFromOriginByThreadId,
     scheduleComposerFocus,
   });
-  const threadNoticeItems =
-    visibleProviderStatus === null
-      ? composerBannerItems
-      : [
-          ...composerBannerItems,
-          providerStatusNotice({
-            environmentId,
-            status: visibleProviderStatus,
-            onDismiss: () => setDismissedProviderStatusNoticeKey(providerStatusNoticeKey),
-            onOpenProviderSetup: openProviderSetupStable,
-          }),
-        ];
-  const { onResume, isResuming } = useComposerResume({
+  const { onResume, resumeOn, isResuming } = useComposerResume({
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -3023,6 +3013,55 @@ export default function ChatView(props: ChatViewProps) {
     scrollToEnd,
     setThreadError,
   });
+  const { limited: limitStand, refresh: refreshLimitStand } = useThreadLimitStand(
+    environmentId,
+    activeThreadShell?.id ?? null,
+  );
+  const composerBannerItems: ThreadNotice[] =
+    limitStand === null || !activeThreadShell
+      ? baseComposerBannerItems
+      : [
+          ...baseComposerBannerItems,
+          providerLimitBannerItem({
+            threadId: activeThreadShell.id,
+            limited: limitStand,
+            providers: providerStatuses,
+            timestampFormat,
+            onContinueOn: async (alternative) => {
+              const modelSelection = limitAlternativeSelection(
+                alternative,
+                activeThreadShell.modelSelection,
+              );
+              const switched = await updateThreadMetadata({
+                environmentId,
+                input: {
+                  threadId: activeThreadShell.id,
+                  modelSelection,
+                  continueQueuedFrom: activeThreadShell.modelSelection,
+                },
+              });
+              if (switched._tag === "Failure") throw squashAtomCommandFailure(switched);
+              onProviderModelSelectStable(alternative.instanceId, alternative.model, {
+                autoAccount: modelSelection.autoAccount === true,
+                focusComposer: false,
+              });
+              refreshLimitStand();
+              await resumeOn(modelSelection);
+            },
+          }),
+        ];
+  const threadNoticeItems =
+    visibleProviderStatus === null
+      ? composerBannerItems
+      : [
+          ...composerBannerItems,
+          providerStatusNotice({
+            environmentId,
+            status: visibleProviderStatus,
+            onDismiss: () => setDismissedProviderStatusNoticeKey(providerStatusNoticeKey),
+            onOpenProviderSetup: openProviderSetupStable,
+          }),
+        ];
   const onImplementPlanInNewThread = useImplementPlanInNewThread({
     environmentId,
     routeThreadKey,

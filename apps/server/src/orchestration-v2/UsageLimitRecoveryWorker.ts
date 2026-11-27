@@ -4,7 +4,6 @@ import {
   isProviderInstanceBackgroundAllowed,
   MessageId,
   type ModelSelection,
-  type OrchestrationV2Command,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ServerCommand,
   type ProviderInstanceId,
@@ -31,6 +30,8 @@ import {
   type AccountRoutingContext,
   type AccountEligibility,
   accountsWithRoom,
+  autoRoute,
+  type CrossProviderMove,
   type McpSignIns,
   readMcpSignIns,
   runLiftsScope,
@@ -38,7 +39,6 @@ import {
   nextAccountRoomAt,
   recoveryRoomAt,
   resolveAutoRoute,
-  routeAutoAccount,
 } from "./AccountRouting.ts";
 import {
   boundedCandidates,
@@ -66,7 +66,7 @@ type ArmCommand = Extract<
   OrchestrationV2ServerCommand,
   { readonly type: "thread.limit-recovery.arm" }
 >;
-type DispatchCommand = Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
+type DispatchCommand = Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>;
 
 /** Where the thread's next turn runs, and when it has room there (see `recoveryRoomAt`). */
 export interface LimitRecoveryTarget {
@@ -165,13 +165,17 @@ export function limitRecoveryTarget({
   ...input
 }: FailoverInput): LimitRecoveryTarget | null {
   if (thread.latestRunProviderInstanceId == null || thread.latestRunModel == null) return null;
-  const selection = routeAutoAccount({
-    ...input,
-    selection: thread.modelSelection,
-    projectId: thread.projectId,
-    currentInstanceId: thread.providerInstanceId,
-    started: true,
-  });
+  // Another provider's move is `limitFailoverCommand`'s, which records why the thread moved.
+  const { selection } = autoRoute(
+    {
+      ...input,
+      selection: thread.modelSelection,
+      projectId: thread.projectId,
+      currentInstanceId: thread.providerInstanceId,
+      started: true,
+    },
+    false,
+  );
   // Another account is account switching's move, so a reset minutes away is waited out here too.
   if (
     selection.instanceId !== thread.latestRunProviderInstanceId &&
@@ -216,12 +220,16 @@ function waitingRunId(
 
 const LIMIT_RESET_RESUME = "limit-reset-resume";
 
-/** Continues a limited thread's run, restarting it when its provider holds it, optionally on another account. */
+/**
+ * Continues a limited thread's run, restarting it when its provider holds it, optionally on another
+ * account, or on another provider (`move`, which the thread then shows).
+ */
 function continueLimitedRun(
   kind: "limit-failover" | typeof LIMIT_RESET_RESUME,
   thread: ProjectionStore.ProjectionLimitRecoveryCandidate,
   runId: RunId,
-  target?: { readonly instanceId: ProviderInstanceId; readonly model: string },
+  target?: ModelSelection,
+  move?: CrossProviderMove,
 ): DispatchCommand {
   const heldAttemptId = thread.status === "running" ? thread.heldAttemptId : undefined;
   // A held run keeps its id across restarts, so its attempt tells each hold apart. The target is
@@ -236,14 +244,17 @@ function continueLimitedRun(
     threadId: thread.id,
     automaticContinuationOfRunId: runId,
     // A stopped run reuses the manual resume guard: it must still be the thread's latest.
-    ...(heldAttemptId === undefined ? { manualContinuationOfRunId: runId } : {}),
-    ...(target === undefined
+    ...(heldAttemptId === undefined
+      ? { manualContinuationOfRunId: runId }
+      : { expectedHeldAttemptId: heldAttemptId }),
+    ...(target === undefined ? {} : { modelSelection: target }),
+    ...(move === undefined
       ? {}
       : {
-          modelSelection: {
-            ...thread.modelSelection,
-            instanceId: target.instanceId,
-            model: target.model,
+          usageLimitMove: {
+            from: move.from,
+            expectedSourceSelection: thread.modelSelection,
+            notice: move.notice,
           },
         }),
     text: "Continue where you left off.",
@@ -299,12 +310,16 @@ function failoverSearch({ thread, ...input }: FailoverInput) {
   const current = input.providers.find(
     (provider) => provider.instanceId === thread.providerInstanceId,
   );
-  return current === undefined ? null : { ...otherAccountSearch(input, thread, current), runId };
+  return current === undefined
+    ? null
+    : { ...otherAccountSearch(input, thread, current), runId, selection: thread.modelSelection };
 }
 
 /**
  * Moves a thread stopped by a usage limit, or held by its provider until the reset, to the first
- * account of its driver with room left.
+ * account of its driver with plan usage left. Without one, an Auto thread moves to another
+ * provider's account as its next dispatch would (`autoRoute`), which puts plan usage on any
+ * provider before prepaid credits; else it moves to an account of its driver on credits.
  */
 export function limitFailoverCommand(input: FailoverInput): DispatchCommand | null {
   return limitFailoverDecision(input).command;
@@ -319,16 +334,37 @@ export function limitFailoverDecision(input: FailoverInput, switching = true) {
       reason: instanceId === input.thread.providerInstanceId ? "source_account" : reason,
     });
   };
-  const target =
+  const sameProvider =
     search === null
       ? undefined
       : accountsWithRoom(search, observe).find(
           (account) => account.instanceId !== search.exceptInstanceId,
         );
+  const routed =
+    search === null || sameProvider?.onCredits === false
+      ? null
+      : autoRoute({
+          ...input,
+          selection: input.thread.modelSelection,
+          projectId: input.thread.projectId,
+          currentInstanceId: input.thread.providerInstanceId,
+          started: true,
+        });
+  const move = routed?.move ?? undefined;
+  const target: ModelSelection | undefined =
+    routed?.move != null
+      ? routed.selection
+      : sameProvider === undefined
+        ? undefined
+        : {
+            ...input.thread.modelSelection,
+            instanceId: sameProvider.instanceId,
+            model: sameProvider.model,
+          };
   const command =
     search === null || target === undefined
       ? null
-      : continueLimitedRun("limit-failover", input.thread, search.runId, target);
+      : continueLimitedRun("limit-failover", input.thread, search.runId, target, move);
   const reason = !switching
     ? "switching_disabled"
     : search === null
@@ -619,6 +655,7 @@ const makeSweep = Effect.gen(function* () {
           ThreadManagementProviderInstanceDisabledError: () => Effect.succeed("refused" as const),
           OrchestratorContinuationSnoozedError: () => Effect.succeed("refused" as const),
         }),
+        Effect.catchIf(Orchestrator.isStaleDispatchError, () => Effect.succeed("refused" as const)),
         Effect.catchCause((cause) =>
           Effect.logWarning(failureMessage, { threadId: command.threadId, cause }).pipe(
             Effect.as("failed" as const),

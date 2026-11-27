@@ -301,6 +301,32 @@ export const ProviderUsageHoldsResult = Schema.Struct({
 });
 export type ProviderUsageHoldsResult = typeof ProviderUsageHoldsResult.Type;
 
+/** An account of another provider that can run work now, and the model a switch to it would use. */
+export const ProviderLimitAlternative = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+  model: TrimmedNonEmptyString,
+});
+export type ProviderLimitAlternative = typeof ProviderLimitAlternative.Type;
+
+/**
+ * Where a chat stands when its provider has no account left to run on. `limited` is absent when
+ * some account of the chat's provider can run its next turn, or when nothing about usage stops it.
+ */
+export const ProviderThreadLimitStandResult = Schema.Struct({
+  limited: Schema.optional(
+    Schema.Struct({
+      /** The provider every account of which is out of usage. */
+      driver: ProviderDriverKind,
+      /** When the first account the chat can run on gets room back. */
+      until: IsoDateTime,
+      /** Accounts of other providers that can run work now, in the saved failover order. */
+      alternatives: ForwardCompatibleArray(ProviderLimitAlternative),
+    }),
+  ),
+});
+export type ProviderThreadLimitStandResult = typeof ProviderThreadLimitStandResult.Type;
+
 /** Each Codex account the user allowed to spend prepaid credits, with what is left of it. */
 export const ProviderCreditGrantsResult = Schema.Struct({
   grants: ForwardCompatibleArray(

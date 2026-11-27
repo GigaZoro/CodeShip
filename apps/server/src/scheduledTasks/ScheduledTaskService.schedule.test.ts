@@ -761,7 +761,8 @@ it.effect.each([
           accountsWithRoom: () => Effect.succeed([]),
           scheduledRunBlock: () => Effect.succeed(null),
           releaseAllowedHolds: Effect.succeed(false),
-          route: (input) => Effect.succeed(input.selection),
+          threadLimitStand: () => Effect.succeed(null),
+          route: (input) => Effect.succeed({ selection: input.selection, move: null }),
           failoverLaunch: (input) =>
             Effect.succeed({
               selection: { ...input.selection, instanceId: spare },

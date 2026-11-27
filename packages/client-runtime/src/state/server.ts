@@ -1637,6 +1637,13 @@ export function createServerEnvironmentAtoms<R, E>(
     staleTimeMs: 30_000,
     refreshIntervalMs: 60_000,
   });
+  // Usage readings stream in on their own; the polling only covers holds that end by the clock.
+  const threadLimitStand = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:provider:thread-limit-stand",
+    tag: WS_METHODS.providerThreadLimitStand,
+    staleTimeMs: 15_000,
+    refreshIntervalMs: 60_000,
+  });
   // Spending shows here within the minute of the balance reading it is counted from.
   const creditGrants = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:provider:credit-grants",
@@ -2102,6 +2109,7 @@ export function createServerEnvironmentAtoms<R, E>(
       },
     }),
     usageHolds,
+    threadLimitStand,
     creditGrants,
     retryUsageLimit: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-usage-limit",

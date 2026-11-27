@@ -1,6 +1,9 @@
 import type {
+  ModelSelection,
   ProviderCreditGrant,
+  ProviderLimitAlternative,
   ProviderRetryUsageLimitResult,
+  ProviderThreadLimitStandResult,
   ProviderUsageHold,
   ServerProvider,
 } from "@t3tools/contracts";
@@ -101,3 +104,33 @@ export const apiCreditCheckDescription = () =>
   t(
     "Runs a tiny billable check when API credits are next in expiry order. The account stays blocked until the next cycle or the API confirms available credit.",
   );
+
+/** The selection a one-click switch applies: the alternative's account and model, on Auto only when the chat was. */
+export function limitAlternativeSelection(
+  alternative: ProviderLimitAlternative,
+  current: ModelSelection,
+): ModelSelection {
+  return {
+    instanceId: alternative.instanceId,
+    model: alternative.model,
+    ...(current.autoAccount === true ? { autoAccount: true } : {}),
+  };
+}
+
+/** What the composer says when every account of the chat's provider is out of usage. */
+export function describeLimitStand(
+  limited: NonNullable<ProviderThreadLimitStandResult["limited"]>,
+  providerName: string,
+  formatTime: (isoDate: string) => string,
+): { readonly title: string; readonly description: string } {
+  const time = formatTime(limited.until);
+  return {
+    title: t("Every {provider} account is out of usage", { provider: providerName }),
+    description:
+      limited.alternatives.length > 0
+        ? t("The first one has room again {time}. Another provider can run this chat now.", {
+            time,
+          })
+        : t("This chat can run again {time}.", { time }),
+  };
+}

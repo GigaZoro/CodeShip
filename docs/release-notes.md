@@ -1,3 +1,9 @@
+## 2026-11-28 — Chats move to another provider when every account of theirs is out of usage
+
+- With **Switch to another account, else resume when the limit resets** on, an Auto chat can continue on another provider when its own provider runs out of plan usage, even if the provider is holding an active turn. The chat shows the original provider's plan reset and the new provider, account and model. Queued messages follow the move, and the chat stays there when the original provider has room again. If all eligible providers are out, the chat waits for the earliest reset it can use.
+- Chats pinned to an account or provider, and delegates told to use a provider, stay put. Their composer (web, desktop and mobile) says every account of the provider is out of usage, names the first reset, lists the accounts that can run now and offers **Continue on** each one, which switches the chat and resumes its queue. The same notice shows before you send.
+- Prepaid credits are spent only when no provider has plan usage left. With the same setting on, new chats, and Auto chats at their next message or when resumed, move to another provider's account with plan usage left before they spend an account's prepaid credits. A chat pinned to the account still runs on its credits.
+
 ## 2026-11-28 — Antigravity turns fail fast and retry once when a model request stalls
 
 - Antigravity turns now watch for awake stream progress and abort a stalled model request after 10 minutes of silence instead of waiting ~55 minutes for a backend 502.

@@ -65,6 +65,8 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { TextGenerationAttribution } from "../textGeneration/TextGenerationUsage.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as AccountRouting from "./AccountRouting.ts";
+import { isStaleDispatchError } from "./Orchestrator.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -132,6 +134,7 @@ const claudeAdapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
 interface HarnessOptions {
+  readonly accountRouting?: Layer.Layer<AccountRouting.AccountRouting>;
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
@@ -159,6 +162,7 @@ function makeHarness(options: HarnessOptions = {}) {
   const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
   const layerReceipts = CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase));
   const layerThreadManagement = ThreadManagement.layer.pipe(
+    Layer.provide(options.accountRouting ?? Layer.empty),
     Layer.provide(layerOrchestrator),
     Layer.provide(layerServerSettings),
     Layer.provide(layerReceipts),
@@ -1085,6 +1089,102 @@ it.effect("records the first run's provider failover and ignores a stale second 
     );
   }).pipe(Effect.provide(harness.layer));
 });
+
+it.effect.each(["already pinned", "source pick changed after routing", "Auto"] as const)(
+  "routes an explicit Auto send on a started thread (%s)",
+  (state) =>
+    Effect.gen(function* () {
+      const routed = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const source =
+        state === "already pinned"
+          ? modelSelection
+          : { ...modelSelection, autoAccount: true as const };
+      const requested = { ...modelSelection, model: "gpt-6-luna", autoAccount: true as const };
+      const target = { ...claudeModelSelection, autoAccount: true as const };
+      const notice =
+        "Every Codex account is out of plan usage until 2026-11-28 08:59 UTC. Continued on Claude.";
+      const harness = makeHarness({
+        adapters: [adapter, claudeAdapter],
+        accountRouting: Layer.mock(AccountRouting.AccountRouting)({
+          failoverLaunch: ({ selection }) => Effect.succeed({ selection, failover: null }),
+          route: ({ started, selection }) =>
+            Effect.gen(function* () {
+              if (!started) return { selection, move: null };
+              assert.deepEqual(selection, state === "already pinned" ? requested : source);
+              yield* Deferred.succeed(routed, undefined);
+              yield* Deferred.await(release);
+              return {
+                selection: target,
+                move: { from: modelSelection.instanceId, until: "2026-11-28T08:59:00Z", notice },
+              };
+            }),
+        }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const { threadId } = yield* launches.launch({
+          ...launchInput({
+            command: "command:launch:usage-move",
+            thread: "thread:launch:usage-move",
+            message: "First turn",
+          }),
+          modelSelection: source,
+        });
+        yield* preparationSettled(threadId);
+        const commandId = CommandId.make("command:launch:usage-move:next");
+        const sending = yield* threads
+          .dispatch({
+            type: "message.dispatch",
+            commandId,
+            messageId: MessageId.make("message:launch:usage-move:next"),
+            threadId,
+            text: "Run a check.",
+            attachments: [],
+            modelSelection: requested,
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          })
+          .pipe(Effect.result, Effect.forkScoped({ startImmediately: true }));
+        yield* Deferred.await(routed);
+        if (state === "source pick changed after routing") {
+          yield* threads.dispatch({
+            type: "thread.model-selection.set",
+            threadId,
+            commandId: CommandId.make("change-auto-model"),
+            modelSelection: { ...source, options: [{ id: "fastMode", value: true }] },
+          });
+        }
+        const before = yield* threads.getThreadProjection(threadId);
+        yield* Deferred.succeed(release, undefined);
+        const result = yield* Fiber.join(sending);
+        const after = yield* threads.getThreadProjection(threadId);
+        if (state === "source pick changed after routing") {
+          assert(Result.isFailure(result) && isStaleDispatchError(result.failure));
+          assert.deepEqual(after, before);
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          assert.isEmpty(yield* outbox.listByCommandId(commandId));
+        } else {
+          assert(Result.isSuccess(result));
+          assert.deepEqual(
+            after.runs.map((run) => [run.modelSelection, run.crossProviderFailoverFrom]),
+            [
+              [source, undefined],
+              [target, modelSelection.instanceId],
+            ],
+          );
+          assert.deepEqual(
+            after.turnItems.flatMap((item) =>
+              item.type === "system_notice" ? [item.message] : [],
+            ),
+            [notice],
+          );
+        }
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
 
 it.effect("runs a thread-bound automation on the provider the thread uses now", () => {
   const harness = makeHarness({ adapters: [adapter, claudeAdapter] });

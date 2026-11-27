@@ -201,6 +201,36 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(authorizedCommandLayer)),
   );
 
+  it.effect("switches provider when a selection names another instance than the thread's", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+      const selection = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "auto" };
+      const previous = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "auto",
+        autoAccount: true,
+      };
+
+      yield* updateThreadMetadata({
+        commandId: CommandId.make("switch"),
+        threadId: ThreadId.make("thread-1"),
+        modelSelection: selection,
+        continueQueuedFrom: previous,
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(commands).toEqual([
+        {
+          type: "provider.switch",
+          commandId: "switch",
+          threadId: "thread-1",
+          modelSelection: selection,
+          continueQueuedFrom: previous,
+        },
+      ]);
+    }).pipe(Effect.provide(authorizedCommandLayer)),
+  );
+
   it.effect("resolves run ordinal zero to the persisted thread-start checkpoint", () =>
     Effect.gen(function* () {
       const scopeId = CheckpointScopeId.make("checkpoint-scope-root");

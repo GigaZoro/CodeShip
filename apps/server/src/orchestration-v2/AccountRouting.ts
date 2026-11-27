@@ -1,9 +1,11 @@
 import {
   type AutoModeModel,
   CodexSettings,
+  defaultInstanceIdForDriver,
   isProviderInstanceBackgroundAllowed,
   type ModelSelection,
   type OrchestrationV2Run,
+  PROVIDER_DISPLAY_NAMES,
   type ProjectId,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
@@ -235,22 +237,25 @@ function runsOnCredits(provider: ServerProvider, input: LimitInput, model: strin
   );
 }
 
-/**
- * When the used-up usage windows stop limiting `model` (null: account-wide), or null if none does,
- * as when the user turned on spending the account's prepaid credits and some are left.
- */
-function windowLimitEnd(provider: ServerProvider, input: LimitInput, model: string | null) {
+/** When the used-up usage windows stop limiting `model` (null: account-wide), or null if none does. */
+function usedUpWindowEnd(provider: ServerProvider, input: LimitInput, model: string | null) {
   const window = exhaustedUsageWindow(provider, input.nowMs, model);
   if (window === undefined || provider.usageLimits === undefined) return null;
-  if (
-    runsOnCredits(provider, input, model) ||
-    (provider.driver === "claudeAgent" && accountUsageTier(provider, input.nowMs, model) === 2)
-  )
-    return null;
   return {
     end: usageWindowLimitEnd(provider.usageLimits, window),
     estimated: window.resetsAt === undefined,
   };
+}
+
+/**
+ * `usedUpWindowEnd`, or null while the account can run on prepaid credits the user allowed and
+ * has left, or on Claude extra usage.
+ */
+function windowLimitEnd(provider: ServerProvider, input: LimitInput, model: string | null) {
+  return runsOnCredits(provider, input, model) ||
+    (provider.driver === "claudeAgent" && accountUsageTier(provider, input.nowMs, model) === 2)
+    ? null
+    : usedUpWindowEnd(provider, input, model);
 }
 
 /** The last refusal or used-up window holding `model` (omitted: account-wide), or null if none does. */
@@ -258,6 +263,7 @@ function accountLimitDetail(
   provider: ServerProvider,
   input: LimitInput,
   model?: string,
+  windowEndFor = windowLimitEnd,
 ): LimitEnd | null {
   if (isPayPerUseAccount(provider)) {
     if (accountUsageTier(provider, input.nowMs, model) !== null) return null;
@@ -265,13 +271,14 @@ function accountLimitDetail(
     return { end: cycleEnd > input.nowMs ? cycleEnd : Infinity, estimated: false };
   }
   if (!isSubscriptionAccount(provider)) return null;
-  return usageLimitDetail(provider, input, model);
+  return usageLimitDetail(provider, input, model, windowEndFor);
 }
 
 function usageLimitDetail(
   provider: ServerProvider,
   input: LimitInput,
   model?: string,
+  windowEndFor = windowLimitEnd,
 ): LimitEnd | null {
   const canonical = model === undefined ? null : canonicalModel(provider, model);
   const ends = refusalEnds(
@@ -280,7 +287,7 @@ function usageLimitDetail(
     input.nowMs,
     canonical,
   );
-  const windowEnd = windowLimitEnd(provider, input, canonical);
+  const windowEnd = windowEndFor(provider, input, canonical);
   if (windowEnd !== null) ends.push(windowEnd);
   if (
     ends.length === 0 &&
@@ -610,12 +617,19 @@ function accountsByLimitEnd(input: AccountSearch) {
 }
 
 /**
- * When the first account of `driver` other than `exceptInstanceId` that a usage limit keeps from
- * running `model` gets room back: the end of its last refusal or used-up window. Null when none waits.
+ * When a waiting thread can switch accounts. A started Auto selection can also wait on a reset
+ * on another eligible provider. Signed-out recovery only tries the same provider.
  */
 export function nextAccountRoomAt(
-  input: AccountSearch & { readonly exceptInstanceId: ProviderInstanceId },
+  input: AccountSearch & {
+    readonly exceptInstanceId: ProviderInstanceId;
+    readonly selection?: ModelSelection;
+  },
 ): number | null {
+  if (input.selection?.autoAccount === true) {
+    const wait = startedThreadWait({ ...input, selection: input.selection });
+    if (wait !== null) return wait.end;
+  }
   const ends = accountsByLimitEnd(input).flatMap(({ instanceId, end }) =>
     instanceId === input.exceptInstanceId || end === null ? [] : [end],
   );
@@ -775,7 +789,7 @@ export interface AutoRouteInput extends AccountRoutingContext, McpSignIns {
   readonly projectId: ProjectId;
   /** The account the thread already runs on; null for a thread with no run yet. */
   readonly currentInstanceId: ProviderInstanceId | null;
-  /** A thread that already ran keeps its provider. */
+  /** A thread that already ran stays on its provider until none of its accounts has room. */
   readonly started: boolean;
   /** A scheduled task's run, which spends the room that would be lost first. */
   readonly scheduled?: boolean | undefined;
@@ -792,9 +806,46 @@ export interface AutoRouteInput extends AccountRoutingContext, McpSignIns {
   readonly routingConstraints?: AutoRoutingConstraints | undefined;
 }
 
+/** A started thread moved to another provider because every account of its own is out of plan usage. */
+export interface CrossProviderMove {
+  readonly from: ProviderInstanceId;
+  /** When the first account of the provider it left gets plan usage back, as an ISO time, or null when unknown. */
+  readonly until: string | null;
+  /** What the thread shows the person: which provider is out, until when, and where it continued. */
+  readonly notice: string;
+}
+
 export interface AutoRouteResult {
   readonly selection: ModelSelection;
+  readonly move: CrossProviderMove | null;
   readonly degradedReason?: AutoRoutingDegradationReason | undefined;
+}
+
+/** "Claude account akucheri": the provider, then the account by its own name when it has one. */
+function accountLabel(account: ServerProvider | undefined, instanceId: ProviderInstanceId) {
+  if (account === undefined) return instanceId;
+  const provider = PROVIDER_DISPLAY_NAMES[account.driver] ?? account.driver;
+  if (account.displayName !== undefined && account.displayName !== provider) {
+    return `${provider} account ${account.displayName}`;
+  }
+  return instanceId === defaultInstanceIdForDriver(account.driver)
+    ? provider
+    : `${provider} account ${instanceId}`;
+}
+
+function crossProviderNotice(
+  input: Pick<AccountRoutingContext, "providers">,
+  from: ProviderInstanceId,
+  until: string | null,
+  to: ModelSelection,
+): string {
+  const named = (id: ProviderInstanceId) => input.providers.find((p) => p.instanceId === id);
+  const left = named(from);
+  const provider = left === undefined ? from : (PROVIDER_DISPLAY_NAMES[left.driver] ?? from);
+  const destination = accountLabel(named(to.instanceId), to.instanceId);
+  return until === null
+    ? `Every ${provider} account is out of plan usage. Continued on ${destination} (${to.model}).`
+    : `Every ${provider} account is out of plan usage until ${until.slice(0, 16).replace("T", " ")} UTC. Continued on ${destination} (${to.model}).`;
 }
 
 function resolveCandidateModelForProvider(
@@ -830,10 +881,11 @@ function resolveCandidateModelForProvider(
 }
 
 /**
- * Resolves an Auto selection and reports any graceful degradation reason when constraints such as
- * `excludeVendorFamily` cannot be satisfied with available quota.
+ * Resolves an Auto selection, any cross-provider move (`planFirstMove`), and any constraint
+ * degradation reason. `crossProvider` false keeps a started thread on its own provider.
  */
-export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteResult {
+export function autoRoute(input: AutoRouteInput, crossProvider = true): AutoRouteResult {
+  const stay = (selection: ModelSelection): AutoRouteResult => ({ selection, move: null });
   const namedSelection = input.providers.find(
     (provider) => provider.instanceId === input.selection.instanceId,
   );
@@ -846,13 +898,33 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
     input.selection.quotaAwareAuto === true ||
     (input.selection.autoAccount !== true && !billingPriority)
   ) {
-    return { selection: input.selection };
+    return stay(input.selection);
   }
   const background = isBackgroundContext(input);
   const excludedFamilies = excludedVendorFamilies(input.routingConstraints);
   const { selection, driver, searchModel } = resolveAutoRoute(input);
   if ((selection === input.selection && !billingPriority) || driver === undefined) {
-    return { selection };
+    return stay(selection);
+  }
+  if (
+    crossProvider &&
+    input.started &&
+    input.settings.failoverLimitedThreads &&
+    input.selection.autoAccount === true
+  ) {
+    const moved = planFirstMove(input, selection, true);
+    if (moved !== null) {
+      const until = limitEndIso(moved.until);
+      return {
+        selection: moved.selection,
+        move: {
+          from: selection.instanceId,
+          until,
+          notice: crossProviderNotice(input, selection.instanceId, until, moved.selection),
+        },
+        ...(moved.degradedReason === undefined ? {} : { degradedReason: moved.degradedReason }),
+      };
+    }
   }
 
   if (excludedFamilies.size === 0 || input.started || input.selection.autoAccount !== true) {
@@ -1058,7 +1130,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
       preservePreviousSelection: input.preservePreviousSelection,
       routingConstraints: input.routingConstraints,
     });
-    return { selection: modelPicksEqual(tuned, input.selection) ? input.selection : tuned };
+    return stay(modelPicksEqual(tuned, input.selection) ? input.selection : tuned);
   }
 
   interface AutoProviderRouteCandidate {
@@ -1214,7 +1286,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
   }
 
   if (candidates.length === 0) {
-    return { selection };
+    return stay(selection);
   }
 
   const filtered = filterEligibleAutoProviders(candidates, input.routingConstraints);
@@ -1243,8 +1315,16 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
 
   return {
     selection: modelPicksEqual(tuned, input.selection) ? input.selection : tuned,
+    move: null,
     ...(filtered.degradedReason === undefined ? {} : { degradedReason: filtered.degradedReason }),
   };
+}
+
+/**
+ * Resolves an Auto selection and reports any cross-provider move or graceful degradation reason.
+ */
+export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteResult {
+  return autoRoute(input);
 }
 
 /**
@@ -1253,7 +1333,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
  * with room. With none, it keeps one that can still run, else the one whose limit ends first.
  */
 export function routeAutoAccount(input: AutoRouteInput): ModelSelection {
-  return routeAutoAccountWithDetails(input).selection;
+  return autoRoute(input).selection;
 }
 
 /** Why a launch started on another account than the one it named. */
@@ -1371,10 +1451,19 @@ function alternateLaunches(
   options?: { readonly allowWhenFailoverOff?: boolean },
 ) {
   if (!input.settings.failoverLimitedThreads && options?.allowWhenFailoverOff !== true) return [];
+  return crossProviderSearches(input, primaryDriver, { background: true });
+}
+
+/** The other providers a launch could run on, each with the model it would search for. */
+function crossProviderSearches(
+  input: AccountRoutingContext & LaunchInput,
+  primaryDriver: ProviderDriverKind,
+  options?: { readonly background?: boolean },
+) {
   const eligible = input.providers.filter(
     (provider) =>
       provider.driver !== primaryDriver &&
-      canAccountRun(provider, input.settings, input.projectId, { background: true }),
+      canAccountRun(provider, input.settings, input.projectId, options),
   );
   const searches = (input.fallbackModelSelections ?? []).flatMap((selection) => {
     const named = eligible.find((provider) => provider.instanceId === selection.instanceId);
@@ -1402,7 +1491,163 @@ function alternateLaunches(
   return searches;
 }
 
-/** A fresh launch that must wait on its provider can use a configured or Auto alternative. */
+/**
+ * Accounts of other providers that can take the turn now, as selections to run it on: plan usage
+ * on any of them before prepaid credits on any. Each provider runs a configured alternative or
+ * its Auto model, on the named account when it is signed in to its MCP servers, else on its first
+ * account, which puts accounts that must sign in to an MCP server again last.
+ */
+function crossProviderRoutes(
+  input: AccountRoutingContext & McpSignIns & LaunchInput,
+  primaryDriver: ProviderDriverKind,
+  options?: { readonly allowWhenFailoverOff?: boolean },
+): ReadonlyArray<{
+  readonly selection: ModelSelection;
+  readonly driver: ProviderDriverKind;
+  readonly onCredits: boolean;
+}> {
+  const searches = alternateLaunches(input, primaryDriver, options).map(
+    ({ selection, driver, preferNamed }) => ({
+      selection,
+      driver,
+      preferNamed,
+      accounts: accountsWithRoom({
+        ...input,
+        background: true,
+        driver,
+        model: selection.model,
+        preferEarliestReset: input.scheduled === true,
+      }),
+    }),
+  );
+  return [false, true].flatMap((onCredits) =>
+    searches.flatMap(({ selection, driver, preferNamed, accounts }) => {
+      const tier = accounts.filter((account) => account.onCredits === onCredits);
+      const named = preferNamed
+        ? tier.find(
+            (candidate) =>
+              candidate.instanceId === selection.instanceId &&
+              pendingSignIns(input, candidate.instanceId).length === 0,
+          )
+        : undefined;
+      const account = named ?? tier[0];
+      if (account === undefined) return [];
+      const targetProvider = input.providers.find(
+        (candidate) => candidate.instanceId === account.instanceId,
+      );
+      const targetDescriptors = targetProvider?.models.find(
+        (candidate) => candidate.slug === account.model,
+      )?.capabilities?.optionDescriptors;
+      const routedBase: ModelSelection = {
+        ...selection,
+        instanceId: account.instanceId,
+        model: account.model,
+      };
+      const routedSelection = preferNamed
+        ? routedBase
+        : withModelSelectionOptions(
+            routedBase,
+            acceptedOptionSelections(targetDescriptors, selection.options),
+          );
+      return [
+        {
+          selection: routedSelection,
+          driver,
+          onCredits,
+        },
+      ];
+    }),
+  );
+}
+
+function pickCrossProviderRoute(
+  input: AccountRoutingContext & McpSignIns & LaunchInput,
+  eligible: ReadonlyArray<{
+    readonly selection: ModelSelection;
+    readonly driver: ProviderDriverKind;
+    readonly onCredits: boolean;
+  }>,
+  started: boolean,
+): {
+  readonly selection: ModelSelection;
+  readonly degradedReason?: AutoRoutingDegradationReason | undefined;
+} | null {
+  if (eligible.length === 0) return null;
+  const auto = input.selection.autoAccount === true;
+  const excludedFamilies =
+    !started && auto ? excludedVendorFamilies(input.routingConstraints) : new Set<string>();
+  const matches = eligible.map((candidate) => {
+    const tuned = applyRequestComplexity({
+      context: input,
+      selection: candidate.selection,
+      requestPrompt: auto ? input.requestPrompt : undefined,
+      started: false,
+      routingConstraints: auto ? input.routingConstraints : undefined,
+    });
+    return {
+      instanceId: tuned.instanceId,
+      driver: candidate.driver,
+      selection: tuned,
+    };
+  });
+  const filtered =
+    excludedFamilies.size > 0
+      ? filterEligibleAutoProviders(
+          matches.map((match) => ({
+            instanceId: match.instanceId,
+            driver: match.driver,
+            model: match.selection.model,
+            hasQuota: true,
+            match,
+          })),
+          input.routingConstraints,
+        )
+      : undefined;
+  const picked = filtered ? filtered.providers[0]?.match : matches[0];
+  return picked === undefined
+    ? null
+    : {
+        selection: picked.selection,
+        ...(filtered?.degradedReason === undefined
+          ? {}
+          : { degradedReason: filtered.degradedReason }),
+      };
+}
+
+/**
+ * Where a turn goes when its provider has no plan usage left, and when that comes back. Plan usage on
+ * any provider beats prepaid credits (`runsOnCredits`, Codex), and other providers' credits beat
+ * none; null keeps the turn. Claude's expiring API-credit grants (AB#5624) count as plan windows.
+ */
+function planFirstMove(
+  input: AccountRoutingContext & McpSignIns & LaunchInput,
+  selection: ModelSelection,
+  started: boolean,
+  options?: { readonly allowWhenFailoverOff?: boolean },
+): {
+  readonly selection: ModelSelection;
+  readonly until: number;
+  readonly degradedReason?: AutoRoutingDegradationReason | undefined;
+} | null {
+  const own = selectionAccounts(input, selection, started);
+  if (own === null) return null;
+  const planWait = waitForRoom(
+    own.driver,
+    own.accounts.map(({ instanceId, planEnd }) => ({ instanceId, end: planEnd })),
+  );
+  if (planWait === null) return null;
+  const onOwnCredits = own.accounts.some((account) => account.end === null);
+  const eligible = crossProviderRoutes(input, own.driver, options).filter(
+    (candidate) => !(onOwnCredits && candidate.onCredits),
+  );
+  const picked = pickCrossProviderRoute(input, eligible, started);
+  return picked === null ? null : { ...picked, until: planWait.end };
+}
+
+/**
+ * A fresh launch whose provider has no plan usage left can use a configured or Auto alternative,
+ * as `planFirstMove` orders them.
+ */
 export function failoverLimitedLaunch(
   input: AccountRoutingContext & McpSignIns & LaunchInput,
 ): LaunchRoute {
@@ -1424,99 +1669,37 @@ export function failoverLimitedLaunch(
         ? primary
         : { selection: input.selection, failover: null }
       : primary;
-  const wait = selectionWait(input, primary.selection);
   const backgroundDisallowed =
     isBackgroundContext(input) &&
     !isProviderInstanceBackgroundAllowed(input.settings, primary.selection.instanceId);
-  const primaryDriver =
-    wait?.driver ??
-    (backgroundDisallowed
-      ? (input.providers.find((provider) => provider.instanceId === primary.selection.instanceId)
-          ?.driver ??
-        (input.selection.autoAccount === true ? activeAutoModeProvider(input.settings) : null))
-      : null);
-  if (primaryDriver === null) return unchanged;
-  const matches: Array<{
-    readonly selection: ModelSelection;
-    readonly driver: ProviderDriverKind;
-    readonly instanceId: ProviderInstanceId;
-  }> = [];
-  for (const { selection, driver, preferNamed } of alternateLaunches(input, primaryDriver, {
+  const moved = planFirstMove(input, primary.selection, false, {
     allowWhenFailoverOff: backgroundDisallowed,
-  })) {
-    const accounts = accountsWithRoom({
-      ...input,
-      background: true,
-      driver,
-      model: selection.model,
-      preferEarliestReset: input.scheduled === true,
-    });
-    const named = preferNamed
-      ? accounts.find(
-          (candidate) =>
-            candidate.instanceId === selection.instanceId &&
-            pendingSignIns(input, candidate.instanceId).length === 0,
-        )
-      : undefined;
-    const account = named ?? accounts[0];
-    if (account !== undefined) {
-      const targetProvider = input.providers.find(
-        (candidate) => candidate.instanceId === account.instanceId,
-      );
-      const targetDescriptors = targetProvider?.models.find(
-        (candidate) => candidate.slug === account.model,
-      )?.capabilities?.optionDescriptors;
-      const routedBase: ModelSelection = {
-        ...selection,
-        instanceId: account.instanceId,
-        model: account.model,
-      };
-      const routedSelection = preferNamed
-        ? routedBase
-        : withModelSelectionOptions(
-            routedBase,
-            acceptedOptionSelections(targetDescriptors, selection.options),
-          );
-      matches.push({
-        instanceId: account.instanceId,
-        driver,
-        selection: applyRequestComplexity({
-          context: input,
-          selection: routedSelection,
-          requestPrompt: input.selection.autoAccount === true ? input.requestPrompt : undefined,
-          started: false,
-          routingConstraints:
-            input.selection.autoAccount === true ? input.routingConstraints : undefined,
-        }),
-      });
-    }
+  });
+  if (moved !== null) {
+    return {
+      selection: moved.selection,
+      failover: { reason: "usageLimit", crossProviderFrom: primary.selection.instanceId },
+      ...(moved.degradedReason === undefined ? {} : { degradedReason: moved.degradedReason }),
+    };
   }
-  if (matches.length > 0) {
-    const filtered =
-      excludedFamilies.size > 0
-        ? filterEligibleAutoProviders(
-            matches.map((match) => ({
-              instanceId: match.instanceId,
-              driver: match.driver,
-              model: match.selection.model,
-              hasQuota: true,
-              match,
-            })),
-            input.routingConstraints,
-          )
-        : undefined;
-    const picked = filtered ? filtered.providers[0]?.match : matches[0];
-    if (picked !== undefined) {
-      return {
+  if (!backgroundDisallowed) return unchanged;
+  const primaryDriver =
+    input.providers.find((provider) => provider.instanceId === primary.selection.instanceId)
+      ?.driver ??
+    (input.selection.autoAccount === true ? activeAutoModeProvider(input.settings) : null);
+  if (primaryDriver === null) return unchanged;
+  const picked = pickCrossProviderRoute(
+    input,
+    crossProviderRoutes(input, primaryDriver, { allowWhenFailoverOff: true }),
+    false,
+  );
+  return picked === null
+    ? unchanged
+    : {
         selection: picked.selection,
         failover: { reason: "usageLimit", crossProviderFrom: primary.selection.instanceId },
-        ...(filtered?.degradedReason === undefined
-          ? {}
-          : { degradedReason: filtered.degradedReason }),
+        ...(picked.degradedReason === undefined ? {} : { degradedReason: picked.degradedReason }),
       };
-    }
-  }
-  return unchanged;
 }
 
 /** The fallback model selection, when it is another account that can take the launch now. */
@@ -1566,48 +1749,53 @@ function waitForRoom(
     : { driver, end: Math.min(...ends), accounts: accounts.map((account) => account.instanceId) };
 }
 
-/** A new thread on `selection` starts where routing puts it, or with switching on any account of its provider. */
-function selectionWait(
+/**
+ * The accounts a thread on `selection` can start on, usage aside: where routing puts it, or with
+ * switching on any account of its provider, each with when its limits end and when its plan has
+ * room again. `started` judges a thread that already ran, whose Auto stays on its provider's model.
+ */
+function selectionAccounts(
   input: AccountRoutingContext & LaunchInput,
   selection: ModelSelection,
-): UsageWait | null {
+  started: boolean,
+) {
   const own = input.providers.find((provider) => provider.instanceId === selection.instanceId);
   if (own === undefined) return null;
   const switching = input.settings.failoverLimitedThreads && supportsAccountFailover(own.driver);
   if (input.selection.autoAccount === true && switching) {
     const candidates = autoDriverCandidates(input.settings, input.providers, own.driver);
     if (candidates.length > 1) {
-      const waits: Array<UsageWait> = [];
+      const byInstance = new Map<
+        ProviderInstanceId,
+        { instanceId: ProviderInstanceId; end: number | null; planEnd: number | null }
+      >();
+      const earlier = (a: number | null, b: number | null) =>
+        a === null || b === null ? null : Math.min(a, b);
       for (const candidate of candidates) {
-        const accounts = input.providers.flatMap((provider) => {
+        for (const provider of input.providers) {
           const model =
             provider.instanceId === own.instanceId
               ? runnableModel(provider, { ...input, model: candidate.model })
               : provider.driver === own.driver
                 ? usableModel(provider, { ...input, background: true, model: candidate.model })
                 : null;
-          return model === null
-            ? []
-            : [
-                {
-                  instanceId: provider.instanceId,
-                  end: accountLimitEnd(provider, input, model),
-                },
-              ];
-        });
-        if (accounts.length === 0) continue;
-        const wait = waitForRoom(own.driver, accounts);
-        if (wait === null) return null;
-        waits.push(wait);
+          if (model === null) continue;
+          const end = accountLimitEnd(provider, input, model);
+          const planEnd = accountLimitDetail(provider, input, model, usedUpWindowEnd)?.end ?? null;
+          const existing = byInstance.get(provider.instanceId);
+          byInstance.set(provider.instanceId, {
+            instanceId: provider.instanceId,
+            end: existing === undefined ? end : earlier(existing.end, end),
+            planEnd: existing === undefined ? planEnd : earlier(existing.planEnd, planEnd),
+          });
+        }
       }
-      if (waits.length === 0) return null;
-      const first = waits.reduce((earliest, wait) => (wait.end < earliest.end ? wait : earliest));
-      return { ...first, accounts: [...new Set(waits.flatMap((wait) => wait.accounts))] };
+      return { driver: own.driver, accounts: [...byInstance.values()] };
     }
   }
   const peerModel =
     input.selection.autoAccount === true
-      ? resolveAutoRoute({ ...input, started: false }).searchModel
+      ? resolveAutoRoute({ ...input, started }).searchModel
       : selection.model;
   const accounts = input.providers.flatMap((provider) => {
     const model =
@@ -1622,29 +1810,35 @@ function selectionWait(
           {
             instanceId: provider.instanceId,
             end: accountLimitEnd(provider, input, model),
+            planEnd: accountLimitDetail(provider, input, model, usedUpWindowEnd)?.end ?? null,
           },
         ];
   });
-  return waitForRoom(own.driver, accounts);
+  return { driver: own.driver, accounts };
 }
 
-function launchWait(input: AccountRoutingContext & LaunchInput): UsageWait | null {
-  if (input.selection.quotaAwareAuto === true) return null;
-  const primary = primaryLaunch({ ...input, mcpSignInsNeeded: new Map() });
-  const blocked = selectionWait(input, primary.selection);
-  if (blocked === null) return null;
+/** When the first eligible account gets room, including alternate providers if this turn can move. */
+function selectionWait(
+  input: AccountRoutingContext & LaunchInput,
+  selection: ModelSelection,
+  started = false,
+): UsageWait | null {
+  const own = selectionAccounts(input, selection, started);
+  const blocked = own === null ? null : waitForRoom(own.driver, own.accounts);
+  if (blocked === null || (started && selection === input.selection)) return blocked;
   const backgroundDisallowed =
+    !started &&
     isBackgroundContext(input) &&
-    !isProviderInstanceBackgroundAllowed(input.settings, primary.selection.instanceId);
+    !isProviderInstanceBackgroundAllowed(input.settings, selection.instanceId);
   const waits = [blocked];
-  for (const { selection, driver } of alternateLaunches(input, blocked.driver, {
+  for (const { selection: alternate, driver } of alternateLaunches(input, blocked.driver, {
     allowWhenFailoverOff: backgroundDisallowed,
   })) {
     const accounts = accountsByLimitEnd({
       ...input,
       background: true,
       driver,
-      model: selection.model,
+      model: alternate.model,
     });
     if (accounts.length === 0) continue;
     const wait = waitForRoom(driver, accounts);
@@ -1653,6 +1847,19 @@ function launchWait(input: AccountRoutingContext & LaunchInput): UsageWait | nul
   }
   const first = waits.reduce((earliest, wait) => (wait.end < earliest.end ? wait : earliest));
   return { ...first, accounts: [...new Set(waits.flatMap((wait) => wait.accounts))] };
+}
+
+function launchWait(input: AccountRoutingContext & LaunchInput): UsageWait | null {
+  if (input.selection.quotaAwareAuto === true) return null;
+  const primary = primaryLaunch({ ...input, mcpSignInsNeeded: new Map() });
+  return selectionWait(input, primary.selection);
+}
+
+/** The limited thread's own provider, with the first reset the thread can actually use. */
+function startedThreadWait(input: AccountRoutingContext & LaunchInput) {
+  const { selection, driver } = resolveAutoRoute({ ...input, started: true });
+  const wait = selectionWait(input, selection, true);
+  return wait === null || driver === undefined ? null : { driver, end: wait.end };
 }
 
 /** Delegation can use any account of the provider that can run in the project. */
@@ -1674,6 +1881,54 @@ function delegateWait(
         : [],
     ),
   );
+}
+
+export interface ThreadLimitStand {
+  /** The provider every account of which is out of usage. */
+  readonly driver: ProviderDriverKind;
+  /** When the first account this thread can use gets room back, as an ISO time. */
+  readonly until: string;
+  /** Plan-usage accounts of other providers that can run now; spending prepaid credits is never offered. */
+  readonly alternatives: ReadonlyArray<{
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+    readonly model: string;
+  }>;
+}
+
+/**
+ * Whether a thread has no account left on its provider and stays there until the user moves it,
+ * and which accounts of other providers could take it. Null when its provider has room, when its
+ * next turn moves on its own, or when usage is not what prevents the turn.
+ */
+export function threadLimitStand(
+  input: AccountRoutingContext & {
+    readonly selection: ModelSelection;
+    readonly projectId: ProjectId;
+  },
+): ThreadLimitStand | null {
+  const wait = startedThreadWait(input);
+  if (wait === null) return null;
+  const until = limitEndIso(wait.end);
+  if (until === null) return null;
+  const seenAlternatives = new Set<ProviderInstanceId>();
+  const alternatives = crossProviderSearches(input, wait.driver).flatMap(({ selection, driver }) =>
+    accountsWithRoom({
+      ...input,
+      mcpSignInsNeeded: new Map(),
+      driver,
+      model: selection.model,
+    }).flatMap((account) => {
+      if (account.onCredits || seenAlternatives.has(account.instanceId)) return [];
+      seenAlternatives.add(account.instanceId);
+      return [{ instanceId: account.instanceId, driver, model: account.model }];
+    }),
+  );
+  return {
+    driver: wait.driver,
+    until,
+    alternatives,
+  };
 }
 
 export interface UsageBlock {
@@ -1780,7 +2035,10 @@ export function creditRefusalMessage(refusal: CreditRefusal): string {
 export class AccountRouting extends Context.Service<
   AccountRouting,
   {
-    /** Resolves an Auto selection to the model and account its next turn runs on. */
+    /**
+     * Resolves an Auto selection to the model and account its next turn runs on, and says when
+     * that moved a started thread to another provider (`autoRoute`).
+     */
     readonly route: (
       input: {
         readonly selection: ModelSelection;
@@ -1795,8 +2053,8 @@ export class AccountRouting extends Context.Service<
         readonly preservePreviousSelection?: boolean | undefined;
         readonly routingConstraints?: AutoRoutingConstraints | undefined;
       } & CreditRequest,
-    ) => Effect.Effect<ModelSelection>;
-    /** Resolves an Auto selection along with any graceful degradation reason. */
+    ) => Effect.Effect<AutoRouteResult>;
+    /** Resolves an Auto selection along with any cross-provider move or graceful degradation reason. */
     readonly routeWithDetails?: (
       input: {
         readonly selection: ModelSelection;
@@ -1878,6 +2136,8 @@ export class AccountRouting extends Context.Service<
      * thread out, or the count reached the cap.
      */
     readonly creditOverruns: Effect.Effect<ReadonlyArray<CreditOverrun>>;
+    /** `threadLimitStand` for a stored thread, judged as every launch judges usage; null when it is not limited. */
+    readonly threadLimitStand: (threadId: ThreadId) => Effect.Effect<ThreadLimitStand | null>;
     /** The accounts `retryAccount` can release, and the ones ChatGPT's app cap stopped. */
     readonly holds: Effect.Effect<ReadonlyArray<ProviderUsageHold>>;
     /** The usage-limited account a new thread on `selection` would start on, or null if it has room. */
@@ -1891,10 +2151,10 @@ export class AccountRouting extends Context.Service<
       } & CreditRequest,
     ) => Effect.Effect<LaunchLimit | null>;
     /**
-     * The account a new thread starts on when its named one is out of usage, signed out, or must
-     * sign in to an MCP server again, and why it moved. Lists the MCP servers of the provider's
-     * accounts first (bounded wait), so a machine no client polls still sees fresh sign-in state;
-     * Auto routes from those lists on its first turn unless this launch changes providers.
+     * The account a new thread starts on, and why, when its named one is out of plan usage, signed
+     * out, or must sign in to an MCP server again. Lists MCP servers first (bounded wait), so a
+     * machine no client polls sees fresh sign-in state; Auto routes from those lists on its first
+     * turn unless this launch changes providers.
      */
     readonly failoverLaunch: (
       input: LaunchInput &
@@ -2580,6 +2840,33 @@ export const layer = Layer.effect(
           nowMs: DateTime.toEpochMillis(now),
         });
       }).pipe(Effect.withSpan("AccountRouting.holds")),
+      threadLimitStand: Effect.fn("AccountRouting.threadLimitStand")(
+        function* (threadId) {
+          const shell = yield* projections.getThreadShell(threadId);
+          if (shell === null) return null;
+          const now = yield* DateTime.now;
+          const providers = yield* providerRegistry.getProviders;
+          const settings = yield* serverSettings.getSettings;
+          return threadLimitStand({
+            selection: shell.modelSelection,
+            projectId: shell.projectId,
+            settings,
+            providers,
+            recordedLimits: yield* readLimits(now, providers),
+            nowMs: DateTime.toEpochMillis(now),
+            creditAccess: yield* readCreditAccess(settings, providers, threadId),
+          });
+        },
+        // A notice must not break the chat it describes: with no reading, no limit is shown.
+        (effect) =>
+          effect.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.account-routing.thread-limit-stand-failed", {
+                cause,
+              }).pipe(Effect.as(null)),
+            ),
+          ),
+      ),
       launchLimit: Effect.fn("AccountRouting.launchLimit")(
         function* (input) {
           if (input.selection.quotaAwareAuto === true) return null;
@@ -2689,7 +2976,9 @@ export const layer = Layer.effect(
       ),
       routeWithDetails: Effect.fn("AccountRouting.routeWithDetails")(
         function* (input) {
-          if (input.selection.quotaAwareAuto === true) return { selection: input.selection };
+          if (input.selection.quotaAwareAuto === true) {
+            return { selection: input.selection, move: null };
+          }
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
           const settings = yield* serverSettings.getSettings;
@@ -2714,19 +3003,21 @@ export const layer = Layer.effect(
           effect.pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.account-routing.failed", { cause }).pipe(
-                Effect.as({ selection: input.selection } satisfies AutoRouteResult),
+                Effect.as({ selection: input.selection, move: null } satisfies AutoRouteResult),
               ),
             ),
           ),
       ),
       route: Effect.fn("AccountRouting.route")(
         function* (input) {
-          if (input.selection.quotaAwareAuto === true) return input.selection;
+          if (input.selection.quotaAwareAuto === true) {
+            return { selection: input.selection, move: null };
+          }
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
           const settings = yield* serverSettings.getSettings;
           // A message dispatch must not wait on or start a provider, so only what is loaded counts.
-          return routeAutoAccount({
+          return autoRoute({
             ...input,
             settings,
             providers,
@@ -2746,7 +3037,7 @@ export const layer = Layer.effect(
           effect.pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.account-routing.failed", { cause }).pipe(
-                Effect.as(input.selection),
+                Effect.as({ selection: input.selection, move: null }),
               ),
             ),
           ),

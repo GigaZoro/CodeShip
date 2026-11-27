@@ -4196,6 +4196,7 @@ const catalog: MessageCatalog = {
   "Continue as {email} on OpenAI.": "Продовжити як {email} на OpenAI.",
   "Continue authentication": "Продовжити автентифікацію",
   "Continue here": "Продовжити тут",
+  "Continue on {account}": "Продовжити на {account}",
   "Continue setup": "Продовжити налаштування",
   "Continue thread": "Продовжити чат",
   "continue threads after restarts": "продовження чатів після перезапусків",
@@ -4813,6 +4814,7 @@ const catalog: MessageCatalog = {
   "Could not switch backend on": "Не вдалося ввімкнути бекенд",
   "Could not switch branch": "Не вдалося перемкнути гілку",
   "Could not switch machine": "Не вдалося змінити комп’ютер",
+  "Could not switch provider": "Не вдалося змінити провайдера",
   "Could not switch to {channel}": "Не вдалося перейти на {channel}",
   "Could not synchronize environment data.": "Не вдалося синхронізувати дані середовища.",
   "Could not synchronize the thread.": "Не вдалося синхронізувати чат.",
@@ -5822,6 +5824,7 @@ const catalog: MessageCatalog = {
   "Every {host} host is turned off.": "Усі хости {host} вимкнено.",
   "Every {interval}": "Кожні {interval}",
   "Every {minutes} min": "Кожні {minutes} хв",
+  "Every {provider} account is out of usage": "Усі облікові записи {provider} вичерпали ліміт",
   "Every {provider} account this task can use was out of usage until {time}.":
     "В усіх облікових записах {provider}, які може використати це завдання, ліміт використання було вичерпано до {time}.",
   "Every {provider} account this task can use was out of usage. It will wait until an account reports available usage again.":
@@ -12060,6 +12063,7 @@ const catalog: MessageCatalog = {
   "Switching to WebRTC.": "Перехід на WebRTC.",
   "Switching uses another subscription account of the same provider. Some providers' terms forbid using extra accounts to get around limits. Custom keeps account switching without automatic resume until you choose an action.":
     "Перемикання використовує інший обліковий запис із підпискою того самого провайдера. Умови деяких провайдерів забороняють використовувати додаткові облікові записи для обходу лімітів. Власний варіант зберігає перемикання облікових записів без автоматичного відновлення, доки ви не виберете дію.",
+  "Switching...": "Перемикаємо...",
   "Sync ref": "Синхронізувати посилання",
   "Syncing messages...": "Синхронізація повідомлень…",
   "Syncing threads...": "Синхронізація чатів...",
@@ -12588,6 +12592,8 @@ const catalog: MessageCatalog = {
     "Файл не знайдено на комп’ютері {machine} за шляхом {path}.",
   "The filter checks file names and folder paths.":
     "Фільтр перевіряє імена файлів і шляхи до папок.",
+  "The first one has room again {time}. Another provider can run this chat now.":
+    "Перший відновиться {time}. Цей чат уже може виконати інший провайдер.",
   "The folder for threads without a project could not be created.":
     "Не вдалося створити папку для чатів без проєкту.",
   "The folder for threads without a project has not reached this device yet. Try again.":
@@ -13080,6 +13086,7 @@ const catalog: MessageCatalog = {
   "This change has more files than the host will report ticks for in one read, so the count is short and some boxes below start empty.":
     "У цій зміні більше файлів, ніж хост повертає позначок за одне читання, тому підрахунок неповний, а деякі прапорці нижче спочатку порожні.",
   "This change has no files to tour.": "У цій зміні немає файлів для туру.",
+  "This chat can run again {time}.": "Чат зможе продовжити роботу {time}.",
   "This chat has reached the limit of {limit} starred messages.":
     "У цьому чаті досягнуто ліміту позначених зірочкою повідомлень ({limit}).",
   "This chat is not settled, not analyzed, or no longer exists.":

@@ -24,6 +24,7 @@ import {
   MessageId,
   ThreadId,
   type ProjectScript,
+  type ProviderLimitAlternative,
 } from "@t3tools/contracts";
 import {
   projectScriptCwd,
@@ -111,6 +112,7 @@ import {
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadStarredMessagesSheet } from "./ThreadStarredMessagesSheet";
 import { requestThreadMessageJump } from "./threadMessageJump";
+import { limitAlternativeSelection } from "@t3tools/client-runtime/usage-holds";
 import { resumeThread } from "./resume-thread";
 import {
   useAndroidWorkspaceBack,
@@ -399,6 +401,10 @@ function ThreadRouteContent(
   });
   const resumeThreadQueue = useAtomCommand(threadEnvironment.resumeThreadQueue, {
     label: "resume queue",
+    reportFailure: false,
+  });
+  const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
+    label: "switch thread provider",
     reportFailure: false,
   });
   const continueThreadRun = useAtomCommand(threadEnvironment.startTurn, {
@@ -754,6 +760,41 @@ function ThreadRouteContent(
       const error = squashAtomCommandFailure(result);
       Dialog.alert(
         t("Could not resume thread"),
+        error instanceof Error ? error.message : t("Try again."),
+      );
+    }
+  };
+
+  const handleContinueOnProvider = async (alternative: ProviderLimitAlternative) => {
+    if (!selectedThread) return;
+    const modelSelection = limitAlternativeSelection(alternative, selectedThread.modelSelection);
+    const switched = await updateThreadMetadata({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        modelSelection,
+        continueQueuedFrom: selectedThread.modelSelection,
+      },
+    });
+    const result =
+      switched._tag === "Failure" || (!composer.queueHeld && composer.resumableRunId === null)
+        ? switched
+        : await resumeThread({
+            thread: selectedThread,
+            resumableRunId: composer.resumableRunId,
+            queueHeld: composer.queueHeld,
+            runtimeMode: composer.runtimeMode ?? selectedThread.runtimeMode,
+            modelSelection,
+            messageId: MessageId.make(uuidv4()),
+            createdAt: new Date().toISOString(),
+            setRuntimeMode: setThreadRuntimeMode,
+            startTurn: continueThreadRun,
+            resumeQueue: resumeThreadQueue,
+          });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      Dialog.alert(
+        t("Could not switch provider"),
         error instanceof Error ? error.message : t("Try again."),
       );
     }
@@ -1200,6 +1241,7 @@ function ThreadRouteContent(
           onResumeQueue={
             composer.queueHeld || composer.resumableRunId !== null ? handleResumeQueue : null
           }
+          onContinueOnProvider={handleContinueOnProvider}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}
           onRetryThreadContent={handleRetryThreadContent}

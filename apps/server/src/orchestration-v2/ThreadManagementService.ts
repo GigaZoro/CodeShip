@@ -906,7 +906,8 @@ const make = Effect.gen(function* () {
     if (
       Option.isNone(accountRouting) ||
       (command.type !== "message.dispatch" && command.type !== "delegated_task.request") ||
-      command.crossProviderFailoverFrom !== undefined
+      command.crossProviderFailoverFrom !== undefined ||
+      command.usageLimitMove !== undefined
     ) {
       return Effect.succeed(command);
     }
@@ -927,7 +928,17 @@ const make = Effect.gen(function* () {
     }) {
       const thread = yield* orchestrator.getThreadShell(input.threadId);
       if (thread === null) return command;
-      const selection = input.selection ?? thread.modelSelection;
+      if (input.selection?.quotaAwareAuto === true) return command;
+      const started = !input.newThread && thread.latestRunId !== null;
+      // Auto is one pick, so a started Auto thread runs where its own Auto routing settled. An
+      // older Auto pick from a composer cannot pull it back to a provider it left for usage.
+      const selection =
+        input.selection === undefined ||
+        (started &&
+          input.selection.autoAccount === true &&
+          thread.modelSelection.autoAccount === true)
+          ? thread.modelSelection
+          : input.selection;
       if (selection.quotaAwareAuto === true) return command;
       const background =
         input.background ||
@@ -980,7 +991,6 @@ const make = Effect.gen(function* () {
           };
         }
       }
-      const started = !input.newThread && thread.latestRunId !== null;
       let previousSelection = started ? thread.modelSelection : undefined;
       if (
         started &&
@@ -1025,12 +1035,24 @@ const make = Effect.gen(function* () {
       const routeResult =
         input.routingConstraints !== undefined && routing.routeWithDetails
           ? yield* routing.routeWithDetails(routeInput)
-          : { selection: yield* routing.route(routeInput) };
+          : yield* routing.route(routeInput);
       const routed = routeResult.selection;
       const degradedReason = routeResult.degradedReason ?? command.degradedReason;
+      if (routeResult.move !== null) {
+        return {
+          ...command,
+          modelSelection: routed,
+          ...(degradedReason === undefined ? {} : { degradedReason }),
+          usageLimitMove: {
+            from: routeResult.move.from,
+            expectedSourceSelection: thread.modelSelection,
+            notice: routeResult.move.notice,
+          },
+        };
+      }
       // A recorded continuation pins the account it was routed to, so the evidence names where it ran.
       if (
-        routed === selection &&
+        routed === (input.selection ?? selection) &&
         !(observe && input.selection === undefined) &&
         degradedReason === command.degradedReason
       ) {

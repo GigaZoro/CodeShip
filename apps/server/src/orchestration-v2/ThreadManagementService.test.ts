@@ -3,6 +3,7 @@ import {
   CommandId,
   EnvironmentId,
   MessageId,
+  type ModelSelection,
   NodeId,
   type OrchestrationV2Command,
   type OrchestrationV2Run,
@@ -87,23 +88,30 @@ const layerDispatchChokepointTest =
     settingsLayer: ReturnType<typeof ServerSettings.layerTest>,
     options: {
       readonly autoAccount?: boolean;
+      /** The thread already ran, so Auto routing keeps it on its provider unless every account is out. */
+      readonly started?: boolean;
       readonly accountRouting?: Layer.Layer<AccountRouting.AccountRouting>;
       readonly runs?: (threadId: ThreadId) => ReadonlyArray<Partial<OrchestrationV2Run>>;
+      /** The thread's own pick, when it is not `codex_work`'s "test" model. */
+      readonly modelSelection?: ModelSelection;
     } = {},
   ) =>
   (dispatched: Array<OrchestrationV2ServerCommand>) => {
+    const modelSelection = options.modelSelection ?? {
+      instanceId: ProviderInstanceId.make("codex_work"),
+      model: "test",
+      ...(options.autoAccount ? { autoAccount: true } : {}),
+    };
     const thread = {
       id: ThreadId.make("thread:thread-management:chokepoint"),
       projectId: ProjectId.make("project:thread-management:chokepoint"),
-      providerInstanceId: ProviderInstanceId.make("codex_work"),
-      activeProviderThreadId: null,
-      latestRunId: null,
+      providerInstanceId: modelSelection.instanceId,
+      activeProviderThreadId: options.started
+        ? ProviderThreadId.make("provider-thread:started")
+        : null,
+      latestRunId: options.started ? RunId.make("run:thread-management:started") : null,
       deletedAt: null,
-      modelSelection: {
-        instanceId: ProviderInstanceId.make("codex_work"),
-        model: "test",
-        ...(options.autoAccount ? { autoAccount: true } : {}),
-      },
+      modelSelection,
     };
     return ThreadManagementService.layer.pipe(
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
@@ -283,10 +291,11 @@ it.effect.each([
           accountsWithRoom: () => Effect.succeed([]),
           scheduledRunBlock: () => Effect.succeed(null),
           releaseAllowedHolds: Effect.succeed(false),
+          threadLimitStand: () => Effect.succeed(null),
           route: (input) =>
             Effect.sync(() => {
               routedIn.push(input.projectId);
-              return input.selection;
+              return { selection: input.selection, move: null };
             }),
           limits: () =>
             Effect.succeed({
@@ -464,10 +473,11 @@ it.effect.each([{ scheduled: false }, { scheduled: true }])(
           accountsWithRoom: () => Effect.succeed([]),
           scheduledRunBlock: () => Effect.succeed(null),
           releaseAllowedHolds: Effect.succeed(false),
+          threadLimitStand: () => Effect.succeed(null),
           route: (input) =>
             Effect.sync(() => {
               routeInputs.push(input);
-              return { ...input.selection, instanceId: routed };
+              return { selection: { ...input.selection, instanceId: routed }, move: null };
             }),
           limits: () =>
             Effect.succeed({
@@ -556,6 +566,104 @@ it.effect.each([{ scheduled: false }, { scheduled: true }])(
   },
 );
 
+it.effect("a started Auto thread that routing moves to another provider carries the reason", () => {
+  const threadId = ThreadId.make("thread:thread-management:chokepoint");
+  const from = ProviderInstanceId.make("codex_work");
+  const to = ProviderInstanceId.make("claude_spare");
+  const moved = { instanceId: to, model: "claude-opus-5-5", autoAccount: true } as const;
+  const dispatched: Array<OrchestrationV2ServerCommand> = [];
+  const layerTest = layerDispatchChokepointTest(
+    ServerSettings.layerTest({
+      providerInstances: {
+        [from]: { driver: "codex", enabled: true },
+        [to]: { driver: "claudeAgent", enabled: true },
+      },
+    }),
+    {
+      autoAccount: true,
+      started: true,
+      accountRouting: Layer.mock(AccountRouting.AccountRouting)({
+        route: () =>
+          Effect.succeed({
+            selection: moved,
+            move: { from, until: "2026-11-28T08:59:00.000Z", notice: "Codex is out." },
+          }),
+      }),
+    },
+  )(dispatched);
+
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:thread-management:usage-move"),
+      threadId,
+      messageId: MessageId.make("message:thread-management:usage-move"),
+      text: "Carry on",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+
+    expect(dispatched).toMatchObject([
+      {
+        type: "message.dispatch",
+        modelSelection: moved,
+        usageLimitMove: { from, notice: "Codex is out." },
+      },
+    ]);
+  }).pipe(Effect.provide(layerTest));
+});
+
+it.effect("a composer's older Auto pick does not pull a moved Auto thread back", () => {
+  const threadId = ThreadId.make("thread:thread-management:chokepoint");
+  const left = ProviderInstanceId.make("codex_work");
+  const movedTo = ProviderInstanceId.make("claude_spare");
+  const threadPick = { instanceId: movedTo, model: "claude-opus-5-5", autoAccount: true } as const;
+  const dispatched: Array<OrchestrationV2ServerCommand> = [];
+  const routed: Array<ModelSelection> = [];
+  const layerTest = layerDispatchChokepointTest(
+    ServerSettings.layerTest({
+      providerInstances: {
+        [left]: { driver: "codex", enabled: true },
+        [movedTo]: { driver: "claudeAgent", enabled: true },
+      },
+    }),
+    {
+      started: true,
+      modelSelection: threadPick,
+      // The left provider has room again, so routing keeps whatever pick it is given.
+      accountRouting: Layer.mock(AccountRouting.AccountRouting)({
+        route: (input) =>
+          Effect.sync(() => {
+            routed.push(input.selection);
+            return { selection: input.selection, move: null };
+          }),
+      }),
+    },
+  )(dispatched);
+
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:thread-management:stale-auto"),
+      threadId,
+      messageId: MessageId.make("message:thread-management:stale-auto"),
+      text: "Carry on",
+      attachments: [],
+      modelSelection: { instanceId: left, model: "test", autoAccount: true },
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+
+    expect(routed).toEqual([threadPick]);
+    expect(dispatched).toMatchObject([{ type: "message.dispatch", modelSelection: threadPick }]);
+  }).pipe(Effect.provide(layerTest));
+});
+
 it.effect("a buffered provider wake-up stays on its account when routing would move it", () => {
   const threadId = ThreadId.make("thread:thread-management:chokepoint");
   const current = ProviderInstanceId.make("codex_work");
@@ -575,10 +683,11 @@ it.effect("a buffered provider wake-up stays on its account when routing would m
         accountsWithRoom: () => Effect.succeed([]),
         scheduledRunBlock: () => Effect.succeed(null),
         releaseAllowedHolds: Effect.succeed(false),
+        threadLimitStand: () => Effect.succeed(null),
         route: (input) =>
           Effect.sync(() => {
             routeInputs.push(input);
-            return { ...input.selection, instanceId: routed };
+            return { selection: { ...input.selection, instanceId: routed }, move: null };
           }),
         limits: () =>
           Effect.succeed({
@@ -1313,7 +1422,7 @@ it.effect(
           releaseAllowedHolds: Effect.succeed(false),
           route: (input) =>
             Effect.succeed(
-              AccountRouting.routeAutoAccount({
+              AccountRouting.autoRoute({
                 ...input,
                 settings: routingSettings,
                 providers,
@@ -1337,6 +1446,7 @@ it.effect(
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
           failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+          threadLimitStand: () => Effect.succeed(null),
         }),
       ),
       Layer.provide(ServerSettings.layerTest(routingSettings)),

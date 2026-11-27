@@ -70,6 +70,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.providerAuthStart]: AuthProvidersManageScope,
   [WS_METHODS.providerConsumeResetCredit]: AuthProvidersManageScope,
   [WS_METHODS.providerUsageHolds]: AuthOrchestrationReadScope,
+  [WS_METHODS.providerThreadLimitStand]: AuthOrchestrationReadScope,
   [WS_METHODS.providerCreditGrants]: AuthOrchestrationReadScope,
   [WS_METHODS.providerAuthComplete]: AuthProvidersManageScope,
   [WS_METHODS.chatGptReconnectProfile]: AuthProvidersManageScope,

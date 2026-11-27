@@ -182,6 +182,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   detectedManualSteps: Schema.optionalKey(Schema.Boolean),
   /** Serves `provider.usageHolds`, the accounts CodeShip skips after a usage refusal. */
   usageHolds: Schema.optionalKey(Schema.Boolean),
+  /** Serves `provider.threadLimitStand`, whether every account of a chat's provider is out of usage. */
+  threadLimitStand: Schema.optionalKey(Schema.Boolean),
   /** Serves `provider.creditGrants`, what is left of the prepaid credits each account may spend. */
   creditGrants: Schema.optionalKey(Schema.Boolean),
   /** Serves `manualSteps.review` and `manualSteps.reviewAgain`, AI reviews of manual steps. */

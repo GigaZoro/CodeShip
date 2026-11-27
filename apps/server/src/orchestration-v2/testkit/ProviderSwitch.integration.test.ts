@@ -2749,6 +2749,258 @@ describe("orchestration v2 provider switching", () => {
       ),
   );
 
+  it.live.each([
+    ["a person's next message", "send"],
+    ["the usage-limit sweep with a message waiting", "sweep"],
+    ["manual Continue on with a message waiting", "manual"],
+    ["manual Continue on with fast mode off on a pinned thread", "manual-pinned"],
+  ] as const)(
+    "moves a limited Auto thread to Claude through %s, says why, and keeps it there",
+    ([_label, path]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const name = `usage-limit-move-${path}`;
+          const withWaitingMessage = path !== "send";
+          const cwd = yield* checkpointWorkspace(name);
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const codexAuto = { ...CODEX_MODEL_SELECTION, autoAccount: true } as const;
+          const manual = path === "manual" || path === "manual-pinned";
+          const source: ModelSelection =
+            path === "manual-pinned" ? CODEX_MODEL_SELECTION : codexAuto;
+          const independent: ModelSelection =
+            path === "manual-pinned"
+              ? { ...source, options: [...(source.options ?? []), { id: "fastMode", value: true }] }
+              : CODEX_MODEL_SELECTION;
+          const claudeAuto = { ...CLAUDE_MODEL_SELECTION, autoAccount: true } as const;
+          const notice =
+            "Every Codex account is out of plan usage until 2026-11-28 08:59 UTC. Continued on Claude (claude-sonnet-4-6).";
+          const registry = ProviderAdapterRegistry.layerFromAdapters([
+            makeTestAdapter({
+              instanceId: CODEX_MODEL_SELECTION.instanceId,
+              driver: CODEX_DRIVER,
+              capabilities: CodexProviderCapabilitiesV2,
+              modelSelection: CODEX_MODEL_SELECTION,
+              responseByRunOrdinal: {},
+              capturedTurns,
+              ...(withWaitingMessage ? { holdFirstTurn: started, releaseFirstTurn: release } : {}),
+              failedRunOrdinals: new Set([1]),
+              failure: makeProviderFailure({
+                message: "Usage limit reached",
+                class: "usage_limit",
+                code: "usage_limit",
+              }),
+            }),
+            makeTestAdapter({
+              instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+              driver: CLAUDE_DRIVER,
+              capabilities: ClaudeProviderCapabilitiesV2,
+              modelSelection: CLAUDE_MODEL_SELECTION,
+              responseByRunOrdinal: {},
+              capturedTurns,
+            }),
+          ]);
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("create"),
+              threadId,
+              projectId,
+              createdBy: "user",
+              creationSource: "web",
+              title: "Usage-limit move",
+              modelSelection: source,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: cwd,
+            });
+            const sendFromComposer = (
+              text: string,
+              dispatchMode: { readonly type: "start_immediately" | "queue_after_active" },
+              modelSelection: ModelSelection = source,
+            ) =>
+              orchestrator.dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(text),
+                messageId: MessageId.make(text),
+                threadId,
+                text,
+                modelSelection,
+                attachments: [],
+                createdBy: "user",
+                creationSource: "web",
+                dispatchMode,
+              });
+            yield* sendFromComposer("Original work", { type: "start_immediately" });
+            if (withWaitingMessage) {
+              yield* Deferred.await(started);
+              yield* sendFromComposer(
+                "Also check the tests",
+                { type: "queue_after_active" },
+                path === "manual-pinned"
+                  ? {
+                      ...source,
+                      options: [...(source.options ?? []), { id: "fastMode", value: false }],
+                    }
+                  : source,
+              );
+              if (manual) {
+                yield* sendFromComposer(
+                  "Use my pinned Codex model",
+                  { type: "queue_after_active" },
+                  independent,
+                );
+              }
+              yield* Deferred.succeed(release, undefined);
+            }
+            const limited = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+            yield* orchestrator.streamStoredEvents.pipe(
+              Stream.filter(
+                ({ event }) =>
+                  event.type === "run.updated" &&
+                  event.runId === limited.id &&
+                  event.payload.status === "failed",
+              ),
+              Stream.runHead,
+            );
+            yield* worker.drain();
+            const waiting = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+              (run) => run.status === "queued",
+            );
+            assert.equal(waiting !== undefined, withWaitingMessage);
+
+            if (manual) {
+              yield* orchestrator.dispatch({
+                type: "provider.switch",
+                commandId: CommandId.make("continue-on-claude"),
+                threadId,
+                modelSelection: claudeAuto,
+                continueQueuedFrom: source,
+              });
+            }
+            const moveId = withWaitingMessage ? "limit-failover:move" : "Next step";
+            const move = orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(moveId),
+              messageId: MessageId.make(moveId),
+              threadId,
+              text: withWaitingMessage ? "Continue where you left off." : moveId,
+              modelSelection: claudeAuto,
+              ...(manual
+                ? {}
+                : {
+                    usageLimitMove: {
+                      from: CODEX_MODEL_SELECTION.instanceId,
+                      expectedSourceSelection: source,
+                      notice,
+                    },
+                  }),
+              attachments: [],
+              createdBy: "user",
+              creationSource: path === "sweep" ? "server" : "web",
+              ...(withWaitingMessage
+                ? {
+                    ...(path === "sweep" ? { automaticContinuationOfRunId: limited.id } : {}),
+                    manualContinuationOfRunId: limited.id,
+                  }
+                : {}),
+              dispatchMode: { type: "start_immediately" },
+            });
+            if (path === "sweep") {
+              const select = (selection: ModelSelection, id: string) =>
+                orchestrator.dispatch({
+                  type: "thread.model-selection.set",
+                  commandId: CommandId.make(id),
+                  threadId,
+                  modelSelection: selection,
+                });
+              yield* select(CODEX_MODEL_SELECTION, "pin-before-recovery");
+              const refusal = yield* move.pipe(Effect.flip);
+              assert.isTrue(Orchestrator.isStaleDispatchError(refusal));
+              const pinned = yield* orchestrator.getThreadProjection(threadId);
+              assert.deepEqual(pinned.thread.modelSelection, CODEX_MODEL_SELECTION);
+              assert.deepEqual(
+                pinned.runs.find((run) => run.id === waiting?.id),
+                waiting,
+              );
+              yield* select(codexAuto, "restore-auto");
+            }
+            yield* move;
+            if (manual) {
+              yield* orchestrator.dispatch({
+                type: "queue.resume",
+                commandId: CommandId.make("resume-queued"),
+                threadId,
+              });
+            }
+            const lastRunId =
+              (manual
+                ? (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+                    (run) => run.userMessageId === MessageId.make("Use my pinned Codex model"),
+                  )?.id
+                : waiting?.id) ??
+              (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+                (run) => run.userMessageId === MessageId.make(moveId),
+              )!.id;
+            yield* orchestrator.streamStoredEvents.pipe(
+              Stream.filter(
+                ({ event }) =>
+                  event.type === "run.updated" &&
+                  event.runId === lastRunId &&
+                  (event.payload.status === "completed" || event.payload.status === "failed"),
+              ),
+              Stream.runHead,
+            );
+            yield* worker.drain();
+
+            const after = yield* orchestrator.getThreadProjection(threadId);
+            const moved = after.runs.find((run) => run.userMessageId === MessageId.make(moveId))!;
+            assert.equal(moved.providerInstanceId, CLAUDE_MODEL_SELECTION.instanceId);
+            assert.equal(
+              moved.crossProviderFailoverFrom,
+              manual ? undefined : CODEX_MODEL_SELECTION.instanceId,
+            );
+            const reason = after.turnItems.find(
+              (item) => item.id === TurnItemId.make(`usage-limit-move:${moved.userMessageId}`),
+            );
+            assert.equal(
+              reason?.type === "system_notice" ? reason.message : undefined,
+              manual ? undefined : notice,
+            );
+            const turns = yield* Ref.get(capturedTurns);
+            assert.deepEqual(
+              turns.map((turn) => turn.driver),
+              manual
+                ? [CODEX_DRIVER, CLAUDE_DRIVER, CLAUDE_DRIVER, CODEX_DRIVER]
+                : withWaitingMessage
+                  ? [CODEX_DRIVER, CLAUDE_DRIVER, CLAUDE_DRIVER]
+                  : [CODEX_DRIVER, CLAUDE_DRIVER],
+            );
+            assert.deepEqual(after.thread.modelSelection, manual ? independent : claudeAuto);
+            if (manual) {
+              assert.include(turns[3]!.text, "Use my pinned Codex model");
+              assert.deepEqual(turns[3]!.modelSelection, independent);
+            }
+            if (waiting !== undefined) {
+              assert.include(turns[2]!.text, "Also check the tests");
+              assert.equal(after.runs.find((run) => run.id === waiting.id)?.status, "completed");
+            }
+          }).pipe(
+            Effect.provide(
+              ProviderReplayHarness.layerWithRegistry(
+                { name, runtimePolicyOverride: { cwd } },
+                registry,
+              ),
+            ),
+          );
+        }),
+      ),
+  );
+
   it.live("fails an unsupported queued handoff and advances to the next queued provider", () =>
     Effect.scoped(
       Effect.gen(function* () {

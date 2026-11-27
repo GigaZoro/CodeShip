@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { evidenceKey, makeDispatchRecorder } from "./StopDecisionEvidence.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
-import { AccountRouting, routeAutoAccount, runLiftsScope } from "./AccountRouting.ts";
+import { AccountRouting, autoRoute, runLiftsScope } from "./AccountRouting.ts";
 import { limitFailoverCommand, limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -10519,7 +10519,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
                 Layer.mergeAll(
                   CommandReceiptStore.layer,
                   Layer.mock(AccountRouting)({
-                    route: (input) => Effect.succeed(input.selection),
+                    route: (input) => Effect.succeed({ selection: input.selection, move: null }),
                   }),
                   ServerSettings.layerTest({
                     providerInstances: { [alternateInstanceId]: { driver, enabled: true } },
@@ -11820,7 +11820,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
                 Layer.mock(AccountRouting)({
                   route: (input) =>
                     Effect.succeed(
-                      routeAutoAccount({
+                      autoRoute({
                         ...input,
                         settings,
                         providers,

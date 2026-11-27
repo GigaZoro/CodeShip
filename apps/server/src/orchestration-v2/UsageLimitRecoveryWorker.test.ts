@@ -384,6 +384,110 @@ describe("limitFailoverCommand", () => {
   });
 });
 
+describe("limitFailoverCommand across providers", () => {
+  const claudeAgent = ProviderInstanceId.make("claudeAgent");
+  const codexId = ProviderInstanceId.make("codex");
+  const codexDriver = ProviderDriverKind.make("codex");
+  const autoThread: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+    ...thread,
+    modelSelection: { instanceId: claudeAgent, model: "opus", autoAccount: true },
+  };
+  const claudeOut = { resetAt, refusedAt: "2026-10-29T11:00:00Z" };
+  const crossSettings = {
+    ...settings,
+    failoverLimitedThreads: true,
+    autoModeProvider: claude,
+    autoModeModels: { [claude]: { model: "claude-opus-4-1" }, codex: { model: "gpt-main" } },
+  };
+  const codexAccount = provider("codex", {
+    driver: codexDriver,
+    models: [model("gpt-main", "GPT Main")],
+  });
+  const crossFailover = (overrides: Partial<Parameters<typeof limitFailoverCommand>[0]> = {}) =>
+    limitFailoverCommand({
+      mcpSignInsNeeded: new Map(),
+      thread: autoThread,
+      settings: crossSettings,
+      providers: [provider("claudeAgent"), codexAccount],
+      recordedLimits: new Map([[claudeAgent, [claudeOut]]]),
+      nowMs: now,
+      ...overrides,
+    });
+
+  it("moves a stopped Auto thread to the other provider and records why", () => {
+    const command = crossFailover();
+    assert.deepEqual(
+      {
+        id: command?.commandId,
+        selection: command?.modelSelection,
+        from: command?.usageLimitMove?.from,
+        notice: command?.usageLimitMove?.notice,
+        mode: command?.dispatchMode,
+      },
+      {
+        id: CommandId.make("limit-failover:thread:failover:run:failover:codex"),
+        selection: { instanceId: codexId, model: "gpt-main", autoAccount: true },
+        from: claudeAgent,
+        notice: `Every Claude account is out of plan usage until 2026-10-30 12:00 UTC. Continued on Codex (gpt-main).`,
+        mode: { type: "start_immediately" },
+      },
+    );
+  });
+
+  it("moves to another account of its own provider first, with no provider record", () => {
+    const command = crossFailover({
+      providers: [provider("claudeAgent"), provider("claude_first"), codexAccount],
+    });
+    assert.deepEqual(
+      { instanceId: command?.modelSelection?.instanceId, move: command?.usageLimitMove },
+      { instanceId: ProviderInstanceId.make("claude_first"), move: undefined },
+    );
+  });
+
+  it("does not move back once the thread runs on the other provider", () => {
+    const moved: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+      ...autoThread,
+      providerInstanceId: codexId,
+      latestRunProviderInstanceId: codexId,
+      modelSelection: { instanceId: codexId, model: "gpt-main", autoAccount: true },
+    };
+    // Claude has room again and Codex does too: nothing pulls the thread back.
+    assert.isNull(crossFailover({ thread: moved, recordedLimits: new Map() }));
+  });
+
+  it.each([
+    [
+      "the selection is pinned",
+      { thread: { ...autoThread, modelSelection: thread.modelSelection } },
+    ],
+    ["switch-and-resume is off", { settings: { ...crossSettings, failoverLimitedThreads: false } }],
+    ["the provider holds a pinned turn", { thread: heldThread }],
+    [
+      "no provider has room",
+      {
+        recordedLimits: new Map([
+          [claudeAgent, [claudeOut]],
+          [codexId, [claudeOut]],
+        ]),
+      },
+    ],
+  ] as const)("keeps the thread in place when %s", (_, overrides) => {
+    assert.isNull(crossFailover(overrides));
+  });
+
+  it("leaves another provider's move to the failover, not the same-provider resume target", () => {
+    const target = limitRecoveryTarget({
+      mcpSignInsNeeded: new Map(),
+      thread: { ...autoThread, latestRunModel: "opus" },
+      settings: crossSettings,
+      providers: [provider("claudeAgent"), codexAccount],
+      recordedLimits: new Map([[claudeAgent, [claudeOut]]]),
+      nowMs: now,
+    });
+    assert.notEqual(target?.selection.instanceId, codexId);
+  });
+});
+
 describe("limitRecoveryTarget", () => {
   const claudeAgent = ProviderInstanceId.make("claudeAgent");
   // Claude held only Fable on this account until its weekly reset.
@@ -862,6 +966,55 @@ describe("limitRecoveryTarget", () => {
     }),
   );
 
+  it.effect(
+    "a sweep dispatches on another provider at its earlier reset without a registry update",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(now);
+        const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+        const sweeps = yield* Queue.unbounded<number>();
+        const codex = ProviderDriverKind.make("codex");
+        const codexAccount = provider("codex", { driver: codex, models: [model("gpt", "GPT")] });
+        const candidate = {
+          ...stopped,
+          providerInstanceId: codexAccount.instanceId,
+          latestRunProviderInstanceId: codexAccount.instanceId,
+          latestRunModel: "gpt",
+          modelSelection: { instanceId: codexAccount.instanceId, model: "gpt", autoAccount: true },
+        };
+        const layer = sweepLayer({
+          candidate,
+          dispatched,
+          sweeps,
+          providers: [codexAccount, provider("claudeAgent")],
+          settings: {
+            failoverLimitedThreads: true,
+            autoModeModels: { [codex]: { model: "gpt" }, [claude]: { model: "claude-opus-4-1" } },
+          },
+          limits: () =>
+            new Map([
+              [codexAccount.instanceId, [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }]],
+              [
+                claudeAgent,
+                [{ resetAt: "2026-10-29T12:00:25Z", refusedAt: "2026-10-29T11:00:00Z" }],
+              ],
+            ]),
+        });
+        yield* Effect.gen(function* () {
+          assert.equal(yield* Queue.take(sweeps), 0);
+          yield* TestClock.adjust("20 seconds");
+          assert.isEmpty(yield* Queue.clear(dispatched));
+          yield* TestClock.adjust("5 seconds");
+          const [command] = yield* Queue.clear(dispatched);
+          assert(command?.type === "message.dispatch");
+          assert.deepEqual(command.modelSelection, {
+            instanceId: claudeAgent,
+            model: "claude-opus-4-1",
+            autoAccount: true,
+          });
+        }).pipe(Effect.provide(layer));
+      }),
+  );
   it.effect("a sweep resumes it early with account switching off", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(now);
@@ -990,15 +1143,43 @@ describe("limitRecoveryTarget", () => {
           instanceId: spare,
         },
       },
-    ] as const)("a sweep $name", ({ switching, providers, limits, expected }) =>
+      {
+        name: "moves an Auto thread to another provider's plan before another account's credits",
+        switching: true,
+        auto: true,
+        providers: [
+          planUsedUp(paid),
+          planUsedUp(spare),
+          provider("claudeAgent", { models: [model("claude-opus-5-5", "Claude Opus 5.5")] }),
+        ],
+        limits: new Map([[paid, [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }]]]),
+        expected: {
+          commandId: `limit-failover:${onPaid.id}:${runId}:claudeAgent`,
+          instanceId: "claudeAgent",
+        },
+      },
+    ] as const)("a sweep $name", ({ switching, providers, limits, expected, ...row }) =>
       Effect.gen(function* () {
         yield* TestClock.setTime(now);
         const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+        const auto = "auto" in row;
         const layer = sweepLayer({
-          candidate: onPaid,
+          candidate: auto
+            ? { ...onPaid, modelSelection: { ...onPaid.modelSelection, autoAccount: true } }
+            : onPaid,
           limits: () => limits,
           dispatched,
-          settings: allowedOnBoth(switching),
+          settings: {
+            ...allowedOnBoth(switching),
+            ...(auto
+              ? {
+                  autoModeModels: {
+                    [claude]: { model: "claude-opus-5-5" },
+                    [codexDriver]: { model: gpt },
+                  },
+                }
+              : {}),
+          },
           providers,
           // As the ledger reads it: nothing spent yet, and the asking thread is the requester.
           creditAccess: (requesterThreadId) =>

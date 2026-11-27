@@ -50,7 +50,7 @@ import {
   makeProviderRetryTurnItem,
 } from "@t3tools/provider-core/server/failure";
 
-const driver = ProviderDriverKind.make("codex");
+const codexDriver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex-restart-test");
 const initialSelection = {
   instanceId: providerInstanceId,
@@ -91,6 +91,7 @@ interface RestartAdapterState {
   }>;
   readonly started: ReadonlyArray<{
     readonly model: string;
+    readonly text: string;
     readonly cwd: string | null;
     readonly attemptId: string;
   }>;
@@ -102,10 +103,19 @@ function makeRestartAdapter(
   state: Ref.Ref<RestartAdapterState>,
   sessionCapabilities: OrchestrationV2ProviderCapabilities = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
-  // Running turns report a 429 retry held until this reset, as Claude's retry watchdog does.
-  heldUntil?: DateTime.Utc,
-  // An interrupt closes the process with this work, which is reported as Claude reports it.
-  lostOnInterrupt?: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+  {
+    driver = codexDriver,
+    heldUntil,
+    completeHeldTurn,
+    liftHold,
+    lostOnInterrupt,
+  }: {
+    readonly driver?: ProviderDriverKind;
+    readonly heldUntil?: DateTime.Utc;
+    readonly completeHeldTurn?: Deferred.Deferred<Effect.Effect<void>>;
+    readonly liftHold?: Deferred.Deferred<Effect.Effect<void>>;
+    readonly lostOnInterrupt?: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+  } = {},
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     instanceId: providerInstanceId,
@@ -216,7 +226,7 @@ function makeRestartAdapter(
             Effect.gen(function* () {
               const createdAt = yield* DateTime.now;
               return {
-                id: ProviderThreadId.make(`provider-thread:${threadInput.threadId}`),
+                id: ProviderThreadId.make(`provider-thread:${driver}:${threadInput.threadId}`),
                 driver,
                 providerInstanceId,
                 providerSessionId: sessionInput.providerSessionId,
@@ -246,6 +256,7 @@ function makeRestartAdapter(
                   ...current.started,
                   {
                     model: input.modelSelection.model,
+                    text: input.message.text,
                     cwd: input.runtimePolicy.cwd,
                     attemptId: input.attemptId,
                   },
@@ -277,31 +288,53 @@ function makeRestartAdapter(
                     completedAt: null,
                   },
                 });
-                if (heldUntil !== undefined) {
+                if (heldUntil !== undefined && (yield* Ref.get(state)).started.length === 1) {
+                  const retryItem = makeProviderRetryTurnItem({
+                    driver,
+                    threadId: input.threadId,
+                    runId: input.runId,
+                    nodeId: input.rootNodeId,
+                    providerThreadId: input.providerThread.id,
+                    providerTurnId: active.providerTurnId,
+                    itemOrdinal: 1,
+                    failure: makeProviderFailure({
+                      class: "usage_limit",
+                      message: "Claude API rate limit.",
+                      code: "api_error_429",
+                      retryable: true,
+                      resetAt: DateTime.formatIso(heldUntil),
+                    }),
+                    retry: { attempt: 1, maxAttempts: 10, retryDelayMs: 300_000 },
+                    status: "running",
+                    startedAt: occurredAt,
+                    updatedAt: occurredAt,
+                  });
                   yield* Queue.offer(events, {
                     type: "turn_item.updated",
                     driver,
-                    turnItem: makeProviderRetryTurnItem({
-                      driver,
-                      threadId: input.threadId,
-                      runId: input.runId,
-                      nodeId: input.rootNodeId,
-                      providerThreadId: input.providerThread.id,
-                      providerTurnId: active.providerTurnId,
-                      itemOrdinal: 1,
-                      failure: makeProviderFailure({
-                        class: "usage_limit",
-                        message: "Claude API rate limit.",
-                        code: "api_error_429",
-                        retryable: true,
-                        resetAt: DateTime.formatIso(heldUntil),
-                      }),
-                      retry: { attempt: 1, maxAttempts: 10, retryDelayMs: 300_000 },
-                      status: "running",
-                      startedAt: occurredAt,
-                      updatedAt: occurredAt,
-                    }),
+                    turnItem: retryItem,
                   });
+                  if (liftHold !== undefined) {
+                    yield* Deferred.succeed(
+                      liftHold,
+                      Effect.gen(function* () {
+                        const updatedAt = yield* DateTime.now;
+                        yield* Queue.offer(events, {
+                          type: "turn_item.updated",
+                          driver,
+                          turnItem: {
+                            ...retryItem,
+                            status: "completed",
+                            completedAt: updatedAt,
+                            updatedAt,
+                          },
+                        });
+                      }),
+                    );
+                  }
+                  if (completeHeldTurn !== undefined) {
+                    yield* Deferred.succeed(completeHeldTurn, publishTerminal(active, "completed"));
+                  }
                 }
                 return;
               }
@@ -694,7 +727,7 @@ it.live(
           const deadAt = yield* DateTime.now;
           const deadSession: OrchestrationV2ProviderSession = {
             id: ProviderSessionId.make(`session:${name}:dead`),
-            driver,
+            driver: codexDriver,
             providerInstanceId,
             status: "ready",
             cwd,
@@ -710,7 +743,7 @@ it.live(
                 id: EventId.make(`event:${name}:dead-attached`),
                 type: "provider-session.attached",
                 threadId,
-                driver,
+                driver: codexDriver,
                 providerInstanceId,
                 occurredAt: deadAt,
                 payload: deadSession,
@@ -719,7 +752,7 @@ it.live(
                 id: EventId.make(`event:${name}:dead-updated`),
                 type: "provider-session.updated",
                 threadId,
-                driver,
+                driver: codexDriver,
                 providerInstanceId,
                 occurredAt: deadAt,
                 payload: {
@@ -857,7 +890,7 @@ it.live.each([
                     // message is queued behind it.
                     yield* Queue.offer(reported, {
                       type: "provider_thread.updated",
-                      driver,
+                      driver: codexDriver,
                       providerThread: { ...input.providerThread, pendingBackgroundTasks: lostWork },
                     });
                     yield* Deferred.await(heldTurnMayComplete).pipe(
@@ -875,7 +908,7 @@ it.live.each([
         list: () => Effect.succeed([providerInstanceId, targetId]),
         getMetadata: (instanceId) =>
           Effect.succeed({
-            driver,
+            driver: codexDriver,
             continuationKey:
               mode === "separate-home" ? `codex:home:/${instanceId}` : "codex:home:/shared",
             enabled: true,
@@ -954,7 +987,7 @@ it.live.each([
                 id: EventId.make(`event:${name}:roster`),
                 type: "provider-thread.updated",
                 threadId,
-                driver,
+                driver: codexDriver,
                 occurredAt: yield* DateTime.now,
                 payload: { ...originalThread, pendingBackgroundTasks: lostWork },
               },
@@ -1054,13 +1087,9 @@ it.live.each(["earlier-run", "first-run"] as const)(
           { taskId: "build", kind: "background_task", description: "vp run build" },
         ] as const;
         const messages: string[] = [];
-        const base = makeRestartAdapter(
-          state,
-          pooledCapabilities,
-          providerInstanceId,
-          undefined,
-          lostWork,
-        );
+        const base = makeRestartAdapter(state, pooledCapabilities, providerInstanceId, {
+          lostOnInterrupt: lostWork,
+        });
         const adapter = {
           ...base,
           openSession: (input) =>
@@ -1181,163 +1210,385 @@ it.live.each(["earlier-run", "first-run"] as const)(
     ),
 );
 
-it.live("moves a turn its provider holds for a usage limit to an account with room", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const name = "held-limit-failover";
-      const cwd = yield* checkpointWorkspace(name);
-      const threadId = ThreadId.make(`thread:${name}`);
-      const targetId = ProviderInstanceId.make("codex-account-with-room");
-      const state = yield* Ref.make<RestartAdapterState>({
-        activeTurn: null,
-        opened: [],
-        started: [],
-        closedSessionCount: 0,
-        failedReplacementOpen: true,
-      });
-      const now = yield* DateTime.now;
-      const adapters = [
-        makeRestartAdapter(
-          state,
-          exclusiveCapabilities,
-          providerInstanceId,
-          DateTime.add(now, { hours: 2 }),
-        ),
-        makeRestartAdapter(state, exclusiveCapabilities, targetId),
-      ];
-      const layerRegistry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
-        get: (instanceId) =>
-          Effect.succeed(adapters.find((adapter) => adapter.instanceId === instanceId)!),
-        list: () => Effect.succeed([providerInstanceId, targetId]),
-        getMetadata: () =>
-          Effect.succeed({
-            driver,
-            continuationKey: "codex:home:/shared",
-            enabled: true,
-            capabilities: exclusiveCapabilities,
+it.live.each([
+  [codexDriver, "held"],
+  [ProviderDriverKind.make("claudeAgent"), "held"],
+  [ProviderDriverKind.make("claudeAgent"), "completed"],
+  [ProviderDriverKind.make("claudeAgent"), "hold lifted"],
+  [ProviderDriverKind.make("claudeAgent"), "healthy replacement"],
+] as const)(
+  "moves a turn its provider holds for a usage limit to an account with room on %s (source before dispatch: %s)",
+  ([targetDriver, sourceState]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const crossProvider = targetDriver !== codexDriver;
+        const name = `held-limit-failover-${targetDriver}-${sourceState.replaceAll(" ", "-")}`;
+        const cwd = yield* checkpointWorkspace(name);
+        const threadId = ThreadId.make(`thread:${name}`);
+        const targetId = ProviderInstanceId.make(`${targetDriver}-account-with-room`);
+        const selection = crossProvider
+          ? { ...initialSelection, autoAccount: true }
+          : initialSelection;
+        const targetModel = crossProvider ? "claude-sonnet-4-6" : initialSelection.model;
+        const state = yield* Ref.make<RestartAdapterState>({
+          activeTurn: null,
+          opened: [],
+          started: [],
+          closedSessionCount: 0,
+          failedReplacementOpen: true,
+        });
+        const now = yield* DateTime.now;
+        const completeHeldTurn = yield* Deferred.make<Effect.Effect<void>>();
+        const liftHold = yield* Deferred.make<Effect.Effect<void>>();
+        const adapters = [
+          makeRestartAdapter(state, exclusiveCapabilities, providerInstanceId, {
+            heldUntil: DateTime.add(now, { hours: 2 }),
+            completeHeldTurn,
+            liftHold,
           }),
-      });
-      const providers = [providerInstanceId, targetId].map((instanceId): ServerProvider => ({
-        instanceId,
-        driver,
-        enabled: true,
-        installed: true,
-        version: null,
-        status: "ready",
-        auth: { status: "authenticated" },
-        checkedAt: DateTime.formatIso(now),
-        models: [
-          { slug: initialSelection.model, name: "Model A", isCustom: false, capabilities: null },
-        ],
-        slashCommands: [],
-        skills: [],
-      }));
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const projections = yield* ProjectionStore.ProjectionStoreV2;
-        const runningTurn = Stream.filter(
-          orchestrator.streamDomainEvents,
-          (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
-        ).pipe(Stream.take(1), Stream.runDrain);
-        const held = yield* orchestrator.streamDomainEvents.pipe(
-          Stream.filter(
-            (event) =>
-              event.type === "turn-item.updated" &&
-              event.payload.type === "error" &&
-              event.payload.status === "running",
-          ),
-          Stream.take(1),
-          Stream.runDrain,
-          Effect.forkScoped({ startImmediately: true }),
-        );
-        yield* orchestrator.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make(`${name}:create`),
-          threadId,
-          projectId: ProjectId.make(`project:${name}`),
-          title: name,
-          modelSelection: initialSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: cwd,
-          createdBy: "user",
-          creationSource: "web",
+          makeRestartAdapter(state, exclusiveCapabilities, targetId, { driver: targetDriver }),
+        ];
+        const layerRegistry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
+          get: (instanceId) =>
+            Effect.succeed(adapters.find((adapter) => adapter.instanceId === instanceId)!),
+          list: () => Effect.succeed([providerInstanceId, targetId]),
+          getMetadata: (instanceId) =>
+            Effect.succeed({
+              driver: instanceId === targetId ? targetDriver : codexDriver,
+              continuationKey:
+                instanceId === targetId && crossProvider ? "claude:test" : "codex:home:/shared",
+              enabled: true,
+              capabilities: exclusiveCapabilities,
+            }),
         });
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make(`${name}:first`),
-          threadId,
-          messageId: MessageId.make(`${name}:first`),
-          text: "first",
-          attachments: [],
-          dispatchMode: { type: "start_immediately" },
-          createdBy: "user",
-          creationSource: "web",
-        });
-        yield* worker.drain();
-        yield* Fiber.join(held);
+        const providers = [providerInstanceId, targetId].map((instanceId): ServerProvider => ({
+          instanceId,
+          driver: instanceId === targetId ? targetDriver : codexDriver,
+          enabled: true,
+          installed: true,
+          version: null,
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: DateTime.formatIso(now),
+          models: [
+            {
+              slug: instanceId === targetId ? targetModel : initialSelection.model,
+              name: "Test model",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        }));
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const held = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "turn-item.updated" &&
+                event.payload.type === "error" &&
+                event.payload.status === "running",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`${name}:create`),
+            threadId,
+            projectId: ProjectId.make(`project:${name}`),
+            title: name,
+            modelSelection: selection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`${name}:first`),
+            threadId,
+            messageId: MessageId.make(`${name}:first`),
+            text: "first",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* worker.drain();
+          yield* Fiber.join(held);
 
-        const candidates = (failover: boolean) =>
-          projections
-            .getLimitRecoveryCandidates({ now, autoResume: true, snooze: true, waiting: failover })
-            .pipe(Effect.map((rows) => rows.find((row) => row.id === threadId)));
-        // Without account switching, the held turn waits for its reset as before.
-        assert.isUndefined(yield* candidates(false));
-        const candidate = yield* candidates(true);
-        assert.equal(candidate?.status, "running");
-        const limitedInstanceIds = yield* projections.getUsageLimitedProviderInstances(
-          now,
-          runLiftsScope(providers),
-        );
-        assert.isTrue(limitedInstanceIds.has(providerInstanceId));
-        const failover =
-          candidate === undefined
-            ? null
-            : limitFailoverCommand({
-                mcpSignInsNeeded: new Map(),
-                thread: candidate,
-                settings: {
-                  ...DEFAULT_SERVER_SETTINGS,
-                  providerInstances: { [targetId]: { driver } },
+          const queuedMessageId = MessageId.make(`${name}:queued`);
+          if (crossProvider) {
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(queuedMessageId),
+              threadId,
+              messageId: queuedMessageId,
+              text: "Also check the tests.",
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+          }
+          const candidates = (failover: boolean) =>
+            projections
+              .getLimitRecoveryCandidates({
+                now,
+                autoResume: true,
+                snooze: true,
+                waiting: failover,
+              })
+              .pipe(Effect.map((rows) => rows.find((row) => row.id === threadId)));
+          // Without account switching, the held turn waits for its reset as before.
+          assert.isUndefined(yield* candidates(false));
+          const candidate = yield* candidates(true);
+          assert.equal(candidate?.status, "running");
+          const limitedInstanceIds = yield* projections.getUsageLimitedProviderInstances(
+            now,
+            runLiftsScope(providers),
+          );
+          assert.isTrue(limitedInstanceIds.has(providerInstanceId));
+          const failover =
+            candidate === undefined
+              ? null
+              : limitFailoverCommand({
+                  mcpSignInsNeeded: new Map(),
+                  thread: candidate,
+                  settings: {
+                    ...DEFAULT_SERVER_SETTINGS,
+                    failoverLimitedThreads: true,
+                    autoModeProvider: codexDriver,
+                    autoModeModels: {
+                      [codexDriver]: { model: initialSelection.model },
+                      [targetDriver]: { model: targetModel },
+                    },
+                    providerInstances: {
+                      [providerInstanceId]: { driver: codexDriver },
+                      [targetId]: { driver: targetDriver },
+                    },
+                  },
+                  providers,
+                  recordedLimits: limitedInstanceIds,
+                  nowMs: DateTime.toEpochMillis(now),
+                });
+          assert.isNotNull(failover);
+          if (sourceState !== "held") {
+            assert(failover?.dispatchMode.type === "restart_active");
+            const sourceId = failover.dispatchMode.targetRunId;
+            const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+              (run) => run.userMessageId === queuedMessageId,
+            );
+            assert.isDefined(queued);
+            // A person's held message stays queued when the original turn finishes.
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`${name}:queue-held`),
+                  type: "run.updated",
+                  threadId,
+                  runId: queued.id,
+                  occurredAt: yield* DateTime.now,
+                  payload: { ...queued, queueHeld: true },
                 },
-                providers,
-                recordedLimits: yield* projections.getUsageLimitedProviderInstances(
-                  now,
-                  runLiftsScope(providers),
+              ],
+            });
+            if (sourceState === "completed") {
+              const complete = yield* Deferred.await(completeHeldTurn);
+              yield* complete;
+              yield* orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "run.updated" &&
+                    event.runId === sourceId &&
+                    event.payload.status === "completed",
                 ),
-                nowMs: DateTime.toEpochMillis(now),
+                Stream.runHead,
+              );
+            } else if (sourceState === "hold lifted") {
+              const lift = yield* Deferred.await(liftHold);
+              yield* lift;
+              yield* orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "turn-item.updated" &&
+                    event.runId === sourceId &&
+                    event.payload.type === "error" &&
+                    event.payload.status === "completed",
+                ),
+                Stream.runHead,
+              );
+            } else {
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(`${name}:replace`),
+                threadId,
+                messageId: MessageId.make(`${name}:replace`),
+                text: "Restart here.",
+                attachments: [],
+                modelSelection: selection,
+                dispatchMode: { type: "restart_active", targetRunId: sourceId },
+                createdBy: "user",
+                creationSource: "web",
               });
-        assert.isNotNull(failover);
-        const restarted = yield* runningTurn.pipe(Effect.forkScoped({ startImmediately: true }));
-        yield* orchestrator.dispatch(failover!);
-        yield* worker.drain();
-        yield* Fiber.join(restarted);
-
-        const projection = yield* orchestrator.getThreadProjection(threadId);
-        assert.equal(projection.thread.providerInstanceId, targetId);
-        assert.deepEqual(
-          projection.runs.map((run) => [run.providerInstanceId, run.status]),
-          [[targetId, "running"]],
-        );
-        assert.deepEqual(
-          projection.messages.map((message) => message.text),
-          ["first", "Continue where you left off."],
-        );
-        assert.deepEqual(
-          (yield* Ref.get(state)).started.map((turn) => turn.model),
-          [initialSelection.model, initialSelection.model],
-        );
-        // The account that held the turn stays skipped until its reset.
-        assert.isUndefined(yield* candidates(true));
-        const stillLimited = yield* projections.getUsageLimitedProviderInstances(
-          now,
-          runLiftsScope(providers),
-        );
-        assert.isTrue(stillLimited.has(providerInstanceId));
-        assert.isFalse(stillLimited.has(targetId));
-      }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
-    }),
-  ),
+              yield* worker.drain();
+              yield* orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "provider-turn.updated" &&
+                    event.payload.status === "running" &&
+                    event.payload.runAttemptId !== candidate?.heldAttemptId,
+                ),
+                Stream.runHead,
+              );
+            }
+            yield* worker.drain();
+            const before = yield* orchestrator.getThreadProjection(threadId);
+            const source = before.runs.find((run) => run.id === sourceId);
+            assert.isDefined(source);
+            assert.equal(source.status, sourceState === "completed" ? "completed" : "running");
+            if (sourceState === "healthy replacement") {
+              assert.notEqual(source.activeAttemptId, candidate?.heldAttemptId);
+              const replacement = before.providerTurns.find(
+                (turn) => turn.runAttemptId === source.activeAttemptId && turn.status === "running",
+              );
+              assert.isDefined(replacement);
+              assert.isFalse(
+                before.turnItems.some(
+                  (item) =>
+                    item.providerTurnId === replacement.id &&
+                    item.nodeId === source.rootNodeId &&
+                    item.type === "error" &&
+                    item.status === "running" &&
+                    item.failure.class === "usage_limit",
+                ),
+              );
+            }
+            assert.equal(before.runs.find((run) => run.id === queued.id)?.status, "queued");
+            assert.deepEqual(before.thread.modelSelection, selection);
+            const result = yield* orchestrator
+              .dispatch(failover)
+              .pipe(Effect.catchIf(Orchestrator.isStaleDispatchError, () => Effect.succeed(null)));
+            yield* worker.drain();
+            const after = yield* orchestrator.getThreadProjection(threadId);
+            const events = result?.storedEvents.map(({ event }) => event) ?? [];
+            assert.deepEqual(
+              {
+                targetStarts: (yield* Ref.get(state)).started.filter(
+                  (turn) => turn.model === targetModel,
+                ).length,
+                newRuns: after.runs.length - before.runs.length,
+                providerSwitches: events.filter(
+                  (event) => event.type === "thread.provider-switched",
+                ).length,
+                moveNotices: after.turnItems.filter(
+                  (item) =>
+                    item.type === "system_notice" &&
+                    item.message === failover.usageLimitMove?.notice,
+                ).length,
+                queueRewrites: events.filter(
+                  (event) =>
+                    event.type === "run.updated" &&
+                    event.runId === queued.id &&
+                    event.payload.providerInstanceId !== queued.providerInstanceId,
+                ).length,
+              },
+              {
+                targetStarts: 0,
+                newRuns: 0,
+                providerSwitches: 0,
+                moveNotices: 0,
+                queueRewrites: 0,
+              },
+            );
+            assert.isNull(result);
+            assert.deepEqual(after.runs, before.runs);
+            assert.deepEqual(after.attempts, before.attempts);
+            assert.deepEqual(after.thread.modelSelection, selection);
+            return;
+          }
+          yield* orchestrator.dispatch(failover!);
+          yield* worker.drain();
+          if (crossProvider) {
+            const moved = yield* orchestrator.getThreadProjection(threadId);
+            const restarted = moved.runs[0];
+            assert.isDefined(restarted);
+            assert.equal(restarted.crossProviderFailoverFrom, providerInstanceId);
+            assert.deepInclude(
+              moved.contextHandoffs.find((handoff) => handoff.id === restarted.contextHandoffId),
+              {
+                targetRunId: restarted.id,
+                coveredRunOrdinals: { from: 1, to: 1 },
+                strategy: "full_thread_summary",
+              },
+            );
+            assert.isTrue(
+              moved.turnItems.some(
+                (item) =>
+                  item.type === "system_notice" &&
+                  item.message === failover!.usageLimitMove?.notice,
+              ),
+            );
+            assert.equal(
+              moved.runs.find((run) => run.userMessageId === queuedMessageId)?.providerInstanceId,
+              targetId,
+            );
+          }
+          yield* orchestrator.streamStoredEvents.pipe(
+            Stream.filter(({ event }) =>
+              crossProvider
+                ? event.type === "run.updated" &&
+                  event.payload.userMessageId === queuedMessageId &&
+                  event.payload.status === "completed"
+                : event.type === "provider-turn.updated" &&
+                  event.providerInstanceId === targetId &&
+                  event.payload.status === "running",
+            ),
+            Stream.runHead,
+          );
+          yield* worker.drain();
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(projection.thread.providerInstanceId, targetId);
+          assert.deepEqual(
+            projection.runs.map((run) => [run.providerInstanceId, run.status]),
+            crossProvider
+              ? [
+                  [targetId, "completed"],
+                  [targetId, "completed"],
+                ]
+              : [[targetId, "running"]],
+          );
+          assert.deepEqual(
+            projection.messages.map((message) => message.text),
+            crossProvider
+              ? ["first", "Continue where you left off.", "Also check the tests."]
+              : ["first", "Continue where you left off."],
+          );
+          const { started } = yield* Ref.get(state);
+          if (crossProvider) assert.include(started.at(-1)!.text, "Also check the tests.");
+          assert.deepEqual(
+            started.map((turn) => turn.model),
+            crossProvider
+              ? [initialSelection.model, targetModel, targetModel]
+              : [initialSelection.model, initialSelection.model],
+          );
+          // The account that held the turn stays skipped until its reset.
+          assert.isUndefined(yield* candidates(true));
+          const stillLimited = yield* projections.getUsageLimitedProviderInstances(
+            now,
+            runLiftsScope(providers),
+          );
+          assert.isTrue(stillLimited.has(providerInstanceId));
+          assert.isFalse(stillLimited.has(targetId));
+        }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
+      }),
+    ),
 );

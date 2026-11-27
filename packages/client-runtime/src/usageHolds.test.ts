@@ -6,6 +6,7 @@ import {
   describeRetryOutcome,
   describeUsageHold,
   heldAccountsForDriver,
+  limitAlternativeSelection,
 } from "./usageHolds.ts";
 
 const codex = ProviderDriverKind.make("codex");
@@ -82,5 +83,28 @@ describe("describeRetryOutcome", () => {
     ],
   ])("reports what admission does with %j", (result, resumes, title, description) => {
     expect(describeRetryOutcome(result, resumes, formatTime)).toMatchObject({ title, description });
+  });
+});
+
+describe("limitAlternativeSelection", () => {
+  const alternative = {
+    instanceId: ProviderInstanceId.make("claude_spare"),
+    driver: ProviderDriverKind.make("claudeAgent"),
+    model: "claude-opus-5-5",
+  };
+  it.each([
+    ["a pinned chat stays pinned", false],
+    ["an Auto chat stays on Auto", true],
+  ])("%s on the other provider", (_label, autoAccount) => {
+    const current = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-main",
+      ...(autoAccount ? { autoAccount: true } : {}),
+    };
+    expect(limitAlternativeSelection(alternative, current)).toEqual({
+      instanceId: alternative.instanceId,
+      model: alternative.model,
+      ...(autoAccount ? { autoAccount: true } : {}),
+    });
   });
 });

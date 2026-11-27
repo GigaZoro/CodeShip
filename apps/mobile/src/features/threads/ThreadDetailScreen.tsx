@@ -14,6 +14,7 @@ import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
+import { ProviderLimitStandCard } from "./ProviderLimitStandCard";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
 import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
@@ -45,6 +46,7 @@ import { deriveBottomControlInsets, type NativeLayoutMetrics } from "../../lib/r
 import type {
   EnvironmentId,
   MessageId,
+  ProviderLimitAlternative,
   RuntimeRequestId,
   ScopedThreadRef,
   ServerConfig as T3ServerConfig,
@@ -305,6 +307,8 @@ export interface ThreadDetailScreenProps {
   readonly onStopThread: () => void;
   /** Present while the thread's queue is held. */
   readonly onResumeQueue: (() => Promise<void>) | null;
+  /** Switches the thread to another provider's account and resumes it; absent on a draft. */
+  readonly onContinueOnProvider?: (alternative: ProviderLimitAlternative) => Promise<void>;
   readonly onSendMessage: (
     followUp?: ActiveTurnComposerAction,
     beforeDispatch?: (
@@ -1717,6 +1721,14 @@ function ThreadDetailBody(
                       thread={props.selectedThread}
                       environmentId={props.environmentId}
                     />
+                    {props.onContinueOnProvider ? (
+                      <ProviderLimitStandCard
+                        environmentId={props.environmentId}
+                        threadId={props.selectedThread.id}
+                        serverConfig={props.serverConfig}
+                        onContinueOn={props.onContinueOnProvider}
+                      />
+                    ) : null}
                     <ChatGptUsageLimitNotice
                       key={`chatgpt-limit:${props.selectedThread.latestRun?.runId}`}
                       thread={props.selectedThread}

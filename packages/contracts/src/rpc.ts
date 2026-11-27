@@ -402,6 +402,7 @@ import {
   ProviderConsumeResetCreditResult,
   ProviderCreditGrantsResult,
   ProviderRetryUsageLimitResult,
+  ProviderThreadLimitStandResult,
   ProviderUsageHoldsResult,
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
@@ -536,6 +537,7 @@ export const WS_METHODS = {
   providerConsumeResetCredit: "provider.consumeResetCredit",
   providerRetryUsageLimit: "provider.retryUsageLimit",
   providerUsageHolds: "provider.usageHolds",
+  providerThreadLimitStand: "provider.threadLimitStand",
   providerCreditGrants: "provider.creditGrants",
   providerAuthComplete: "provider.auth.complete",
   chatGptReconnectProfile: "provider.chatgpt.reconnect-profile",
@@ -831,6 +833,12 @@ const WsProviderRetryUsageLimitRpc = Rpc.make(WS_METHODS.providerRetryUsageLimit
 const WsProviderUsageHoldsRpc = Rpc.make(WS_METHODS.providerUsageHolds, {
   payload: Schema.Struct({}),
   success: ProviderUsageHoldsResult,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsProviderThreadLimitStandRpc = Rpc.make(WS_METHODS.providerThreadLimitStand, {
+  payload: Schema.Struct({ threadId: ThreadId }),
+  success: ProviderThreadLimitStandResult,
   error: EnvironmentAuthorizationError,
 });
 
@@ -2476,6 +2484,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderConsumeResetCreditRpc,
   WsProviderRetryUsageLimitRpc,
   WsProviderUsageHoldsRpc,
+  WsProviderThreadLimitStandRpc,
   WsProviderCreditGrantsRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthCompleteRpc,
