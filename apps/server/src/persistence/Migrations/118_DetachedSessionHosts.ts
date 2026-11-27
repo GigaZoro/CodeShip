@@ -46,6 +46,7 @@ export default Effect.gen(function* () {
       request_namespace TEXT NOT NULL,
       subagent INTEGER NOT NULL DEFAULT 0,
       capabilities_json TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
       issued_at INTEGER NOT NULL,
       last_alive_at INTEGER NOT NULL
     )

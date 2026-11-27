@@ -314,3 +314,78 @@ it.effect("persists only token hashes in SQLite and reloads live credentials aft
     expect(yield* registryAfterRevoke.resolve(token)).toBeUndefined();
   }).pipe(Effect.provide(Layer.mergeAll(Sqlite.layerMemory, NodeServices.layer))),
 );
+
+it.effect(
+  "after a restart keeps only the credentials of threads whose process was taken over",
+  () =>
+    Effect.gen(function* () {
+      let timestamp = 10_000;
+      const sql = yield* SqlClient.SqlClient;
+      const adoptedThread = ThreadId.make("thread-adopted");
+      const staleThread = ThreadId.make("thread-stale");
+      const before = yield* makeRegistry(() => timestamp);
+      const adopted = yield* before.issue({
+        threadId: adoptedThread,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      });
+      const stale = yield* before.issue({
+        threadId: staleThread,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      });
+      const tokenOf = (issued: McpSessionRegistry.McpIssuedCredential) =>
+        issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+      timestamp += 10;
+      const after = yield* makeRegistry(() => timestamp);
+      expect(yield* after.restoredCredentialForThread(adoptedThread)).toEqual({
+        _tag: "Usable",
+        mcpCredentialId: adopted.config.providerSessionId,
+      });
+      const issuedAfterStart = yield* after.issue({
+        threadId: ThreadId.make("thread-new"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      });
+      yield* after.pruneRestored(new Set([adoptedThread]));
+
+      expect((yield* after.resolve(tokenOf(adopted)))?.thread.threadId).toBe(adoptedThread);
+      expect(yield* after.resolve(tokenOf(stale))).toBeUndefined();
+      expect((yield* after.resolve(tokenOf(issuedAfterStart)))?.thread.threadId).toBe("thread-new");
+      expect(yield* after.restoredCredentialForThread(staleThread)).toEqual({ _tag: "None" });
+      const rows = yield* sql<{ readonly thread_id: string }>`
+      SELECT thread_id FROM mcp_session_credentials ORDER BY thread_id
+    `;
+      expect(rows.map((row) => row.thread_id)).toEqual(["thread-adopted", "thread-new"]);
+      // The next restart cannot bring the pruned credential back either.
+      const later = yield* makeRegistry(() => timestamp);
+      expect(yield* later.resolve(tokenOf(stale))).toBeUndefined();
+    }).pipe(Effect.provide(Layer.mergeAll(Sqlite.layerMemory, NodeServices.layer))),
+);
+
+it.effect("refuses a restored credential once the MCP endpoint has moved", () =>
+  Effect.gen(function* () {
+    const threadId = ThreadId.make("thread-moved");
+    const before = yield* makeRegistry(() => 10_000);
+    yield* before.issue({ threadId, providerInstanceId: ProviderInstanceId.make("codex") });
+    const after = yield* makeRegistry(() => 10_010, makeFakeHttpServer("127.0.0.1", 43124));
+    expect(yield* after.restoredCredentialForThread(threadId)).toEqual({
+      _tag: "Unusable",
+      reason:
+        "The MCP endpoint moved from http://127.0.0.1:43123/mcp to http://127.0.0.1:43124/mcp.",
+    });
+  }).pipe(Effect.provide(Layer.mergeAll(Sqlite.layerMemory, NodeServices.layer))),
+);
+
+it.effect("treats unreadable saved credentials as unusable and deletes them when pruning", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = ThreadId.make("thread-unreadable");
+    const before = yield* makeRegistry(() => 10_000);
+    yield* before.issue({ threadId, providerInstanceId: ProviderInstanceId.make("codex") });
+    yield* sql`ALTER TABLE mcp_session_credentials RENAME COLUMN endpoint TO endpoint_old`;
+    const after = yield* makeRegistry(() => 10_010);
+    expect((yield* after.restoredCredentialForThread(threadId))._tag).toBe("Unusable");
+    yield* sql`ALTER TABLE mcp_session_credentials RENAME COLUMN endpoint_old TO endpoint`;
+    yield* after.pruneRestored(new Set([threadId]));
+    expect(yield* sql`SELECT token_hash FROM mcp_session_credentials`).toHaveLength(0);
+  }).pipe(Effect.provide(Layer.mergeAll(Sqlite.layerMemory, NodeServices.layer))),
+);

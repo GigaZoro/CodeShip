@@ -28,8 +28,20 @@ export interface McpIssuedCredential {
   readonly config: McpProviderSession.McpProviderSessionConfig;
 }
 
+/** What a provider process taken over after a planned update can still use of its MCP access. */
+export type RestoredMcpCredential =
+  | { readonly _tag: "None" }
+  | { readonly _tag: "Usable"; readonly mcpCredentialId: string }
+  | { readonly _tag: "Unusable"; readonly reason: string };
+
 export interface McpSessionRegistryShape {
   readonly issue: (request: McpCredentialRequest) => Effect.Effect<McpIssuedCredential>;
+  /** The credential a thread held before the restart; its process kept the raw token. */
+  readonly restoredCredentialForThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RestoredMcpCredential>;
+  /** Deletes every credential restored at startup whose thread is not kept, from memory and SQLite. */
+  readonly pruneRestored: (keepThreadIds: ReadonlySet<ThreadId>) => Effect.Effect<void>;
   readonly resolve: (
     rawToken: string,
   ) => Effect.Effect<McpInvocationContext.McpThreadInvocationScope | undefined>;
@@ -59,6 +71,7 @@ interface PersistedCredentialRow {
   readonly request_namespace: string;
   readonly subagent: number;
   readonly capabilities_json: string;
+  readonly endpoint: string;
   readonly issued_at: number;
   readonly last_alive_at: number;
 }
@@ -107,6 +120,9 @@ const decodePersistedCapabilities = (
   ]);
 };
 
+// A failed write leaves SQLite out of step with memory; startup pruning removes what it left behind.
+const PERSIST_FAILURE_MESSAGE = "Could not update the saved MCP credentials.";
+
 const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   options: McpSessionRegistryOptions = {},
 ) {
@@ -116,6 +132,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const httpServer = yield* HttpServer.HttpServer;
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
   const initialRecords = new Map<string, CredentialRecord>();
+  // The endpoint each restored credential's process was told to call, by token hash.
+  const restoredEndpoints = new Map<string, string>();
+  let restoreFailed = false;
 
   if (Option.isSome(sqlOption)) {
     const sql = sqlOption.value;
@@ -129,11 +148,26 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         request_namespace,
         subagent,
         capabilities_json,
+        endpoint,
         issued_at,
         last_alive_at
       FROM mcp_session_credentials
-    `.pipe(Effect.orElseSucceed(() => [] as Array<PersistedCredentialRow>));
+    `.pipe(
+      Effect.catch((cause) =>
+        Effect.logError("Could not read the MCP credentials saved before the restart.", {
+          cause,
+        }).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              restoreFailed = true;
+              return [] as ReadonlyArray<PersistedCredentialRow>;
+            }),
+          ),
+        ),
+      ),
+    );
     for (const row of rows) {
+      restoredEndpoints.set(row.token_hash, row.endpoint);
       initialRecords.set(row.token_hash, {
         tokenHash: row.token_hash,
         lastAliveAt: row.last_alive_at,
@@ -157,6 +191,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const state = yield* SynchronizedRef.make<RegistryState>({ records: initialRecords });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
+  const startedAtMs = yield* currentTimeMillis;
   const endpoint = NetAddress.isInetAddress(httpServer.address)
     ? `http://${getHttpMcpEndpointHost(httpServer.address.address)}:${httpServer.address.port}/mcp`
     : "http://127.0.0.1/mcp";
@@ -210,6 +245,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
             request_namespace,
             subagent,
             capabilities_json,
+            endpoint,
             issued_at,
             last_alive_at
           ) VALUES (
@@ -221,10 +257,11 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
             ${scope.requestNamespace},
             ${scope.thread.subagent ? 1 : 0},
             ${capabilitiesJson},
+            ${endpoint},
             ${issuedAt},
             ${issuedAt}
           )
-        `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+        `.pipe(Effect.asVoid, Effect.ignore({ log: "Error", message: PERSIST_FAILURE_MESSAGE }));
       }
       return {
         config: {
@@ -270,7 +307,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           UPDATE mcp_session_credentials
           SET last_alive_at = ${timestamp}
           WHERE thread_id = ${threadId}
-        `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+        `.pipe(Effect.asVoid, Effect.ignore({ log: "Error", message: PERSIST_FAILURE_MESSAGE }));
       }
     },
   );
@@ -280,10 +317,73 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),
     }));
 
+  const restoredCredentialForThread: McpSessionRegistryShape["restoredCredentialForThread"] =
+    Effect.fn("McpSessionRegistry.restoredCredentialForThread")(function* (threadId) {
+      if (restoreFailed) {
+        return {
+          _tag: "Unusable",
+          reason: "The MCP credentials saved before the restart could not be read.",
+        } as const;
+      }
+      const now = yield* currentTimeMillis;
+      const restored = Array.from((yield* SynchronizedRef.get(state)).records.values()).filter(
+        (record) =>
+          restoredEndpoints.has(record.tokenHash) && record.scope.thread.threadId === threadId,
+      );
+      if (restored.length === 0) return { _tag: "None" } as const;
+      const movedFrom = restored
+        .map((record) => restoredEndpoints.get(record.tokenHash))
+        .find((previous) => previous !== endpoint);
+      // The process keeps calling the URL it was given; a server on another port cannot answer it.
+      if (movedFrom !== undefined) {
+        return {
+          _tag: "Unusable",
+          reason: `The MCP endpoint moved from ${movedFrom} to ${endpoint}.`,
+        } as const;
+      }
+      const usable = restored.find((record) => now - record.lastAliveAt <= livenessWindowMs);
+      return usable === undefined
+        ? ({ _tag: "Unusable", reason: "The saved MCP credential has expired." } as const)
+        : ({ _tag: "Usable", mcpCredentialId: usable.scope.thread.providerSessionId } as const);
+    });
+
+  const pruneRestored: McpSessionRegistryShape["pruneRestored"] = Effect.fn(
+    "McpSessionRegistry.pruneRestored",
+  )(function* (keepThreadIds) {
+    const removed = yield* SynchronizedRef.modify(state, ({ records }) => {
+      const next = new Map(records);
+      const hashes: Array<string> = [];
+      for (const [tokenHash, record] of records) {
+        if (restoredEndpoints.has(tokenHash) && !keepThreadIds.has(record.scope.thread.threadId)) {
+          next.delete(tokenHash);
+          hashes.push(tokenHash);
+        }
+      }
+      return [hashes, { records: next }] as const;
+    });
+    for (const tokenHash of removed) restoredEndpoints.delete(tokenHash);
+    if (Option.isNone(sqlOption)) return;
+    const sql = sqlOption.value;
+    // Rows that could not be read were never restored; only ones issued since startup are kept.
+    const deletion = restoreFailed
+      ? sql`DELETE FROM mcp_session_credentials WHERE issued_at < ${startedAtMs}`
+      : Effect.forEach(
+          removed,
+          (tokenHash) => sql`DELETE FROM mcp_session_credentials WHERE token_hash = ${tokenHash}`,
+          { discard: true },
+        );
+    yield* deletion.pipe(
+      Effect.asVoid,
+      Effect.ignore({ log: "Error", message: PERSIST_FAILURE_MESSAGE }),
+    );
+  });
+
   return McpSessionRegistry.of({
     issue,
     resolve,
     touch,
+    restoredCredentialForThread,
+    pruneRestored,
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {
         yield* revokeWhere((record) => record.scope.thread.providerSessionId === providerSessionId);
@@ -292,7 +392,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           yield* sql`
             DELETE FROM mcp_session_credentials
             WHERE provider_session_id = ${providerSessionId}
-          `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+          `.pipe(Effect.asVoid, Effect.ignore({ log: "Error", message: PERSIST_FAILURE_MESSAGE }));
         }
       },
     ),
@@ -303,7 +403,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         yield* sql`
           DELETE FROM mcp_session_credentials
           WHERE thread_id = ${threadId}
-        `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+        `.pipe(Effect.asVoid, Effect.ignore({ log: "Error", message: PERSIST_FAILURE_MESSAGE }));
       }
     }),
     revokeAll: Effect.gen(function* () {
@@ -312,7 +412,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         const sql = sqlOption.value;
         yield* sql`DELETE FROM mcp_session_credentials`.pipe(
           Effect.asVoid,
-          Effect.ignore({ log: true }),
+          Effect.ignore({ log: "Error", message: PERSIST_FAILURE_MESSAGE }),
         );
       }
     }),
