@@ -1,3 +1,7 @@
+## 2026-11-27 — Released worktrees reopen after a rebased or archived landing
+
+- A chat whose worktree was released after its branch landed by rebase or squash, or whose unlanded work was kept under an archive ref, reopens on the project's current base again instead of failing every turn with "could not fast-forward the released branch". If no saved ref holds the branch's work any more, the worktree reopens at that work instead of moving the branch.
+
 ## 2026-11-27 — Stop repeated usage-limit resumes after zero progress
 
 - When a thread resumes from a usage limit via a banked reset and immediately hits a usage limit again on the same account and model without making progress, CodeShip stops retrying that account automatically instead of looping.

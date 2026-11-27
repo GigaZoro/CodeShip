@@ -654,7 +654,14 @@ export const layer: Layer.Layer<
             yield* gitWorkflow.createWorktree(
               { cwd, refName: branch, path: worktreePath },
               {
-                releasedBranch: { previousHead: released.request.head, baseRef: base.refName },
+                releasedBranch: {
+                  previousHead: released.request.head,
+                  baseRef: base.refName,
+                  durableRefs: [
+                    released.request.durableRef,
+                    ...(released.request.alsoDurable ?? []),
+                  ],
+                },
               },
             );
           } else {
