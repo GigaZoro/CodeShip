@@ -2282,6 +2282,7 @@ const catalog: MessageCatalog = {
   "After the last run ended, until the chat was settled.":
     "Після завершення останнього запуску, доки чат не завершили.",
   "After the turn": "Після ходу",
+  "After two days without a capture": "Після двох днів без записів",
   Agent: "Агент",
   "Agent access": "Доступ агентів",
   "agent activity": "активність агента",
@@ -2463,6 +2464,8 @@ const catalog: MessageCatalog = {
     "Під час створення нового чату сталася помилка.",
   "An error occurred while saving.": "Під час збереження сталася помилка.",
   "An error occurred.": "Сталася помилка.",
+  "An evening note that asks what annoyed you today.":
+    "Вечірнє повідомлення з питанням, що сьогодні дратувало.",
   "An instance named '{id}' already exists.": "Екземпляр «{id}» уже існує.",
   "An unexpected error occurred.": "Сталася неочікувана помилка.",
   "An unexpected router error occurred.": "Сталася неочікувана помилка маршрутизатора.",
@@ -2532,6 +2535,7 @@ const catalog: MessageCatalog = {
   "Any thread may spend them": "Витрачати їх може будь-який чат",
   Anyone: "Будь-хто",
   "Anyone on the web": "Будь-хто в інтернеті",
+  "Anything annoy you today?": "Щось сьогодні дратувало?",
   "API estimate": "Оцінка за API",
   "API estimate excludes {percent} unpriced records.":
     "Оцінка за API не враховує записи без ціни ({percent}).",
@@ -2686,6 +2690,7 @@ const catalog: MessageCatalog = {
   "Attach a {term} by URL or number": "Прикріпити {term} за URL або номером",
   "Attach a pull request to this thread by its URL, or by its number for this thread's repository.":
     "Прикріпіть пул-реквест до цього чату за його URL або за номером у репозиторії цього чату.",
+  "Attach a screenshot of the window": "Додати знімок вікна",
   "Attach again": "Прикріпити знову",
   "Attach dropped files again or remove them before stashing":
     "Додайте перетягнуті файли ще раз або видаліть їх перед збереженням",
@@ -3080,6 +3085,7 @@ const catalog: MessageCatalog = {
   "Cannot add project": "Не вдалося додати проєкт",
   "Cannot archive while the provider is active.": "Не можна архівувати, поки провайдер активний.",
   Capabilities: "Можливості",
+  Capture: "Зафіксувати",
   "Capture {id}: {message}": "Захоплення {id}: {message}",
   "Capture a window and attach it to your current draft.":
     "Захопіть вікно та додайте його до поточної чернетки.",
@@ -3091,6 +3097,9 @@ const catalog: MessageCatalog = {
   "Capture helper files must be regular files. Remove the conflicting link before trying again.":
     "Файли помічника захоплення мають бути звичайними файлами. Видаліть конфліктне посилання й повторіть спробу.",
   "Capture is ready": "Захоплення готове",
+  "Capture it in a few words. It stays on this device.":
+    "Опишіть це кількома словами. Запис залишиться на цьому пристрої.",
+  "Capture key": "Клавіша запису",
   "Capture needs attention": "Захоплення потребує уваги",
   "Capture needs attention. Go back to check access.":
     "Захоплення потребує уваги. Поверніться, щоб перевірити доступ.",
@@ -3100,8 +3109,10 @@ const catalog: MessageCatalog = {
   "Capture the window you're using without switching apps.":
     "Захоплюйте вікно, яким користуєтеся, не перемикаючи застосунки.",
   "Capture the window you're using.": "Захоплюйте вікно, яким користуєтеся.",
+  "Capture UI Feedback": "Зафіксувати відгук про інтерфейс",
   "Captured terminal output": "Захоплений вивід терміналу",
   "Captured window": "Захоплене вікно",
+  Captures: "Записи",
   "Captures a window into your draft. Set it with the rest of Window capture.":
     "Захоплює вікно у вашу чернетку. Налаштовується разом з рештою параметрів захоплення вікна.",
   "Capturing screenshot": "Створення знімка екрана",
@@ -3223,6 +3234,8 @@ const catalog: MessageCatalog = {
   "Check for issues": "Перевіряти на проблеми",
   "Check for updates": "Перевірити оновлення",
   "Check for Updates...": "Перевірити оновлення...",
+  "Check it for secrets first: it is kept with this capture.":
+    "Спершу перевірте, чи немає на ньому секретів: знімок зберігається разом із записом.",
   "Check out": "Перейти",
   "Check out {owner}/{name}#{number}?": "Перейти на {owner}/{name}#{number}?",
   "Check out feature branch & continue": "Перейти на гілку функції та продовжити",
@@ -3567,6 +3580,7 @@ const catalog: MessageCatalog = {
     "Натисніть, щоб збільшити або повернути за розміром. Прокручуйте для масштабування, перетягуйте для зсуву. Enter перемикає масштаб, плюс і мінус змінюють його, 0 повертає за розміром.",
   "Clicking a pull request link opens it in T3.CodeShip. Turn off to open pull request links like any other link, on your git host.":
     "Клік на посилання пул-реквесту відкриває його в T3.CodeShip. Вимкніть, щоб відкривати такі посилання як звичайні, на вашому git-хостингу.",
+  "Clicks since {date}": "Кліки з {date}",
   "Client label (optional)": "Мітка клієнта (необов’язково)",
   "Client not supported": "Клієнт не підтримується",
   "Client scopes": "Області клієнта",
@@ -4259,6 +4273,7 @@ const catalog: MessageCatalog = {
   "Could not check this shortcut.": "Не вдалося перевірити це скорочення.",
   "Could not choose a merge method.": "Не вдалося вибрати спосіб злиття.",
   "Could not clear {name}'s data": "Не вдалося очистити дані профілю {name}",
+  "Could not clear UI feedback": "Не вдалося очистити відгуки",
   "Could not clone": "Не вдалося клонувати",
   "Could not close this {term}": "Не вдалося закрити: {term}",
   "Could not close this browser tab": "Не вдалося закрити цю вкладку браузера",
@@ -4339,6 +4354,7 @@ const catalog: MessageCatalog = {
   "Could not delete pending task": "Не вдалося видалити завдання в очікуванні",
   "Could not delete provider instance": "Не вдалося видалити екземпляр провайдера",
   "Could not delete task": "Не вдалося видалити завдання",
+  "Could not delete the capture": "Не вдалося видалити запис",
   "Could not delete the side chat": "Не вдалося видалити бічний чат",
   "Could not delete this branch": "Не вдалося видалити цю гілку",
   "Could not delete thread": "Не вдалося видалити чат",
@@ -4369,6 +4385,7 @@ const catalog: MessageCatalog = {
   "Could not enable agent activity updates.": "Не вдалося ввімкнути оновлення активності агента.",
   "Could not enable agent notifications.": "Не вдалося ввімкнути сповіщення агента.",
   "Could not enable auto-merge": "Не вдалося увімкнути автозлиття",
+  "Could not export UI feedback": "Не вдалося експортувати відгуки",
   "Could not find the latest {channel} release in this environment's npm registry.":
     "Не вдалося знайти найновіший випуск {channel} у реєстрі npm цього середовища.",
   "Could not finish disconnecting. Try again.":
@@ -4555,6 +4572,8 @@ const catalog: MessageCatalog = {
   "Could not read T3 Connect link state.": "Не вдалося прочитати стан зв’язку T3 Connect.",
   "Could not read that file. Paste the JSON below instead.":
     "Не вдалося прочитати цей файл. Натомість вставте JSON нижче.",
+  "Could not read the captures saved in this browser.":
+    "Не вдалося прочитати записи, збережені в цьому браузері.",
   "Could not read the clipboard": "Не вдалося прочитати буфер обміну",
   "Could not read the Office viewer response.":
     "Не вдалося прочитати відповідь засобу перегляду Office.",
@@ -4638,6 +4657,7 @@ const catalog: MessageCatalog = {
   "Could not save the queued message": "Не вдалося зберегти повідомлення в черзі",
   "Could not save the theme.": "Не вдалося зберегти тему.",
   "Could not save this change. Try again.": "Не вдалося зберегти цю зміну. Повторіть спробу.",
+  "Could not save UI feedback": "Не вдалося зберегти відгук",
   "Could not save video": "Не вдалося зберегти відео",
   "Could not save your theme": "Не вдалося зберегти вашу тему",
   "Could not save. Try again.": "Не вдалося зберегти. Спробуйте ще раз.",
@@ -5061,10 +5081,16 @@ const catalog: MessageCatalog = {
   "Delete artifact?": "Видалити артефакт?",
   "Delete branch": "Видалити гілку",
   "Delete branch {branch}?": "Видалити гілку {branch}?",
+  "Delete capture from {time}": "Видалити запис від {time}",
+  "Screenshot preview": "Перегляд знімка екрана",
+  Control: "Елемент",
+  Clicks: "Кліки",
   "Delete comment": "Видалити коментар",
   "delete confirmation": "підтвердження видалення",
   "Delete confirmation": "Підтвердження видалення",
   "Delete draft": "Видалити чернетку",
+  "Delete every UI feedback capture and reset the click counters?":
+    "Видалити всі записи відгуків і скинути лічильники кліків?",
   "Delete folder “{name}”?": "Видалити папку «{name}»?",
   "Delete folder…": "Видалити папку…",
   "Delete inactive rotated log files after this many days. Current logs are kept.":
@@ -5695,6 +5721,7 @@ const catalog: MessageCatalog = {
     "Орієнтовна вартість за цінами API для ходів, які почали запуски запланованих завдань.",
   "Even pace": "Рівномірний темп",
   "Even pace: {percent}% left by now": "Рівномірний темп: до цього часу залишилось би {percent}%",
+  "Evening reminder": "Вечірнє нагадування",
   "Event log": "Журнал подій",
   "Every {host} host is turned off.": "Усі хости {host} вимкнено.",
   "Every {interval}": "Кожні {interval}",
@@ -5713,6 +5740,7 @@ const catalog: MessageCatalog = {
   "Every connected machine is already on {channel}. This only saves the track.":
     "Усі підключені комп’ютери вже на {channel}. Це лише збереже канал.",
   "Every day": "Щодня",
+  "Every evening": "Щовечора",
   "Every hour": "Щогодини",
   "Every interval": "Через інтервал",
   "Every layer being merged must be open and ready for review.":
@@ -5815,6 +5843,7 @@ const catalog: MessageCatalog = {
   "Export as Markdown": "Експортувати як Markdown",
   "Export theme file": "Експортувати файл теми",
   "Export thread as Markdown": "Експортувати чат як Markdown",
+  "Exported UI feedback": "Відгуки експортовано",
   "Exporting thread…": "Експорт чату…",
   "Exposed on all interfaces.": "Відкрито на всіх інтерфейсах.",
   "Exposed on all interfaces. Pairing links use {host}.":
@@ -7779,6 +7808,7 @@ const catalog: MessageCatalog = {
   "Native sessions": "Власні сеанси",
   "Native terminal unavailable. Using text fallback.":
     "Нативний термінал недоступний. Використовується текстовий режим.",
+  "Nav rail": "Панель навігації",
   Navigate: "Навігація",
   "Navigate up": "Нагору",
   Navigation: "Навігація",
@@ -7961,6 +7991,7 @@ const catalog: MessageCatalog = {
   "No available models": "Немає доступних моделей",
   "No branches available": "Немає доступних гілок",
   "No cached data": "Немає кешованих даних",
+  "No captures yet.": "Записів ще немає.",
   "No changed files to commit.": "Немає змінених файлів для коміту.",
   "No changes": "Немає змін",
   "No changes to commit": "Немає змін для коміту",
@@ -7970,6 +8001,8 @@ const catalog: MessageCatalog = {
   "No chats settled in this period.": "За цей період жоден чат не завершено.",
   "No checks reported": "Перевірок немає",
   "No checks reported.": "Перевірок немає.",
+  "No clicks counted yet.": "Кліків ще не пораховано.",
+  "No clicks yet": "Кліків ще немає",
   "No Codex CLI was found in this environment. T3.CodeShip can download its own copy.":
     "У цьому середовищі не знайдено Codex CLI. T3.CodeShip може завантажити власну копію.",
   "No commands ran.": "Жодна команда не виконувалась.",
@@ -8104,6 +8137,7 @@ const catalog: MessageCatalog = {
   "No new conversations to import": "Немає нових розмов для імпорту",
   "No newer version is available yet.": "Новішої версії поки немає.",
   "No non-test files loaded yet": "Нетестові файли ще не завантажено",
+  "No note": "Без нотатки",
   "No open {label}": "Немає відкритого {label}",
   "No open threads": "Немає відкритих чатів",
   "No other environments are published to your account yet. Publish one from another device and it will show up here.":
@@ -8322,6 +8356,7 @@ const catalog: MessageCatalog = {
   "Not synced yet": "Ще не синхронізовано",
   "Not used": "Не використовується",
   Note: "Примітка",
+  "Note (optional)": "Нотатка (необов’язково)",
   "Notes on this stop": "Нотатки до цього етапу",
   "Nothing detected yet": "Поки нічого не виявлено",
   "Nothing has taken the app down during launch in the last 7 days.":
@@ -9133,6 +9168,8 @@ const catalog: MessageCatalog = {
   "Press {modifier} + Shift + Enter to {alternate} instead for one message.":
     "Натисніть {modifier} + Shift + Enter, щоб для одного повідомлення {alternate}.",
   "Press {shortcut} again to quit": "Натисніть {shortcut} ще раз, щоб вийти",
+  "Press {shortcut} when something annoys you. The app saves where you are, the control under the pointer and a short note, on this device only.":
+    "Натисніть {shortcut}, коли щось дратує. Застосунок збереже, де ви зараз, елемент під вказівником і коротку нотатку, лише на цьому пристрої.",
   "Press {shortcut} with a prompt in the composer to stash it.":
     "Натисніть {shortcut}, коли в полі повідомлення є запит, щоб відкласти його.",
   "Press ⌘C to copy": "Натисніть ⌘C, щоб скопіювати",
@@ -10600,6 +10637,8 @@ const catalog: MessageCatalog = {
   "Saved. Restart the server to apply.": "Збережено. Перезапустіть сервер, щоб застосувати.",
   "Saves it on the machine you pick, then deletes it from {machine}. Its run history isn't moved.":
     "Зберігає його на вибраному комп’ютері, а потім видаляє з {machine}. Історію запусків не буде перенесено.",
+  "Saves where you are, the control under the pointer and your note, on this device only.":
+    "Зберігає, де ви зараз, елемент під вказівником і вашу нотатку, лише на цьому пристрої.",
   Saving: "Збереження",
   "saving {count} images…": {
     one: "збереження {count} зображення…",
@@ -10657,6 +10696,7 @@ const catalog: MessageCatalog = {
   "Screenshot capture failed ({status}). Try again.":
     "Не вдалося зробити знімок екрана ({status}). Спробуйте ще раз.",
   "Screenshot capture failed. Try again.": "Не вдалося зробити знімок екрана. Спробуйте ще раз.",
+  "Screenshot of the window at this capture": "Знімок вікна в момент запису",
   "Screenshot saved": "Знімок екрана збережено",
   "Screenshot unavailable": "Знімок екрана недоступний",
   scripts: "скрипти",
@@ -10923,6 +10963,8 @@ const catalog: MessageCatalog = {
   set: "встановити",
   Set: "Задати",
   "Set {label} on for selected environments": "Увімкнути {label} для вибраних середовищ",
+  "Set a key for Capture UI Feedback in Keybindings to save what annoys you.":
+    "Призначте клавішу для «Зафіксувати відгук про інтерфейс» у комбінаціях клавіш, щоб записувати те, що дратує.",
   "Set as default": "Зробити типовим",
   "Set by desktop": "Задано настільним застосунком",
   "Set by environment": "Задано середовищем",
@@ -13653,6 +13695,8 @@ const catalog: MessageCatalog = {
     "Спробуйте ще раз із проєкту або спершу відкрийте чат.",
   "Try again in a moment.": "Спробуйте ще раз за мить.",
   "Try again when connected.": "Спробуйте ще раз, коли буде з’єднання.",
+  "Try again, or check that this browser allows site storage.":
+    "Спробуйте ще раз або перевірте, чи дозволяє цей браузер зберігати дані сайтів.",
   "Try again.": "Спробуйте ще раз.",
   "Try again. If it keeps happening, copy the details for a bug report.":
     "Спробуйте ще раз. Якщо проблема повторюється, скопіюйте подробиці для звіту про помилку.",
@@ -13731,6 +13775,8 @@ const catalog: MessageCatalog = {
   "Typeset LaTeX math, such as $x^2$ or \\[x^2\\], in messages and Markdown previews. The composer keeps TeX source editable.":
     "Відображати математику LaTeX, наприклад $x^2$ або \\[x^2\\], у повідомленнях і попередньому перегляді Markdown. Поле повідомлення зберігає TeX-код редагованим.",
   Typography: "Типографіка",
+  "UI feedback": "Відгуки про інтерфейс",
+  "UI feedback saved": "Відгук збережено",
   Ultrafast: "Надшвидкий",
   "Ultrafast mode on": "Надшвидкий режим увімкнено",
   Ultrathink: "Ultrathink",
@@ -14602,6 +14648,7 @@ const catalog: MessageCatalog = {
     "Що робить повідомлення, надіслане, поки агент працює: спрямовує хід, чекає в черзі до його завершення або зупиняє хід і надсилається.",
   "What agents here may do there": "Що агенти звідси можуть робити там",
   "What agents there may do here": "Що агенти там можуть робити тут",
+  "What annoyed you?": "Що вас дратувало?",
   "What it may do": "Що він може робити",
   "What should the agent do each time this runs?": "Що має робити агент під час кожного запуску?",
   "What should the agent do each time?": "Що агент має робити щоразу?",

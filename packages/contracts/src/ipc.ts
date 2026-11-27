@@ -1031,6 +1031,13 @@ export const DesktopMediaReadSchema = Schema.Struct({
 });
 export type DesktopMediaRead = typeof DesktopMediaReadSchema.Type;
 
+export const DesktopUiFeedbackScreenshotSchema = Schema.Struct({
+  dataUrl: Schema.String,
+  width: Schema.Number,
+  height: Schema.Number,
+});
+export type DesktopUiFeedbackScreenshot = typeof DesktopUiFeedbackScreenshotSchema.Type;
+
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
@@ -1171,6 +1178,13 @@ export interface DesktopBridge {
     onRequest: (listener: (request: DesktopAppActivationRequest) => void) => () => void;
   };
   preview: DesktopPreviewBridge;
+  /** Fork-only: local UI feedback captures. Nothing here leaves the machine. */
+  uiFeedback: {
+    /** JPEG of the calling window, at most 1600 px wide; null when the window cannot be captured. */
+    captureWindow: () => Promise<DesktopUiFeedbackScreenshot | null>;
+    /** Writes the Markdown export to a fixed file in the T3 home and returns its absolute path. */
+    writeExport: (markdown: string) => Promise<string>;
+  };
 }
 
 /** Renderer callback invoked by Electron with a fresh user gesture before display-media capture. */

@@ -13,9 +13,10 @@
   "automations": {
     "CodeShip: keep translations up to date": "one",
     "CodeShip: weekly sync from T3 Code": "one",
-    "CodeShip: weekly dependency upgrade": "one"
+    "CodeShip: weekly dependency upgrade": "one",
+    "CodeShip: weekly UI feedback triage": ["MacBook-Pro-Andrii"]
   },
-  "$scheduled_tasks": "The weekly sync and the weekly dependency upgrade run on Opus at xhigh effort with automatic account choice, so each machine picks a signed-in Claude account; translations follow the machine's default scheduled-task model. The dependency upgrade runs the day after the sync, on freshly synced main, and hands its independent review to Codex.",
+  "$scheduled_tasks": "The weekly sync and the weekly dependency upgrade run on Opus at xhigh effort with automatic account choice, so each machine picks a signed-in Claude account; translations and the weekly UI feedback triage follow the machine's default scheduled-task model. The triage runs only on the MacBook, where the desktop app writes the UI feedback export. The dependency upgrade runs the day after the sync, on freshly synced main, and hands its independent review to Codex.",
   "scheduled_tasks": {
     "CodeShip: keep translations up to date": {
       "group": "CodeShip maintenance",
@@ -39,6 +40,12 @@
         "autoAccount": true
       },
       "delegate_providers": ["claudeAgent", "codex"]
+    },
+    "CodeShip: weekly UI feedback triage": {
+      "group": "CodeShip maintenance",
+      "prompt": "automations/ui-feedback-triage.md",
+      "schedule": { "type": "fixed_time", "timeOfDay": "17:00", "weekdays": [5] },
+      "model": "default"
     }
   },
   "toolchain": {

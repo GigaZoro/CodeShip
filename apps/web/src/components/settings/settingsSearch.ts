@@ -885,6 +885,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["OTel OTLP telemetry export endpoints logs traces metrics Grafana"],
   },
   {
+    id: "ui-feedback",
+    title: msg("UI feedback"),
+    to: "/settings/diagnostics",
+    targetId: "ui-feedback",
+    searchTerms: ["annoyance capture screenshot note usage counters clicks export markdown"],
+  },
+  {
+    id: "ui-feedback-reminder",
+    title: msg("Evening reminder"),
+    to: "/settings/diagnostics",
+    targetId: "ui-feedback-reminder",
+    searchTerms: ["UI feedback annoy reminder evening daily"],
+  },
+  {
     id: "diagnostics",
     title: msg("Diagnostics"),
     to: "/settings/diagnostics",

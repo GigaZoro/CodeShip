@@ -248,6 +248,19 @@ describe("settle thread shortcut", () => {
   });
 });
 
+describe("UI feedback capture shortcut", () => {
+  it("takes Shift with the Stop key instead of stopping the thread", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: ">", code: "Period", metaKey: true, shiftKey: true }),
+        DEFAULT_RESOLVED_KEYBINDINGS,
+        { platform: "MacIntel" },
+      ),
+      "uiFeedback.capture",
+    );
+  });
+});
+
 describe("thread undo shortcut", () => {
   it("leaves native undo alone inside text fields and terminals", () => {
     assert.isNull(

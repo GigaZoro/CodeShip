@@ -12,6 +12,7 @@
 - [Appearance, themes, and language](./user/appearance.md)
 - [Keyboard shortcuts](./user/keybindings.md)
 - [SnapShots](./user/snap-shot.md)
+- [UI feedback](./user/ui-feedback.md)
 - [Visual replies](./user/html-renders.md)
 - [Import browser sessions](./user/browser-import.md)
 - [Use T3.CodeShip as your default browser](./user/default-browser.md)

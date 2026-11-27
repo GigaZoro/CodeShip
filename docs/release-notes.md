@@ -1,3 +1,10 @@
+## 2026-11-27 — Capture what annoys you in the app
+
+- Press Mod+Shift+. to save a UI annoyance with an optional note. The capture records the page, the components under the pointer, the visible notices and panels, and the window size, theme and density. The desktop app can also attach a screenshot of the window. Captures stay on your device.
+- The app counts clicks on nav rail destinations, thread details controls and composer controls, and stores only the counts.
+- Settings > Diagnostics > UI feedback lists the captures and the counters, exports them as Markdown, and clears them. An optional evening reminder asks what annoyed you that day.
+- A weekly CodeShip task on the MacBook groups the week's captures and files the biggest groups as work items.
+
 ## 2026-11-27 — Transparent in-run usage-limit failover and headroom helpers
 
 - When a provider session or thread start refuses immediately with a usage limit and automatic failover is enabled, turns now transparently switch to another eligible account (up to two alternates), durably record refused accounts across retries and restarts without emitting a visible error item, preserve concurrent thread edits, and fall back cleanly to the original account's usage-limit error if no alternate can carry the conversation.

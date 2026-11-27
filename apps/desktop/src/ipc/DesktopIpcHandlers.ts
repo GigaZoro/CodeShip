@@ -88,6 +88,7 @@ import {
   installCliCommand,
   uninstallCliCommand,
 } from "./methods/cliCommand.ts";
+import { captureUiFeedbackWindow, writeUiFeedbackExport } from "./methods/uiFeedback.ts";
 import { getLoginItemState, setLoginItemEnabled } from "./methods/loginItem.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
@@ -173,6 +174,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(uninstallCliCommand);
   yield* ipc.handle(getLoginItemState);
   yield* ipc.handle(setLoginItemEnabled);
+  yield* ipc.handle(captureUiFeedbackWindow);
+  yield* ipc.handle(writeUiFeedbackExport);
   for (const previewMethod of PreviewIpc.methods) {
     // Explicit types preserve the error/service union of these heterogeneous preview methods.
     yield* ipc.handle<

@@ -468,4 +468,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         ipcRenderer.removeListener(IpcChannels.PREVIEW_OPEN_LINK_CHANNEL, wrappedListener);
     },
   },
+  uiFeedback: {
+    captureWindow: () => ipcRenderer.invoke(IpcChannels.UI_FEEDBACK_CAPTURE_WINDOW_CHANNEL),
+    writeExport: (markdown) =>
+      ipcRenderer.invoke(IpcChannels.UI_FEEDBACK_WRITE_EXPORT_CHANNEL, markdown),
+  },
 } satisfies DesktopBridge);

@@ -444,6 +444,7 @@ export function commandLabel(command: KeybindingCommand): string {
   if (usagePeriod) return t("Usage: Period: {period}", { period: t(usagePeriod.label) });
   if (command === "view.reopenClosed") return t("Reopen Closed Tab");
   if (command === "preview.focusUrl") return t("Preview: Focus URL");
+  if (command === "uiFeedback.capture") return t("Capture UI Feedback");
   const raw = String(command);
   if (raw.startsWith("script.") && raw.endsWith(".run")) {
     return t("Run Script: {script}", {
