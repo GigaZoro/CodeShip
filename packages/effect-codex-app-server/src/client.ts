@@ -43,6 +43,9 @@ export class CodexAppServerClient extends Context.Service<
   {
     readonly raw: CodexAppServerClientRaw;
     readonly awaitTermination: Effect.Effect<never, CodexError.CodexAppServerError>;
+    readonly parkRequestHandler: CodexProtocol.CodexAppServerPatchedProtocol["parkRequestHandler"];
+    readonly awaitRequestHandlersParked: CodexProtocol.CodexAppServerPatchedProtocol["awaitRequestHandlersParked"];
+    readonly flushOutgoing: CodexProtocol.CodexAppServerPatchedProtocol["flushOutgoing"];
     readonly request: <M extends CodexRpc.ClientRequestMethod>(
       method: M,
       payload: CodexRpc.ClientRequestParamsByMethod[M],
@@ -261,6 +264,9 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
 
   return CodexAppServerClient.of({
     awaitTermination: Deferred.await(termination),
+    parkRequestHandler: transport.parkRequestHandler,
+    awaitRequestHandlersParked: transport.awaitRequestHandlersParked,
+    flushOutgoing: transport.flushOutgoing,
     raw: {
       notifications: transport.incomingNotifications,
       requests: transport.incomingRequests,
