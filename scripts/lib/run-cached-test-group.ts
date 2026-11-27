@@ -15,29 +15,88 @@ import { CHECKOUT_HEAD_ENV } from "./cached-tests.ts";
 import { validateNestedVitestOptions } from "./cached-vitest-options.ts";
 
 const checkout = NodePath.resolve(import.meta.dirname, "../..");
+// oxlint-disable-next-line t3code/no-global-process-runtime -- this standalone Vitest runner has no Effect runtime.
+const caseless = process.platform === "win32";
+// GIT_DIR and its kin reach trace2 as def_param events, which name a repository Git may open
+// without reporting it as a def_repo worktree.
+const tracedEnv = [
+  "GIT_DIR",
+  "GIT_COMMON_DIR",
+  "GIT_WORK_TREE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_INDEX_FILE",
+];
 
-// Git writes a trace2 file per process into the folder, with a def_repo event naming the worktree
-// of each repository it opens. A def_repo it cannot parse counts as a read of this checkout.
-function openedCheckout(traces: string, root: string) {
+const comparable = (path: string) => (caseless ? path.toLowerCase() : path);
+
+function resolved(path: string) {
+  try {
+    return [path, NodeFS.realpathSync.native(path)];
+  } catch {
+    return [path];
+  }
+}
+
+function reaches(path: string, targets: ReadonlyArray<string>, inside: boolean) {
+  return resolved(path).some((candidate) => {
+    const key = comparable(candidate);
+    return targets.some(
+      (target) => key === target || (inside && key.startsWith(target + NodePath.sep)),
+    );
+  });
+}
+
+// Git writes a trace2 file per process. trace2 omits the working directory relative paths resolve
+// against, so a process's own repository stands in for it, or the checkout for a process with none.
+// Git passes upload-pack an absolute path. An event this cannot read counts as a read.
+export function readsCheckoutGit(traces: string, checkoutPaths: ReadonlyArray<string>) {
+  const targets = checkoutPaths.flatMap((path) => resolved(NodePath.resolve(path)).map(comparable));
   for (const file of NodeFS.readdirSync(traces)) {
+    const values: Array<string> = [];
+    const bases: Array<string> = [];
     for (const line of NodeFS.readFileSync(NodePath.join(traces, file), "utf8").split("\n")) {
-      if (!line.includes('"def_repo"')) continue;
-      let worktree: unknown;
+      if (!line.trim()) continue;
+      let event: Record<string, unknown>;
       try {
-        worktree = JSON.parse(line).worktree;
+        event = JSON.parse(line);
       } catch {
         return true;
       }
-      if (typeof worktree !== "string" || NodePath.resolve(worktree) === root) return true;
+      if (event.event === "start") {
+        if (!Array.isArray(event.argv)) return true;
+        for (const arg of event.argv) {
+          if (typeof arg !== "string") return true;
+          values.push(arg, arg.slice(arg.indexOf("=") + 1));
+        }
+      } else if (event.event === "def_repo") {
+        if (typeof event.worktree !== "string" || !NodePath.isAbsolute(event.worktree)) return true;
+        if (reaches(event.worktree, targets, true)) return true;
+        bases.push(event.worktree);
+      } else if (event.event === "def_param") {
+        if (typeof event.value !== "string") return true;
+        values.push(event.value, ...event.value.split(NodePath.delimiter));
+      }
+    }
+    for (const value of values) {
+      const path = value.startsWith("file://") ? value.slice("file://".length) : value;
+      if (!path) continue;
+      if (NodePath.isAbsolute(path)) {
+        if (reaches(path, targets, true)) return true;
+        continue;
+      }
+      // Relative arguments such as `git add src/a.ts` in another repository stay its own.
+      if (bases.some((base) => reaches(NodePath.resolve(base, path), targets, true))) return true;
+      if (!bases.length && reaches(NodePath.resolve(checkout, path), targets, false)) return true;
     }
   }
   return false;
 }
 
 /**
- * Cached groups key on the files their tests read, not on HEAD, so a test that reads this
- * checkout's Git state keys its group on HEAD through Vite+'s runner client. When Git cannot show
- * that it traces opening this checkout, every group counts as a reader.
+ * Cached groups key on the files their tests read, not on HEAD, so a group whose Git reads this
+ * checkout's repository keys on HEAD through Vite+'s runner client. When Git cannot show that it
+ * traces this checkout, every group counts as a reader. The check runs after teardown, or at exit.
  */
 function traceCheckoutGit() {
   // Outside `vp run` no cache records the group.
@@ -47,25 +106,47 @@ function traceCheckoutGit() {
   if (runner.getEnv(CHECKOUT_HEAD_ENV, { tracked: false }) === undefined) {
     throw new Error(`Vite+ did not pass ${CHECKOUT_HEAD_ENV} to the cached test group`);
   }
-  const keyOnHead = () => runner.getEnv(CHECKOUT_HEAD_ENV);
   const traces = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-git-trace-"));
   const probe = NodePath.join(traces, "probe");
   const tests = NodePath.join(traces, "tests");
   NodeFS.mkdirSync(probe);
   NodeFS.mkdirSync(tests);
-  const root = NodeFS.realpathSync(checkout);
-  const traced =
-    NodeChildProcess.spawnSync("git", ["rev-parse", "--git-dir"], {
-      cwd: root,
-      env: { ...process.env, GIT_TRACE2_EVENT: probe },
-      stdio: "ignore",
-    }).status === 0 && openedCheckout(probe, root);
-  process.env.GIT_TRACE2_EVENT = tests;
-  return () => {
-    delete process.env.GIT_TRACE2_EVENT;
-    if (!traced || openedCheckout(tests, root)) keyOnHead();
-    NodeFS.rmSync(traces, { recursive: true, force: true });
+  const traceEnv = { GIT_TRACE2_ENV_VARS: tracedEnv.join(",") };
+  const located = NodeChildProcess.spawnSync(
+    "git",
+    ["rev-parse", "--absolute-git-dir", "--path-format=absolute", "--git-common-dir"],
+    {
+      cwd: checkout,
+      encoding: "utf8",
+      env: { ...process.env, ...traceEnv, GIT_TRACE2_EVENT: probe },
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
+  const gitDirs = located.status === 0 ? located.stdout.split("\n").filter(Boolean) : [];
+  // The checkout's folder, its git dir and its common git dir.
+  const targets = [checkout, ...gitDirs];
+  const traced = gitDirs.length === 2 && readsCheckoutGit(probe, targets);
+  Object.assign(process.env, traceEnv, { GIT_TRACE2_EVENT: tests });
+  let checked = false;
+  const check = () => {
+    if (checked) return;
+    checked = true;
+    process.off("exit", check);
+    let reads = true;
+    try {
+      reads = !traced || readsCheckoutGit(tests, targets);
+    } catch (error) {
+      process.exitCode = 1;
+      process.stderr.write(`Could not read the Git trace of the cached test group: ${error}\n`);
+    }
+    try {
+      if (reads) runner.getEnv(CHECKOUT_HEAD_ENV);
+    } finally {
+      NodeFS.rmSync(traces, { recursive: true, force: true });
+    }
   };
+  process.on("exit", check);
+  return check;
 }
 
 async function runCachedTestGroup(args: string[]) {
@@ -103,8 +184,8 @@ async function runCachedTestGroup(args: string[]) {
   }
   if (filters.some((filter) => filter.includes(":"))) options.includeTaskLocation ??= true;
   if (typeof options.typecheck?.only === "boolean") options.typecheck.enabled ??= true;
-  // Only check:changed passes the commit, which test:cached groups have never keyed on.
-  const finishGitTrace = allowExcluded ? traceCheckoutGit() : undefined;
+  // Only check:changed passes the commit; test:cached groups don't key on HEAD.
+  const checkGitTrace = allowExcluded ? traceCheckoutGit() : undefined;
 
   const identity = (spec: TestSpecification) =>
     JSON.stringify([spec.project.name, spec.moduleId, spec.pool]);
@@ -192,9 +273,9 @@ async function runCachedTestGroup(args: string[]) {
     }
   } finally {
     try {
-      finishGitTrace?.();
-    } finally {
       await context.exit();
+    } finally {
+      checkGitTrace?.();
     }
   }
 }

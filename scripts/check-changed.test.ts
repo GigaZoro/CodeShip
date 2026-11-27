@@ -3390,6 +3390,43 @@ it("discards test results recorded while HEAD moved, and replays them at a commi
   expect(rebased.stdout).toContain("cache hit, replaying");
 });
 
+// Each case reads the checkout's Git from a test, with `root` the checkout and `other` a folder
+// outside it.
+it.each([
+  ["opens the checkout", `git(root, "rev-parse", "HEAD")`],
+  ["clones the checkout", `git(other, "clone", "-q", root, "copy")`],
+  ["aims --git-dir at the checkout", `git(other, "--git-dir=" + join(root, ".git"), "log", "-1")`],
+])("reruns a test group that %s after a commit that leaves its files alone", (_, read) => {
+  using project = launcherFixture();
+  project.write(
+    "fixture.test.ts",
+    `import { execFileSync } from "node:child_process";
+    import { mkdtempSync, rmSync } from "node:fs";
+    import { tmpdir } from "node:os";
+    import { join } from "node:path";
+    import { it } from "vite-plus/test";
+    const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe" });
+    it("reads the checkout's Git", () => {
+      const root = import.meta.dirname;
+      const other = mkdtempSync(join(tmpdir(), "reader-"));
+      try {
+        ${read};
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+    });`,
+  );
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  project.write(project.source, "export const value = 2;\n");
+  project.git("add", project.source);
+  project.git("commit", "-m", "unread change");
+  const next = project.run();
+  expect(next.status, next.stdout + next.stderr).toBe(0);
+  expect(next.stdout).toContain("pass  test (1 files)");
+  expect(next.stdout).not.toContain("cache hit, replaying");
+});
+
 it("reports failures from every selected test group", () => {
   using project = launcherFixture();
   for (const [file, name] of [
