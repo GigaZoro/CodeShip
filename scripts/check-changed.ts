@@ -177,23 +177,23 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
       force: true,
     });
   };
+  // Markers come and go while other runs read them, so a reader only probes one read-only, which
+  // creates, locks out and removes nothing. Only a held marker counts: one that vanished, is
+  // mid-change, or was left by a killed landing (with its journal beside it) waits on nobody.
   const landingWaits = () =>
     NodeFS.readdirSync(directory)
-      .filter((name) => name.startsWith(markerPrefix))
+      .filter((name) => name.startsWith(markerPrefix) && name.endsWith(".sqlite"))
       .some((name) => {
-        const file = NodePath.join(directory, name);
-        const db = new NodeSqlite.DatabaseSync(file);
+        let db: NodeSqlite.DatabaseSync | undefined;
         try {
-          db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+          db = new NodeSqlite.DatabaseSync(NodePath.join(directory, name), { readOnly: true });
+          db.exec("PRAGMA busy_timeout = 0; BEGIN; SELECT count(*) FROM sqlite_master; COMMIT;");
+          return false;
         } catch (cause) {
-          if (isSqliteBusy(cause)) return true;
-          throw cause;
+          return isSqliteBusy(cause);
         } finally {
-          db.close();
+          db?.close();
         }
-        // Nobody held it: a marker its landing left behind.
-        NodeFS.rmSync(file, { force: true });
-        return false;
       });
 
   const lockFree = (max: number) =>

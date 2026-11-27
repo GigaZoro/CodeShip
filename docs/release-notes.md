@@ -3,6 +3,7 @@
 - A working thread whose agent has sent nothing for 10 minutes reads **Stalled** in the thread list, its activity line and its Details status, with the time since its last event. The next event clears it, and Claude tools that report progress, such as a long build, keep it from stalling.
 - A stalled thread you started waits in **Needs you** and counts on the Threads badge; stalled agent-started and scheduled threads stay with their agents. The Needs you filter lists every stalled thread. Web, desktop, and mobile show the same state.
 - **Settings → Threads → Mark stalled threads** (under Recovery on mobile) changes the limit (2 to 240 minutes) or turns it off.
+- For contributors: `vp run check:changed` no longer fails with "file is not a database", "unable to open database file" or a disk I/O error while another chat's landing waits for a check slot.
 
 ## 2026-11-27 — Auto mode matches model and reasoning effort to request complexity
 

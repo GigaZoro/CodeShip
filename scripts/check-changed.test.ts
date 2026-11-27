@@ -672,6 +672,44 @@ describe("check:changed", () => {
       }),
   );
 
+  it.effect("takes a free slot beside a landing marker's journal", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      // SQLite writes this beside a held marker, and a killed landing leaves it behind.
+      NodeFS.writeFileSync(
+        NodePath.join(directory, "landing-wait-1.sqlite-journal"),
+        Buffer.alloc(512),
+      );
+      const results = yield* runSteps(
+        [{ name: "step", run: () => Effect.succeed({ ok: true, output: "" }) }],
+        { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory },
+      );
+
+      assert.deepStrictEqual(
+        results.map((result) => result.outcome),
+        ["pass"],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("passes an unheld landing marker by without removing it", () =>
+    Effect.gen(function* () {
+      const directory = yield* slotDirectory;
+      // Removing it races the landing that is about to lock it, and other runs reading it.
+      const marker = NodePath.join(directory, "landing-wait-1.sqlite");
+      NodeFS.writeFileSync(marker, "");
+      const results = yield* runSteps(
+        [{ name: "step", run: () => Effect.succeed({ ok: true, output: "" }) }],
+        { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory },
+      );
+
+      assert.deepStrictEqual(
+        [results.map((result) => result.outcome), NodeFS.existsSync(marker)],
+        [["pass"], true],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
     Effect.gen(function* () {
       let interrupted = false;
