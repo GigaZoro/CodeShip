@@ -27,6 +27,7 @@ import {
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
 } from "@t3tools/client-runtime/state/thread-inbox";
+import { collectFinishedNotSeen } from "@t3tools/client-runtime/state/needs-you-triage";
 import { matchesAnyThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
 import {
   hasUnseenCompletion as threadHasUnseenCompletion,
@@ -285,6 +286,8 @@ export interface ThreadListV2Item {
   readonly waitingSince?: number;
   /** A Needs you thread the user put off with "Decide later". */
   readonly later?: boolean;
+  /** Listed under "Finished, not seen", and again in its own shelf below. */
+  readonly finishedNotSeen?: boolean;
 }
 
 interface ThreadListV2FolderBase {
@@ -373,6 +376,8 @@ export interface ThreadListV2Layout {
   readonly needsYouCount: number;
   /** The last of those, put off with "Decide later". */
   readonly needsYouLaterCount: number;
+  /** The next items, after the Needs you ones: threads the user started that finished unseen. */
+  readonly finishedNotSeenCount: number;
   readonly folderHeaders: ReadonlyArray<ThreadListV2FolderHeader>;
   readonly folderFooters: ReadonlyArray<ThreadListV2FolderFooter>;
   /** Null when a filter hides how many older settled threads not loaded yet match. */
@@ -427,6 +432,14 @@ export interface ThreadListV2NeedsYouHeaderListItem {
   readonly later: boolean;
 }
 
+export interface ThreadListV2FinishedNotSeenHeaderListItem {
+  readonly type: "v2-finished-not-seen";
+  readonly key: "v2-finished-not-seen";
+  readonly count: number;
+  /** What "Settle all" settles. */
+  readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+}
+
 export interface ThreadListV2WorkingShelfListItem {
   readonly type: "v2-working-shelf";
   readonly key: "v2-working-shelf";
@@ -475,6 +488,7 @@ export type ThreadListV2ListItem =
   | ThreadListV2FolderListItem
   | ThreadListV2FolderMoreListItem
   | ThreadListV2NeedsYouHeaderListItem
+  | ThreadListV2FinishedNotSeenHeaderListItem
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
   | ThreadListV2SettledShelfListItem;
@@ -488,6 +502,7 @@ export function isThreadListV2ListItem(value: {
     value.type === "v2-folder" ||
     value.type === "v2-folder-more" ||
     value.type === "v2-needs-you" ||
+    value.type === "v2-finished-not-seen" ||
     value.type === "v2-working-shelf" ||
     value.type === "v2-snoozed-shelf" ||
     value.type === "v2-settled-shelf"
@@ -509,6 +524,7 @@ export function threadListV2ListItemsAreEqual(
         previous.item.snoozed === item.item.snoozed &&
         previous.item.pinned === item.item.pinned &&
         previous.item.needsYou === item.item.needsYou &&
+        previous.item.finishedNotSeen === item.item.finishedNotSeen &&
         previous.item.waitingSince === item.item.waitingSince &&
         previous.item.wokeAt === item.item.wokeAt &&
         previous.snoozeWakeLabelText === item.snoozeWakeLabelText &&
@@ -549,6 +565,13 @@ export function threadListV2ListItemsAreEqual(
         previous.type === "v2-needs-you" &&
         previous.count === item.count &&
         previous.later === item.later
+      );
+    case "v2-finished-not-seen":
+      return (
+        previous.type === "v2-finished-not-seen" &&
+        previous.count === item.count &&
+        previous.threads.length === item.threads.length &&
+        previous.threads.every((thread, index) => thread === item.threads[index])
       );
     case "v2-working-shelf":
       return (
@@ -631,6 +654,7 @@ export function buildThreadListV2ListItems(input: {
   readonly folderFooters?: ReadonlyArray<ThreadListV2FolderFooter>;
   readonly needsYouCount?: number;
   readonly needsYouLaterCount?: number;
+  readonly finishedNotSeenCount?: number;
   readonly workingCount?: number;
   readonly workingShelfExpanded?: boolean;
   readonly workingShelfHeaderIndex?: number | null;
@@ -663,7 +687,7 @@ export function buildThreadListV2ListItems(input: {
         ? input.snoozeLabelNow
         : undefined;
     const move =
-      item.variant === "card" && item.needsYou !== true
+      item.variant === "card" && item.needsYou !== true && item.finishedNotSeen !== true
         ? input.moveAvailability?.get(`${item.thread.environmentId}:${item.thread.id}`)
         : undefined;
     return {
@@ -700,6 +724,8 @@ export function buildThreadListV2ListItems(input: {
   const needsYouCount = input.needsYouCount ?? 0;
   const laterCount = input.needsYouLaterCount ?? 0;
   const nowCount = needsYouCount - laterCount;
+  const finishedCount = input.finishedNotSeenCount ?? 0;
+  const finishedEnd = needsYouCount + finishedCount;
   const result: ThreadListV2ListItem[] = [
     ...(nowCount > 0
       ? [
@@ -718,6 +744,17 @@ export function buildThreadListV2ListItems(input: {
           ...threadItems.slice(nowCount, needsYouCount),
         ]
       : []),
+    ...(finishedCount > 0
+      ? [
+          {
+            type: "v2-finished-not-seen",
+            key: "v2-finished-not-seen",
+            count: finishedCount,
+            threads: input.items.slice(needsYouCount, finishedEnd).map((item) => item.thread),
+          } as const,
+          ...threadItems.slice(needsYouCount, finishedEnd),
+        ]
+      : []),
     ...pendingItems,
   ];
   const folderHeaders = input.folderHeaders ?? [];
@@ -726,7 +763,7 @@ export function buildThreadListV2ListItems(input: {
   let folderFooterIndex = 0;
   let folderKind: ThreadListV2Folder["kind"] | null = null;
   // A closed folder can end the active rows, so its header sits at `activeEnd`.
-  for (let index = needsYouCount; index <= activeEnd; index += 1) {
+  for (let index = finishedEnd; index <= activeEnd; index += 1) {
     // An empty folder's header, its footer and the next folder's header can share one index.
     for (;;) {
       const footer = folderFooters[folderFooterIndex];
@@ -959,6 +996,8 @@ export function buildThreadListV2Items(input: {
   // folder, shelf, or filter. A search ranks every match in one list instead.
   const needsYou = rankedMatches === null ? [...awaitingThreads] : [];
   const putOff = new Set(awaiting.later);
+  const finishedNotSeen =
+    rankedMatches === null ? collectFinishedNotSeen(listableThreads, { now }) : [];
   const needsYouThreads = new Set(needsYou);
   // Threads listed only because their messages match; only their rows show
   // the message and open at it.
@@ -1033,6 +1072,7 @@ export function buildThreadListV2Items(input: {
       })),
       needsYouCount: 0,
       needsYouLaterCount: 0,
+      finishedNotSeenCount: 0,
       hiddenSettledCount: 0,
       listedSettledThreads: [],
       listedFolderSettledCounts: new Map(),
@@ -1124,6 +1164,19 @@ export function buildThreadListV2Items(input: {
     waitingSince: awaiting.sinceOf(thread),
     later: putOff.has(thread),
   }));
+  // A copy: each of these threads also lists in its own shelf below.
+  for (const thread of finishedNotSeen) {
+    items.push({
+      thread,
+      variant: "card",
+      snoozed: false,
+      pinned: thread.pinnedAt != null,
+      wokeAt: resolveThreadListV2WokeAt(thread, { now }),
+      isLast: false,
+      copy: true,
+      finishedNotSeen: true,
+    });
+  }
   const orderedPinned = applyPendingThreadOrder(
     sortPinnedThreadsByOrderKey(pinned),
     "pinned",
@@ -1332,6 +1385,7 @@ export function buildThreadListV2Items(input: {
     items,
     needsYouCount: needsYou.length,
     needsYouLaterCount: needsYou.filter((thread) => putOff.has(thread)).length,
+    finishedNotSeenCount: finishedNotSeen.length,
     folderHeaders,
     folderFooters,
     hiddenSettledCount: settledFooterHiddenCount({

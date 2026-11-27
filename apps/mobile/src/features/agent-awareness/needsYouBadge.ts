@@ -1,4 +1,4 @@
-import { shouldNotifyThread } from "@t3tools/shared/threadNotifications";
+import { countNeedsYouBadge } from "@t3tools/client-runtime/state/needs-you-triage";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
@@ -12,9 +12,7 @@ export function installNeedsYouBadge(): () => void {
   return appAtomRegistry.subscribe(
     environmentThreadShells.needsYouThreadsAtom,
     (needsYou) => {
-      const nextCount = needsYou.threads.filter((thread) =>
-        shouldNotifyThread(true, thread.notificationLevel, "input"),
-      ).length;
+      const nextCount = countNeedsYouBadge(needsYou.threads);
       if (nextCount === count) return;
       count = nextCount;
       // Without badge permission the OS ignores it; the list still shows the count.

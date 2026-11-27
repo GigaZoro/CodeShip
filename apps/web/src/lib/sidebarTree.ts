@@ -24,8 +24,16 @@ export function attachSidebarTree(element: HTMLElement | null) {
   return element ? installSidebarTree(element) : undefined;
 }
 
+/** The Needs you box's tree, where J and K also move, since its rows take no typing. */
+export function attachTriageTree(element: HTMLElement | null) {
+  return element ? installSidebarTree(element, { letterKeys: true }) : undefined;
+}
+
 /** A roving DOM focus, separate from thread activation, as in VS Code's list commands. */
-export function installSidebarTree(root: HTMLElement) {
+export function installSidebarTree(
+  root: HTMLElement,
+  options: { readonly letterKeys?: boolean } = {},
+) {
   let rows: HTMLElement[] = [];
   let focusedId: string | undefined;
   let ownsFocus = false;
@@ -176,7 +184,10 @@ export function installSidebarTree(root: HTMLElement) {
     const index = rows.indexOf(row);
     if (index < 0) return;
     let target: HTMLElement | undefined;
-    switch (event.key) {
+    const key = options.letterKeys
+      ? ({ j: "ArrowDown", k: "ArrowUp" }[event.key] ?? event.key)
+      : event.key;
+    switch (key) {
       case "ArrowDown":
         target = rows[Math.min(index + 1, rows.length - 1)];
         break;

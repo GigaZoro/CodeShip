@@ -104,6 +104,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2OlderThreadsFooter,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2FinishedNotSeenHeader,
   ThreadListV2NeedsYouHeader,
   ThreadListV2WorkingShelfHeader,
 } from "./thread-list-v2-items";
@@ -203,6 +204,7 @@ function ThreadNavigationSidebarPane(
     archiveThread,
     confirmDeleteThread,
     settleThread,
+    settleThreads,
     snoozeThread,
     unsnoozeThread,
     unsettleThread,
@@ -755,6 +757,7 @@ function ThreadNavigationSidebarPane(
             arrangementSupported={activeReorderEnvironmentIds.has(thread.environmentId)}
             reorderSupported={
               item.item.needsYou !== true &&
+              item.item.finishedNotSeen !== true &&
               (item.item.pinned
                 ? pinReorderEnvironmentIds.has(thread.environmentId)
                 : threadListV2Layout.listedSections.activeManualOrder &&
@@ -809,6 +812,14 @@ function ThreadNavigationSidebarPane(
         );
       case "v2-needs-you":
         return <ThreadListV2NeedsYouHeader count={item.count} later={item.later} pane="sidebar" />;
+      case "v2-finished-not-seen":
+        return (
+          <ThreadListV2FinishedNotSeenHeader
+            count={item.count}
+            pane="sidebar"
+            onSettleAll={() => void settleThreads(item.threads)}
+          />
+        );
       case "v2-working-shelf":
         return (
           <ThreadListV2WorkingShelfHeader

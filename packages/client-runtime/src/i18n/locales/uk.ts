@@ -437,6 +437,12 @@ const catalog: MessageCatalog = {
     many: "{count} знахідок",
     other: "{count} знахідки",
   },
+  "{count} finished": {
+    one: "{count} виконано",
+    few: "{count} виконано",
+    many: "{count} виконано",
+    other: "{count} виконано",
+  },
   "{count} folders": {
     one: "{count} папка",
     few: "{count} папки",
@@ -642,6 +648,12 @@ const catalog: MessageCatalog = {
     few: "{count} потребують вас",
     many: "{count} потребують вас",
     other: "{count} потребують вас",
+  },
+  "{count} need you now": {
+    one: "{count} чекає на вас",
+    few: "{count} чекають на вас",
+    many: "{count} чекають на вас",
+    other: "{count} чекає на вас",
   },
   "{count} notes": {
     one: "{count} нотатка",
@@ -2566,6 +2578,7 @@ const catalog: MessageCatalog = {
   "Approval requested": "Запитано схвалення",
   "Approval requests": "Запити на схвалення",
   approvals: "схвалення",
+  approve: "схвалити",
   Approve: "Схвалити",
   "Approve the app on GitHub to finish signing in.":
     "Схваліть застосунок на GitHub, щоб завершити вхід.",
@@ -2575,6 +2588,7 @@ const catalog: MessageCatalog = {
   "Approve workflows to run": "Схвалити запуск workflow",
   Approved: "Схвалено",
   "Approved by {name}": "Схвалено: {name}",
+  "Approved: {title}": "Схвалено: {title}",
   "Approving...": "Схвалення...",
   "Approving…": "Схвалення…",
   "Approximate active CPU time for the T3.CodeShip server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves.":
@@ -4972,10 +4986,12 @@ const catalog: MessageCatalog = {
   "Days to run": "Дні запуску",
   Debug: "Налагодження",
   "Decide later": "Вирішити пізніше",
+  decline: "відхилити",
   Decline: "Відхилити",
   Declined: "Відхилено",
   "Declined {program}": "Відхилено {program}",
   "Declined to {action}": "Відхилено: {action}",
+  "Declined: {title}": "Відхилено: {title}",
   Decrease: "Зменшити",
   "Decrease {label}": "Зменшити: {label}",
   "Decrease {setting}": "Зменшити: {setting}",
@@ -6105,6 +6121,8 @@ const catalog: MessageCatalog = {
   Finished: "Завершено",
   "Finished paragraphs": "Завершені абзаци",
   "Finished tasks": "Завершені завдання",
+  "Finished, not seen": "Виконані, не переглянуті",
+  "Finished, not seen ({count})": "Виконані, не переглянуті ({count})",
   "Finished, not yet opened": "Завершено, ще не відкрито",
   "Finishing sign-in...": "Завершення входу...",
   Fire: "Вогонь",
@@ -7019,6 +7037,7 @@ const catalog: MessageCatalog = {
   "Last Seen": "Востаннє",
   "last seen {time}": "востаннє в мережі {time}",
   "Last selected": "Останній вибраний",
+  later: "пізніше",
   Later: "Пізніше",
   "Later ({count})": "Пізніше ({count})",
   Latest: "Найновіший",
@@ -7033,6 +7052,7 @@ const catalog: MessageCatalog = {
     "Орендує, керує та передає потоком пристрої. Створіть окремий для кожного середовища командою {command} або залиште порожнім і додайте пізніше. Порожній токен використовує {tokenVariable} комп’ютера, коли його {urlVariable} вказує на цей шлюз.",
   "Leases, drives, and streams devices. Create one with {command}, or leave it blank to add it later. A blank token uses the machine's {tokenVariable} when its {urlVariable} is this gateway.":
     "Орендує, керує та передає потоком пристрої. Створіть токен командою {command} або залиште порожнім і додайте пізніше. Порожній токен використовує {tokenVariable} комп’ютера, коли його {urlVariable} вказує на цей шлюз.",
+  leave: "вийти",
   Leave: "Вийти",
   "Leave a comment": "Залишити коментар",
   "Leave a comment...": "Залишити коментар...",
@@ -7714,6 +7734,7 @@ const catalog: MessageCatalog = {
   "Most failures": "Найбільше збоїв",
   "Most relevant": "Найрелевантніші",
   Motion: "Рух",
+  move: "перейти",
   Move: "Перемістити",
   "Move {account} down": "Перемістити {account} вниз",
   "Move {account} up": "Перемістити {account} вгору",
@@ -7778,6 +7799,7 @@ const catalog: MessageCatalog = {
   "Needs sign-in": "Потрібен вхід",
   "Needs you": "Потрібні ви",
   "Needs you ({count})": "Потрібні ви ({count})",
+  "Needs you box": "Блок «Потрібні ви»",
   "Negate {name}": "Заперечити {name}",
   "Negate group": "Заперечити групу",
   Network: "Мережа",
@@ -8475,6 +8497,7 @@ const catalog: MessageCatalog = {
   "Only UTF-8 text and images can be opened inside an archive.":
     "В архіві можна відкривати лише текст UTF-8 та зображення.",
   "Only you": "Лише ви",
+  open: "відкрити",
   Open: "Відкрити",
   "Open {file} in editor": "Відкрити {file} у редакторі",
   "Open {kind} {label}: {title}": "Відкрити {kind} {label}: {title}",
@@ -9657,6 +9680,7 @@ const catalog: MessageCatalog = {
   "Recording preview": "Перегляд запису",
   "Recording saved": "Запис збережено",
   Recordings: "Записи",
+  "Recovered ({count})": "Відновилися ({count})",
   Recovery: "Відновлення",
   recurring: "повторювані",
   "Recurring network errors point at the connection or the provider; others at the setup.":
@@ -10985,6 +11009,13 @@ const catalog: MessageCatalog = {
   "Settle {title}": "Завершити: {title}",
   "Settle a thread when its pull request merges. Closed pull requests still settle automatically.":
     "Завершувати чат, коли його пул-реквест злито. Закриті пул-реквести так само завершують чат автоматично.",
+  "Settle all": "Завершити всі",
+  "Settle all {count} finished threads": {
+    one: "Завершити {count} виконаний чат",
+    few: "Завершити всі {count} виконані чати",
+    many: "Завершити всі {count} виконаних чатів",
+    other: "Завершити всі {count} виконаного чату",
+  },
   "Settle finished threads": "Завершити готові чати",
   "Settle thread": "Завершити чат",
   "Settle threads started by a scheduled task when they finish and have no pending work.":
@@ -14627,8 +14658,11 @@ const catalog: MessageCatalog = {
   "Where the time went": "Куди пішов час",
   "Where the time went: {segments}": "Куди пішов час: {segments}",
   "Which machines run this task": "Які комп’ютери запускають це завдання",
+  "While a row in the box has focus: J and K move, A approves, D declines, L puts off until later, E settles, Enter opens, Escape returns to the chat. Settling offers Undo for 8 seconds.":
+    "Коли фокус на рядку блоку: J і K переміщують, A схвалює, D відхиляє, L відкладає на пізніше, E завершує, Enter відкриває, Escape повертає до чату. Після завершення 8 секунд можна натиснути «Скасувати».",
   "while the agent is running": "поки агент працює",
   "While the agent is running": "Поки агент працює",
+  "While you were away": "Поки вас не було",
   "Whoosh (Default)": "Whoosh (за замовчуванням)",
   "Why am I being asked this?": "Чому мене про це питають?",
   Wide: "Широка",

@@ -2,13 +2,19 @@ import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
 import { useSyncExternalStore } from "react";
 import { AccessibilityInfo } from "react-native";
 
+export type ThreadUndoClaim = ReturnType<typeof ThreadUndo.begin>;
+
 type UndoNotice = {
   readonly action: "Settled" | "Snoozed" | "Unpinned";
-  readonly claim: ReturnType<typeof ThreadUndo.begin>;
+  /** More than one thread: "Settle all" lists one notice for the batch. */
+  readonly count?: number;
+  readonly durationMs?: number;
+  readonly claim: ThreadUndoClaim;
   readonly undo: () => Promise<void>;
 };
 
 const UNDO_NOTICE_MS = 5_000;
+export const BULK_UNDO_NOTICE_MS = 8_000;
 
 let notice: UndoNotice | null = null;
 let expiry: ReturnType<typeof setTimeout> | undefined;
@@ -20,7 +26,7 @@ const listeners = new Set<() => void>();
 function armExpiry() {
   clearTimeout(expiry);
   if (notice !== null && !screenReaderEnabled)
-    expiry = setTimeout(dismissThreadUndoNotice, UNDO_NOTICE_MS);
+    expiry = setTimeout(dismissThreadUndoNotice, notice.durationMs ?? UNDO_NOTICE_MS);
 }
 
 function setScreenReaderEnabled(enabled: boolean) {

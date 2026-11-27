@@ -1,3 +1,9 @@
+## 2026-11-27 — Triage the Needs you box by keyboard
+
+- With a row in the Needs you box focused, `J`/`K` or the arrows move, `A` approves, `D` declines, `L` defers, `E` settles, `Enter` opens and `Esc` returns to the chat. Settling offers Undo for 8 seconds, and Settings → Keybindings lists the keys.
+- **Finished, not seen** lists threads you started that finished since your last visit, with **Settle all**; they don't count toward the badges. Mobile shows the same section on the thread list.
+- After at least 15 minutes away, **While you were away** sums up what needs you, what finished and what recovered on its own, until you choose **Caught up**.
+
 ## 2026-11-26 — Windows command cleanup respects reused process IDs
 
 - When CodeShip detects that another process has taken a command's PID, it remembers that process's start time so cleanup can spare its children even after it has exited.

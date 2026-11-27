@@ -6,6 +6,7 @@ import {
   presentThreadShell,
 } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
+import { countNeedsYouBadge } from "@t3tools/client-runtime/state/needs-you-triage";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import {
   resolveThreadStatus,
@@ -438,9 +439,7 @@ export function startThreadNotifications(
       const unsubscribeBadge = registry.subscribe(
         environmentThreadShells.needsYouThreadsAtom,
         (needsYou) => {
-          const nextCount = needsYou.threads.filter((thread) =>
-            shouldNotifyThread(true, thread.notificationLevel, "input"),
-          ).length;
+          const nextCount = countNeedsYouBadge(needsYou.threads);
           if (nextCount === badgeCount) return;
           badgeCount = nextCount;
           setNotificationBadge(badgeCount);

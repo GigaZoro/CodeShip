@@ -19,7 +19,7 @@ import {
   readThreadUndoNotice,
   useThreadUndoNotice,
 } from "./thread-undo-notice";
-import { t } from "../../lib/i18n";
+import { t, tn } from "../../lib/i18n";
 
 export function ThreadUndoNotice(props: {
   readonly visible: boolean;
@@ -90,7 +90,9 @@ export function ThreadUndoNotice(props: {
       <Toast
         message={
           notice.action === "Settled"
-            ? t("Settled thread")
+            ? notice.count !== undefined
+              ? tn(notice.count, "Settled {count} thread", "Settled {count} threads")
+              : t("Settled thread")
             : notice.action === "Snoozed"
               ? t("Snoozed thread")
               : t("Unpinned thread")

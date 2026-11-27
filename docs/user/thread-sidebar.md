@@ -93,6 +93,20 @@ folder is closed, or the thread is pinned or settled. Once you answer, the threa
 usual place. A failed run leaves when you retry it, settle it, or snooze it; a usage-limited run
 set to resume on its own is not listed.
 
+Triage the box from the keyboard: once a row has focus, `J` and `K` (or the arrow keys) move, `A`
+approves, `D` declines, `L` puts the thread off until later, `E` settles a failed run, `Enter`
+opens the thread and `Esc` returns to the chat. A hint row lists the keys while the box has focus,
+and **Settings → Keybindings** lists them too. Settling shows **Undo** for 8 seconds.
+
+Below the threads that need you, **Finished, not seen** lists threads you started that finished
+since you last opened them. They don't count toward the Needs you badges. Open one, settle it with
+`E`, or choose **Settle all** to settle them together, with **Undo** for 8 seconds. Mobile shows the
+same section with **Settle all** at the top of the thread list.
+
+When you come back after at least 15 minutes away, **While you were away** at the top of the box
+says how many threads need you now, how many finished, and how many recovered on their own, for
+example after a usage limit reset. **Caught up** clears it until the next time you are away.
+
 Press `Mod+Shift+U`, or choose **Next thread that needs you** in the command palette, to open each
 waiting thread in turn. On mobile, the **N more need you** button above the composer does the same.
 The count also shows on the **Threads** icon in the side rail, the desktop dock or taskbar icon,

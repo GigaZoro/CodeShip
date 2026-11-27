@@ -19,8 +19,9 @@ function setup() {
   return {
     root,
     row,
-    install: () => {
-      dispose = installSidebarTree(root);
+    install: (options?: Parameters<typeof installSidebarTree>[1]) => {
+      dispose?.();
+      dispose = installSidebarTree(root, options);
     },
     [Symbol.dispose]() {
       dispose?.();
@@ -55,6 +56,23 @@ describe("sidebar keyboard navigation", () => {
     expect(document.activeElement).toBe(first);
     expect(activate).not.toHaveBeenCalled();
     expect(tree.root.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+  });
+
+  it("moves with J and K only in a triage tree, and leaves modified letters alone", () => {
+    using tree = setup();
+    const first = tree.row("first");
+    const second = tree.row("second");
+    tree.install();
+    first.focus();
+    expect(press(first, "j").defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(first);
+    tree.install({ letterKeys: true });
+    first.focus();
+    press(first, "j");
+    expect(document.activeElement).toBe(second);
+    press(second, "j", { metaKey: true });
+    press(second, "k");
+    expect(document.activeElement).toBe(first);
   });
 
   it("expands a group before entering its first child and returns to the parent", async () => {
