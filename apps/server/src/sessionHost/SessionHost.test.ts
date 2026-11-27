@@ -15,6 +15,10 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import { compareIdentity, timeIdentity } from "../commandRunner/processIdentity.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Layer from "effect/Layer";
+import * as ProcessRunner from "../processRunner.ts";
+import { readProcessStartedAt } from "../serverRuntimeState.ts";
 import { readSelfProcessIdentity } from "./broker.ts";
 import { DetachedStdioHandle } from "./DetachedStdioHandle.ts";
 import {
@@ -784,7 +788,22 @@ describe("Detached session host broker identity", () => {
     assert.isNotNull(identity);
     const startedAtMs = Math.round(performance.timeOrigin);
     assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs)), "same");
+    // ps reports whole seconds, so the reading of a later check can fall up to a second early.
+    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs - 900)), "same");
+    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs + 5_000)), "other");
   });
+
+  // Linux and Windows identities come from /proc and Get-Process; macOS reads ps on both sides.
+  it.effect.skipIf(isWindowsHost || isLinuxHost)(
+    "records the start time a later server reads for it from ps",
+    () =>
+      Effect.gen(function* () {
+        const identity = readSelfProcessIdentity(HOST_PLATFORM);
+        const startedAt = yield* readProcessStartedAt(process.pid);
+        assert.isDefined(startedAt);
+        assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAt ?? 0)), "same");
+      }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer)))),
+  );
 });
 
 describe("DetachedStdioHandle held output", () => {
