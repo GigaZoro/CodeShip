@@ -165,6 +165,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as SessionHostService from "../../sessionHost/SessionHostService.ts";
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 const CODEX_CAPACITY_MAX_RETRIES = 5;
@@ -1659,6 +1660,8 @@ export const layerAppServerClientFactory: Layer.Layer<
     );
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
     const agentScope = yield* AgentScope;
+    const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+    const workingDirectory = yield* HostProcess.WorkingDirectory;
 
     return CodexAppServerClientFactory.of({
       open: Effect.fn("CodexAdapterV2.open")(function* (input) {
@@ -1667,28 +1670,66 @@ export const layerAppServerClientFactory: Layer.Layer<
           ...codexAppServerEnvironment(input.environment),
           ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
         };
-        const command = yield* makeCodexAppServerSpawnCommand({
-          command: input.settings.binaryPath || "codex",
-          args: codexAppServerArgs(
-            withPrivateMcpSignIns(
-              resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
-              input.privateMcpSignIns === true,
-            ),
-          ),
-          env: environment,
-          threadId: input.threadId,
-        }).pipe(Effect.provideService(AgentScope, agentScope));
-        const handle = yield* spawner.spawn(command).pipe(
-          Effect.provideService(Scope.Scope, scope),
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapter.ProviderAdapterOpenSessionError({
-                driver: CODEX_PROVIDER,
-                providerSessionId: input.providerSessionId,
-                cause,
-              }),
+        const launchArgs = codexAppServerArgs(
+          withPrivateMcpSignIns(
+            resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+            input.privateMcpSignIns === true,
           ),
         );
+        const binaryCommand = input.settings.binaryPath || "codex";
+        let handle: ChildProcessSpawner.ChildProcessHandle;
+        if (Option.isSome(sessionHostOption)) {
+          const sessionHost = sessionHostOption.value;
+          const detached = yield* sessionHost
+            .spawnChildProcessHandle({
+              providerSessionId: input.providerSessionId,
+              threadId: input.threadId,
+              driver: "codex",
+              command: binaryCommand,
+              args: launchArgs,
+              cwd: workingDirectory,
+              env: environment,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterOpenSessionError({
+                    driver: CODEX_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    cause,
+                  }),
+              ),
+            );
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.gen(function* () {
+              if (detached.handle.detachingForUpdate) {
+                yield* Effect.promise(() => detached.handle.detach());
+                return;
+              }
+              yield* sessionHost.terminate(detached.handle.sessionHostId);
+            }),
+          );
+          handle = detached.childProcess;
+        } else {
+          const command = yield* makeCodexAppServerSpawnCommand({
+            command: binaryCommand,
+            args: launchArgs,
+            env: environment,
+            threadId: input.threadId,
+          }).pipe(Effect.provideService(AgentScope, agentScope));
+          handle = yield* spawner.spawn(command).pipe(
+            Effect.provideService(Scope.Scope, scope),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: CODEX_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
+            ),
+          );
+        }
         const protocolLogger = makeCodexAppServerProtocolLogger({
           nativeEventLogger,
           threadId: input.threadId,

@@ -124,6 +124,7 @@ import Migration0114 from "./Migrations/114_UsageStopReplay.ts";
 import Migration0115 from "./Migrations/115_UsageStopSteerTargets.ts";
 import Migration0116 from "./Migrations/116_CommandRunLaterPidHolder.ts";
 import Migration0117 from "./Migrations/117_UsageLimitRefusals.ts";
+import Migration0118 from "./Migrations/118_DetachedSessionHosts.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -244,6 +245,7 @@ const migrationEntries = [
   [115, "UsageStopSteerTargets", Migration0115],
   [116, "CommandRunLaterPidHolder", Migration0116],
   [117, "UsageLimitRefusals", Migration0117],
+  [118, "DetachedSessionHosts", Migration0118],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

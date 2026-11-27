@@ -1,12 +1,16 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -246,4 +250,67 @@ it.effect.each(["provider-session", "thread", "all"] as const)(
       yield* registry.touch(threadId);
       expect(yield* registry.resolve(token)).toBeUndefined();
     }),
+);
+
+it.effect("persists only token hashes in SQLite and reloads live credentials after restart", () =>
+  Effect.gen(function* () {
+    let timestamp = 10_000;
+    const sql = yield* SqlClient.SqlClient;
+    const crypto = yield* Crypto.Crypto;
+    const threadId = ThreadId.make("thread-durable-restart");
+
+    const registryBeforeRestart = yield* makeRegistry(() => timestamp);
+    const issued = yield* registryBeforeRestart.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("claude"),
+      capabilities: new Set(["preview", "device"]),
+      subagent: true,
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(token));
+    const expectedHash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+    const rows = yield* sql<{
+      readonly token_hash: string;
+      readonly provider_session_id: string;
+      readonly thread_id: string;
+      readonly subagent: number;
+      readonly last_alive_at: number;
+    }>`
+      SELECT token_hash, provider_session_id, thread_id, subagent, last_alive_at
+      FROM mcp_session_credentials
+      WHERE provider_session_id = ${issued.config.providerSessionId}
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.token_hash).toBe(expectedHash);
+    expect(JSON.stringify(rows[0])).not.toContain(token);
+    expect(rows[0]?.subagent).toBe(1);
+
+    // Advance clock and touch before simulated restart.
+    timestamp += 80;
+    yield* registryBeforeRestart.touch(threadId);
+
+    // Simulate a server restart by constructing a brand-new registry against the same SQLite DB.
+    timestamp += 50;
+    const registryAfterRestart = yield* makeRegistry(() => timestamp);
+    const resolved = yield* registryAfterRestart.resolve(token);
+    expect(resolved?.thread.threadId).toBe(threadId);
+    expect(resolved?.thread.providerSessionId).toBe(issued.config.providerSessionId);
+    expect(resolved?.thread.subagent).toBe(true);
+    expect(resolved?.capabilities).toEqual(
+      new Set(["preview", "device", "orchestration", "worktree", "pull-requests"]),
+    );
+
+    // Revoking deletes the durable row so a subsequent restart also rejects the token.
+    yield* registryAfterRestart.revokeProviderSession(issued.config.providerSessionId);
+    const remaining = yield* sql`
+      SELECT token_hash
+      FROM mcp_session_credentials
+      WHERE provider_session_id = ${issued.config.providerSessionId}
+    `;
+    expect(remaining).toHaveLength(0);
+
+    const registryAfterRevoke = yield* makeRegistry(() => timestamp);
+    expect(yield* registryAfterRevoke.resolve(token)).toBeUndefined();
+  }).pipe(Effect.provide(Layer.mergeAll(Sqlite.layerMemory, NodeServices.layer))),
 );

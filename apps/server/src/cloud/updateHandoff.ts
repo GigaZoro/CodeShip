@@ -15,6 +15,23 @@ import {
 
 const DESKTOP_UPDATE_RESTART_MARKER_TTL = Duration.minutes(1);
 
+// CloudLink's finalizer consumes the desktop restart marker before ServerRuntimeStartup runs;
+// remember fresh markers in-process so shutdown hooks still recognize planned desktop updates.
+const consumedFreshDesktopMarkers = new Map<string, number>();
+
+const desktopMarkerPath = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  const path = yield* Path.Path;
+  return path.join(config.baseDir, "runtime", DESKTOP_UPDATE_RESTART_MARKER_FILE);
+});
+
+const isFreshMarker = (mtime: Option.Option<Date>, now: number): boolean =>
+  Option.match(mtime, {
+    onNone: () => false,
+    onSome: (writtenAt) =>
+      now - writtenAt.getTime() < Duration.toMillis(DESKTOP_UPDATE_RESTART_MARKER_TTL),
+  });
+
 export const pendingServiceUpdateExists = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
@@ -42,19 +59,35 @@ export const pendingUpdateHandoffExists = Effect.gen(function* () {
 
 // Reading consumes it, so shutdown checks it first.
 export const desktopUpdateRestartPending = Effect.gen(function* () {
-  const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const markerPath = path.join(config.baseDir, "runtime", DESKTOP_UPDATE_RESTART_MARKER_FILE);
+  const markerPath = yield* desktopMarkerPath;
   const marker = yield* fs.stat(markerPath).pipe(Effect.option);
   if (Option.isNone(marker)) {
     return false;
   }
   yield* fs.remove(markerPath).pipe(Effect.ignore);
   const now = yield* Clock.currentTimeMillis;
-  return Option.match(marker.value.mtime, {
-    onNone: () => false,
-    onSome: (writtenAt) =>
-      now - writtenAt.getTime() < Duration.toMillis(DESKTOP_UPDATE_RESTART_MARKER_TTL),
-  });
+  const fresh = isFreshMarker(marker.value.mtime, now);
+  if (fresh) {
+    consumedFreshDesktopMarkers.set(markerPath, now);
+  }
+  return fresh;
+});
+
+export const isPlannedUpdateShutdown = Effect.gen(function* () {
+  if (yield* pendingUpdateHandoffExists) {
+    return true;
+  }
+  const markerPath = yield* desktopMarkerPath;
+  const now = yield* Clock.currentTimeMillis;
+  const consumedAt = consumedFreshDesktopMarkers.get(markerPath);
+  if (
+    consumedAt !== undefined &&
+    now - consumedAt < Duration.toMillis(DESKTOP_UPDATE_RESTART_MARKER_TTL)
+  ) {
+    return true;
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const marker = yield* fs.stat(markerPath).pipe(Effect.option);
+  return Option.isSome(marker) && isFreshMarker(marker.value.mtime, now);
 });

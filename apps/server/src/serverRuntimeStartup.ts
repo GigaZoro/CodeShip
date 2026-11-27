@@ -20,7 +20,9 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -28,9 +30,11 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "./config.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
+import { isPlannedUpdateShutdown } from "./cloud/updateHandoff.ts";
 import { flushCompileCache } from "./compileCache.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import * as SessionHostService from "./sessionHost/SessionHostService.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -455,6 +459,9 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const crypto = yield* Crypto.Crypto;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+  const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+  const fileSystemOption = yield* Effect.serviceOption(FileSystem.FileSystem);
+  const pathOption = yield* Effect.serviceOption(Path.Path);
 
   const commandGate = yield* makeCommandGate;
   const httpListening = yield* Deferred.make<void>();
@@ -473,6 +480,29 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       const workerFiber = yield* Ref.getAndSet(effectWorkerFiber, null);
       if (workerFiber !== null) {
         yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
+      }
+      if (
+        Option.isSome(sessionHostOption) &&
+        Option.isSome(fileSystemOption) &&
+        Option.isSome(pathOption)
+      ) {
+        const plannedUpdate = yield* isPlannedUpdateShutdown.pipe(
+          Effect.provideService(ServerConfig.ServerConfig, serverConfig),
+          Effect.provideService(FileSystem.FileSystem, fileSystemOption.value),
+          Effect.provideService(Path.Path, pathOption.value),
+          Effect.orElseSucceed(() => false),
+        );
+        if (plannedUpdate) {
+          const detached = yield* sessionHostOption.value
+            .detachAllForUpdate()
+            .pipe(Effect.orElseSucceed(() => []));
+          if (detached.length > 0) {
+            yield* Effect.logInfo("Detached live provider session hosts for planned update", {
+              count: detached.length,
+              threadIds: detached.map((entry) => entry.threadId),
+            });
+          }
+        }
       }
       yield* providerRuntimeRecovery.prepareForShutdown.pipe(
         Effect.ensuring(providerSessions.shutdown),

@@ -183,6 +183,8 @@ import {
 import * as ServerConfig from "../../config.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import type { DetachedStdioHandle } from "../../sessionHost/DetachedStdioHandle.ts";
+import * as SessionHostService from "../../sessionHost/SessionHostService.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import {
@@ -1097,6 +1099,8 @@ export const layerQueryRunner: Layer.Layer<
     );
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
+    const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+    const workingDirectory = yield* HostProcess.WorkingDirectory;
     // A failed open leaves no transcript until a prompt was sent, but the CLI refuses a fresh ID
     // that names one, even one without messages.
     const canReopen = (options: ClaudeAgentSdkQueryOpenInput["options"]) =>
@@ -1162,9 +1166,13 @@ export const layerQueryRunner: Layer.Layer<
               [PortScanner.AGENT_THREAD_ENV]: input.threadId,
             },
           };
+          const useDetachedSessionHost =
+            Option.isSome(sessionHostOption) && queryOptions.spawnClaudeCodeProcess === undefined;
           // The SDK can prepend a scope wrapper to native binaries; script entries run through node.
+          // Detached session hosts wrap the broker with survivesRestart=true instead.
           const binaryPath = queryOptions.pathToClaudeCodeExecutable;
           const launch =
+            useDetachedSessionHost ||
             binaryPath === undefined ||
             CLAUDE_SCRIPT_EXTENSIONS.some((ext) => binaryPath.endsWith(ext))
               ? undefined
@@ -1194,9 +1202,27 @@ export const layerQueryRunner: Layer.Layer<
             if (!answered) stderrTail = (stderrTail + text).slice(-CLAUDE_STDERR_TAIL_LENGTH);
           };
           let windowsCli: ClaudeWindowsCli | undefined;
+          let detachedHandle: DetachedStdioHandle | undefined;
           const spawnProcess =
             options.spawnClaudeCodeProcess ??
             ((spawnOptions: ClaudeSpawnOptions) => {
+              if (useDetachedSessionHost && Option.isSome(sessionHostOption)) {
+                const created = sessionHostOption.value.createPendingClaudeProcess({
+                  providerSessionId: input.providerSessionId,
+                  threadId: input.threadId,
+                  driver: "claude",
+                  command: spawnOptions.command,
+                  args: spawnOptions.args,
+                  cwd: spawnOptions.cwd ?? queryOptions.cwd ?? workingDirectory,
+                  env: spawnOptions.env,
+                  onStderr: (chunk) => {
+                    appendStderr(chunk);
+                    options.stderr?.(chunk);
+                  },
+                });
+                detachedHandle = created.handle;
+                return created.spawnedProcess;
+              }
               if (platform !== "win32") {
                 // A script entry's runtime is known only here, so it gets the unscoped launcher.
                 const scoped =
@@ -1494,7 +1520,20 @@ export const layerQueryRunner: Layer.Layer<
               ),
             ),
             close: Queue.shutdown(promptQueue).pipe(
-              Effect.andThen(closeClaudeQuery(queryRuntime)),
+              Effect.andThen(
+                Effect.suspend(() => {
+                  if (detachedHandle?.detachingForUpdate) {
+                    return Effect.promise(() => detachedHandle!.detach()).pipe(Effect.asVoid);
+                  }
+                  return closeClaudeQuery(queryRuntime).pipe(
+                    Effect.andThen(
+                      detachedHandle !== undefined && Option.isSome(sessionHostOption)
+                        ? sessionHostOption.value.terminate(detachedHandle.sessionHostId)
+                        : Effect.void,
+                    ),
+                  );
+                }),
+              ),
               Effect.tap(() =>
                 logProtocolEvent({
                   direction: "outgoing",

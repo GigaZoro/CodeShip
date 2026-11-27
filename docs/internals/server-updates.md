@@ -377,3 +377,43 @@ listener ignores reconciliation's cancellations. A cancelled child whose restart
 continuation is still pending in the outbox is not a result yet; the continuation's run
 settles it, or the handler settles it when it declines to continue. Schedulers wait for
 activation so they cannot start runs that reconciliation would then cancel.
+
+## Detached provider session hosts
+
+Provider runtimes (`ClaudeAdapterV2`, `CodexAdapterV2`, and `AcpSessionRuntime`) can run
+inside a detached [`__session-host`](../../apps/server/src/sessionHost/broker.ts) broker
+outside `t3-server`'s process tree and cgroup so live agent sessions survive planned
+updates without dying or injecting a continuation prompt. The broker uses the same
+isolation mechanisms as `CommandRunner` (`AgentScope` with `survivesRestart` on Linux,
+`detached: true` with `stdio: "ignore"` on macOS, and `Win32_Process.Create` on Windows)
+and records its PID and start identity ([`processIdentity.ts`](../../apps/server/src/commandRunner/processIdentity.ts))
+in SQLite (`session_hosts`).
+
+Each broker owns one provider child process and serves a per-session local IPC socket
+(`<stateDir>/session-hosts/<hash>.sock` mode `0600` on POSIX, with a short `/tmp` fallback
+if `stateDir` would exceed `sun_path`, and `\\.\pipe\t3-session-host-<hash>` on Windows).
+The startup config file carrying the random `authToken` is written mode `0600` and
+unlinked immediately on broker startup; the token never appears in argv. While attached,
+the broker forwards stdin and tags every stdout, stderr, and exit event with a strictly
+increasing sequence number (`seq`) in a bounded ring buffer.
+
+On planned-update shutdown (detected via [`isPlannedUpdateShutdown`](../../apps/server/src/cloud/updateHandoff.ts),
+which checks both the launcher update handoff and the desktop restart marker),
+[`SessionHostService.detachAllForUpdate`](../../apps/server/src/sessionHost/SessionHostService.ts)
+sends `{ type: "detach" }` to each live broker, marks its row `detached_for_update` with
+the last acknowledged sequence number, and leaves the broker and provider child running.
+Normal shutdowns, explicit stops, thread closes, and session evictions send
+`{ type: "terminate" }`, killing the child process group and unlinking the socket.
+Durable MCP bearer credential hashes (`mcp_session_credentials`) persist in SQLite so
+surviving provider processes continue calling CodeShip's local MCP endpoint seamlessly
+after the new `t3-server` binds.
+
+On startup, [`ProviderRuntimeRecoveryService`](../../apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts)
+calls `reattachAllDetachedForUpdate()`. Each `detached_for_update` row is verified against
+its stored process identity before reconnecting with `{ type: "attach", afterSeq, authToken }`:
+the broker replays every buffered frame after `afterSeq` strictly in order and then streams
+live output. Threads with live reattached hosts keep their running state untouched without
+triggering `RestartContinuation`. If a broker exited or failed identity verification while
+the server was down, its row is marked `dead` and recovery falls back cleanly to
+`RestartContinuation`. Any detached broker that is never reattached self-terminates its
+child process group and removes its socket after `orphanTtlMs` (default 15 minutes).

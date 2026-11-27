@@ -49,6 +49,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as SessionHostService from "../sessionHost/SessionHostService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
@@ -447,6 +448,24 @@ export const layerWithOptions = (
           }),
       );
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
+      const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+      const isEntryDetachedForUpdate = (entry: LiveSessionEntry): Effect.Effect<boolean> => {
+        if (Option.isNone(sessionHostOption)) return Effect.succeed(false);
+        const sessionHost = sessionHostOption.value;
+        return Effect.gen(function* () {
+          if (
+            yield* sessionHost.isProviderSessionDetachedForUpdate(entry.runtime.providerSessionId)
+          ) {
+            return true;
+          }
+          for (const threadId of entry.attachedThreadIds) {
+            if (yield* sessionHost.isThreadDetachedForUpdate(threadId)) {
+              return true;
+            }
+          }
+          return false;
+        });
+      };
       const changingCredentials = new Set<ProviderInstanceId>();
       const scopeWorkspaces = new Map<Scope.Closeable, string>();
       const openingSessions = new Set<{ readonly instanceId: ProviderInstanceId }>();
@@ -1387,6 +1406,19 @@ export const layerWithOptions = (
               onNone: () => Effect.void,
               onSome: (entry) =>
                 Effect.gen(function* () {
+                  const detachedForUpdate =
+                    input.reason === "server_shutdown" && (yield* isEntryDetachedForUpdate(entry));
+                  if (detachedForUpdate) {
+                    if (input.cancelIdleFiber !== false) {
+                      yield* cancelIdleFiber(entry.idleFiber);
+                    }
+                    yield* interruptSubscribers(entry);
+                    yield* closeScopeWithin(entry.scope, {
+                      providerSessionId: input.providerSessionId,
+                      reason: input.reason,
+                    });
+                    return;
+                  }
                   const releasedBackgroundTasks = yield* recordReleasedBackgroundWork(
                     yield* readReleasedBackgroundTasks({
                       entry,
@@ -1445,30 +1477,36 @@ export const layerWithOptions = (
           ([entry]) =>
             Option.match(entry, {
               onNone: () => Effect.void,
-              onSome: (entry) =>
-                // Revoke recorded credentials after process death, except those held by live replacements.
-                Ref.get(sessions).pipe(
-                  Effect.flatMap((current) =>
-                    Effect.forEach(
-                      entry.mcpCredentialIdByThread,
-                      ([threadId, mcpCredentialId]) => {
-                        // Only holders of this credential may prevent its revocation; stale credentials must not leak it.
-                        const heldElsewhere =
-                          isMcpCredentialReserved(threadId, mcpCredentialId) ||
-                          Array.from(current.values()).some(
-                            (other) =>
-                              other !== entry &&
-                              (other.attachedThreadIds.has(threadId) ||
-                                other.mcpCredentialIdByThread.get(threadId) === mcpCredentialId),
-                          );
-                        return heldElsewhere
-                          ? Effect.void
-                          : clearMcpSession(threadId, mcpCredentialId);
-                      },
-                      { discard: true },
-                    ),
-                  ),
-                ),
+              onSome: Effect.fn("ProviderSessionManager.revokeReleasedMcpCredentials")(
+                function* (entry) {
+                  if (
+                    input.reason === "server_shutdown" &&
+                    (yield* isEntryDetachedForUpdate(entry))
+                  ) {
+                    return;
+                  }
+                  // Revoke recorded credentials after process death, except those held by live replacements.
+                  const current = yield* Ref.get(sessions);
+                  yield* Effect.forEach(
+                    entry.mcpCredentialIdByThread,
+                    ([threadId, mcpCredentialId]) => {
+                      // Only holders of this credential may prevent its revocation; stale credentials must not leak it.
+                      const heldElsewhere =
+                        isMcpCredentialReserved(threadId, mcpCredentialId) ||
+                        Array.from(current.values()).some(
+                          (other) =>
+                            other !== entry &&
+                            (other.attachedThreadIds.has(threadId) ||
+                              other.mcpCredentialIdByThread.get(threadId) === mcpCredentialId),
+                        );
+                      return heldElsewhere
+                        ? Effect.void
+                        : clearMcpSession(threadId, mcpCredentialId);
+                    },
+                    { discard: true },
+                  );
+                },
+              ),
             }),
         ).pipe(
           Effect.catchCause((cause) =>

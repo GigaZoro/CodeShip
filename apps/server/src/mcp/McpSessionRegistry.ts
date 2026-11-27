@@ -1,12 +1,15 @@
-import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -47,6 +50,19 @@ interface CredentialRecord {
   readonly lastAliveAt: number;
 }
 
+interface PersistedCredentialRow {
+  readonly token_hash: string;
+  readonly provider_session_id: string;
+  readonly thread_id: string;
+  readonly provider_instance_id: string;
+  readonly environment_id: string;
+  readonly request_namespace: string;
+  readonly subagent: number;
+  readonly capabilities_json: string;
+  readonly issued_at: number;
+  readonly last_alive_at: number;
+}
+
 interface RegistryState {
   readonly records: ReadonlyMap<string, CredentialRecord>;
 }
@@ -73,6 +89,24 @@ const getHttpMcpEndpointHost = (address: NetAddress.IpAddress): string =>
     ? "127.0.0.1"
     : NetAddress.formatUrlHostString(NetAddress.formatIp(address));
 
+const PersistedCapabilitiesJson = Schema.fromJsonString(Schema.Array(Schema.String));
+const decodePersistedCapabilitiesJson = Schema.decodeUnknownOption(PersistedCapabilitiesJson);
+const encodePersistedCapabilitiesJson = Schema.encodeSync(PersistedCapabilitiesJson);
+
+const decodePersistedCapabilities = (
+  raw: string,
+): ReadonlySet<McpInvocationContext.McpCapability> => {
+  const parsed = decodePersistedCapabilitiesJson(raw);
+  if (Option.isSome(parsed)) {
+    return new Set(parsed.value as ReadonlyArray<McpInvocationContext.McpCapability>);
+  }
+  return new Set<McpInvocationContext.McpCapability>([
+    "orchestration",
+    "worktree",
+    "pull-requests",
+  ]);
+};
+
 const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   options: McpSessionRegistryOptions = {},
 ) {
@@ -80,7 +114,47 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
   const httpServer = yield* HttpServer.HttpServer;
-  const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
+  const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const initialRecords = new Map<string, CredentialRecord>();
+
+  if (Option.isSome(sqlOption)) {
+    const sql = sqlOption.value;
+    const rows = yield* sql<PersistedCredentialRow>`
+      SELECT
+        token_hash,
+        provider_session_id,
+        thread_id,
+        provider_instance_id,
+        environment_id,
+        request_namespace,
+        subagent,
+        capabilities_json,
+        issued_at,
+        last_alive_at
+      FROM mcp_session_credentials
+    `.pipe(Effect.orElseSucceed(() => [] as Array<PersistedCredentialRow>));
+    for (const row of rows) {
+      initialRecords.set(row.token_hash, {
+        tokenHash: row.token_hash,
+        lastAliveAt: row.last_alive_at,
+        scope: {
+          environmentId: EnvironmentId.make(row.environment_id),
+          requestNamespace: row.request_namespace,
+          thread: {
+            threadId: ThreadId.make(row.thread_id),
+            providerSessionId: row.provider_session_id,
+            providerInstanceId: ProviderInstanceId.make(row.provider_instance_id),
+            subagent: row.subagent !== 0,
+          },
+          client: undefined,
+          capabilities: decodePersistedCapabilities(row.capabilities_json),
+          issuedAt: row.issued_at,
+        },
+      });
+    }
+  }
+
+  const state = yield* SynchronizedRef.make<RegistryState>({ records: initialRecords });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
   const endpoint = NetAddress.isInetAddress(httpServer.address)
@@ -99,6 +173,12 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
       const browserToolsAvailable = request.browserToolsAvailable ?? true;
+      const capabilities = new Set<McpInvocationContext.McpCapability>([
+        "orchestration",
+        "worktree",
+        "pull-requests",
+        ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
+      ]);
       const scope: McpInvocationContext.McpThreadInvocationScope = {
         environmentId,
         requestNamespace: providerSessionId,
@@ -109,12 +189,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           subagent: request.subagent === true,
         },
         client: undefined,
-        capabilities: new Set<McpInvocationContext.McpCapability>([
-          "orchestration",
-          "worktree",
-          "pull-requests",
-          ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
-        ]),
+        capabilities,
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
@@ -122,6 +197,35 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         next.set(tokenHash, { tokenHash, scope, lastAliveAt: issuedAt });
         return { records: next };
       });
+      if (Option.isSome(sqlOption)) {
+        const sql = sqlOption.value;
+        const capabilitiesJson = encodePersistedCapabilitiesJson([...capabilities]);
+        yield* sql`
+          INSERT OR REPLACE INTO mcp_session_credentials (
+            token_hash,
+            provider_session_id,
+            thread_id,
+            provider_instance_id,
+            environment_id,
+            request_namespace,
+            subagent,
+            capabilities_json,
+            issued_at,
+            last_alive_at
+          ) VALUES (
+            ${tokenHash},
+            ${providerSessionId},
+            ${scope.thread.threadId},
+            ${scope.thread.providerInstanceId},
+            ${environmentId},
+            ${scope.requestNamespace},
+            ${scope.thread.subagent ? 1 : 0},
+            ${capabilitiesJson},
+            ${issuedAt},
+            ${issuedAt}
+          )
+        `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+      }
       return {
         config: {
           environmentId,
@@ -160,6 +264,14 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         }
         return { records: next };
       });
+      if (Option.isSome(sqlOption)) {
+        const sql = sqlOption.value;
+        yield* sql`
+          UPDATE mcp_session_credentials
+          SET last_alive_at = ${timestamp}
+          WHERE thread_id = ${threadId}
+        `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+      }
     },
   );
 
@@ -175,12 +287,35 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {
         yield* revokeWhere((record) => record.scope.thread.providerSessionId === providerSessionId);
+        if (Option.isSome(sqlOption)) {
+          const sql = sqlOption.value;
+          yield* sql`
+            DELETE FROM mcp_session_credentials
+            WHERE provider_session_id = ${providerSessionId}
+          `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+        }
       },
     ),
     revokeThread: Effect.fn("McpSessionRegistry.revokeThread")(function* (threadId) {
       yield* revokeWhere((record) => record.scope.thread.threadId === threadId);
+      if (Option.isSome(sqlOption)) {
+        const sql = sqlOption.value;
+        yield* sql`
+          DELETE FROM mcp_session_credentials
+          WHERE thread_id = ${threadId}
+        `.pipe(Effect.asVoid, Effect.ignore({ log: true }));
+      }
     }),
-    revokeAll: SynchronizedRef.set(state, { records: new Map() }),
+    revokeAll: Effect.gen(function* () {
+      yield* SynchronizedRef.set(state, { records: new Map() });
+      if (Option.isSome(sqlOption)) {
+        const sql = sqlOption.value;
+        yield* sql`DELETE FROM mcp_session_credentials`.pipe(
+          Effect.asVoid,
+          Effect.ignore({ log: true }),
+        );
+      }
+    }),
   });
 });
 

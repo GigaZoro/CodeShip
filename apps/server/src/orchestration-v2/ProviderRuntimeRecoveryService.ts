@@ -18,6 +18,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -29,6 +30,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as SessionHostService from "../sessionHost/SessionHostService.ts";
 import {
   answerableAfterRestart,
   continuesAfterRestart,
@@ -74,6 +76,7 @@ export interface ProviderRuntimeRecoverySummary {
   readonly closedRequests: number;
   readonly retiredEffects: number;
   readonly requeuedEffects: number;
+  readonly reattachedSessionHosts?: number;
 }
 
 export interface ProviderRuntimeReconciliationSummary {
@@ -82,6 +85,7 @@ export interface ProviderRuntimeReconciliationSummary {
   readonly closedRequests: number;
   readonly retiredEffects: number;
   readonly requeuedEffects: number;
+  readonly reattachedSessionHosts?: number;
 }
 
 export class ProviderRuntimeRecoveryService extends Context.Service<
@@ -394,6 +398,7 @@ export const make = Effect.gen(function* () {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -978,12 +983,54 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
+    const preservedThreadIds = new Set<ThreadId>();
+    let reattachedSessionHosts = 0;
+    if (Option.isSome(sessionHostOption)) {
+      const sessionHost = sessionHostOption.value;
+      if (trigger === "startup") {
+        const reattached = yield* sessionHost.reattachAllDetachedForUpdate();
+        for (const entry of reattached) {
+          if (entry.status === "reattached") {
+            preservedThreadIds.add(entry.record.threadId);
+            reattachedSessionHosts += 1;
+            yield* Effect.logInfo("Reattached detached provider session host after restart", {
+              sessionHostId: entry.record.id,
+              threadId: entry.record.threadId,
+              providerSessionId: entry.record.providerSessionId,
+              driver: entry.record.driver,
+              replayedFromSeq: entry.record.lastAckedSeq,
+              latestSeq: entry.attachedInfo.latestSeq,
+              droppedFrames: entry.attachedInfo.droppedFrames,
+            });
+          } else {
+            yield* Effect.logWarning(
+              "Detached provider session host did not survive restart; falling back to recovery",
+              {
+                sessionHostId: entry.record.id,
+                threadId: entry.record.threadId,
+                providerSessionId: entry.record.providerSessionId,
+                reason: entry.reason,
+              },
+            );
+          }
+        }
+      } else {
+        for (const threadId of threadIds) {
+          if (yield* sessionHost.isThreadDetachedForUpdate(threadId)) {
+            preservedThreadIds.add(threadId);
+          }
+        }
+      }
+    }
     let terminalizedRuns = 0;
     let stoppedSessions = 0;
     let closedRequests = 0;
     let retiredEffects = 0;
     const stoppedThisPass = new Map<string, RecoverySession>();
     for (const threadId of threadIds) {
+      if (preservedThreadIds.has(threadId)) {
+        continue;
+      }
       // Shutdown does not drain admitted commands, so read and commit under the lock they plan under.
       const { projection, result } = yield* threadDispatch.withLock(
         threadId,
@@ -1034,6 +1081,7 @@ export const make = Effect.gen(function* () {
       closedRequests,
       retiredEffects: retiredEffects + outboxReconciliation.cancelled,
       requeuedEffects: outboxReconciliation.requeued,
+      ...(reattachedSessionHosts > 0 ? { reattachedSessionHosts } : {}),
     } satisfies ProviderRuntimeReconciliationSummary;
   });
 
@@ -1043,6 +1091,12 @@ export const make = Effect.gen(function* () {
     if (!enabled && !resumeRequested) return;
     const threadIds = yield* projections.getRecoveryThreadIds("runtime");
     for (const threadId of threadIds) {
+      if (
+        Option.isSome(sessionHostOption) &&
+        (yield* sessionHostOption.value.isThreadDetachedForUpdate(threadId))
+      ) {
+        continue;
+      }
       yield* Effect.gen(function* () {
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (!continuesAfterRestart(resumeRequested, enabled, projection.thread.projectId)) return;

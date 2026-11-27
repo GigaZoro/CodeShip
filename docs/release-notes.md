@@ -1,3 +1,8 @@
+## 2026-11-27 — Detached provider session hosts survive planned server updates
+
+- Live Claude, Codex, and ACP provider processes now run inside detached `__session-host` brokers outside `t3-server`'s process tree so planned updates detach, buffer stdout/stderr, and reattach in order without killing running turns or re-prompting.
+- MCP session credential hashes are persisted in SQLite so surviving provider processes keep authenticating with local CodeShip MCP tools after a restart. If a detached broker exits while the server is down, startup recovery falls back to standard restart continuation, and unattached brokers auto-clean after 15 minutes.
+
 ## 2026-11-27 — Capture what annoys you in the app
 
 - Press Mod+Shift+. to save a UI annoyance with an optional note. The capture records the page, the components under the pointer, the visible notices and panels, and the window size, theme and density. The desktop app can also attach a screenshot of the window. Captures stay on your device.
