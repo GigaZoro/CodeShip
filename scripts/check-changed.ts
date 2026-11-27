@@ -87,7 +87,9 @@ import {
   installFingerprint,
   isFileAt,
   isReferenceRepoPath,
+  MAX_SERVER_CHAINS,
   nameKey,
+  serverTestChainCount,
   unlessAbsent,
 } from "./lib/cached-tests.ts";
 import { isSqliteBusy, stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
@@ -462,6 +464,7 @@ const TestRequest = Schema.Struct({
   groupSize: Schema.Number,
   uncached: Schema.Array(Schema.String),
   completed: Schema.optional(Schema.Array(Schema.String)),
+  serverChains: Schema.optional(Schema.Number),
 });
 const encodeTestRequest = Schema.encodeEffect(Schema.fromJsonString(TestRequest));
 const decodeTestSummary = Schema.decodeEffect(
@@ -1170,14 +1173,54 @@ const removeTempDirectory = (directory: string, platform: NodeJS.Platform): Effe
     ),
   );
 
+const SHM_TEMP_BASE = "/dev/shm";
+const MIN_SHM_AVAILABLE_BYTES = 2 * GiB;
+
+const defaultShmStatFs = (): { readonly bavail: number; readonly bsize: number } => {
+  NodeFS.accessSync(
+    SHM_TEMP_BASE,
+    NodeFS.constants.R_OK | NodeFS.constants.W_OK | NodeFS.constants.X_OK,
+  );
+  return NodeFS.statfsSync(SHM_TEMP_BASE);
+};
+
+/**
+ * Pick a RAM-backed base directory for test temporary files on Linux when `/dev/shm` is writable
+ * and has at least 2 GiB free; fall back to `os.tmpdir()` otherwise.
+ */
+export const selectTestTempBase = (
+  platform: NodeJS.Platform,
+  shmStatFs: () => { readonly bavail: number; readonly bsize: number } = defaultShmStatFs,
+  fallback: string = NodeOS.tmpdir(),
+): string => {
+  if (platform !== "linux") return fallback;
+  try {
+    const { bavail, bsize } = shmStatFs();
+    if (
+      Number.isFinite(bavail) &&
+      Number.isFinite(bsize) &&
+      bavail >= 0 &&
+      bsize > 0 &&
+      bavail * bsize >= MIN_SHM_AVAILABLE_BYTES
+    ) {
+      return SHM_TEMP_BASE;
+    }
+  } catch {
+    // Fall back to the system temp directory when /dev/shm is absent, unwritable or unreadable.
+  }
+  return fallback;
+};
+
 // Removes the temp directory when the scope closes, swallowing Windows handle teardown noise.
 export const makeScopedTempDir = (
   fs: FileSystem.FileSystem,
   prefix: string,
   platform: NodeJS.Platform,
+  directory?: string,
 ) =>
-  Effect.acquireRelease(fs.makeTempDirectory({ prefix }), (directory) =>
-    removeTempDirectory(directory, platform),
+  Effect.acquireRelease(
+    fs.makeTempDirectory({ prefix, ...(directory !== undefined ? { directory } : {}) }),
+    (created) => removeTempDirectory(created, platform),
   );
 
 export const spawnVpIsolated = (
@@ -1558,11 +1601,14 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const inRoot = (file: string) => path.join(root, file);
   // Runtime selection can change without a source edit, so check before accepting cached results.
   yield* Console.log(yield* Effect.try(() => checkNodeRuntime()));
-  yield* Effect.sync(() => sweepStaleTempDirs());
-
   // macOS counts its file cache as used, so available memory there would
   // starve a large Mac. Elsewhere availableMemory() honors a cgroup limit.
   const platform = yield* HostProcess.Platform;
+  const testTempBase = selectTestTempBase(platform);
+  yield* Effect.sync(() => {
+    sweepStaleTempDirs();
+    if (testTempBase !== NodeOS.tmpdir()) sweepStaleTempDirs({ dir: testTempBase });
+  });
   // The landing command (.github/scripts/landing-turn.cjs) gives its checks the turn it holds.
   const landing = Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN")));
   const concurrency = Option.getOrElse(
@@ -2047,10 +2093,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     );
   };
 
-  // Server test files run one at a time (fileParallelism in apps/server/vite.config.ts),
-  // so they keep one worker busy however many there are.
+  // Each apps/server Vitest runs one file at a time (fileParallelism in apps/server/vite.config.ts),
+  // so check:changed runs up to MAX_SERVER_CHAINS independent chains concurrently when slots allow.
   const serverTests = vitestTests.filter((file) => file.startsWith("apps/server/")).length;
-  const testWorkers = vitestTests.length - serverTests + Math.min(serverTests, 1);
+  const serverSlots = serverTests <= 1 ? serverTests : Math.min(serverTests, MAX_SERVER_CHAINS) * 2;
+  const testWorkers = vitestTests.length - serverTests + serverSlots;
 
   const slotDirectory = yield* budgetDirectory(root);
   const testStep: Step<never> = {
@@ -2059,8 +2106,14 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       Effect.scoped(
         Effect.gen(function* () {
           const temp = yield* makeScopedTempDir(fs, "t3-check-changed-tests-", platform);
-          // Keep the step TMPDIR a short sibling so Unix socket paths stay within sun_path.
-          const stepTmp = yield* makeScopedTempDir(fs, "t3-cct-", platform);
+          // Keep the step TMPDIR a short sibling (in /dev/shm on Linux when room allows) so Unix
+          // socket paths stay within sun_path and concurrent groups stay off disk.
+          const stepTmp = yield* makeScopedTempDir(
+            fs,
+            "t3-cct-",
+            platform,
+            selectTestTempBase(platform),
+          );
           const head = yield* gitCommit(root, "HEAD");
           const started = yield* testInputs(head, testGit);
           const { install, state } = started;
@@ -2078,8 +2131,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             }),
           );
           const request = path.join(temp, "tests.json");
-          const groups = Math.max(1, Math.floor(slots / 3));
-          const workers = Math.floor(slots / groups);
+          const serverChains = serverTestChainCount(slots);
+          const concurrencyLimit = Math.max(
+            1,
+            Math.floor(slots / 3),
+            Math.min(serverTests, serverChains),
+          );
+          const workers = Math.max(1, Math.floor(slots / concurrencyLimit));
           const env = {
             ...changedTestRequestEnv(request, testRuntime, workers, cache, state, head, install),
             ...hostCapabilitiesEnv(hostCapabilities),
@@ -2093,8 +2151,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
               files: vitestTests,
               groupSize: CHANGED_TEST_GROUP_SIZE,
               uncached: keepProviderEnv ? vitestTests : uncachedTests,
+              serverChains,
             },
-            groups,
+            concurrencyLimit,
             platform,
             (limit) => {
               const run = spawnVp(

@@ -50,6 +50,7 @@ import {
   runSteps,
   noticingSleep,
   runTestGroups,
+  selectTestTempBase,
   spawnVp,
   spawnVpIsolated,
   splitTests,
@@ -2899,19 +2900,21 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
 
   project.write(
     "fixture.test.ts",
-    `import { writeFileSync } from "node:fs";
+    `import { readdirSync, writeFileSync } from "node:fs";
     import os from "node:os";
     import path from "node:path";
     import { it, expect } from "vite-plus/test";
-    it("runs inside an isolated step temp dir", () => {
+    it("runs inside an isolated per-group temp dir", () => {
       const dir = process.env.TMPDIR ?? "";
       expect(dir).toBeTruthy();
       expect(process.env.TEMP).toBe(dir);
       expect(process.env.TMP).toBe(dir);
       expect(os.tmpdir()).toBe(dir);
-      expect(path.basename(dir)).toMatch(/^t3-cct-/);
+      expect(path.basename(dir)).toMatch(/^g-/);
+      expect(path.basename(path.dirname(dir))).toMatch(/^t3-cct-/);
+      expect(readdirSync(dir).filter((entry) => entry.startsWith("t3-git-trace-"))).toEqual([]);
       writeFileSync(path.join(dir, "leaked.txt"), "left behind");
-      console.log("STEP_TMP=" + dir);
+      console.log("GROUP_TMP=" + dir);
     });`,
   );
 
@@ -2922,10 +2925,13 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
   });
   expect(first.status, first.stdout + first.stderr).toBe(1);
   expect(first.stdout).toContain("pass  test (1 files)");
-  const matched = /STEP_TMP=(.+)/.exec(first.stdout);
+  const matched = /GROUP_TMP=(.+)/.exec(first.stdout);
   expect(matched, first.stdout).not.toBeNull();
-  const stepTmp = matched![1]!.trim();
-  expect(NodePath.dirname(stepTmp)).toBe(outerTmp1);
+  const groupTmp = matched![1]!.trim();
+  const stepTmp = NodePath.dirname(groupTmp);
+  const expectedBase = selectTestTempBase(isLinuxHost ? "linux" : "darwin", undefined, outerTmp1);
+  expect(NodePath.dirname(stepTmp)).toBe(expectedBase);
+  expect(NodeFS.existsSync(groupTmp)).toBe(false);
   expect(NodeFS.existsSync(stepTmp)).toBe(false);
   expect(NodeFS.existsSync(staleDir)).toBe(false);
   expect(NodeFS.existsSync(freshDir)).toBe(true);
@@ -2947,7 +2953,9 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
     import path from "node:path";
     import { it } from "vite-plus/test";
     it("leaves a file behind and fails", () => {
-      writeFileSync(path.join(process.env.TMPDIR!, "leaked-on-fail.txt"), "boom");
+      const dir = process.env.TMPDIR!;
+      console.log("FAIL_TMP=" + dir);
+      writeFileSync(path.join(dir, "leaked-on-fail.txt"), "boom");
       throw new Error("expected failure");
     });`,
   );
@@ -2958,7 +2966,76 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
   });
   expect(failed.status, failed.stdout + failed.stderr).toBe(1);
   expect(failed.stdout).toContain("FAIL  test (1 files)");
+  const failMatched = /FAIL_TMP=(.+)/.exec(failed.stdout);
+  expect(failMatched, failed.stdout).not.toBeNull();
+  const failGroupTmp = failMatched![1]!.trim();
+  expect(NodeFS.existsSync(failGroupTmp)).toBe(false);
+  expect(NodeFS.existsSync(NodePath.dirname(failGroupTmp))).toBe(false);
   expect(NodeFS.readdirSync(outerTmp2)).toEqual([]);
+});
+
+it("runs apps/server groups in parallel chains with distinct group TMPDIRs and replays cache across chain counts", () => {
+  using project = launcherFixture();
+  project.write("pnpm-workspace.yaml", "packages:\n  - packages/*\n  - apps/*\n");
+  project.write(
+    "apps/server/package.json",
+    JSON.stringify({ name: "@t3tools/server", scripts: { test: "vp test run" } }) + "\n",
+  );
+  project.commit("add server package");
+
+  // These three names each hash-split into their own group under CHANGED_TEST_GROUP_SIZE = 4.
+  const serverFiles = [
+    "apps/server/p3.test.ts",
+    "apps/server/p6.test.ts",
+    "apps/server/p10.test.ts",
+  ];
+  for (const file of serverFiles) {
+    project.write(
+      file,
+      `import { readdirSync, writeFileSync } from "node:fs";
+      import os from "node:os";
+      import path from "node:path";
+      import { expect, it } from "vite-plus/test";
+      it("runs in its own group temp dir", () => {
+        const dir = os.tmpdir();
+        expect(path.basename(dir)).toMatch(/^g-/);
+        expect(path.basename(path.dirname(dir))).toMatch(/^t3-cct-/);
+        expect(readdirSync(dir).filter((entry) => entry.startsWith("t3-git-trace-"))).toEqual([]);
+        writeFileSync(path.join(dir, "probe.txt"), ${JSON.stringify(file)});
+        console.log("SERVER_GROUP_TMP=" + dir);
+      });\n`,
+    );
+  }
+
+  // Eight fast steps precede testStep in launcherFixture; 14 total slots leave 6 for testStep (3 chains).
+  const parallel = project.run("lint", "", project.source, ["--concurrency", "14"]);
+  expect(parallel.status, parallel.stdout + parallel.stderr).toBe(1);
+  expect(parallel.stdout).toContain("pass  test (3 files)");
+
+  const testCacheCalls = project
+    .calls()
+    .filter(({ args }) => args.includes("test-cache") && args.includes("--concurrency-limit"));
+  expect(testCacheCalls.length).toBeGreaterThanOrEqual(1);
+  const firstLimitIndex = testCacheCalls[0]!.args.indexOf("--concurrency-limit");
+  expect(Number(testCacheCalls[0]!.args[firstLimitIndex + 1])).toBe(3);
+
+  const groupTmps = [...parallel.stdout.matchAll(/SERVER_GROUP_TMP=(.+)/g)].map((match) =>
+    match[1]!.trim(),
+  );
+  expect(groupTmps).toHaveLength(3);
+  expect(new Set(groupTmps).size).toBe(3);
+  const stepTmps = new Set(groupTmps.map((dir) => NodePath.dirname(dir)));
+  expect(stepTmps.size).toBe(1);
+  const [stepTmp] = [...stepTmps];
+  expect(NodePath.dirname(stepTmp!)).toBe(selectTestTempBase(isLinuxHost ? "linux" : "darwin"));
+  for (const dir of groupTmps) expect(NodeFS.existsSync(dir)).toBe(false);
+  expect(NodeFS.existsSync(stepTmp!)).toBe(false);
+
+  // Lowering concurrency changes serverChains (3 -> 1) and task dependsOn, yet every group replays from cache.
+  const serial = project.run("lint", "", project.source, ["--concurrency", "1"]);
+  expect(serial.status, serial.stdout + serial.stderr).toBe(1);
+  expect(serial.stdout).toContain("pass  test (3 files)");
+  expect(serial.stdout.match(/cache hit, replaying/g)).toHaveLength(3);
 });
 
 it("reuses passes in another worktree with the same inputs and tracked environment, at another worker count", () => {

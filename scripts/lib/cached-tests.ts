@@ -334,8 +334,16 @@ export function changedTestRequestEnv(
 }
 
 // check:changed's groups average this many files and hold at most twice as many. A changed input
-// reruns its whole group, while each group boots its own Vitest, one at a time on the server chain.
+// reruns its whole group, while each group boots its own Vitest inside its server chain.
 export const CHANGED_TEST_GROUP_SIZE = 4;
+
+// Cap concurrent apps/server test chains so parallel Vitest processes do not contend on CPU or RAM.
+export const MAX_SERVER_CHAINS = 4;
+
+/** How many independent serial apps/server test chains fit in `slots`. */
+export function serverTestChainCount(slots: number): number {
+  return Math.max(1, Math.min(MAX_SERVER_CHAINS, Math.floor(slots / 2)));
+}
 
 // Windows cannot start a process whose command line passes 32,767 characters, and vp passes
 // its arguments on to the tool it starts, so a long list of paths runs in several steps.
@@ -460,6 +468,13 @@ export function cachedTestTasks(
   if (!Array.isArray(completed) || !completed.every((task) => typeof task === "string")) {
     throw new Error("Invalid completed test tasks");
   }
+  const serverChains: unknown =
+    changed && "serverChains" in request && request.serverChains !== undefined
+      ? request.serverChains
+      : 1;
+  if (typeof serverChains !== "number" || !Number.isSafeInteger(serverChains) || serverChains < 1) {
+    throw new Error("Invalid server test chain count");
+  }
   const skip = new Set(completed);
   const files: Array<string> = [];
   for (const file of request.files) {
@@ -568,13 +583,26 @@ export function cachedTestTasks(
     if (group.length > 0) groups.push(group);
     groups.push(...entries.filter((file) => uncachedFiles.has(file)).map((file) => [file]));
     const server = changed && directory === NodePath.join(root, "apps", "server");
-    let previousServerTask: string | undefined;
+    const serverChainLast: Array<string | undefined> = Array.from(
+      { length: serverChains },
+      () => undefined,
+    );
+    const serverChainLoad: Array<number> = Array.from({ length: serverChains }, () => 0);
     for (const group of groups) {
       const key = NodeCrypto.createHash("sha256").update(group.join("\0")).digest("hex");
       const task = `test-cache:${key}`;
       if (skip.has(task)) continue;
-      const dependsOn = previousServerTask ? [previousServerTask] : undefined;
-      if (server) previousServerTask = task;
+      let dependsOn: Array<string> | undefined;
+      if (server) {
+        let chain = 0;
+        for (let index = 1; index < serverChains; index += 1) {
+          if (serverChainLoad[index]! < serverChainLoad[chain]!) chain = index;
+        }
+        const previous = serverChainLast[chain];
+        if (previous) dependsOn = [previous];
+        serverChainLast[chain] = task;
+        serverChainLoad[chain]! += group.length;
+      }
       const uncachedGroup = uncachedFiles.has(group[0]!);
       // Vite+ reports VITE_CACHE_PATH to Vite's loadEnv and keys the group by it, so it is set
       // empty here and removed again in each test by packages/shared/src/testing/providerEnv.ts.

@@ -245,7 +245,9 @@ change the limit (`1` runs the steps one by one). A step that runs past `--timeo
 more. A run whose checkout changed while it ran fails and lists the
 changed paths. One nobody edited was written inside the checkout by a check or a tool, which should
 write under the system temp folder or a gitignored folder instead. Test groups run concurrently within the test step's worker
-budget. Server groups run one at a time alongside other packages. If Vite+ interrupts an in-flight
+budget. Server groups run in up to four independent serial chains alongside other packages, with each
+running group isolated in its own short temp folder (under `/dev/shm` on Linux when writable with at
+least 2 GiB free, otherwise the system temp folder) that is removed when the group ends. If Vite+ interrupts an in-flight
 group after another group fails, the test step runs it again and reports failures across the full
 selection. A run under the landing turn stops at its first failure instead, since it can no longer pass: the first step to end
 `FAIL` or `TIMEOUT` stops the others, which report `STOPPED`, and the first failing test group ends the test step. Each run uses a private copy of a cache that every commit with the same install shares;
@@ -286,7 +288,7 @@ load. Editing and restoring a file during a run, or changing an installed packag
 invalidate even an uncached verdict. A generated declaration that the checks themselves rewrite
 keeps the whole-run pass out of the cache, and fails a run that reused an earlier pass, because
 only its tests saw the new file. The test step's
-limit grows by two minutes per selected test file, because server test files run one at a time.
+limit grows by two minutes per selected test file, because each server chain runs its test files one at a time.
 
 The checks select their files from the tree a commit of the checkout would get under Git's own
 settings: tracked changes and untracked files that are not ignored. Each pass, a cached one

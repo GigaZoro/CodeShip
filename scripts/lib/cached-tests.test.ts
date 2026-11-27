@@ -20,8 +20,11 @@ import {
   gitPaths,
   installFingerprint,
   matchesTestPath,
+  MAX_SERVER_CHAINS,
   relativeTestPath,
+  serverTestChainCount,
 } from "./cached-tests.ts";
+import { selectTestTempBase } from "../check-changed.ts";
 import { readsCheckoutGit } from "./run-cached-test-group.ts";
 
 describe("cachedTestTasks", () => {
@@ -432,6 +435,122 @@ describe("cachedTestTasks", () => {
 
   it("does not add tasks without an explicit request", () => {
     expect(cachedTestTasks(undefined)).toEqual({});
+  });
+
+  it("caps server test chains between 1 and MAX_SERVER_CHAINS by slot budget", () => {
+    expect(MAX_SERVER_CHAINS).toBe(4);
+    expect([0, 1, 2, 3, 4, 5, 6, 7, 8, 12].map(serverTestChainCount)).toEqual([
+      1, 1, 1, 1, 2, 2, 3, 3, 4, 4,
+    ]);
+  });
+
+  it("splits apps/server groups across K independent serial chains without changing commands", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-test-chains-"));
+    try {
+      const request = NodePath.join(directory, "request.json");
+      const files = Array.from({ length: 8 }, (_, index) => `apps/server/s${index}.test.ts`);
+      const loadFor = async (serverChains: unknown, completed?: Array<string>) => {
+        await NodeFSP.writeFile(
+          request,
+          JSON.stringify({
+            files,
+            groupSize: 1,
+            ...(serverChains !== undefined ? { serverChains } : {}),
+            ...(completed ? { completed } : {}),
+          }),
+        );
+        vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", request);
+        return cachedTestTasks(undefined);
+      };
+
+      const single = await loadFor(1);
+      const keys = single["test-cache"]!.dependsOn!;
+      expect(keys).toHaveLength(8);
+
+      for (const chains of [1, 2, 3, 4]) {
+        const tasks = await loadFor(chains);
+        const taskKeys = tasks["test-cache"]!.dependsOn!;
+        expect(taskKeys).toEqual(keys);
+
+        // Commands and cache definitions stay identical across chain counts so Vite+ cache keys do not shift.
+        for (const key of taskKeys) {
+          expect(tasks[key]!.command).toBe(single[key]!.command);
+          expect(tasks[key]!.cache).toEqual(single[key]!.cache);
+        }
+
+        // Partition into independent strictly serial chains: `chains` roots, every predecessor used at most once.
+        const roots = taskKeys.filter((key) => tasks[key]!.dependsOn === undefined);
+        expect(roots).toHaveLength(chains);
+        const seenPredecessors = new Set<string>();
+        for (const key of taskKeys) {
+          const deps = tasks[key]!.dependsOn;
+          if (!deps) continue;
+          expect(deps).toHaveLength(1);
+          expect(seenPredecessors.has(deps[0]!)).toBe(false);
+          seenPredecessors.add(deps[0]!);
+        }
+        // Trace each root forward to confirm every task belongs to one serial chain of balanced length.
+        const visited = new Set<string>();
+        const lengths: Array<number> = [];
+        for (const root of roots) {
+          let current: string | undefined = root;
+          let count = 0;
+          while (current !== undefined) {
+            expect(visited.has(current)).toBe(false);
+            visited.add(current);
+            count += 1;
+            const next = taskKeys.filter((key) => tasks[key]!.dependsOn?.[0] === current);
+            expect(next.length).toBeLessThanOrEqual(1);
+            current = next[0];
+          }
+          lengths.push(count);
+        }
+        expect(visited.size).toBe(keys.length);
+        expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(1);
+      }
+
+      // Completed tasks are omitted before chaining so remaining tasks never depend on a skipped task.
+      const resumed = await loadFor(2, [keys[0]!, keys[3]!]);
+      const resumedKeys = resumed["test-cache"]!.dependsOn!;
+      expect(resumedKeys).toHaveLength(6);
+      for (const key of resumedKeys) {
+        const dep = resumed[key]!.dependsOn?.[0];
+        if (dep !== undefined) expect(resumedKeys).toContain(dep);
+      }
+
+      for (const invalid of [0, -1, 1.5, "2"]) {
+        await expect(loadFor(invalid)).rejects.toThrow("Invalid server test chain count");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("selects /dev/shm on Linux only when writable with at least 2 GiB free", () => {
+    const GiB = 1024 ** 3;
+    const fallback = "/fallback/tmp";
+    const statOf = (bytes: number) => () => ({ bsize: 4096, bavail: bytes / 4096 });
+
+    expect(selectTestTempBase("linux", statOf(2 * GiB), fallback)).toBe("/dev/shm");
+    expect(selectTestTempBase("linux", statOf(4 * GiB), fallback)).toBe("/dev/shm");
+    expect(selectTestTempBase("linux", () => ({ bsize: 1, bavail: 2 * GiB - 1 }), fallback)).toBe(
+      fallback,
+    );
+    expect(
+      selectTestTempBase(
+        "linux",
+        () => {
+          throw new Error("EACCES");
+        },
+        fallback,
+      ),
+    ).toBe(fallback);
+
+    const probe = vi.fn(statOf(16 * GiB));
+    expect(selectTestTempBase("darwin", probe, fallback)).toBe(fallback);
+    expect(selectTestTempBase("win32", probe, fallback)).toBe(fallback);
+    expect(probe).not.toHaveBeenCalled();
   });
 
   // Each `vp run` boots Vitest per task, so every behaviour is its own test with its own time budget.

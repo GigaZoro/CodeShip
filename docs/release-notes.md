@@ -1,3 +1,8 @@
+## 2026-11-28 — `check:changed` runs server tests in parallel chains with RAM-backed temp dirs
+
+- Maintainers: `vp run check:changed` now splits `apps/server` test groups across up to four independent serial chains when the machine's concurrency budget allows, without invalidating cached test passes when the chain count changes.
+- On Linux, `check:changed` places its test step temp directory on `/dev/shm` when writable with at least 2 GiB free (falling back to the system temp directory elsewhere), and isolates each running test group in its own short `g-*` `TMPDIR` subdirectory outside Git's trace2 temp folder.
+
 ## 2026-11-28 — Run loop guard and thrash circuit breaker
 
 - Automated, delegated, maintenance, and interactive runs now enforce configurable per-role turn and tool-call caps alongside a 3-identical-error thrash circuit breaker, aborting stuck loops with a structured reason instead of burning quota.
