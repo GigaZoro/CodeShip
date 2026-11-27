@@ -19,6 +19,13 @@ its origin.
 
 ## Peer links
 
+A [peer link](../../apps/server/src/peer/PeerLinks.ts) lets one environment's
+agents work in another. The linking environment signs in to the other's `/mcp`
+as an outside MCP client, with a pairing code from it, and keeps that session's
+token in its own secret store. The other environment needs nothing new: it
+sees one more OAuth client, lists it in Machines & access, and revokes it there.
+Unlinking on the linking side only forgets the token.
+
 - **The Linked environments beta (`linkedEnvironmentsEnabled`) gates both
   sides.** Off on the linking side, `PeerLinks.link`, link requests and
   `PeerForwarding.call`/`links` refuse; `readThread`, `waitForThread` and

@@ -1,6 +1,6 @@
 import { t } from "~/i18n";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
-import { Outlet, createFileRoute, redirect, useLocation, useRouter } from "@tanstack/react-router";
+import { Outlet, createFileRoute, useLocation, useRouter } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 
 import { RotateCcwIcon } from "lucide-react";
@@ -25,6 +25,7 @@ import { SETTINGS_DEVICE_ONLY_PATHS } from "../components/settings/SettingsScope
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import { useRenderedSettingsPathname } from "../components/settings/useRenderedSettingsPathname";
 import {
+  redirectMovedSettingsLocation,
   retainSettingsScope,
   validateSettingsRouteSearch,
 } from "../components/settings/settingsScopeNavigation";
@@ -32,8 +33,6 @@ import {
   getSettingsSearchTargetScope,
   getThreadAutoSettlementSearchAvailability,
   isSettingsSearchScopeAvailable,
-  movedSettingsPath,
-  consolidatedSettingsAnchor,
 } from "../components/settings/settingsSearch";
 
 function ResetPageButton({ page, onRestored }: { page: string; onRestored: () => void }) {
@@ -250,14 +249,6 @@ function SettingsRouteLayout() {
 export const Route = createFileRoute("/_chat/settings")({
   validateSearch: validateSettingsRouteSearch,
   search: { middlewares: [retainSettingsScope] },
-  beforeLoad: async ({ location }) => {
-    if (location.pathname === "/settings") {
-      throw redirect({ to: "/settings/general", replace: true });
-    }
-    const moved = movedSettingsPath(location.pathname, location.hash);
-    const hash = consolidatedSettingsAnchor(location.hash);
-    if (moved || hash !== location.hash)
-      throw redirect({ to: moved ?? location.pathname, search: true, hash, replace: true });
-  },
+  beforeLoad: ({ location }) => redirectMovedSettingsLocation(location),
   component: SettingsRouteLayout,
 });

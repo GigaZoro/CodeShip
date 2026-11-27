@@ -22,7 +22,11 @@ type UndoOptions = {
   failureTitle: string;
   claim: ReturnType<typeof ThreadUndo.begin>;
   commit?: () => void;
+  /** How long the notice stays after this action; the latest action sets it. */
+  durationMs?: number;
 };
+
+const UNDO_NOTICE_MS = 5_000;
 
 type UndoNotice = {
   action: UndoOptions["action"];
@@ -185,5 +189,5 @@ export function showThreadUndoNotice(options: UndoOptions) {
       commit?.();
     }
     refreshNotice();
-  }, 5_000);
+  }, options.durationMs ?? UNDO_NOTICE_MS);
 }

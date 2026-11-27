@@ -6,10 +6,12 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import ts from "typescript-legacy";
 
 import { findEsmImportsOfExternalPackages } from "./cli-executable-imports.ts";
 
 import {
+  isExternalCliDependency,
   isRuntimeExternalCliDependency,
   findInlinedExternalPackages,
   selectCliRuntimeExternalDependencies,
@@ -165,6 +167,82 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
         missing,
         [],
         `these peers of staged external packages are missing from the packaged app; add them to apps/server dependencies: ${missing.join(", ")}`,
+      );
+    }),
+  );
+
+  // Node SEA rejects non-builtin ESM imports; external packages must be loaded via createRequire.
+  it.effect("loads every external CLI dependency in apps/server/src without ESM imports", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const serverSrc = path.resolve(
+        path.dirname(NodeURL.fileURLToPath(import.meta.url)),
+        "../../apps/server/src",
+      );
+      const violations: string[] = [];
+
+      const isRuntimeImport = (node: ts.ImportDeclaration) => {
+        const clause = node.importClause;
+        if (!clause) return true;
+        if (clause.isTypeOnly) return false;
+        if (clause.name) return true;
+        const bindings = clause.namedBindings;
+        if (!bindings) return true;
+        if (ts.isNamespaceImport(bindings)) return true;
+        return bindings.elements.some((element) => !element.isTypeOnly);
+      };
+
+      const isRuntimeExport = (node: ts.ExportDeclaration) => {
+        if (node.isTypeOnly) return false;
+        const clause = node.exportClause;
+        if (!clause || ts.isNamespaceExport(clause)) return true;
+        return clause.elements.some((element) => !element.isTypeOnly);
+      };
+
+      const dirs = [serverSrc];
+      while (dirs.length > 0) {
+        const dir = dirs.pop()!;
+        for (const entry of yield* fileSystem.readDirectory(dir)) {
+          if (entry === "testUtils") continue;
+          const fullPath = path.join(dir, entry);
+          const info = yield* fileSystem.stat(fullPath);
+          if (info.type === "Directory") {
+            dirs.push(fullPath);
+            continue;
+          }
+          if (!entry.endsWith(".ts") || /\.(?:test|testkit)\.ts$/.test(entry)) continue;
+          const source = yield* fileSystem.readFileString(fullPath);
+          const file = ts.createSourceFile(fullPath, source, ts.ScriptTarget.Latest, false);
+          const relative = path.relative(serverSrc, fullPath);
+          const visit = (node: ts.Node): void => {
+            let specifierNode: ts.Expression | undefined;
+            if (ts.isImportDeclaration(node) && isRuntimeImport(node)) {
+              specifierNode = node.moduleSpecifier;
+            } else if (ts.isExportDeclaration(node) && isRuntimeExport(node)) {
+              specifierNode = node.moduleSpecifier;
+            } else if (
+              ts.isCallExpression(node) &&
+              node.expression.kind === ts.SyntaxKind.ImportKeyword
+            ) {
+              specifierNode = node.arguments[0];
+            }
+            if (
+              specifierNode &&
+              ts.isStringLiteralLike(specifierNode) &&
+              isExternalCliDependency(specifierNode.text)
+            ) {
+              violations.push(`${relative}: ${specifierNode.text}`);
+            }
+            ts.forEachChild(node, visit);
+          };
+          visit(file);
+        }
+      }
+      assert.deepStrictEqual(
+        violations,
+        [],
+        `runtime ESM imports of external CLI dependencies fail in Node SEA (use createRequire): ${violations.join(", ")}`,
       );
     }),
   );

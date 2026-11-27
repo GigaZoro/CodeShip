@@ -214,6 +214,7 @@ type SettlementRuleThread = Omit<
   | "parentWorktreePath"
   | "parentResultAt"
   | "parentDone"
+  | "parentResultKey"
   | "latestUserAuthoredMessageAt"
   | ScheduledSettlementFields
 >;
@@ -719,6 +720,9 @@ export const make = Effect.gen(function* () {
           ...(deliveredAt === null || settlesWithParent || thread.parentResultAt === null
             ? {}
             : { parentResultAt: thread.parentResultAt }),
+          ...(deliveredAt === null || settlesWithParent || thread.parentResultKey === null
+            ? {}
+            : { parentResultKey: thread.parentResultKey }),
         });
         return null;
       },

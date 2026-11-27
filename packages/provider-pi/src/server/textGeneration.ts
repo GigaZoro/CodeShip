@@ -71,6 +71,7 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
         return yield* new TextGenerationError({
           operation,
           detail: resolvedLaunchArgs.message,
+          retryable: false,
         });
       }
       const launch = buildPiRpcLaunch({
@@ -101,6 +102,7 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
           return yield* new TextGenerationError({
             operation,
             detail: `Pi model '${modelSelection.model}' must use provider/model format.`,
+            retryable: false,
           });
         }
         yield* connection
@@ -116,6 +118,7 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
                       "If the model comes from a Pi extension or package, text generation cannot use it " +
                       "because it runs Pi with --no-extensions. Pick a built-in Pi model or one defined " +
                       "in Pi's models.json.",
+                    retryable: false,
                     cause: error,
                   })
                 : error,

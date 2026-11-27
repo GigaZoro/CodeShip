@@ -483,6 +483,19 @@ test("a run GitHub gave no runner replaces itself at once, up to the attempt lim
     }),
     { action: "rerun", id: 502 },
   );
+  // A cancellation after acquiring a runner (for example a manual cancel) must not respawn itself.
+  assert.deepEqual(
+    recovery({
+      runs: [asking],
+      fromRun: true,
+      currentJobs: [
+        preflight(publisherDownload),
+        { ...failedBuild, conclusion: "cancelled", runner_id: 7, steps: [ok("Build")] },
+      ],
+      responses: ready(42, "js-bundle"),
+    }),
+    { action: "wait" },
+  );
 });
 
 test("recovery of the latest release ends once it serves its own macOS feed", () => {

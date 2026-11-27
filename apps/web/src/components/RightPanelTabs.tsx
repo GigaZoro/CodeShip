@@ -111,6 +111,7 @@ import { FaviconImage } from "./preview/PreviewFaviconIcon";
 import { previewBridge } from "./preview/previewBridge";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { preventThumbButtonFocus, takeThumbButtonNavigation } from "./preview/thumbButtons";
+import { OWNS_LETTER_KEYS_ATTRIBUTE } from "./chat/composerFocusRedirect";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import { useEmbeddableThread } from "./chat/useEmbeddableThread";
 import { resolvePullRequestState } from "./pullRequest/pullRequestPresentation";
@@ -301,8 +302,9 @@ export function surfaceShortcutTargetsTypingContext(
   target: { closest(selectors: string): unknown } | null,
 ): boolean {
   return (
-    target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !=
-    null
+    target?.closest(
+      `input, textarea, select, [contenteditable]:not([contenteditable="false"]), [${OWNS_LETTER_KEYS_ATTRIBUTE}]`,
+    ) != null
   );
 }
 

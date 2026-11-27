@@ -1009,5 +1009,33 @@ describe("synchronized mobile model visibility", () => {
         detail: "Example Corp's policy does not allow the Claude provider. Choose another model.",
       });
     });
+
+    it("labels built-in drivers without displayName using PROVIDER_DISPLAY_NAMES", () => {
+      const multiConfig = {
+        providers: [
+          {
+            instanceId: "antigravity_main",
+            driver: "antigravity",
+            enabled: true,
+            installed: true,
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [{ slug: "gemini-3-pro", name: "Gemini 3 Pro", capabilities: null }],
+          },
+          {
+            instanceId: "muse_main",
+            driver: "muse",
+            enabled: true,
+            installed: true,
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [{ slug: "muse-wonder", name: "Muse Wonder", capabilities: null }],
+          },
+        ],
+      } as unknown as ServerConfig;
+      expect(
+        buildModelOptions(multiConfig, null, undefined, null).map((option) => option.providerLabel),
+      ).toEqual(["Antigravity", "Muse Code"]);
+    });
   });
 });

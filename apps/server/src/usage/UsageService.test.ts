@@ -45,6 +45,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import * as ServerConfig from "../config.ts";
+import { seededRandom } from "../testUtils/seededRandom.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as CodexUsageHistory from "./CodexUsageHistory.ts";
@@ -67,6 +68,7 @@ import {
   SCAN_CACHE_DIRECTORY_NAME,
   SCAN_CACHE_PIECE_CHARS,
   scanCacheDocumentPieces,
+  scanCacheSnapshotName,
   USAGE_SCAN_CACHE_VERSION,
   type ScanCache,
 } from "./usageScanCache.ts";
@@ -97,10 +99,11 @@ function claudeLine(
   outputTokens: number,
   model = "claude-fable-5",
   sessionId = "session-1",
+  timestamp = "2026-08-01T10:00:00Z",
 ): string {
   return `${JSON.stringify({
     type: "assistant",
-    timestamp: "2026-08-01T10:00:00Z",
+    timestamp,
     requestId: `req_${id}`,
     sessionId,
     message: {
@@ -370,6 +373,10 @@ interface StoredRow {
   nr?: true;
   mr: number;
   r: unknown[][];
+  t: unknown[][];
+  /** Peer tails and superseded records: [seenMs, size or sinceMs, record, ...]. */
+  pt?: unknown[][];
+  sp?: unknown[][];
   cs: Record<string, unknown>;
 }
 
@@ -379,6 +386,7 @@ interface StoredDocument {
   sources: Record<string, unknown>;
   sessions: string[];
   models: string[];
+  evictedReads?: Record<string, unknown>;
 }
 
 /** The saved snapshots, by name; a test that ran one service has one. */
@@ -424,6 +432,69 @@ const storedFileKeys = (stateDir: string) =>
       ),
     ),
   ]);
+
+/** Every path any saved snapshot keeps an evicted read for. */
+const storedEvictions = (stateDir: string) =>
+  Effect.map(readStore(stateDir), (stored) => [
+    ...new Set(
+      stored.flatMap(({ raw }) =>
+        Object.keys((decodeUnknownJsonString(raw) as StoredDocument).evictedReads ?? {}),
+      ),
+    ),
+  ]);
+
+/** Sorts object keys at every depth, so equal documents print the same. */
+const canonicalJson = (value: unknown): unknown =>
+  Array.isArray(value)
+    ? value.map(canonicalJson)
+    : typeof value === "object" && value !== null
+      ? Object.fromEntries(
+          Object.keys(value)
+            .sort()
+            .map((key) => [key, canonicalJson((value as Record<string, unknown>)[key])]),
+        )
+      : value;
+
+/**
+ * Every saved snapshot as sorted JSON with its interned models and sessions spelled out, without
+ * its name or writer: two stores that saved the same rows, sources and reads print the same.
+ */
+const canonicalStore = (stateDir: string) =>
+  Effect.map(readStore(stateDir), (stored) =>
+    stored
+      .map(({ raw }) => {
+        const { files, models, sessions, ...rest } = decodeUnknownJsonString(raw) as StoredDocument;
+        const named = (record: readonly unknown[]) =>
+          record.map((value, index) =>
+            index === 2
+              ? sessions[value as number]
+              : (index === 1 || index === 11) && value !== null
+                ? models[value as number]
+                : value,
+          );
+        const nested = (items: readonly (readonly unknown[])[] | undefined) =>
+          items?.map(([seen, size, record, ...more]) => [
+            seen,
+            size,
+            named(record as readonly unknown[]),
+            ...more,
+          ]);
+        const rows = Object.fromEntries(
+          Object.entries(files).map(([path, row]) => [
+            path,
+            {
+              ...row,
+              r: row.r.map(named),
+              t: row.t.map(named),
+              pt: nested(row.pt),
+              sp: nested(row.sp),
+            },
+          ]),
+        );
+        return JSON.stringify(canonicalJson({ ...rest, files: rows }));
+      })
+      .sort(),
+  );
 
 /** Reads with a fresh service, which loads saved usage and saves it again as it shuts down. */
 const outputTokensAfterRestart = Effect.scoped(
@@ -5252,6 +5323,78 @@ describe("UsageService", () => {
         );
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
+
+  it.live("migrates snapshots from the v11 directory without reviving expired usage", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* writeTranscriptAtCursorNow(transcript, 5);
+      const sibling = NodePath.join(NodePath.dirname(transcript), "v11-delta.jsonl");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(sibling, claudeLine(2, 7));
+        await NodeFSP.utimes(sibling, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+      });
+
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
+        const active = yield* onlySnapshot(stateDir);
+        const oldDir = NodePath.join(stateDir, "usage-scan-cache-v11");
+        const oldWriter = "00000000-0000-4000-8000-000000000000";
+        const oldName = scanCacheSnapshotName(oldWriter, 1);
+        const deltaName = scanCacheSnapshotName(oldWriter, 2);
+        const oldPath = NodePath.join(oldDir, oldName);
+        const deltaPath = NodePath.join(oldDir, deltaName);
+        const oldContents = encodeUnknownJsonString({
+          ...active.document,
+          version: 11,
+          files: { [transcript]: active.document.files[transcript] },
+        });
+        const deltaContents = encodeUnknownJsonString({
+          ...active.document,
+          version: 11,
+          files: { [sibling]: active.document.files[sibling] },
+        });
+        yield* fs.remove(active.path);
+        yield* fs.remove(transcript);
+        yield* fs.remove(sibling);
+        yield* fs.makeDirectory(oldDir, { recursive: true });
+        yield* fs.writeFileString(oldPath, oldContents);
+
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        const migrated = yield* onlySnapshot(stateDir);
+        assert.strictEqual(migrated.document.version, USAGE_SCAN_CACHE_VERSION);
+        const aside = NodePath.join(stateDir, oldName);
+        yield* fs.rename(oldPath, aside);
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        yield* fs.rename(aside, oldPath);
+
+        yield* Effect.gen(function* () {
+          const current = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* current.readSummary(WINDOW)), 5);
+          yield* current.awaitPersisted;
+          yield* fs.writeFileString(deltaPath, deltaContents);
+          yield* current.readSummary(WINDOW);
+          yield* current.awaitPersisted;
+          assert.strictEqual(totalOutputTokens(yield* current.readSummary(WINDOW)), 12);
+          yield* current.awaitPersisted;
+        }).pipe(Effect.scoped);
+
+        yield* TestClock.setTime(CURSOR_NOW + 92 * DAY_MS);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
+        yield* TestClock.adjust("1 millis");
+        assert.strictEqual(yield* outputTokensAfterRestart, 0);
+        assert.strictEqual(yield* outputTokensAfterRestart, 0);
+        assert.sameMembers(yield* fs.readDirectory(oldDir), [oldName, deltaName]);
+        assert.strictEqual(yield* fs.readFileString(oldPath), oldContents);
+        assert.strictEqual(yield* fs.readFileString(deltaPath), deltaContents);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-v11-migration", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live("persists a verified smaller rewrite when its disk base is unchanged", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
@@ -5270,6 +5413,90 @@ describe("UsageService", () => {
       }).pipe(Effect.provide(layerService({ prefix: "usage-cache-three-way", home, settings })));
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
+
+  it.live("keeps usage from a newer Claude transcript after restoring an older copy", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      const shared = claudeLine(1, 5);
+      const olderMtime = Date.parse("2026-07-20T12:00:00Z");
+      const sibling = NodePath.join(NodePath.dirname(transcript), "sibling.jsonl");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, shared + claudeLine(2, 12));
+        await NodeFSP.utimes(transcript, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+        await NodeFSP.writeFile(sibling, claudeLine(3, 7));
+        await NodeFSP.utimes(sibling, CURSOR_NOW / 1000, CURSOR_NOW / 1000);
+      });
+
+      yield* Effect.gen(function* () {
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const writer = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 24);
+        yield* writer.awaitPersisted;
+        const original = yield* onlySnapshot(stateDir);
+
+        yield* TestClock.adjust("5 seconds");
+        const restoredAt = yield* Clock.currentTimeMillis;
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(transcript, shared);
+          await NodeFSP.utimes(transcript, olderMtime / 1000, olderMtime / 1000);
+        });
+        assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 24);
+        yield* writer.awaitPersisted;
+        const delta = yield* newestSnapshot(stateDir);
+        assert.deepStrictEqual(Object.keys(delta.document.files), [transcript]);
+        assert.strictEqual(delta.document.files[transcript]?.m, olderMtime);
+        assert.lengthOf(delta.document.files[transcript]!.r, 1);
+        assert.strictEqual(totalOutputTokens(yield* writer.readSummary(WINDOW)), 24);
+        yield* writer.awaitPersisted;
+
+        // Enough redundant snapshots make the peer compact the delta and original into one.
+        yield* seedSnapshot(stateDir, original.raw);
+        yield* seedSnapshot(stateDir, original.raw);
+        const peer = yield* UsageService.make;
+        assert.strictEqual(totalOutputTokens(yield* peer.readSummary(WINDOW)), 24);
+        yield* peer.awaitPersisted;
+        const compacted = yield* onlySnapshot(stateDir);
+        assert.sameMembers(Object.keys(compacted.document.files), [transcript, sibling]);
+        assert.lengthOf(compacted.document.files[transcript]!.r, 1);
+
+        const expiresAfter = restoredAt + 92 * DAY_MS;
+        yield* TestClock.setTime(expiresAfter - 1);
+        assert.strictEqual(yield* outputTokensAfterRestart, 24);
+        yield* TestClock.setTime(expiresAfter + 1);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
+
+        const expired = yield* onlySnapshot(stateDir);
+        assert.isEmpty(expired.document.files[transcript]?.r ?? []);
+        yield* seedSnapshot(stateDir, original.raw);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
+        assert.strictEqual(yield* outputTokensAfterRestart, 12);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-restored-copy", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.live("leaves expired usage out when a shorter transcript returns after deletion", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* TestClock.setTime(CURSOR_NOW);
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(transcript, claudeLine(1, 5) + claudeLine(2, 12)),
+      );
+      yield* Effect.gen(function* () {
+        assert.strictEqual(yield* outputTokensAfterRestart, 17);
+        yield* Effect.promise(() => NodeFSP.unlink(transcript));
+        assert.strictEqual(yield* outputTokensAfterRestart, 17);
+        yield* TestClock.setTime(CURSOR_NOW + 92 * DAY_MS + 1);
+        yield* writeTranscriptAtCursorNow(transcript, 5);
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-cache-expired-restore", home, settings })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live.each(["peer", "migration", "late archive", "unrelated peer write"] as const)(
     "keeps a verified correction ahead of a stale %s",
     (scenario) =>
@@ -5685,9 +5912,201 @@ describe("UsageService", () => {
         yield* TestClock.adjust("93 days");
         assert.strictEqual(yield* outputTokensAfterRestart, 5);
         assert.isEmpty(yield* storedFileKeys(stateDir));
+        // A full save that retires every snapshot keeps the cutoff until two retention periods
+        // after the read, so a retired snapshot that comes back cannot restore the old row.
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        assert.deepStrictEqual(yield* storedEvictions(stateDir), [transcript]);
+        yield* TestClock.setTime(CURSOR_NOW + 184 * DAY_MS + 1);
+        assert.strictEqual(yield* outputTokensAfterRestart, 5);
+        assert.isEmpty(yield* storedEvictions(stateDir));
       }).pipe(Effect.provide(layerService({ prefix: "usage-live-retention", home, settings })));
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
+
+  describe("saved evicted reads over a long multi-peer history", () => {
+    const RETENTION_MS = 92 * DAY_MS;
+    const BLANK_WRITER = "00000000-0000-4000-8000-000000000000";
+    const dayOf = (ms: number) => UsageDay.make(DateTime.formatIsoDate(DateTime.makeUnsafe(ms)));
+
+    const readThenPersist = (
+      service: Effect.Success<typeof UsageService.make>,
+      window: UsageSummaryInput,
+    ) => Effect.andThen(service.readSummary(window), service.awaitPersisted);
+
+    // Two peers and a fresh reader run four retention periods of edits, then over two more of
+    // deletes. A save that retired every input keeps no cutoff two periods old, only restored
+    // copies' hints outlive the history, and readers of the store in opposite name orders save
+    // the same document.
+    it.live.each([1, 2])("stays bounded and merges in any order (seed %s)", (seed) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        const projectDir = NodePath.dirname(transcript);
+        const next = seededRandom(seed);
+        let nowMs = CURSOR_NOW;
+        yield* TestClock.setTime(nowMs);
+        const window = (recent: boolean): UsageSummaryInput => ({
+          timeZone: "UTC",
+          sinceDay: dayOf(recent ? nowMs - DAY_MS : CURSOR_NOW - DAY_MS),
+          untilDay: dayOf(nowMs),
+        });
+
+        const reloadInOrder = (
+          stored: ReadonlyArray<{ readonly name: string; readonly raw: string }>,
+          prefix: string,
+          descending: boolean,
+        ) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const { stateDir } = yield* ServerConfig.ServerConfig;
+            const dir = storeDirOf(stateDir);
+            yield* fs.makeDirectory(dir, { recursive: true });
+            for (const { name, raw } of stored) {
+              yield* fs.writeFileString(NodePath.join(dir, name), raw);
+            }
+            // Two blank snapshots, each larger than the rest, make a full save due in either
+            // order, so each reader saves everything it merged in one document.
+            const blank = encodeUnknownJsonString({
+              version: USAGE_SCAN_CACHE_VERSION,
+              models: [],
+              sessions: [],
+              files: {},
+              sources: {},
+            }).padEnd(stored.reduce((chars, { raw }) => chars + raw.length, 1));
+            for (const seq of [1, 2]) {
+              const name = scanCacheSnapshotName(BLANK_WRITER, seq);
+              yield* fs.writeFileString(NodePath.join(dir, name), blank);
+            }
+            const ordered = (names: ReadonlyArray<string>) => {
+              const sorted = [...names].sort();
+              return descending ? sorted.reverse() : sorted;
+            };
+            yield* Effect.scoped(
+              Effect.flatMap(
+                UsageService.make.pipe(
+                  Effect.provideService(FileSystem.FileSystem, {
+                    ...fs,
+                    readDirectory: (directory, options) =>
+                      directory === dir
+                        ? Effect.map(fs.readDirectory(directory, options), ordered)
+                        : fs.readDirectory(directory, options),
+                  }),
+                ),
+                (service) => readThenPersist(service, window(false)),
+              ),
+            );
+            return yield* canonicalStore(stateDir);
+          }).pipe(Effect.provide(layerService({ prefix, home, settings })));
+
+        yield* Effect.gen(function* () {
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const peers = [yield* UsageService.make, yield* UsageService.make];
+          const live = new Map<string, { lines: string[]; createdMs: number }>();
+          const restored = new Set<string>();
+          let lineId = 0;
+          let retiringSaves = 0;
+          let orderChecks = 0;
+
+          const write = (file: string, lines: readonly string[], mtimeMs: number) =>
+            Effect.promise(async () => {
+              await NodeFSP.writeFile(file, lines.join(""));
+              await NodeFSP.utimes(file, mtimeMs / 1000, mtimeMs / 1000);
+            });
+          const line = () => {
+            lineId += 1;
+            const at = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
+            return claudeLine(lineId, 1 + (lineId % 5), undefined, `session-${lineId % 3}`, at);
+          };
+          const checkSave = (before: ReadonlySet<string>) =>
+            Effect.gen(function* () {
+              const stored = yield* readStore(stateDir);
+              if (stored.length !== 1 || before.has(stored[0]!.name)) return;
+              retiringSaves += 1;
+              const document = decodeUnknownJsonString(stored[0]!.raw) as StoredDocument;
+              for (const [path, read] of Object.entries(document.evictedReads ?? {})) {
+                const throughMs = Array.isArray(read) ? read[0] : read;
+                if (throughMs !== null) {
+                  assert.isAtLeast(throughMs as number, nowMs - 2 * RETENTION_MS, path);
+                }
+              }
+            });
+          const runPeers = Effect.gen(function* () {
+            const order = [0, 1, 2];
+            for (let index = order.length - 1; index > 0; index--) {
+              const swap = Math.floor(next() * (index + 1));
+              [order[index], order[swap]] = [order[swap]!, order[index]!];
+            }
+            for (const which of order) {
+              const before = new Set((yield* readStore(stateDir)).map(({ name }) => name));
+              const recent = next() < 0.5;
+              const peer = peers[which];
+              yield* peer === undefined
+                ? Effect.scoped(
+                    Effect.flatMap(UsageService.make, (fresh) =>
+                      readThenPersist(fresh, window(recent)),
+                    ),
+                  )
+                : readThenPersist(peer, window(recent));
+              yield* checkSave(before);
+            }
+          });
+          const checkOrder = Effect.gen(function* () {
+            orderChecks += 1;
+            const stored = yield* readStore(stateDir);
+            const ascending = yield* reloadInOrder(stored, `order-${orderChecks}-a`, false);
+            const descending = yield* reloadInOrder(stored, `order-${orderChecks}-d`, true);
+            assert.lengthOf(ascending, 1);
+            assert.deepStrictEqual(descending, ascending);
+          });
+
+          for (let round = 1; nowMs < CURSOR_NOW + 4 * RETENTION_MS; round++) {
+            const stepMs = (1 + Math.floor(next() * 25)) * DAY_MS;
+            nowMs += stepMs;
+            yield* TestClock.adjust(Duration.millis(stepMs));
+            for (const [file, state] of live) {
+              const roll = next();
+              if (roll < 0.15) {
+                live.delete(file);
+                yield* Effect.promise(() => NodeFSP.rm(file));
+              } else if (roll < 0.3) {
+                state.lines.push(line());
+                yield* write(file, state.lines, nowMs);
+              } else if (roll < 0.36 && state.lines.length > 1) {
+                state.lines = state.lines.slice(0, 1);
+                restored.add(file);
+                yield* write(file, state.lines, state.createdMs - DAY_MS);
+              }
+            }
+            for (let created = Math.floor(next() * 3); created >= 0; created--) {
+              const file = NodePath.join(projectDir, `round-${round}-${created}.jsonl`);
+              const state = { lines: [line()], createdMs: nowMs };
+              live.set(file, state);
+              yield* write(file, state.lines, nowMs);
+            }
+            yield* runPeers;
+            if (round % 8 === 0) yield* checkOrder;
+          }
+
+          for (const file of live.keys()) yield* Effect.promise(() => NodeFSP.rm(file));
+          for (let step = 0; step < 8; step++) {
+            nowMs += 30 * DAY_MS;
+            yield* TestClock.adjust("30 days");
+            yield* runPeers;
+          }
+          yield* checkOrder;
+
+          assert.isAbove(retiringSaves, 0);
+          assert.isEmpty(yield* storedFileKeys(stateDir));
+          const remaining = (yield* readStore(stateDir)).flatMap(({ raw }) =>
+            Object.entries((decodeUnknownJsonString(raw) as StoredDocument).evictedReads ?? {}),
+          );
+          for (const [path, read] of remaining) {
+            assert.isTrue(Array.isArray(read) && read[0] === null && restored.has(path), path);
+          }
+        }).pipe(Effect.provide(layerService({ prefix: `usage-history-${seed}`, home, settings })));
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    );
+  });
+
   it.live("answers a warm scan while a sync is blocked on disk", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

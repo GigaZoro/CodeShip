@@ -52,6 +52,7 @@ export const DEVICE_SETTINGS_PROFILE_KEYS = [
   "followUpBehavior",
   "showSkillsInSlashMenu",
   "mathRenderingEnabled",
+  "foldFinishedWork",
   "notificationMode",
   "inAppNotificationsEnabled",
 ] as const satisfies ReadonlyArray<keyof ClientSettings>;

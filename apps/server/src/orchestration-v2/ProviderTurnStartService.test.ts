@@ -104,6 +104,7 @@ import {
 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
+import { ClaudeSettingsResolveError } from "../provider/Drivers/ClaudeSettingsCascade.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -4123,6 +4124,25 @@ effectIt.effect.each([
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   },
+  // regression: a settings read a busy machine held past its deadline settled the run as a refusal
+  {
+    case: "for Claude settings the account worker could not read in time",
+    cause: "settings read timed out",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: undefined,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+  {
+    case: "for Claude settings the account worker failed to read",
+    cause: "settings read failed",
+    beforePrompt: true,
+    pause: undefined,
+    sinceWakeMs: undefined,
+    class: "provider_error",
+    code: null,
+  },
   // Refusals only the user can fix win over a sleep or a wake.
   {
     case: "30 seconds after a wake, for an account the provider turned away",
@@ -4167,6 +4187,14 @@ effectIt.effect.each([
       "missing --append-system-prompt text": new ClaudeAppendSystemPromptMissingValueError({
         flag: "--append-system-prompt",
       }),
+      "settings read timed out": new ClaudeSettingsResolveError({
+        phase: "account-worker",
+        kind: "timeout",
+      }),
+      "settings read failed": new ClaudeSettingsResolveError({
+        phase: "account-worker",
+        kind: "nonzero-exit",
+      }),
     } as const;
     const cause = Object.hasOwn(causes, row.cause)
       ? causes[row.cause as keyof typeof causes]
@@ -4204,6 +4232,8 @@ effectIt.effect.each([
       },
       "MCP registration timed out": { message: registrationTimeout.message },
       "missing --append-system-prompt text": { message: cause.message },
+      "settings read timed out": { message: cause.message },
+      "settings read failed": { message: cause.message },
     } as const;
     expect(failures).toEqual([
       expect.objectContaining({
@@ -4590,4 +4620,1330 @@ effectIt.effect("rejects citation expansion before opening a provider session", 
     ]);
     expect(harness.projection().messages[0]?.text).toBe(text);
   }),
+);
+
+function makeUsageLimitFailoverHarness(input: {
+  readonly prompt?: string;
+  readonly failoverLimitedThreads?: boolean;
+  readonly willRetry?: boolean;
+  readonly startedThread?: {
+    readonly nativeThreadId?: string;
+    readonly itemIdentityVersion?: 2;
+  };
+  readonly accountsWithRoom?: ReadonlyArray<{
+    readonly instanceId: ProviderInstanceId;
+    readonly model: string;
+    readonly mcpSignInsNeeded?: ReadonlyArray<string>;
+    readonly onCredits?: boolean;
+  }>;
+  readonly openUsageLimitInstances?: ReadonlySet<ProviderInstanceId>;
+  readonly ensureUsageLimitInstances?: ReadonlySet<ProviderInstanceId>;
+  readonly resumeUsageLimitInstances?: ReadonlySet<ProviderInstanceId>;
+  readonly usageLimitDetailsByInstance?: ReadonlyMap<
+    ProviderInstanceId,
+    {
+      readonly code?: string;
+      readonly message?: string;
+      readonly resetAt?: string;
+      readonly modelScope?: string;
+    }
+  >;
+  readonly openNonLimitErrors?: ReadonlyMap<ProviderInstanceId, Error>;
+  readonly ensureNonLimitErrors?: ReadonlyMap<ProviderInstanceId, Error>;
+  readonly resumeNonLimitErrors?: ReadonlyMap<ProviderInstanceId, Error>;
+  readonly creditRefusal?: (input: {
+    readonly threadId: ThreadId;
+    readonly instanceId: ProviderInstanceId;
+    readonly model: string;
+  }) => Effect.Effect<AccountRouting.CreditRefusal | null>;
+  readonly adapterMetadataByInstance?: ReadonlyMap<
+    ProviderInstanceId,
+    {
+      readonly driver?: ProviderDriverKind;
+      readonly continuationKey: string;
+      readonly supportsMultipleProviderThreadsPerSession?: boolean;
+    }
+  >;
+  readonly modelContextWindowByInstance?: ReadonlyMap<ProviderInstanceId, number>;
+  readonly prepareProviderHandoff?: ContextHandoffService.ContextHandoffServiceV2Shape["prepareProviderHandoff"];
+  readonly getTurnStartHistory?: (
+    callIndex: number,
+  ) => Effect.Effect<
+    ReadonlyArray<OrchestrationV2ThreadProjection["turnItems"][number]>,
+    ProjectionStore.ProjectionStoreV2Error
+  >;
+  readonly onOpen?: (
+    instanceId: ProviderInstanceId,
+    mutateProjection: (
+      updater: (current: OrchestrationV2ThreadProjection) => OrchestrationV2ThreadProjection,
+    ) => void,
+  ) => void;
+  readonly rejectRunningCommit?: boolean;
+  readonly failFirstRunningCommit?: boolean;
+}) {
+  let failFirstRunningCommitPending = input.failFirstRunningCommit === true;
+  const now = DateTime.makeUnsafe("2026-11-27T00:00:00.000Z");
+  const threadId = ThreadId.make("thread-failover-1");
+  const projectId = ProjectId.make("project-failover-1");
+  const priorRunId = RunId.make("run-failover-0");
+  const priorAttemptId = RunAttemptId.make("attempt-failover-0");
+  const priorRootNodeId = NodeId.make("node-failover-0");
+  const priorMessageId = MessageId.make("message-failover-0");
+  const runId = RunId.make("run-failover-1");
+  const attemptId = RunAttemptId.make("attempt-failover-1");
+  const rootNodeId = NodeId.make("node-failover-1");
+  const messageId = MessageId.make("message-failover-1");
+  const checkpointScopeId = CheckpointScopeId.make("scope-failover-1");
+  const providerThreadId = ProviderThreadId.make("provider-thread-failover-1");
+  const initialSessionId = ProviderSessionId.make("provider-session-account-a");
+  const driver = ProviderDriverKind.make("codex");
+  const accountA = ProviderInstanceId.make("codex-account-a");
+  const model = "gpt-5.4";
+  const prompt = input.prompt ?? "Fix the parser bug";
+  const isStarted = input.startedThread !== undefined;
+  const runOrdinal = isStarted ? 2 : 1;
+
+  const makeUsageLimitError = (instanceId: ProviderInstanceId, sessionId: ProviderSessionId) => {
+    const details = input.usageLimitDetailsByInstance?.get(instanceId);
+    return new ProviderAdapter.ProviderAdapterOpenSessionError({
+      driver,
+      providerSessionId: sessionId,
+      failure: {
+        class: "usage_limit",
+        code: details?.code ?? "usage_limit_reached",
+        message: details?.message ?? `Usage limit reached on ${instanceId}`,
+        retryable: null,
+        resetAt: details?.resetAt ?? "2099-01-01T00:00:00.000Z",
+        ...(details?.modelScope === undefined ? {} : { modelScope: details.modelScope }),
+      },
+    });
+  };
+
+  const priorRun: OrchestrationV2ThreadProjection["runs"][number] = {
+    id: priorRunId,
+    threadId,
+    ordinal: 1,
+    providerInstanceId: accountA,
+    modelSelection: { instanceId: accountA, model },
+    providerThreadId,
+    userMessageId: priorMessageId,
+    rootNodeId: priorRootNodeId,
+    activeAttemptId: priorAttemptId,
+    status: "completed",
+    requestedAt: DateTime.subtract(now, { minutes: 5 }),
+    startedAt: DateTime.subtract(now, { minutes: 5 }),
+    completedAt: DateTime.subtract(now, { minutes: 4 }),
+    checkpointId: null,
+    contextHandoffId: null,
+  };
+  const run: OrchestrationV2ThreadProjection["runs"][number] = {
+    id: runId,
+    threadId,
+    ordinal: runOrdinal,
+    providerInstanceId: accountA,
+    modelSelection: { instanceId: accountA, model },
+    providerThreadId,
+    userMessageId: messageId,
+    rootNodeId,
+    activeAttemptId: attemptId,
+    status: "starting",
+    requestedAt: now,
+    startedAt: null,
+    completedAt: null,
+    checkpointId: null,
+    contextHandoffId: null,
+  };
+  const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
+    id: providerThreadId,
+    driver,
+    providerInstanceId: accountA,
+    providerSessionId: initialSessionId,
+    appThreadId: threadId,
+    ownerNodeId: null,
+    nativeThreadRef: isStarted
+      ? {
+          driver,
+          nativeId: input.startedThread.nativeThreadId ?? "native-account-a",
+          strength: "strong",
+        }
+      : null,
+    nativeConversationHeadRef: null,
+    ...(input.startedThread?.itemIdentityVersion === undefined
+      ? {}
+      : {
+          nativeMetadata: {
+            itemIdentityVersion: input.startedThread.itemIdentityVersion,
+          },
+        }),
+    status: isStarted ? "active" : "not_loaded",
+    firstRunOrdinal: 1,
+    lastRunOrdinal: runOrdinal,
+    handoffIds: [],
+    forkedFrom: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  let projection: OrchestrationV2ThreadProjection = {
+    thread: {
+      id: threadId,
+      projectId,
+      title: "Failover test thread",
+      providerInstanceId: accountA,
+      modelSelection: { instanceId: accountA, model },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: providerThreadId,
+      lineage: {
+        parentThreadId: null,
+        rootThreadId: threadId,
+        relationshipToParent: null,
+      },
+      forkedFrom: null,
+      createdBy: "user",
+      creationSource: "web",
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      lastVisitedAt: null,
+      deletedAt: null,
+    },
+    messages: [
+      ...(isStarted
+        ? [
+            {
+              id: priorMessageId,
+              threadId,
+              runId: priorRunId,
+              nodeId: priorRootNodeId,
+              role: "user" as const,
+              text: "Earlier prompt from run 1",
+              attachments: [],
+              streaming: false,
+              createdBy: "user" as const,
+              creationSource: "web" as const,
+              createdAt: DateTime.subtract(now, { minutes: 5 }),
+              updatedAt: DateTime.subtract(now, { minutes: 5 }),
+            },
+          ]
+        : []),
+      {
+        id: messageId,
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        role: "user",
+        text: prompt,
+        attachments: [],
+        streaming: false,
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    runs: isStarted ? [priorRun, run] : [run],
+    attempts: [
+      {
+        id: attemptId,
+        runId,
+        attemptOrdinal: 1,
+        rootNodeId,
+        providerInstanceId: accountA,
+        providerThreadId,
+        providerTurnId: null,
+        reason: "initial",
+        status: "pending",
+        startedAt: null,
+        completedAt: null,
+      },
+    ],
+    nodes: [
+      {
+        id: rootNodeId,
+        threadId,
+        runId,
+        parentNodeId: null,
+        rootNodeId,
+        kind: "root_turn",
+        status: "pending",
+        countsForRun: true,
+        providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId,
+        startedAt: null,
+        completedAt: null,
+      },
+    ],
+    providerSessions: [],
+    providerThreads: [providerThread],
+    providerTurns: [],
+    turnItems: [],
+    visibleTurnItems: [],
+    runtimeRequests: [],
+    subagents: [],
+    plans: [],
+    contextHandoffs: [],
+    contextTransfers: [],
+    checkpointScopes: [
+      {
+        id: checkpointScopeId,
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        parentScopeId: null,
+        providerThreadId,
+        kind: "root_run",
+        ordinalWithinParent: 0,
+        advancesAppRunCount: true,
+        cwd: "/tmp/failover-workspace",
+        createdAt: now,
+      },
+    ],
+    checkpoints: [],
+    updatedAt: now,
+  };
+
+  const events: Array<OrchestrationV2DomainEvent> = [];
+  const openedInstances: Array<ProviderInstanceId> = [];
+  const openCalls: Array<{
+    readonly instanceId: ProviderInstanceId;
+    readonly providerSessionId: ProviderSessionId;
+    readonly initialNativeThreadId?: string;
+    readonly initialProviderItemIdentityVersion?: number;
+  }> = [];
+  const resumedInstances: Array<{
+    readonly instanceId: ProviderInstanceId;
+    readonly nativeThreadId: string | null;
+  }> = [];
+  const startedTurns: Array<{
+    readonly instanceId: ProviderInstanceId;
+    readonly text: string;
+  }> = [];
+  const recordedSilentRefusals: Array<
+    Parameters<ProjectionStore.ProjectionStoreV2Shape["recordUsageLimitRefusal"]>[0]
+  > = [];
+  const refreshedInstances: Array<ProviderInstanceId> = [];
+  const refreshDeferreds = new Map<ProviderInstanceId, Deferred.Deferred<void>>();
+  const getRefreshDeferred = (instanceId: ProviderInstanceId) => {
+    let deferred = refreshDeferreds.get(instanceId);
+    if (deferred === undefined) {
+      deferred = Deferred.makeUnsafe<void>();
+      refreshDeferreds.set(instanceId, deferred);
+    }
+    return deferred;
+  };
+  const detach = vi.fn<ProviderSessionManager.ProviderSessionManagerV2Shape["detach"]>(
+    () => Effect.void,
+  );
+  const refreshInstance = vi.fn((instanceId: ProviderInstanceId) => {
+    refreshedInstances.push(instanceId);
+    return Deferred.succeed(getRefreshDeferred(instanceId), undefined).pipe(Effect.as([]));
+  });
+  const recordUsageLimitRefusal = vi.fn<
+    ProjectionStore.ProjectionStoreV2Shape["recordUsageLimitRefusal"]
+  >((refusal) =>
+    Effect.sync(() => {
+      recordedSilentRefusals.push(refusal);
+    }),
+  );
+  const accountsWithRoom = vi.fn(() =>
+    Effect.succeed(
+      (input.accountsWithRoom ?? []).map((candidate) => ({
+        instanceId: candidate.instanceId,
+        model: candidate.model,
+        mcpSignInsNeeded: candidate.mcpSignInsNeeded ?? [],
+        onCredits: candidate.onCredits ?? false,
+      })),
+    ),
+  );
+  let historyCallCount = 0;
+
+  const open = vi.fn<ProviderSessionManager.ProviderSessionManagerV2Shape["open"]>(
+    ({
+      providerSessionId,
+      modelSelection,
+      initialNativeThreadId,
+      initialProviderItemIdentityVersion,
+    }) => {
+      const instanceId = modelSelection.instanceId;
+      openedInstances.push(instanceId);
+      openCalls.push({
+        instanceId,
+        providerSessionId,
+        ...(initialNativeThreadId === undefined ? {} : { initialNativeThreadId }),
+        ...(initialProviderItemIdentityVersion === undefined
+          ? {}
+          : { initialProviderItemIdentityVersion }),
+      });
+      input.onOpen?.(instanceId, (updater) => {
+        projection = updater(projection);
+      });
+      const openNonLimitError = input.openNonLimitErrors?.get(instanceId);
+      if (openNonLimitError !== undefined) {
+        return Effect.fail(
+          new ProviderSessionManager.ProviderSessionOpenError({
+            instanceId,
+            providerSessionId,
+            cause: openNonLimitError,
+          }),
+        );
+      }
+      if (input.openUsageLimitInstances?.has(instanceId)) {
+        return Effect.fail(
+          new ProviderSessionManager.ProviderSessionOpenError({
+            instanceId,
+            providerSessionId,
+            cause: makeUsageLimitError(instanceId, providerSessionId),
+          }),
+        );
+      }
+      const ensureThread = vi.fn(
+        (ensureInput: {
+          readonly existingProviderThread?: OrchestrationV2ThreadProjection["providerThreads"][number];
+        }) => {
+          const ensureNonLimitError = input.ensureNonLimitErrors?.get(instanceId);
+          if (ensureNonLimitError !== undefined) {
+            return Effect.fail(ensureNonLimitError as never);
+          }
+          if (input.ensureUsageLimitInstances?.has(instanceId)) {
+            return Effect.fail(makeUsageLimitError(instanceId, providerSessionId));
+          }
+          const baseThread = ensureInput.existingProviderThread ?? providerThread;
+          return Effect.succeed({
+            ...baseThread,
+            providerInstanceId: instanceId,
+            providerSessionId,
+            nativeThreadRef: {
+              driver,
+              nativeId: `native-${instanceId}`,
+              strength: "strong" as const,
+            },
+            status: "active" as const,
+          });
+        },
+      );
+      const resumeThread = vi.fn(
+        (resumeInput: {
+          readonly providerThread: OrchestrationV2ThreadProjection["providerThreads"][number];
+        }) => {
+          resumedInstances.push({
+            instanceId,
+            nativeThreadId: resumeInput.providerThread.nativeThreadRef?.nativeId ?? null,
+          });
+          const resumeNonLimitError = input.resumeNonLimitErrors?.get(instanceId);
+          if (resumeNonLimitError !== undefined) {
+            return Effect.fail(resumeNonLimitError as never);
+          }
+          if (input.resumeUsageLimitInstances?.has(instanceId)) {
+            return Effect.fail(makeUsageLimitError(instanceId, providerSessionId));
+          }
+          return Effect.succeed({
+            ...resumeInput.providerThread,
+            providerInstanceId: instanceId,
+            providerSessionId,
+            status: "active" as const,
+          });
+        },
+      );
+      const startTurn = vi.fn((turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) => {
+        startedTurns.push({ instanceId, text: turnInput.message.text });
+        return Effect.void;
+      });
+      const contextWindow = input.modelContextWindowByInstance?.get(instanceId);
+      return Effect.succeed({
+        driver,
+        providerSession: {
+          id: providerSessionId,
+          driver,
+          providerInstanceId: instanceId,
+          status: "ready" as const,
+          cwd: "/tmp/failover-workspace",
+          model: null,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        },
+        ...(contextWindow === undefined ? {} : { getModelContextWindow: () => contextWindow }),
+        ensureThread,
+        resumeThread,
+        startTurn,
+      } as never);
+    },
+  );
+
+  const startRootRun = vi.fn<
+    (runInput: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
+  >((runInput) =>
+    Effect.gen(function* () {
+      const turn = yield* runInput.prepareTurn!(
+        {
+          ...runInput,
+        } as never,
+        false,
+      );
+      yield* runInput.session
+        .startTurn(turn.turnInput)
+        .pipe(Effect.tapError(turn.notAccepted), Effect.andThen(turn.accepted));
+    }).pipe(Effect.orDie),
+  );
+
+  const writeIfRunCurrent = vi.fn(({ events: incoming, activeAttemptId, expectedStatus }) =>
+    Effect.suspend(() => {
+      const current = projection.runs.find((candidate) => candidate.id === runId);
+      const isRunningTransition = incoming.some(
+        (event: OrchestrationV2DomainEvent) =>
+          event.type === "run.updated" && event.payload.status === "running",
+      );
+      if (isRunningTransition && failFirstRunningCommitPending) {
+        failFirstRunningCommitPending = false;
+        return Effect.fail(
+          new EventSink.EventSinkWriteError({
+            eventCount: incoming.length,
+            cause: "transient sqlite busy",
+          }),
+        );
+      }
+      const committed =
+        !(input.rejectRunningCommit === true && isRunningTransition) &&
+        current !== undefined &&
+        current.activeAttemptId === activeAttemptId &&
+        current.status === expectedStatus;
+      if (committed) {
+        for (const event of incoming) {
+          expect(isDomainEvent(event)).toBe(true);
+          events.push(event);
+          projection = ProjectionStore.applyToProjection(projection, event);
+        }
+      }
+      return Effect.succeed({ committed, storedEvents: [] });
+    }),
+  );
+
+  const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
+          prepareProviderHandoff:
+            input.prepareProviderHandoff ??
+            ((handoff) =>
+              isStarted
+                ? Effect.succeed({
+                    ...handoff,
+                    id: ContextHandoffId.make(`failover-handoff-${handoff.toProviderInstanceId}`),
+                    createdByProviderInstanceId: handoff.toProviderInstanceId,
+                    status: "ready",
+                    summaryMessageId: null,
+                    summaryText: "SUMMARY_FROM_RUN_1",
+                    updatedAt: handoff.createdAt,
+                  })
+                : Effect.die("unexpected handoff on first turn")),
+        }),
+        Layer.mock(EventSink.EventSinkV2)({
+          writeIfRunCurrent,
+          write: ({ events: incoming }) =>
+            Effect.sync(() => {
+              for (const event of incoming) {
+                expect(isDomainEvent(event)).toBe(true);
+                events.push(event);
+                projection = ProjectionStore.applyToProjection(projection, event);
+              }
+              return [];
+            }),
+        }),
+        IdAllocator.layer,
+        NodePath.layer,
+        Layer.mock(ServerConfig.ServerConfig)({
+          worktreesDir: managedWorktreesDir,
+          stateDir: `${managedWorktreesDir}/../state`,
+        } as ServerConfig.ServerConfig["Service"]),
+        ServerSettings.layerTest({
+          failoverLimitedThreads: input.failoverLimitedThreads ?? true,
+        }),
+        ProviderSkillsTestkit.layer,
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([]),
+          refreshInstance,
+        }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+          getMetadata: (instanceId) => {
+            const meta = input.adapterMetadataByInstance?.get(instanceId);
+            return Effect.succeed({
+              driver: meta?.driver ?? driver,
+              continuationKey: meta?.continuationKey ?? `key:${instanceId}`,
+              enabled: true,
+              capabilities: {
+                ...CodexProviderCapabilitiesV2,
+                sessions: {
+                  ...CodexProviderCapabilitiesV2.sessions,
+                  supportsMultipleProviderThreadsPerSession:
+                    meta?.supportsMultipleProviderThreadsPerSession ??
+                    CodexProviderCapabilitiesV2.sessions.supportsMultipleProviderThreadsPerSession,
+                },
+              },
+            });
+          },
+        }),
+        Layer.mock(AccountRouting.AccountRouting)({
+          accountsWithRoom,
+          creditRefusal: input.creditRefusal ?? (() => Effect.succeed(null)),
+        }),
+        FileSystem.layerNoop({ exists: () => Effect.succeed(true) }),
+        Layer.mock(GitWorkflow.GitWorkflowService)({}),
+        Layer.mock(ProjectService.ProjectService)({
+          getById: () => Effect.succeedSome({ workspaceRoot: "/tmp/failover-workspace" } as never),
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUsageLimitedProviderInstances: () => Effect.succeed(new Map()),
+          getForkSourceRunIds: () => Effect.succeed([]),
+          recordUsageLimitRefusal,
+          getThreadRecords: () => Effect.succeed(projection),
+          getTurnStartContext: () => Effect.succeed({ ...projection, hasConversation: true }),
+          getRuntimeRecoveryProjection: () =>
+            Effect.succeed({ ...projection, hasConversation: true }),
+          getRun: (_threadId, id) =>
+            Effect.succeed(projection.runs.find((candidate) => candidate.id === id)),
+          getTurnStartHistory: () =>
+            input.getTurnStartHistory
+              ? input.getTurnStartHistory(historyCallCount++)
+              : Effect.succeed([]),
+        }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          open,
+          detach,
+          releaseIfSilent: () => Effect.succeed(false),
+          isLive: () => Effect.succeed(false),
+          get: () => Effect.succeedNone,
+        }),
+        Layer.mock(ProviderAuthService.ProviderAuthService)({
+          tryHandlePromptCommand: () => Effect.succeed(false),
+        }),
+        Layer.mock(RunExecutionService.RunExecutionServiceV2)({
+          startRootRun,
+          forkBaseline: () => Effect.succeed(Effect.void),
+        }),
+        Layer.succeed(ProviderUsageAnalytics.ProviderTurnAnalytics, {
+          runStarted: () => Effect.void,
+          turnCompleted: () => Effect.void,
+          runSettled: () => Effect.void,
+        }),
+        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+          runForThread: () => Effect.succeed({ status: "no-script" }),
+        }),
+        Layer.mock(ThreadWorktreeRestore)({ takeRecreated: () => Effect.undefined }),
+        Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
+        layerNoTaskFolders,
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: ({ thread }) =>
+            Effect.succeed({
+              cwd: "/tmp/failover-workspace",
+              runtimeMode: thread.runtimeMode,
+            } as never),
+        }),
+      ),
+    ),
+  );
+
+  const runWithService = <A, E>(
+    fn: (service: ProviderTurnStart.ProviderTurnStartServiceV2["Service"]) => Effect.Effect<A, E>,
+  ) =>
+    Effect.flatMap(ProviderTurnStart.ProviderTurnStartServiceV2, fn).pipe(
+      Effect.provide(layer),
+      Effect.provideService(ProviderTurnStart.HostLoadPerCpu, Effect.succeed(0)),
+      Effect.provideService(AwakeSinceWake, Effect.void),
+    );
+
+  return {
+    threadId,
+    runId,
+    providerThreadId,
+    accountA,
+    initialSessionId,
+    open,
+    openCalls,
+    detach,
+    refreshInstance,
+    awaitRefresh: (instanceId: ProviderInstanceId) =>
+      Deferred.await(getRefreshDeferred(instanceId)),
+    recordUsageLimitRefusal,
+    recordedSilentRefusals,
+    refreshedInstances,
+    accountsWithRoom,
+    startRootRun,
+    openedInstances,
+    resumedInstances,
+    startedTurns,
+    events,
+    projection: () => projection,
+    runWithService,
+    start: runWithService((service) =>
+      service.start({
+        threadId,
+        runId,
+        ...(input.willRetry === undefined ? {} : { willRetry: input.willRetry }),
+      }),
+    ),
+  };
+}
+
+effectIt.effect(
+  "transparently fails over to an eligible alternate account on immediate open usage_limit refusal without emitting a failure item",
+  () =>
+    Effect.gen(function* () {
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const harness = makeUsageLimitFailoverHarness({
+        prompt: "Fix the parser bug",
+        willRetry: true,
+        openUsageLimitInstances: new Set([ProviderInstanceId.make("codex-account-a")]),
+        accountsWithRoom: [
+          { instanceId: ProviderInstanceId.make("codex-account-a"), model: "gpt-5.4" },
+          { instanceId: accountB, model: "gpt-5.4" },
+        ],
+      });
+
+      yield* harness.start;
+      yield* harness.awaitRefresh(harness.accountA);
+
+      expect(harness.openedInstances).toEqual([harness.accountA, accountB]);
+      expect(harness.startedTurns).toEqual([{ instanceId: accountB, text: "Fix the parser bug" }]);
+      expect(harness.startedTurns[0]?.text).not.toContain(CONTINUE_PROMPT);
+      expect(harness.projection().thread.providerInstanceId).toBe(accountB);
+      expect(harness.projection().thread.modelSelection.instanceId).toBe(accountB);
+      expect(harness.projection().runs[0]?.status).toBe("running");
+      expect(harness.projection().runs[0]?.providerInstanceId).toBe(accountB);
+      expect(harness.projection().turnItems.filter((item) => item.type === "error")).toEqual([]);
+      expect(harness.events.some((event) => event.type === "thread.provider-switched")).toBe(true);
+      expect(harness.refreshInstance).toHaveBeenCalledWith(harness.accountA);
+      expect(harness.recordedSilentRefusals).toMatchObject([
+        {
+          providerInstanceId: harness.accountA,
+          resetAt: "2099-01-01T00:00:00.000Z",
+          code: "usage_limit_reached",
+        },
+      ]);
+    }),
+);
+
+effectIt.effect(
+  "detaches the refusing account session and fails over transparently when ensureThread refuses with usage_limit",
+  () =>
+    Effect.gen(function* () {
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const harness = makeUsageLimitFailoverHarness({
+        prompt: "Refactor the cache",
+        ensureUsageLimitInstances: new Set([ProviderInstanceId.make("codex-account-a")]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+      });
+
+      yield* harness.start;
+
+      expect(harness.openedInstances).toEqual([harness.accountA, accountB]);
+      expect(harness.detach).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerSessionId: harness.initialSessionId,
+          revokeMcpCredential: false,
+        }),
+      );
+      expect(harness.startedTurns).toEqual([{ instanceId: accountB, text: "Refactor the cache" }]);
+      expect(harness.projection().runs[0]?.status).toBe("running");
+      expect(harness.projection().runs[0]?.providerInstanceId).toBe(accountB);
+      expect(harness.projection().turnItems.filter((item) => item.type === "error")).toEqual([]);
+    }),
+);
+
+effectIt.effect(
+  "retries across up to two alternate accounts without retrying already-tried instances",
+  () =>
+    Effect.gen(function* () {
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const accountC = ProviderInstanceId.make("codex-account-c");
+      const harness = makeUsageLimitFailoverHarness({
+        prompt: "Run the migration",
+        openUsageLimitInstances: new Set([ProviderInstanceId.make("codex-account-a"), accountB]),
+        accountsWithRoom: [
+          { instanceId: ProviderInstanceId.make("codex-account-a"), model: "gpt-5.4" },
+          { instanceId: accountB, model: "gpt-5.4" },
+          { instanceId: accountC, model: "gpt-5.4" },
+        ],
+      });
+
+      yield* harness.start;
+
+      expect(harness.openedInstances).toEqual([harness.accountA, accountB, accountC]);
+      expect(harness.startedTurns).toEqual([{ instanceId: accountC, text: "Run the migration" }]);
+      expect(harness.projection().thread.providerInstanceId).toBe(accountC);
+      expect(harness.projection().runs[0]?.status).toBe("running");
+      expect(harness.projection().turnItems.filter((item) => item.type === "error")).toEqual([]);
+      expect(harness.recordedSilentRefusals.map((r) => r.providerInstanceId)).toEqual([
+        harness.accountA,
+        accountB,
+      ]);
+    }),
+);
+
+effectIt.effect(
+  "caps transparent in-run usage_limit failovers at two retries and settles cleanly on the original account with its original error",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const accountC = ProviderInstanceId.make("codex-account-c");
+      const accountD = ProviderInstanceId.make("codex-account-d");
+      const harness = makeUsageLimitFailoverHarness({
+        openUsageLimitInstances: new Set([accountA, accountB, accountC]),
+        usageLimitDetailsByInstance: new Map([
+          [
+            accountA,
+            {
+              code: "account_a_limit",
+              message: "Account A primary quota reached",
+              resetAt: "2099-01-01T01:00:00.000Z",
+            },
+          ],
+          [
+            accountB,
+            {
+              code: "account_b_limit",
+              message: "Account B quota reached",
+              resetAt: "2099-01-01T02:00:00.000Z",
+            },
+          ],
+          [
+            accountC,
+            {
+              code: "account_c_limit",
+              message: "Account C quota reached",
+              resetAt: "2099-01-01T03:00:00.000Z",
+            },
+          ],
+        ]),
+        accountsWithRoom: [
+          { instanceId: accountB, model: "gpt-5.4" },
+          { instanceId: accountC, model: "gpt-5.4" },
+          { instanceId: accountD, model: "gpt-5.4" },
+        ],
+      });
+
+      yield* harness.start;
+      yield* harness.awaitRefresh(accountA);
+      yield* harness.awaitRefresh(accountB);
+      yield* harness.awaitRefresh(accountC);
+
+      expect(harness.openedInstances).toEqual([accountA, accountB, accountC]);
+      expect(harness.startedTurns).toEqual([]);
+      expect(harness.events.some((event) => event.type === "thread.provider-switched")).toBe(false);
+      expect(harness.projection().thread.providerInstanceId).toBe(accountA);
+      expect(harness.projection().runs[0]?.status).toBe("failed");
+      expect(harness.projection().runs[0]?.providerInstanceId).toBe(accountA);
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "usage_limit",
+            code: "account_a_limit",
+            message: "Account A primary quota reached",
+            resetAt: "2099-01-01T01:00:00.000Z",
+          },
+        },
+      ]);
+      // Alternate accounts B and C had their refusals durably recorded even though settlement blames A.
+      expect(harness.recordedSilentRefusals).toMatchObject([
+        { providerInstanceId: accountA, code: "account_a_limit" },
+        { providerInstanceId: accountB, code: "account_b_limit" },
+        { providerInstanceId: accountC, code: "account_c_limit" },
+      ]);
+    }),
+);
+
+effectIt.effect(
+  "preserves the original account usage_limit error and detaches the alternate session when failover hits a non-limit error",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const harness = makeUsageLimitFailoverHarness({
+        willRetry: true,
+        openUsageLimitInstances: new Set([accountA]),
+        usageLimitDetailsByInstance: new Map([
+          [
+            accountA,
+            {
+              code: "account_a_limit",
+              message: "Account A reached its limit",
+              resetAt: "2099-01-01T04:00:00.000Z",
+            },
+          ],
+        ]),
+        ensureNonLimitErrors: new Map([
+          [
+            accountB,
+            new ProviderAdapter.ProviderAdapterTurnStartError({
+              driver: ProviderDriverKind.make("codex"),
+              threadId: ThreadId.make("thread-failover-1"),
+              providerThreadId: ProviderThreadId.make("provider-thread-failover-1"),
+              runId: RunId.make("run-failover-1"),
+              cause: new Error("ECONNRESET on account B"),
+            }),
+          ],
+        ]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+      });
+
+      yield* harness.start;
+
+      const bSessionId = harness.openCalls.find(
+        (call) => call.instanceId === accountB,
+      )?.providerSessionId;
+      expect(bSessionId).toBeDefined();
+      expect(harness.detach).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerSessionId: bSessionId,
+          revokeMcpCredential: false,
+        }),
+      );
+      expect(harness.events.some((event) => event.type === "thread.provider-switched")).toBe(false);
+      expect(harness.projection().thread.providerInstanceId).toBe(accountA);
+      expect(harness.projection().runs[0]?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "usage_limit",
+            code: "account_a_limit",
+            message: "Account A reached its limit",
+            resetAt: "2099-01-01T04:00:00.000Z",
+          },
+        },
+      ]);
+      // B failed with a non-limit error, so B must not be recorded as usage-limited.
+      expect(harness.recordedSilentRefusals.map((r) => r.providerInstanceId)).toEqual([accountA]);
+    }),
+);
+
+effectIt.effect(
+  "preserves concurrent thread edits and newer next-turn modelSelection when emitting thread.provider-switched",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const accountZ = ProviderInstanceId.make("codex-account-z");
+      const pinnedAt = DateTime.makeUnsafe("2026-11-27T00:01:00.000Z");
+      const archivedAt = DateTime.makeUnsafe("2026-11-27T00:02:00.000Z");
+      const snoozedUntil = DateTime.makeUnsafe("2026-11-27T05:00:00.000Z");
+
+      const harness = makeUsageLimitFailoverHarness({
+        openUsageLimitInstances: new Set([accountA]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+        onOpen: (instanceId, mutateProjection) => {
+          if (instanceId !== accountB) return;
+          mutateProjection((current) => ({
+            ...current,
+            thread: {
+              ...current.thread,
+              title: "User renamed thread in flight",
+              pinnedAt,
+              archivedAt,
+              snoozedUntil,
+              runtimeMode: "approval-required",
+              modelSelection: { instanceId: accountZ, model: "gpt-5.4-mini" },
+            },
+          }));
+        },
+      });
+
+      yield* harness.start;
+
+      const switchedEvent = harness.events.find(
+        (event) => event.type === "thread.provider-switched",
+      );
+      expect(switchedEvent).toBeDefined();
+      expect(harness.projection().thread.title).toBe("User renamed thread in flight");
+      expect(harness.projection().thread.pinnedAt).toEqual(pinnedAt);
+      expect(harness.projection().thread.archivedAt).toEqual(archivedAt);
+      expect(harness.projection().thread.snoozedUntil).toEqual(snoozedUntil);
+      expect(harness.projection().thread.runtimeMode).toBe("approval-required");
+      expect(harness.projection().thread.modelSelection).toEqual({
+        instanceId: accountZ,
+        model: "gpt-5.4-mini",
+      });
+      expect(harness.projection().runs[0]?.providerInstanceId).toBe(accountB);
+      expect(harness.startedTurns).toEqual([{ instanceId: accountB, text: "Fix the parser bug" }]);
+    }),
+);
+
+effectIt.effect(
+  "creates a separate providerThread row with recovery handoff on a started thread without native resume and preserves the original account row",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const harness = makeUsageLimitFailoverHarness({
+        prompt: "Continue working on the parser",
+        startedThread: {
+          nativeThreadId: "native-account-a",
+          itemIdentityVersion: 2,
+        },
+        resumeUsageLimitInstances: new Set([accountA]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+        adapterMetadataByInstance: new Map([
+          [accountA, { continuationKey: "codex-home-a" }],
+          [accountB, { continuationKey: "codex-home-b" }],
+        ]),
+      });
+
+      yield* harness.start;
+
+      const bOpenCall = harness.openCalls.find((call) => call.instanceId === accountB);
+      expect(bOpenCall?.initialNativeThreadId).toBeUndefined();
+      expect(bOpenCall?.initialProviderItemIdentityVersion).toBeUndefined();
+
+      const finalProjection = harness.projection();
+      const rowA = finalProjection.providerThreads.find(
+        (row) => row.id === harness.providerThreadId,
+      );
+      const rowB = finalProjection.providerThreads.find(
+        (row) => row.providerInstanceId === accountB,
+      );
+      expect(rowA?.providerInstanceId).toBe(accountA);
+      expect(rowA?.nativeThreadRef?.nativeId).toBe("native-account-a");
+      expect(rowB).toBeDefined();
+      expect(rowB?.id).not.toBe(harness.providerThreadId);
+      expect(finalProjection.thread.activeProviderThreadId).toBe(rowB?.id);
+      const activeRun = finalProjection.runs.find((r) => r.id === harness.runId);
+      expect(activeRun?.providerThreadId).toBe(rowB?.id);
+      expect(finalProjection.attempts[0]?.providerThreadId).toBe(rowB?.id);
+      expect(finalProjection.nodes[0]?.providerThreadId).toBe(rowB?.id);
+      expect(harness.startedTurns).toHaveLength(1);
+      expect(harness.startedTurns[0]?.instanceId).toBe(accountB);
+      expect(harness.startedTurns[0]?.text).toContain("SUMMARY_FROM_RUN_1");
+    }),
+);
+
+effectIt.effect(
+  "never runs a started thread on a blank session when recovery handoff preparation fails",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const harness = makeUsageLimitFailoverHarness({
+        startedThread: { nativeThreadId: "native-account-a" },
+        resumeUsageLimitInstances: new Set([accountA]),
+        usageLimitDetailsByInstance: new Map([
+          [
+            accountA,
+            {
+              code: "account_a_limit",
+              message: "Account A limit reached",
+              resetAt: "2099-01-01T06:00:00.000Z",
+            },
+          ],
+        ]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+        adapterMetadataByInstance: new Map([
+          [accountA, { continuationKey: "codex-home-a" }],
+          [accountB, { continuationKey: "codex-home-b" }],
+        ]),
+        prepareProviderHandoff: (handoff) =>
+          Effect.fail(
+            new ContextHandoffService.ContextHandoffPrepareError({
+              threadId: handoff.threadId,
+              targetRunId: handoff.targetRunId,
+              fromProviderThreadIds: [...handoff.fromProviderThreadIds],
+              toProviderThreadId: handoff.toProviderThreadId,
+              cause: "handoff storage unavailable",
+            }),
+          ),
+      });
+
+      yield* harness.start;
+
+      const bSessionId = harness.openCalls.find(
+        (call) => call.instanceId === accountB,
+      )?.providerSessionId;
+      expect(bSessionId).toBeDefined();
+      expect(harness.detach).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerSessionId: bSessionId,
+          revokeMcpCredential: false,
+        }),
+      );
+      expect(harness.startedTurns).toEqual([]);
+      expect(harness.events.some((event) => event.type === "thread.provider-switched")).toBe(false);
+      expect(harness.projection().runs.find((r) => r.id === harness.runId)?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: {
+            class: "usage_limit",
+            code: "account_a_limit",
+            message: "Account A limit reached",
+          },
+        },
+      ]);
+    }),
+);
+
+effectIt.effect(
+  "detaches a non-resumable alternate whose handoff exceeds budget and falls back to a natively-resumable alternate",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const accountC = ProviderInstanceId.make("codex-account-c");
+      const harness = makeUsageLimitFailoverHarness({
+        startedThread: { nativeThreadId: "native-account-a" },
+        resumeUsageLimitInstances: new Set([accountA]),
+        accountsWithRoom: [
+          { instanceId: accountB, model: "gpt-5.4" },
+          { instanceId: accountC, model: "gpt-5.4" },
+        ],
+        adapterMetadataByInstance: new Map([
+          [accountA, { continuationKey: "shared-codex-home" }],
+          [accountB, { continuationKey: "isolated-codex-home" }],
+          [accountC, { continuationKey: "shared-codex-home" }],
+        ]),
+        // Make B's context window too small to fit the recovery handoff.
+        modelContextWindowByInstance: new Map([[accountB, 10]]),
+        prepareProviderHandoff: (handoff) =>
+          Effect.succeed({
+            ...handoff,
+            id: ContextHandoffId.make(`oversized-handoff-${handoff.toProviderInstanceId}`),
+            createdByProviderInstanceId: handoff.toProviderInstanceId,
+            status: "ready",
+            summaryMessageId: null,
+            summaryText: "X".repeat(20_000),
+            updatedAt: handoff.createdAt,
+          }),
+      });
+
+      yield* harness.start;
+
+      const bSessionId = harness.openCalls.find(
+        (call) => call.instanceId === accountB,
+      )?.providerSessionId;
+      expect(bSessionId).toBeDefined();
+      expect(harness.detach).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerSessionId: bSessionId,
+          revokeMcpCredential: false,
+        }),
+      );
+      expect(harness.resumedInstances).toEqual([
+        { instanceId: accountA, nativeThreadId: "native-account-a" },
+        { instanceId: accountC, nativeThreadId: "native-account-a" },
+      ]);
+      expect(harness.startedTurns).toEqual([{ instanceId: accountC, text: "Fix the parser bug" }]);
+      expect(harness.projection().thread.activeProviderThreadId).toBe(harness.providerThreadId);
+      expect(
+        harness.projection().runs.find((r) => r.id === harness.runId)?.providerInstanceId,
+      ).toBe(accountC);
+    }),
+);
+
+effectIt.effect(
+  "skips an alternate candidate when creditRefusal fails or defects instead of allowing spend",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const accountC = ProviderInstanceId.make("codex-account-c");
+      const harness = makeUsageLimitFailoverHarness({
+        openUsageLimitInstances: new Set([accountA]),
+        accountsWithRoom: [
+          { instanceId: accountB, model: "gpt-5.4" },
+          { instanceId: accountC, model: "gpt-5.4" },
+        ],
+        creditRefusal: ({ instanceId }) =>
+          instanceId === accountB
+            ? Effect.die(new Error("settings store unavailable"))
+            : Effect.succeed(null),
+      });
+
+      yield* harness.start;
+
+      expect(harness.openedInstances).toEqual([accountA, accountC]);
+      expect(harness.startedTurns).toEqual([{ instanceId: accountC, text: "Fix the parser bug" }]);
+    }),
+);
+
+effectIt.effect(
+  "tracks failover state across start() retries so willRetry cannot reset the two-retry cap",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const accountC = ProviderInstanceId.make("codex-account-c");
+      const accountD = ProviderInstanceId.make("codex-account-d");
+      const harness = makeUsageLimitFailoverHarness({
+        willRetry: true,
+        openUsageLimitInstances: new Set([accountA, accountC]),
+        accountsWithRoom: [
+          { instanceId: accountB, model: "gpt-5.4" },
+          { instanceId: accountC, model: "gpt-5.4" },
+          { instanceId: accountD, model: "gpt-5.4" },
+        ],
+        // On attempt 1, A fails over to B (failover retry #1), then committing the running transition
+        // fails transiently. On attempt 2 (start() retried by caller), failover state remembers B was
+        // tried and retry count = 1, so A fails over to C (failover retry #2) and hits the cap without
+        // ever touching D.
+        failFirstRunningCommit: true,
+      });
+
+      yield* harness.runWithService((service) =>
+        Effect.gen(function* () {
+          const first = yield* Effect.result(
+            service.start({
+              threadId: harness.threadId,
+              runId: harness.runId,
+              willRetry: true,
+            }),
+          );
+          expect(first._tag).toBe("Failure");
+
+          // Second call on the same runId must keep triedInstanceIds (including B) and retry count = 1.
+          yield* service.start({
+            threadId: harness.threadId,
+            runId: harness.runId,
+            willRetry: true,
+          });
+        }),
+      );
+
+      const bSessionId = harness.openCalls.find(
+        (call) => call.instanceId === accountB,
+      )?.providerSessionId;
+      expect(bSessionId).toBeDefined();
+      expect(harness.detach).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerSessionId: bSessionId,
+          revokeMcpCredential: false,
+        }),
+      );
+      expect(harness.openedInstances).toEqual([accountA, accountB, accountA, accountC]);
+      expect(harness.openedInstances).not.toContain(accountD);
+      expect(harness.projection().runs[0]?.status).toBe("failed");
+      expect(harness.projection().runs[0]?.providerInstanceId).toBe(accountA);
+    }),
+);
+
+effectIt.effect(
+  "derives a shared ProviderSessionId when the alternate adapter supports multiple provider threads per session",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const harness = makeUsageLimitFailoverHarness({
+        openUsageLimitInstances: new Set([accountA]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+        adapterMetadataByInstance: new Map([
+          [
+            accountB,
+            { continuationKey: "shared-b", supportsMultipleProviderThreadsPerSession: true },
+          ],
+        ]),
+      });
+
+      const expectedSharedSessionId = yield* Effect.map(IdAllocator.IdAllocatorV2, (allocator) =>
+        allocator.derive.providerSession({ providerInstanceId: accountB }),
+      ).pipe(Effect.provide(IdAllocator.layer));
+
+      yield* harness.start;
+
+      const bOpenCall = harness.openCalls.find((call) => call.instanceId === accountB);
+      expect(bOpenCall?.providerSessionId).toBe(expectedSharedSessionId);
+    }),
+);
+
+effectIt.effect(
+  "detaches the opened alternate session when committing the running transition is rejected",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const harness = makeUsageLimitFailoverHarness({
+        openUsageLimitInstances: new Set([accountA]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+        rejectRunningCommit: true,
+      });
+
+      yield* harness.start;
+
+      const bSessionId = harness.openCalls.find(
+        (call) => call.instanceId === accountB,
+      )?.providerSessionId;
+      expect(bSessionId).toBeDefined();
+      expect(harness.detach).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerSessionId: bSessionId,
+          revokeMcpCredential: false,
+        }),
+      );
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+    }),
+);
+
+effectIt.effect(
+  "falls through to the existing usage_limit failure when no alternate account has room",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeUsageLimitFailoverHarness({
+        openUsageLimitInstances: new Set([ProviderInstanceId.make("codex-account-a")]),
+        accountsWithRoom: [
+          { instanceId: ProviderInstanceId.make("codex-account-a"), model: "gpt-5.4" },
+        ],
+      });
+
+      yield* harness.start;
+
+      expect(harness.openedInstances).toEqual([harness.accountA]);
+      expect(harness.startedTurns).toEqual([]);
+      expect(harness.events.some((event) => event.type === "thread.provider-switched")).toBe(false);
+      expect(harness.projection().runs[0]?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: { class: "usage_limit", code: "usage_limit_reached" },
+        },
+      ]);
+    }),
+);
+
+effectIt.effect(
+  "does not switch accounts on immediate usage_limit refusal when failoverLimitedThreads is false",
+  () =>
+    Effect.gen(function* () {
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const harness = makeUsageLimitFailoverHarness({
+        failoverLimitedThreads: false,
+        openUsageLimitInstances: new Set([ProviderInstanceId.make("codex-account-a")]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+      });
+
+      yield* harness.start;
+
+      expect(harness.accountsWithRoom).not.toHaveBeenCalled();
+      expect(harness.openedInstances).toEqual([harness.accountA]);
+      expect(harness.startedTurns).toEqual([]);
+      expect(harness.events.some((event) => event.type === "thread.provider-switched")).toBe(false);
+      expect(harness.projection().runs[0]?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: { class: "usage_limit", code: "usage_limit_reached" },
+        },
+      ]);
+    }),
 );

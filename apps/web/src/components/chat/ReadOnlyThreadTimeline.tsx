@@ -7,6 +7,7 @@ import {
 import { createQuestionHistoryProjector } from "@t3tools/client-runtime/state/thread-requests";
 import {
   EnvironmentId,
+  type FoldFinishedWork,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
@@ -41,6 +42,7 @@ export function ReadOnlyThreadTimeline(props: {
   /** Keys the list. It holds no ":" so the timeline finds no environment thread behind it. */
   readonly threadKey: string;
   readonly projection: OrchestrationV2ThreadProjection;
+  readonly foldFinishedWork?: FoldFinishedWork;
   readonly historyControls: MessagesTimelineHistoryControls | undefined;
   /** Where expanded rows read an item's detail. */
   readonly turnItemSource: TurnItemSource;
@@ -120,6 +122,7 @@ export function ReadOnlyThreadTimeline(props: {
             markdownCwd={undefined}
             resolvedTheme={resolvedTheme}
             timestampFormat="locale"
+            foldFinishedWork={props.foldFinishedWork ?? "older"}
             workspaceRoot={undefined}
             anchorMessageId={null}
             onAnchorReady={ignore}

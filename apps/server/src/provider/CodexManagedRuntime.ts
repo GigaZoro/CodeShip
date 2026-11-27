@@ -100,6 +100,7 @@ export const makeCodexManagedRuntime = Effect.fn("makeCodexManagedRuntime")(func
             instanceId: options.instanceId,
             operation: "install",
             detail: "Set up managed Codex before starting a session.",
+            retryable: false,
           }),
       ),
     );

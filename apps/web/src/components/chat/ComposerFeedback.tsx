@@ -10,17 +10,18 @@ import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 
 export function feedbackBannerItem(
   submission: CodexFeedbackSubmission,
   onDismiss: () => void,
   resolve: typeof t = t,
-): ComposerBannerStackItem | null {
+): ThreadNotice | null {
   const notice = codexFeedbackNotice(submission, resolve);
   if (!notice) return null;
   return {
     id: `feedback:${submission.id}`,
+    producer: "feedback",
     variant:
       submission.status === "failed" ? "error" : submission.status === "sent" ? "success" : "info",
     icon: <MessageSquareIcon />,

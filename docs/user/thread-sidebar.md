@@ -110,6 +110,20 @@ folder is closed, or the thread is pinned or settled. Once you answer, the threa
 usual place. A failed run leaves when you retry it, settle it, or snooze it; a usage-limited run
 set to resume on its own is not listed.
 
+Triage the box from the keyboard: once a row has focus, `J` and `K` (or the arrow keys) move, `A`
+approves, `D` declines, `L` puts the thread off until later, `E` settles a failed run, `Enter`
+opens the thread and `Esc` returns to the chat. A hint row lists the keys while the box has focus,
+and **Settings → Keybindings** lists them too. Settling shows **Undo** for 8 seconds.
+
+Below the threads that need you, **Finished, not seen** lists threads you started that finished
+since you last opened them. They don't count toward the Needs you badges. Open one, settle it with
+`E`, or choose **Settle all** to settle them together, with **Undo** for 8 seconds. Mobile shows the
+same section with **Settle all** at the top of the thread list.
+
+When you come back after at least 15 minutes away and threads finished, or recovered on their own
+after a usage limit reset, **While you were away** at the top of the box says how many, and how
+many need you now. **Caught up** clears it until the next time you are away.
+
 Press `Mod+Shift+U`, or choose **Next thread that needs you** in the command palette, to open each
 waiting thread in turn. On mobile, the **N more need you** button above the composer does the same.
 The count also shows on the **Threads** icon in the side rail, the desktop dock or taskbar icon,
@@ -662,10 +676,13 @@ a reset time offer manual retry and the normal snooze choices.
 
 With two or more accounts for one provider, choose **Switch to another account,
 else resume when the limit resets** in **Settings → Threads → When a thread hits
-a usage limit**. Arrange the account order in **Settings → Providers & models**. When
+a usage limit**. Arrange the tie-break account order in **Settings → Providers & models**. When
 an account stops a turn on a limit with a reset time, or Claude holds the turn
-open until that reset, the thread continues on the first other signed-in account
-of that provider, in that order, that still has usage left. A reset less than
+open until that reset, the thread avoids accounts near their limit (soft-draining)
+and continues on the other signed-in account of that provider with the most
+remaining quota headroom (preferring accounts with a live usage reading over
+unread ones, and breaking ties by soonest weekly reset and then the saved account
+order). A reset less than
 five minutes away is waited out instead. An account that hit a limit is skipped
 until it resets. When the provider gives no reset, CodeShip holds the account for five
 hours from the refusal, or for its shortest reported usage window when that is shorter.
@@ -689,20 +706,23 @@ limit ends, whether a reset or a hold, with no usage check needed. Each provider
 signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits. With this on, a scheduled task whose account has hit
-its limit starts its new thread on the first other account with usage left, and
+its limit avoids soft-draining accounts and starts its new thread on the other
+healthy account whose weekly limit resets soonest (breaking ties by remaining
+headroom and then the saved account order), and
 its **Run history** says which account it used and why. **Usage → Limits** shows which
 account a limited thread continues on right now. When no other account has room, a
 thread waiting on an account whose banked reset was just redeemed continues there; see
 [Track subscription limits](usage.md#track-subscription-limits). When an
 account's login is rejected before the agent does any work, the thread sends its message
-again on the first other signed-in account with usage left, right away or as soon as one
-gets usage back within a day.
+again on the healthiest other signed-in account with usage left (avoiding soft-draining
+accounts and preferring the most remaining headroom, then soonest weekly reset and
+the saved order), right away or as soon as one gets usage back within a day.
 
 An account that must sign in to an MCP server again (such as ThreadPage, shown as a
 manual step on the provider) would start the chat without that server's tools. With
 account switching on, Auto, scheduled tasks and agent launches therefore prefer an
 account whose sign-ins are in place: a scheduled task that names such an account
-starts on the first other account with room and none to redo, an Auto chat moves
+starts on the best other account with room and none to redo, an Auto chat moves
 the same way, and a delegate whose parent chat runs on such an account starts on
 another one. When every account needs a sign-in, the chat stays where it is. Plugin
 servers and servers that can't be signed in to from CodeShip don't count.
@@ -726,10 +746,15 @@ coordinator. Then pick **Auto** at the top of the model picker, or turn on **Aut
 the default model in settings for new threads. A scheduled task's model can be Auto
 too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`,
 starts it there. A new thread starts on the first account in the primary provider's account
-order that can run in its project and has its coordinator model. With account switching enabled in **Settings → Threads**, it starts on the first
-signed-in one that has usage left, or, when none has, on the signed-in one whose limit ends
-first, and switches accounts at usage limits. A scheduled task on Auto starts its new thread on
-the account with usage left whose weekly limit resets soonest, so usage that would reset unused
+order that can run in its project and has its coordinator model. With account switching enabled in **Settings → Threads**, a new Auto thread avoids soft-draining accounts and starts on the healthy
+signed-in account with the most remaining quota headroom (preferring accounts with a live usage
+reading over unread ones, and breaking ties by soonest weekly reset and then the saved account
+order), or, when none has room, on the signed-in one whose limit ends
+first, and switches accounts at usage limits. Once started, an Auto thread stays on its current
+account to preserve prompt caches unless it hits a hard limit, would spend prepaid credits, or
+needs an MCP sign-in. A scheduled task on Auto avoids soft-draining accounts and starts its new
+thread on the healthy account whose weekly limit resets soonest (breaking ties by remaining
+headroom and then the saved account order), so usage that would reset unused
 is spent first. A thread whose account signed out moves the
 same way on its next message. The turn a
 finished background command starts stays on the account that ran the command,
@@ -790,8 +815,16 @@ Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
 finishes; the call's own result shows its status.
 
+A finished turn's tool calls fold into one summary row, such as "Worked for 8m · 14 tools ·
+6 files · 2 failed", so its final answer is in view; select the row to expand it. **Fold
+finished work** in **Settings → Chat & diffs** folds every finished turn (**Always**), every
+turn before your latest prompt (**Older turns**, the default), or none (**Never**). The turn
+still running and a turn that failed stay open. Mobile folds every finished turn.
+
 When you come back to a thread, a **New since your last visit** line marks where the work you
-have not seen begins. It follows the visit mark the server keeps, so reading a thread on one device
+have not seen begins, and says what changed meanwhile, such as "2 turns · finished · PR #88
+opened". On web and desktop, a dot on the conversation minimap marks the same place. The line
+follows the visit mark the server keeps, so reading a thread on one device
 moves it on the others. Older turns load as you scroll toward the top of a long thread; **Load
 earlier turns** loads them right away. Press `mod+alt+arrowup` and `mod+alt+arrowdown` to jump
 between your own prompts.

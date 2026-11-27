@@ -184,6 +184,25 @@ describe("subscription widget snapshots", () => {
     expect(snapshot.providers[0]?.detail).toBe("Subscription remaining");
     expect(snapshot.providers[0]?.windows[0]?.remaining).toBe(20);
   });
+  it("includes any provider reporting subscription usage limits and skips those without limits", () => {
+    const snapshot = buildSubscriptionUsageSnapshot(
+      presentations([
+        provider({
+          instanceId: ProviderInstanceId.make("antigravity"),
+          driver: ProviderDriverKind.make("antigravity"),
+        }),
+        provider({
+          instanceId: ProviderInstanceId.make("pi"),
+          driver: ProviderDriverKind.make("pi"),
+          usageLimits: undefined,
+        }),
+      ]),
+      deepLink,
+    );
+    expect(snapshot.checkedAt).toBe(now);
+    expect(snapshot.providers.map((entry) => entry.name)).toEqual(["Antigravity"]);
+    expect(snapshot.providers[0]?.windows[0]?.remaining).toBe(60);
+  });
 });
 
 describe("subscription widget expiry", () => {

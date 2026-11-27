@@ -1,6 +1,7 @@
 import * as NodeSqlite from "node:sqlite";
 
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import {
   CheckpointId,
   CheckpointRef,
@@ -3087,11 +3088,13 @@ it.effect("settling a native child rejects while its parent's task on it works a
       });
     }
     // A provider-native subagent's turns run on its parent's run and never touch its own thread.
-    const recordTask = (status: "running" | "completed", at: DateTime.Utc) => {
+    const recordTask = (status: "running" | "completed", at: DateTime.Utc, result = "Done") => {
       const id = NodeId.make("node:settle-child-task");
       const driver = ProviderDriverKind.make("codex");
       return projections.apply({
-        id: EventId.make(`event:settle-child-task:${status}:${DateTime.toEpochMillis(at)}`),
+        id: EventId.make(
+          `event:settle-child-task:${status}:${DateTime.toEpochMillis(at)}:${result}`,
+        ),
         type: "subagent.updated",
         threadId: parentThreadId,
         nodeId: id,
@@ -3114,28 +3117,39 @@ it.effect("settling a native child rejects while its parent's task on it works a
           title: "Child task",
           model: null,
           status,
-          result: status === "completed" ? "Done" : null,
+          result: status === "completed" ? result : null,
           startedAt: createdAt,
           completedAt: status === "completed" ? at : null,
           updatedAt: at,
         },
       });
     };
-    const settle = (name: string, settledAt: DateTime.Utc, parentResultAt?: DateTime.Utc) =>
+    const settle = (name: string, settledAt: DateTime.Utc, parentResultKey?: string) =>
       orchestrator.dispatch({
         type: "thread.auto-settle",
         commandId: CommandId.make(`settle-delivered-child-${name}`),
         threadId: childThreadId,
         snapshotAt: createdAt,
         settledAt,
-        ...(parentResultAt === undefined ? {} : { parentResultAt }),
+        ...(parentResultKey === undefined ? {} : { parentResultKey }),
       });
-    const settleOnResult = (name: string, parentResultAt: DateTime.Utc) =>
-      settle(name, parentResultAt, parentResultAt);
+    const resultKey = Effect.gen(function* () {
+      const [candidate] = yield* projections.getSettlementCandidates(childThreadId);
+      const key = candidate?.parentResultKey;
+      assert.isString(key);
+      return key as string;
+    });
+    const settleOnResult = (name: string, settledAt: DateTime.Utc, parentResultKey: string) =>
+      settle(name, settledAt, parentResultKey);
     const firstResultAt = DateTime.add(createdAt, { minutes: 1 });
     yield* recordTask("completed", firstResultAt);
+    const firstKey = yield* resultKey;
+    // The same completedAt with a changed result is another delivery.
+    yield* recordTask("completed", firstResultAt, "Done again");
+    const sameTime = yield* settleOnResult("same-time", firstResultAt, firstKey).pipe(Effect.flip);
+    assert.instanceOf(sameTime, Orchestrator.OrchestratorDispatchError);
     yield* recordTask("running", DateTime.add(createdAt, { minutes: 2 }));
-    const stale = yield* settleOnResult("stale", firstResultAt).pipe(Effect.flip);
+    const stale = yield* settleOnResult("stale", firstResultAt, firstKey).pipe(Effect.flip);
     assert.instanceOf(stale, Orchestrator.OrchestratorDispatchError);
     // The inactivity rule reads the child's own thread, which the working task leaves untouched.
     const inactive = yield* settle("inactive", createdAt).pipe(Effect.flip);
@@ -3144,11 +3158,195 @@ it.effect("settling a native child rejects while its parent's task on it works a
 
     const secondResultAt = DateTime.add(createdAt, { minutes: 3 });
     yield* recordTask("completed", secondResultAt);
-    yield* settleOnResult("current", secondResultAt);
+    yield* settleOnResult("current", secondResultAt, yield* resultKey);
     assert.deepInclude(yield* projections.getThread(childThreadId), {
       settledOverride: "settled",
       settledAt: secondResultAt,
     });
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("thread.auto-settle rechecks the parent task inside the commit transaction", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const parentThreadId = ThreadId.make("thread:settle-race-parent");
+    const childThreadId = ThreadId.make("thread:settle-race-child");
+    const createdAt = yield* DateTime.now;
+    const driver = ProviderDriverKind.make("codex");
+
+    for (const [threadId, relationshipToParent] of [
+      [parentThreadId, null],
+      [childThreadId, "subagent"],
+    ] as const) {
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`event:race-create:${threadId}`),
+            type: "thread.created",
+            threadId,
+            occurredAt: createdAt,
+            payload: {
+              createdBy: "agent",
+              creationSource: "provider",
+              id: threadId,
+              projectId: ProjectId.make("project:settle-race"),
+              title: threadId,
+              providerInstanceId: instanceId,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: null,
+              lineage: {
+                parentThreadId: relationshipToParent === null ? null : parentThreadId,
+                relationshipToParent,
+                rootThreadId: parentThreadId,
+              },
+              forkedFrom: null,
+              createdAt,
+              updatedAt: createdAt,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+          },
+        ],
+      });
+    }
+
+    const writeParentTask = (
+      eventSuffix: string,
+      status: "running" | "completed",
+      at: DateTime.Utc,
+      result = "Done",
+    ) => {
+      const id = NodeId.make("node:settle-race-task");
+      return eventSink.write({
+        events: [
+          {
+            id: EventId.make(`event:settle-race-task:${eventSuffix}`),
+            type: "subagent.updated",
+            threadId: parentThreadId,
+            nodeId: id,
+            driver,
+            providerInstanceId: instanceId,
+            occurredAt: at,
+            payload: {
+              id,
+              threadId: parentThreadId,
+              runId: null,
+              parentNodeId: NodeId.make("node:settle-race-parent"),
+              origin: "provider_native",
+              createdBy: "agent",
+              driver,
+              providerInstanceId: instanceId,
+              providerThreadId: null,
+              childThreadId,
+              nativeTaskRef: null,
+              prompt: "Do the work",
+              title: "Child task",
+              model: null,
+              status,
+              result: status === "completed" ? result : null,
+              startedAt: createdAt,
+              completedAt: status === "completed" ? at : null,
+              updatedAt: at,
+            },
+          },
+        ],
+      });
+    };
+
+    const resultKey = Effect.gen(function* () {
+      const [candidate] = yield* projections.getSettlementCandidates(childThreadId);
+      const key = candidate?.parentResultKey;
+      assert.isString(key);
+      return key as string;
+    });
+
+    const firstResultAt = DateTime.add(createdAt, { minutes: 1 });
+    yield* writeParentTask("initial-completed", "completed", firstResultAt, "First result");
+    const firstKey = yield* resultKey;
+
+    const realCommitCommand = eventSink.commitCommand;
+    let interleave: Effect.Effect<void, EventSink.EventSinkV2Error> | null = writeParentTask(
+      "raced-running",
+      "running",
+      DateTime.add(createdAt, { minutes: 2 }),
+    ).pipe(Effect.asVoid);
+
+    const commitSpy = vi.spyOn(eventSink, "commitCommand").mockImplementation((input) => {
+      const inject = interleave;
+      interleave = null;
+      return inject === null
+        ? realCommitCommand(input)
+        : inject.pipe(Effect.andThen(realCommitCommand(input)));
+    });
+
+    try {
+      // A provider write starts a new task on the parent after Orchestrator's read, right before commit.
+      const racedRunningCommand = {
+        type: "thread.auto-settle" as const,
+        commandId: CommandId.make("settle-race-running"),
+        threadId: childThreadId,
+        snapshotAt: createdAt,
+        settledAt: firstResultAt,
+        parentResultKey: firstKey,
+      };
+      const racedRunning = yield* orchestrator.dispatch(racedRunningCommand).pipe(Effect.flip);
+      assert.instanceOf(racedRunning, Orchestrator.OrchestratorDispatchError);
+      assert.isNull((yield* projections.getThread(childThreadId)).settledOverride);
+
+      // Replaying the rejected command id observes the rejected receipt recorded by the commit tx.
+      const replayed = yield* orchestrator.dispatch(racedRunningCommand).pipe(Effect.flip);
+      assert.instanceOf(replayed, Orchestrator.OrchestratorCommandPreviouslyRejectedError);
+
+      // A provider write changes the result under the same completedAt right before commit.
+      const secondResultAt = DateTime.add(createdAt, { minutes: 3 });
+      yield* writeParentTask("second-completed", "completed", secondResultAt, "Second result");
+      const secondKey = yield* resultKey;
+      interleave = writeParentTask(
+        "raced-same-time-result",
+        "completed",
+        secondResultAt,
+        "Second result revised",
+      ).pipe(Effect.asVoid);
+
+      const racedSameTime = yield* orchestrator
+        .dispatch({
+          type: "thread.auto-settle",
+          commandId: CommandId.make("settle-race-same-time"),
+          threadId: childThreadId,
+          snapshotAt: createdAt,
+          settledAt: secondResultAt,
+          parentResultKey: secondKey,
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(racedSameTime, Orchestrator.OrchestratorDispatchError);
+      assert.isNull((yield* projections.getThread(childThreadId)).settledOverride);
+
+      // With the current key and no competing write, settlement commits.
+      const currentKey = yield* resultKey;
+      yield* orchestrator.dispatch({
+        type: "thread.auto-settle",
+        commandId: CommandId.make("settle-race-final"),
+        threadId: childThreadId,
+        snapshotAt: createdAt,
+        settledAt: secondResultAt,
+        parentResultKey: currentKey,
+      });
+      assert.deepInclude(yield* projections.getThread(childThreadId), {
+        settledOverride: "settled",
+        settledAt: secondResultAt,
+      });
+    } finally {
+      commitSpy.mockRestore();
+    }
   }).pipe(Effect.provide(layerTest)),
 );
 

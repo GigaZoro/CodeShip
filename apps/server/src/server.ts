@@ -228,6 +228,7 @@ import {
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as EnvironmentAuthPolicy from "./auth/EnvironmentAuthPolicy.ts";
 import * as CloudHttp from "./cloud/http.ts";
+import * as MachineRestartHold from "./cloud/machineRestartHold.ts";
 import * as GuestHttp from "./guest/http.ts";
 import * as LinkThreadHttp from "./peer/linkThreadHttp.ts";
 import * as CloudLink from "./cloud/CloudLink.ts";
@@ -363,6 +364,10 @@ const layerHostPowerMonitor = HostPowerMonitor.layer.pipe(
 
 // A fresh receiver layer would open a second reader on the desktop telemetry fd.
 const layerDesktopAppUpdate = DesktopAppUpdate.layer.pipe(
+  Layer.provide(layerDesktopTelemetryReceiver),
+);
+
+const layerMachineRestartHold = MachineRestartHold.layer.pipe(
   Layer.provide(layerDesktopTelemetryReceiver),
 );
 
@@ -1086,7 +1091,8 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerDesktopReadinessProofRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
-    ServerHttp.layerDesktopAutoInstallReadinessRoute,
+    ServerHttp.layerDesktopUpdateControlRoutes.pipe(Layer.provide(layerDesktopTelemetryReceiver)),
+    ServerHttp.layerDesktopRestartHoldRoute,
     GuestHttp.layer,
     ThreadPageCheckAccessHttp.layer,
     LinkThreadHttp.layer,
@@ -1108,7 +1114,7 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   // Watches t3_command_run commands to their end, including ones an earlier server started.
   Layer.effectDiscard(CommandRunner.CommandRunner.pipe(Effect.flatMap((runner) => runner.start()))),
-  // Installs new releases on a background service once nothing a restart would stop is running.
+  // Schedules releases for the launcher and desktop app.
   ServerAutoUpdate.layer,
 )
   .pipe(
@@ -1224,10 +1230,12 @@ const layerMakeServer = Layer.unwrap(
         }
 
         const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+        const serverConfig = yield* ServerConfig.ServerConfig;
         const state = yield* makePersistedServerRuntimeState({
-          config: yield* ServerConfig.ServerConfig,
+          config: serverConfig,
           port: address.port,
           serviceManaged: launcher.managed,
+          automaticUpdates: ServerConfig.runsAutomaticUpdates(serverConfig, launcher.managed),
           managedPolicy: yield* ManagedPolicy.loadedPolicy(yield* ManagedPolicy.ManagedPolicy),
         });
         yield* ownership
@@ -1611,6 +1619,8 @@ const layerMakeServer = Layer.unwrap(
     }).pipe(
       withUntracedRequests,
       withRootRequestSpans,
+      // Route handlers resolve their services here, so the update and the route share one.
+      Layer.provide(layerMachineRestartHold),
       Layer.tap(() => Deferred.succeed(routesReady, undefined).pipe(Effect.orDie)),
     );
     const layerServerApplication = Layer.mergeAll(

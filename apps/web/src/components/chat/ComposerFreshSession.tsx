@@ -1,15 +1,13 @@
 import { t, msg } from "~/i18n";
 import { EraserIcon } from "lucide-react";
 
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 
 /** Shown while `/clear` is armed; dismissing it keeps the current conversation. */
-export function freshSessionBannerItem(
-  onUndo: () => void,
-  resolve: typeof t = t,
-): ComposerBannerStackItem {
+export function freshSessionBannerItem(onUndo: () => void, resolve: typeof t = t): ThreadNotice {
   return {
     id: "fresh-session",
+    producer: "freshSession",
     variant: "info",
     icon: <EraserIcon />,
     title: resolve(msg("Your next message starts a fresh session")),

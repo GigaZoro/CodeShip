@@ -28,6 +28,44 @@ const ANTIGRAVITY_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_CHARS = 128_000;
 const isTextGenerationError = Schema.is(TextGenerationError);
 const isProviderSetupError = Schema.is(ProviderSetupError);
+const NON_RETRYABLE_ANTIGRAVITY_STATUSES = new Set([401, 402, 403, 429]);
+const NON_RETRYABLE_ANTIGRAVITY_CODES = new Set([
+  "QUOTA_EXHAUSTED",
+  "RESOURCE_EXHAUSTED",
+  "UNAUTHENTICATED",
+  "PERMISSION_DENIED",
+]);
+
+function isNonRetryableAntigravityCause(cause: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = cause;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const retryable = Reflect.get(current, "retryable");
+    if (retryable === false || Reflect.get(current, "_tag") === "AcpModelSelectionError") {
+      return true;
+    }
+    if (retryable === true) {
+      return false;
+    }
+    const status =
+      Reflect.get(current, "status") ??
+      Reflect.get(current, "statusCode") ??
+      Reflect.get(current, "httpStatusCode");
+    if (typeof status === "number" && NON_RETRYABLE_ANTIGRAVITY_STATUSES.has(status)) {
+      return true;
+    }
+    for (const key of ["code", "reason"] as const) {
+      const value = Reflect.get(current, key);
+      if (typeof value === "string" && NON_RETRYABLE_ANTIGRAVITY_CODES.has(value)) {
+        return true;
+      }
+    }
+    current = Reflect.get(current, "cause");
+  }
+  return false;
+}
+
 const isNativeSessionId = Schema.is(Schema.String.check(Schema.isUUID(4)));
 const Configuration = Schema.Record(Schema.String, Schema.Unknown);
 const decodeConfiguration = Schema.decodeEffect(Schema.fromJsonString(Configuration));
@@ -152,6 +190,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
             operation,
             detail:
               "Antigravity text generation is unavailable for profiles with global hooks or MCP configuration. Select another system model.",
+            retryable: false,
           });
         }
 
@@ -261,6 +300,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
                 new TextGenerationError({
                   operation,
                   detail: "Could not select the Antigravity model for text generation.",
+                  ...(isNonRetryableAntigravityCause(cause) ? { retryable: false } : {}),
                   cause,
                 }),
             });
@@ -365,6 +405,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
                   : isAntigravitySignInRequiredError(cause)
                     ? ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE
                     : "Antigravity text generation failed.",
+                ...(isNonRetryableAntigravityCause(cause) ? { retryable: false } : {}),
                 cause,
               }),
         ),

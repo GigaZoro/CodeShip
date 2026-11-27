@@ -430,6 +430,7 @@ function GuestThread({
           // No ":" so the timeline finds no environment thread behind the key.
           threadKey={`guest-${shareId}`}
           projection={projection}
+          foldFinishedWork="older"
           historyControls={historyControls}
           turnItemSource={turnItemSource}
           attachmentUrls={attachmentUrls}

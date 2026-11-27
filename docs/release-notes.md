@@ -1,3 +1,120 @@
+## 2026-11-27 — Tighter wake-up measurement bounds in wake-usage
+
+- The daily repeated-wake measurement report (`scripts/wake-usage.mjs`) now isolates overlapping prior turns using turn-item evidence, detects complete or end-of-file post-completion log reads, and accounts for usage-limit failed turns in start evidence and top-five chat ranking while keeping its conservative decision bounds.
+
+## 2026-11-27 — Cursor text generation exposes accepted requests
+
+- The Cursor adapter reports when the SDK accepts a request, including requests that later return an invalid title. Setup failures produce no dispatch signal.
+
+## 2026-11-27 — Headroom-aware account routing and soft-drain avoidance
+
+- New Auto threads and usage-limit failovers now avoid soft-draining accounts and spread across healthy accounts by remaining quota headroom (preferring accounts with a live usage reading over unread ones, and breaking ties by soonest weekly reset and then saved account order), while scheduled runs still spend expiring weekly quota first and plan usage / MCP sign-in precedence remain unchanged. Active threads, explicit named launches, and delegated tasks on a healthy parent account stay sticky to preserve prompt caches unless hard-limited or outranked on plan/MCP precedence.
+
+## 2026-11-27 — Auto mode uses every Antigravity account's per-model quota
+
+- Auto mode's delegation roster honors per-model quota windows: an Antigravity account out of Claude or GPT-OSS quota still offers its Gemini models, and each model is listed once, on the first account in failover order with room for it, so Claude stays routable through a second Antigravity account. The paired Claude/Codex provider comes first, and providers share the roster evenly, with unused shares going to the rest.
+- When the paired provider cannot review, Auto mode takes the cross-provider review from the next available provider: its saved Auto model, else its default model, or, for Antigravity's placeholder default, its frontier model at xhigh (Gemini 4 Neon).
+- The brief stays under Codex's 4,000-byte limit with many accounts: trailing account sections give way to an `orchestrator_capabilities` pointer, and the review instructions are kept. The bundled model manifest includes Antigravity's current Gemini, Claude and GPT-OSS models.
+
+## 2026-11-27 — Settings drops pages and rows that only pointed elsewhere
+
+- Old settings links such as `/settings/about`, `/settings/access`, `/settings/worktrees` and `/settings/storage` still open the page their settings moved to, now without an empty page of their own behind them. A settings link to a page that does not exist shows Page not found instead of an empty thread.
+- Providers & models no longer has a Background activity row that only linked to Maintenance & about, and Source control & worktrees no longer has a Worktree cleanup row that only linked there. Both settings stay in Maintenance & about.
+- Chat & diffs no longer has a second Diff layout picker. The stacked/split toggle in the diff panel toolbar sets it, and searching for Diff layout in Settings explains where to find it.
+- Help text names today's settings pages: Machines & access for pairing codes, T3 Connect and the WSL backend; Maintenance & about for Update track; Keybindings for the send shortcut; and Source control & worktrees for opening pull requests in T3.CodeShip.
+
+## 2026-11-27 — Reliable macOS fork release recovery and SEA import guard
+
+- Fixed macOS release recovery so runner-timeout cancellations retry immediately instead of being skipped, while manually cancelled builds do not respawn themselves.
+- Recovery and scheduled catch-up jobs now fetch `fork-release.cjs` directly via `gh api` instead of failing on `.repos` submodule gitlinks during `actions/checkout`.
+- Added a test guard blocking runtime ESM imports of external CLI dependencies in `apps/server/src` so single-executable builds stay protected.
+
+## 2026-11-27 — Turn folds say what the turn did
+
+- A folded turn's summary row counts its tool calls and changed files beside its duration, such as "Worked for 8m · 14 tools · 6 files". Failed tool calls show as "2 failed" in the error color. Web, desktop, and mobile show the same text.
+- **Fold finished work** in **Settings → Chat & diffs** chooses which finished turns fold: **Always**, **Older turns** (the default, every turn before your latest prompt), or **Never**. The turn still running never folds.
+- The **New since your last visit** line says what changed while you were away, such as "2 turns · finished · PR #88 opened", on web, desktop, and mobile. On web and desktop, a dot on the conversation minimap marks where it sits.
+
+## 2026-11-27 — Triage the Needs you box by keyboard
+
+- With a row in the Needs you box focused, `J`/`K` or the arrows move, `A` approves, `D` declines, `L` defers, `E` settles, `Enter` opens and `Esc` returns to the chat. Settling offers Undo for 8 seconds, and Settings → Keybindings lists the keys.
+- **Finished, not seen** lists threads you started that finished since your last visit, with **Settle all**; they don't count toward the badges. Mobile shows the same section on the thread list.
+- After at least 15 minutes away, **While you were away** sums up what finished or recovered on its own while you were gone, and what needs you now, until you choose **Caught up**.
+
+## 2026-11-27 — Background command wakeups strip ANSI and cap success output
+
+- Completed `t3_command_run` wakeups strip ANSI escape codes and collapse carriage-return progress updates in the injected `Last output:` tail while keeping raw output intact in the on-disk log file.
+- Clean exit-0 wakeups cap the injected tail to 1,536 characters, while failures, timeouts, lost runs, and unreadable exit statuses keep up to 4,096 characters of stripped diagnostic output.
+
+## 2026-11-27 — Saved usage stays bounded over long histories
+
+- Usage's saved scan cache no longer grows without limit. It forgets deleted or expired transcripts about six months after it last read them, and drops other peers' records of a transcript once those records pass the 92-day window. Two CodeShip instances that share a data folder now save the same usage whichever order they read each other's saves in, at any time.
+
+## 2026-11-27 — Thread title generation skips retries on non-retryable provider errors
+
+- Initial thread title generation no longer retries usage-limit, rate-limit, authentication, or disabled-provider errors, avoiding redundant provider spawns when a retry cannot succeed.
+
+## 2026-11-27 — Isolated temp directories and stale temp cleanup in check:changed
+
+- `vp run check:changed` now gives each test step its own scoped `TMPDIR`/`TEMP`/`TMP` directory that is removed after the child process exits, keeps temp paths out of the test cache key, and opportunistically sweeps `check:changed` temp folders older than 24 hours.
+
+## 2026-11-27 — Capture what annoys you in the app
+
+- Press Mod+Shift+. to save a UI annoyance with an optional note. The capture records the page, the components under the pointer, the visible notices and panels, and the window size, theme and density. The desktop app can also attach a screenshot of the window. Captures stay on your device.
+- The app counts clicks on nav rail destinations, thread details controls and composer controls, and stores only the counts.
+- Settings > Diagnostics > UI feedback lists the captures and the counters, exports them as Markdown, and clears them. An optional evening reminder asks what annoyed you that day.
+- A weekly CodeShip task on the MacBook groups the week's captures and files the biggest groups as work items.
+
+## 2026-11-27 — Transparent in-run usage-limit failover and headroom helpers
+
+- When a provider session or thread start refuses immediately with a usage limit and automatic failover is enabled, turns now transparently switch to another eligible account (up to two alternates), durably record refused accounts across retries and restarts without emitting a visible error item, preserve concurrent thread edits, and fall back cleanly to the original account's usage-limit error if no alternate can carry the conversation.
+- Added shared soft-drain and quota headroom helper utilities (`softDrainingUsageWindow`, `accountHeadroomPercent`, and `compareAccountsByHeadroom`) in `@t3tools/shared` for upcoming headroom-aware account routing.
+
+## 2026-11-27 — One notice above the composer at a time
+
+- A thread shows its most urgent notice in a single line above the composer instead of stacking every notice. What stops sending comes first, then what needs you, failures, usage-limit recovery and information; equally urgent notices show the newest first.
+- A **+N** button names the most urgent notice it hides and lists the rest, each with its own actions. Screen readers announce only the notice in front, and only notices that block sending, need you or failed are coloured.
+
+## 2026-11-27 — Claude turns survive a slow settings read
+
+- When a busy machine delays the worker that reads another Claude account's settings past its 30-second deadline, CodeShip reads them once more. If that read also runs out of time, the turn is retried as one whose message was never sent, instead of failing with "Claude's settings could not be resolved (account-worker: timeout)".
+
+## 2026-11-26 — Multi-provider support across Auto mode, usage, and mobile
+
+- Auto mode now discovers and labels every enabled provider for delegated work and independent reviews instead of assuming only Claude and Codex.
+- Usage limits, `orchestrator_capabilities`, and the mobile subscription widget now include every enabled provider that reports subscription usage, and an exhausted account-wide weekly window suppresses its session window across all providers.
+- Native session lookup, provider ordering, custom model placeholders, multiple-account notes, terminal home-path expansion (`GROK_HOME`, `PI_CODING_AGENT_DIR`), and telemetry now cover all built-in providers (`codex`, `claudeAgent`, `cursor`, `grok`, `opencode`, `antigravity`, `muse`, `pi`, `fx`, and `acpRegistry`).
+
+## 2026-11-26 — Antigravity extra-high effort pricing and quota probe crash handling
+
+- Antigravity usage pricing now resolves `-xhigh` and `-minimal` effort model slugs to their base model rate.
+- When the Antigravity quota probe runtime exits before announcing commands, the probe now fails immediately instead of waiting for the 30-second timeout.
+
+## 2026-11-26 — Single-executable server builds load Zod via createRequire
+
+- Fixed `build-exe` in fork releases by loading the external `zod` runtime dependency lazily through `createRequire` in `ClaudeAdapterV2` instead of a static ESM import.
+
+## 2026-11-26 — Windows command cleanup respects reused process IDs
+
+- When CodeShip detects that another process has taken a command's PID, it remembers that process's start time so cleanup can spare its children even after it has exited.
+
+## 2026-11-26 — Restoring a transcript preserves usage history
+
+- When an older Claude, Pi, or Muse transcript replaces a newer copy, Usage keeps identifiable records missing from the restored file for 92 days. Records shared by both copies count once, including after a restart.
+
+## 2026-11-26 — Landing waiters stagger polls and report unconfirmed release
+
+- Waiting landers stagger their polls and reuse lease metadata until origin advertises a different lease commit, reducing redundant Git fetches.
+- When a fallback lease release cannot be confirmed after retries, `landing-turn.cjs` and `upstream-sync.ts` report `releaseConfirmed: false`, still print any landed commit, and exit nonzero.
+
+## 2026-11-26 — Finished subagent threads settle only on the result they delivered
+
+- A subagent thread now settles on its parent's result only if that result is still the one delivered, even when the parent writes a new task or revises the result in the same instant or while the settle is committing.
+
+## 2026-11-26 — Large command logs retain their final output
+
+- Commands started on macOS and Linux keep a bounded log with their latest output, including the last lines written while CodeShip is restarting.
+
 ## 2026-11-26 — Start a fix chat from a Monitoring weak point
 
 - Select **Fix root cause** in the Monitoring overview or a chat’s findings on web, desktop, or mobile. The new chat opens in the affected project with the finding and examples. From the overview it uses the current filters, chooses the machine and project with the most time lost, and includes up to 20 affected chats. Retrying after a lost response reopens the same chat.
@@ -97,6 +214,10 @@
 - Usage updates now keep the time each quota window was observed. A new short-window reading leaves the weekly reading’s timestamp intact. Agents reading usage through MCP can distinguish separate Antigravity pools and see which models a limit applies to.
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
+
+## 2026-11-25 — Tests that link folders run on Windows without Developer Mode
+
+- Maintainers: server tests that link a folder make a junction on Windows, which needs no special rights, and the few that need a real file symlink skip where the machine cannot make one. Before, on a Windows machine without Developer Mode, about twenty storage cleanup, settings, review, session scanner and uninstall tests failed before checking anything. The `check:changed` worktree reuse test also links its packages again in each checkout, because Windows copies a junction as a folder.
 
 ## 2026-11-25 — The metadata smoke test answers its child first and fails on a broken reply
 
@@ -806,6 +927,11 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — Automatic desktop updates wait for chats on the WSL server too
+
+- Automatic updates check at the scheduled local time and when a retry is due. Before installing, the desktop app confirms every server it runs, including one still starting in WSL, has paused scheduled starts and reported its work. It retries if a server cannot confirm, even after the chat deadline. A rolled-back or unapplied release waits for a newer release to become due.
+- **Update everything** includes desktop apps whose primary server runs in WSL.
+
 ## 2026-11-20 — A desktop preview tab's viewers and recordings no longer fight over its screencast
 
 - When a viewer and a recording streamed the same desktop browser tab, each one's screencast settings replaced the other's: a scrolling viewer shrank the recording's frames to half size and lower quality, and a settled viewer's size kept capping the recording. The tab now runs one screencast at the best quality and largest size any streaming session asked for, and re-merges when a session starts, stops or closes.
@@ -952,6 +1078,12 @@
 ## 2026-11-20 — Thread creation retries survive a removed provider
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
+
+## 2026-11-19 — Automatic updates run daily on desktop and background servers
+
+- Set **Automatic update time** in **Settings → Maintenance & about → Updates**. It defaults to 03:00 in the machine's time zone. If a newer release was published by that time, the machine installs the newest available release.
+- Desktop and background servers give active chats time to finish and pause new scheduled starts if needed. A desktop app with chats running all day can now update, and interrupted chats resume after it restarts when **Continue threads after restarts** is on (the default).
+- An automatic update that fails is tried again after 15 minutes, then less often, up to every six hours, also across restarts.
 
 ## 2026-11-19 — The upstream sync checks against its own base
 

@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
+  type ProviderApprovalDecision,
   type RuntimeRequestId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -17,14 +18,29 @@ import {
   THREAD_STATUS_DISPLAY,
 } from "@t3tools/client-runtime/state/thread-status";
 import { ClockIcon, Undo2Icon } from "lucide-react";
-import { memo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import {
+  memo,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 import { t } from "~/i18n";
+import { announce } from "~/lib/announce";
+import { latinLetterOf } from "~/lib/sidebarTree";
 import { cn } from "~/lib/utils";
+import { requestWorkspaceContentFocus } from "~/lib/workspaceFocus";
 import { useEnvironmentScope } from "../../state/session";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { ComposerPendingApprovalActions } from "../chat/ComposerPendingApprovalActions";
+import {
+  approvalOffersDecision,
+  ComposerPendingApprovalActions,
+} from "../chat/ComposerPendingApprovalActions";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
 import { resolveSidebarRowAccessibility } from "../Sidebar.logic";
 import { InlineButton } from "../ui/button";
@@ -34,6 +50,41 @@ import { WaitingSinceLabel } from "./SidebarThreadRow";
 import { THREAD_ROW_STATUS_ICONS } from "./threadRowStatus";
 
 export const NEEDS_YOU_LATER_ROW_ID = "needs-you:later";
+export const FINISHED_NOT_SEEN_ROW_ID = "needs-you:finished";
+
+const TRIAGE_KEYS = { a: "approve", d: "decline", l: "later", e: "settle" } as const;
+
+/**
+ * The box's keys: Enter opens, Escape leaves, and A, D, L and E answer, put off, or settle. The
+ * box owns its letters (OWNS_LETTER_KEYS_ATTRIBUTE), so one that does not apply to the row
+ * still stops here rather than typing into the composer.
+ */
+export function handleTriageKeyDown(
+  event: KeyboardEvent,
+  actions: {
+    readonly [action in "open" | (typeof TRIAGE_KEYS)[keyof typeof TRIAGE_KEYS]]?:
+      | (() => unknown)
+      | undefined;
+  },
+) {
+  if (
+    event.target !== event.currentTarget ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.nativeEvent.isComposing
+  )
+    return;
+  const letter = latinLetterOf(event);
+  if (event.key === "Enter") actions.open?.();
+  else if (event.key === "Escape") requestWorkspaceContentFocus();
+  else if (letter in TRIAGE_KEYS) {
+    // A held key would act again on the row that takes focus next.
+    if (!event.repeat) actions[TRIAGE_KEYS[letter as keyof typeof TRIAGE_KEYS]]?.();
+  } else return;
+  event.preventDefault();
+  event.stopPropagation();
+}
 
 const REASON_ICON = {
   approval: THREAD_ROW_STATUS_ICONS.approval,
@@ -55,12 +106,19 @@ function firstLine(text: string): string {
   return text.trimStart().split("\n", 1)[0] ?? "";
 }
 
+interface ApprovalHandle {
+  /** Answers by keyboard; does nothing when this approval cannot take that answer here. */
+  decide: (decision: ProviderApprovalDecision) => void;
+}
+
 /** The thread's own approval, answered here unless the open thread's composer already offers it. */
 function ApprovalRequest(props: {
   threadRef: ScopedThreadRef;
   icon: ReactNode;
   fallback: string;
   answerable: boolean;
+  handle: Ref<ApprovalHandle>;
+  onAnswered: (decision: ProviderApprovalDecision) => void;
 }) {
   const approval =
     useAtomValue(environmentThreadDetails.pendingRequestsAtom(props.threadRef))?.approvals[0] ??
@@ -73,12 +131,42 @@ function ApprovalRequest(props: {
   const [responding, setResponding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const summary = approval ? firstLine(approval.detail || approval.requestKind) : props.fallback;
+  const live = props.answerable && approval?.responseCapability === "live";
+  // Stays set after a success: the request lingers until the pending list drops it.
+  const answeredRef = useRef<RuntimeRequestId | null>(null);
+  const answer = async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => {
+    if (!canRespond || responding || answeredRef.current === requestId) return;
+    setResponding(true);
+    setError(null);
+    const result = await respond({
+      environmentId: props.threadRef.environmentId,
+      input: { threadId: props.threadRef.threadId, requestId, decision },
+    });
+    if (result._tag === "Success") {
+      answeredRef.current = requestId;
+      props.onAnswered(decision);
+    } else if (!isAtomCommandInterrupted(result)) {
+      const failure = squashAtomCommandFailure(result);
+      setError(
+        failure instanceof Error ? failure.message : t("Failed to submit approval decision."),
+      );
+    }
+    setResponding(false);
+    return result;
+  };
+  useImperativeHandle(props.handle, () => ({
+    decide: (decision) => {
+      if (live && approvalOffersDecision(approval.options, decision)) {
+        void answer(approval.requestId, decision);
+      }
+    },
+  }));
   return (
     <>
       <RequestLine icon={props.icon}>
         <RequestSummary mono={approval?.detail !== undefined}>{summary}</RequestSummary>
       </RequestLine>
-      {props.answerable && approval?.responseCapability === "live" ? (
+      {live ? (
         // Buttons answer the request; the row's own click opens the thread.
         <div className="flex items-center gap-3 ps-5 pt-1" onClick={stopRowActivation}>
           <ComposerPendingApprovalActions
@@ -88,25 +176,7 @@ function ApprovalRequest(props: {
             canRespond
             disabled={!canRespond}
             options={approval.options}
-            onRespondToApproval={async (requestId, decision) => {
-              if (!canRespond || responding) return;
-              setResponding(true);
-              setError(null);
-              const result = await respond({
-                environmentId: props.threadRef.environmentId,
-                input: { threadId: props.threadRef.threadId, requestId, decision },
-              });
-              if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-                const failure = squashAtomCommandFailure(result);
-                setError(
-                  failure instanceof Error
-                    ? failure.message
-                    : t("Failed to submit approval decision."),
-                );
-              }
-              setResponding(false);
-              return result;
-            }}
+            onRespondToApproval={answer}
           />
         </div>
       ) : null}
@@ -229,6 +299,7 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
   onSettle: (threadRef: ScopedThreadRef) => void;
 }) {
   const { thread } = props;
+  const approvalRef = useRef<ApprovalHandle>(null);
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const reason = needsYouReasonOf(thread);
   const ReasonIcon = REASON_ICON[reason];
@@ -248,20 +319,25 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
     projectDisplayName: props.projectDisplayName,
     isActive: props.isOpen,
   });
-  const handleToggleLaterClick = (event: MouseEvent) => {
-    event.stopPropagation();
+  const toggleLater = () => {
     if (props.placement === "box") props.onDecideLater(threadRef);
     else props.onPutBack(threadRef);
   };
-  // Printable keys go to the composer (type to focus), so the row answers only Enter.
-  const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.target !== event.currentTarget || event.key !== "Enter") return;
-    event.preventDefault();
-    props.onOpen(threadRef);
+  const handleToggleLaterClick = (event: MouseEvent) => {
+    event.stopPropagation();
+    toggleLater();
   };
   const later = props.placement === "later";
   const laterLabel = later ? t("Move back to Needs you") : t("Decide later");
   const failure = reason === "failed" || reason === "limited";
+  const handleKeyDown = (event: KeyboardEvent) =>
+    handleTriageKeyDown(event, {
+      open: () => props.onOpen(threadRef),
+      approve: () => approvalRef.current?.decide("accept"),
+      decline: () => approvalRef.current?.decide("decline"),
+      later: props.laterSupported ? toggleLater : undefined,
+      settle: failure && props.settlementSupported ? () => props.onSettle(threadRef) : undefined,
+    });
   return (
     <li className="list-none">
       <div
@@ -334,6 +410,15 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
             icon={reasonIcon}
             fallback={reasonLabel}
             answerable={!props.isOpen}
+            handle={approvalRef}
+            onAnswered={(decision) =>
+              announce(
+                decision === "decline"
+                  ? t("Declined: {title}", { title: thread.title })
+                  : t("Approved: {title}", { title: thread.title }),
+                "needs-you-triage",
+              )
+            }
           />
         ) : reason === "input" && thread.hasPendingUserInput ? (
           <QuestionRequest
@@ -354,6 +439,60 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
             </InlineButton>
           </div>
         ) : null}
+      </div>
+    </li>
+  );
+});
+
+/** A thread the user started that finished after they last looked; it waits on nobody. */
+export const FinishedNotSeenRow = memo(function FinishedNotSeenRow(props: {
+  thread: EnvironmentThreadShell;
+  isOpen: boolean;
+  project: ProjectFaviconProject | null;
+  projectDisplayName: string | null;
+  settlementSupported: boolean;
+  onOpen: (threadRef: ScopedThreadRef) => void;
+  onSettle: (threadRef: ScopedThreadRef) => void;
+}) {
+  const { thread } = props;
+  const threadRef = scopeThreadRef(thread.environmentId, thread.id);
+  const accessibility = resolveSidebarRowAccessibility({
+    title: thread.title,
+    statusLabel: t("Finished, not seen"),
+    projectDisplayName: props.projectDisplayName,
+    isActive: props.isOpen,
+  });
+  const completedAt = Date.parse(thread.latestRun?.completedAt ?? thread.updatedAt);
+  return (
+    <li className="list-none">
+      <div
+        role="treeitem"
+        tabIndex={-1}
+        data-sidebar-row={`needs-you:finished:${scopedThreadKey(threadRef)}`}
+        data-sidebar-parent={FINISHED_NOT_SEEN_ROW_ID}
+        aria-label={accessibility.label}
+        aria-current={accessibility.current}
+        onClick={() => props.onOpen(threadRef)}
+        onKeyDown={(event) =>
+          handleTriageKeyDown(event, {
+            open: () => props.onOpen(threadRef),
+            settle: props.settlementSupported ? () => props.onSettle(threadRef) : undefined,
+          })
+        }
+        className={cn(
+          "flex h-7 cursor-pointer items-center gap-1.5 rounded-md ps-5 pe-2 text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          props.isOpen
+            ? "bg-sidebar-row-active light:ring-1 light:ring-inset light:ring-sidebar-border/70"
+            : "hover:bg-sidebar-row-hover",
+        )}
+      >
+        {props.project ? (
+          <ProjectFavicon project={props.project} className="size-3.5 shrink-0" />
+        ) : null}
+        <span className="min-w-0 flex-1 truncate text-sm">{thread.title}</span>
+        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+          <WaitingSinceLabel since={completedAt} />
+        </span>
       </div>
     </li>
   );

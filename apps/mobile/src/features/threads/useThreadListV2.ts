@@ -411,6 +411,7 @@ export function useThreadListV2(input: {
         folderFooters: layout.folderFooters,
         needsYouCount: layout.needsYouCount,
         needsYouLaterCount: layout.needsYouLaterCount,
+        finishedNotSeenCount: layout.finishedNotSeenCount,
         workingCount: layout.workingCount,
         workingShelfExpanded: input.workingShelfExpanded,
         workingShelfHeaderIndex: layout.workingShelfHeaderIndex,

@@ -41,8 +41,8 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopStartupRecovery from "./DesktopStartupRecovery.ts";
 import * as DesktopState from "./DesktopState.ts";
-import * as DesktopAutoInstall from "../updates/DesktopAutoInstall.ts";
 import * as DesktopRemoteUpdates from "../updates/DesktopRemoteUpdates.ts";
+import * as DesktopUpdateHttpControl from "../updates/DesktopUpdateHttpControl.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
@@ -439,7 +439,7 @@ const startup = Effect.gen(function* () {
   // Sets canInstallUpdates, which the backend bootstrap payload reads.
   yield* updates.configure;
   yield* DesktopRemoteUpdates.listen;
-  yield* DesktopAutoInstall.listen;
+  if (environment.platform === "win32") yield* DesktopUpdateHttpControl.listen();
   yield* DesktopStartupRecovery.listen;
   const backendStarted = yield* startLocalBackend.pipe(
     Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)),

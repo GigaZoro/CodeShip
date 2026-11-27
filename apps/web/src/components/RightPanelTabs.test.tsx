@@ -121,6 +121,7 @@ describe("surface shortcut typing contexts", () => {
     expect(surfaceShortcutTargetsTypingContext(makeTarget("textarea"))).toBe(true);
     expect(surfaceShortcutTargetsTypingContext(makeTarget("select"))).toBe(true);
     expect(surfaceShortcutTargetsTypingContext(makeTarget("[contenteditable]"))).toBe(true);
+    expect(surfaceShortcutTargetsTypingContext(makeTarget("[data-owns-letter-keys]"))).toBe(true);
   });
 });
 

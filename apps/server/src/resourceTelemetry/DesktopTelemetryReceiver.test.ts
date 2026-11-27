@@ -7,18 +7,134 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 import * as Logger from "effect/Logger";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { describe, expect } from "vite-plus/test";
 
+import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import {
+  HTTP_UPDATE_COMMANDS_LIMIT,
+  make,
   makeApplyDesktopShellEnvironmentSnapshot,
   requireDesktopTelemetryWriteProgress,
 } from "./DesktopTelemetryReceiver.ts";
 
 describe("DesktopTelemetryReceiver", () => {
+  it.effect("waits for the first desktop inventory and bounds a missing report", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const receiver = yield* make().pipe(
+        Effect.provideService(ServerConfig.ServerConfig, { ...config, mode: "desktop" }),
+      );
+      const first = Stream.runHead(receiver.desktopBackends);
+      const waiting = yield* Effect.forkChild(Effect.result(first));
+      yield* TestClock.adjust("59 seconds");
+      expect(waiting.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust("1 second");
+      expect((yield* Fiber.join(waiting))._tag).toBe("Failure");
+      const next = yield* Effect.forkChild(first);
+      yield* receiver.receiveDesktopReport({ version: 1, type: "desktopBackends", backends: [] });
+      expect(yield* Fiber.join(next)).toEqual(Option.some([]));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), process.cwd()),
+          ServerSettings.layerTest(),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+  );
+
+  it.effect("delivers an earlier WSL commit before a later request", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const receiver = yield* make().pipe(
+        Effect.provideService(ServerConfig.ServerConfig, {
+          ...config,
+          mode: "desktop",
+          desktopUpdateHttpControl: true,
+        }),
+      );
+
+      yield* receiver.commitDesktopUpdate("first");
+      yield* receiver.requestDesktopUpdate("second");
+
+      const commit = yield* receiver.nextDesktopUpdateCommand;
+      expect(commit).toMatchObject({
+        type: "commitDesktopUpdate",
+        requestId: "first",
+      });
+      expect(yield* receiver.nextDesktopUpdateCommand).toEqual(commit);
+      yield* receiver.acknowledgeDesktopUpdateCommand({
+        version: 1,
+        type: "desktopUpdateControlAcknowledgement",
+        requestId: commit.requestId,
+        command: commit.type,
+      });
+      expect(yield* receiver.nextDesktopUpdateCommand).toMatchObject({
+        type: "requestDesktopUpdate",
+        requestId: "second",
+      });
+      yield* receiver.cancelDesktopUpdate("second");
+      yield* receiver.requestDesktopUpdate("third");
+      yield* receiver.acknowledgeDesktopUpdateCommand({
+        version: 1,
+        type: "desktopUpdateControlAcknowledgement",
+        requestId: "second",
+        command: "requestDesktopUpdate",
+      });
+      expect(yield* receiver.nextDesktopUpdateCommand).toMatchObject({
+        type: "cancelDesktopUpdate",
+        requestId: "second",
+      });
+
+      // A desktop app that stops reading keeps only the newest commands.
+      for (let attempt = 0; attempt < HTTP_UPDATE_COMMANDS_LIMIT * 2; attempt++) {
+        yield* receiver.requestDesktopUpdate(`unread-${attempt}`);
+        yield* receiver.cancelDesktopUpdate(`unread-${attempt}`);
+      }
+      const readAndAcknowledge = Effect.gen(function* () {
+        const next = yield* receiver.nextDesktopUpdateCommand;
+        yield* receiver.acknowledgeDesktopUpdateCommand({
+          version: 1,
+          type: "desktopUpdateControlAcknowledgement",
+          requestId: next.requestId,
+          command: next.type,
+        });
+        return next;
+      });
+      const kept: Array<string> = [];
+      for (let read = 0; read < HTTP_UPDATE_COMMANDS_LIMIT; read++) {
+        kept.push((yield* readAndAcknowledge).requestId);
+      }
+      expect(kept).toEqual(
+        Array.from(
+          { length: HTTP_UPDATE_COMMANDS_LIMIT },
+          (_, index) => `unread-${HTTP_UPDATE_COMMANDS_LIMIT + index}`,
+        ),
+      );
+      yield* receiver.requestDesktopUpdate("after");
+      expect(yield* readAndAcknowledge).toMatchObject({
+        type: "requestDesktopUpdate",
+        requestId: "after",
+      });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), process.cwd()),
+          ServerSettings.layerTest(),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+  );
+
   it.live(
     "preserves system and bundled roots when the first snapshot withdraws overlapping extras",
     () =>

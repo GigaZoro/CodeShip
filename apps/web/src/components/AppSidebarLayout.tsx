@@ -305,7 +305,7 @@ function registerAppShellCommands(router: AnyRouter, shellElement: Element): () 
     registerSectionEscapeCommand(router),
     registerMenuAction("open-settings", () => {
       if (!/^\/settings(\/|$)/.test(router.state.location.pathname))
-        void router.navigate({ to: "/settings" });
+        void router.navigate({ to: "/settings/general" });
     }),
     registerMenuAction("open-keybindings", () => {
       void router.navigate({ to: "/settings/keybindings" });

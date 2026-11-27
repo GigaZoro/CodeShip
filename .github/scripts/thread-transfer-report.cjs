@@ -5,7 +5,20 @@ const ARTIFACT_NAME = "thread-transfer-results";
 const RESULT_FILE = "thread-transfer-result.json";
 const SCENARIOS_FILE = "thread-transfer-scenarios.json";
 const COMMENT_MARKER = "<!-- t3-thread-transfer-report -->";
-const PROVIDERS = ["codex", "claudeAgent"];
+const PROVIDER_DISPLAY_NAMES = {
+  antigravity: "Antigravity",
+  codex: "Codex",
+  claudeAgent: "Claude",
+  cursor: "Cursor",
+  grok: "Grok",
+  fx: "fx",
+  muse: "Muse Code",
+  acpRegistry: "ACP Registry",
+  pi: "Pi",
+  opencode: "OpenCode",
+};
+const PROVIDER_KEY_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+const providerDisplayName = (provider) => PROVIDER_DISPLAY_NAMES[provider] ?? provider;
 const OBSERVED_KEYS = [
   "totalWireBytes",
   "threadSnapshotWireBytes",
@@ -75,8 +88,15 @@ function validateResult(value) {
     assertMetric(value.scenario[key], `result.scenario.${key}`);
   }
 
-  assertExactKeys(value.providers, PROVIDERS, "result.providers");
-  for (const provider of PROVIDERS) {
+  assertObject(value.providers, "result.providers");
+  const providers = Object.keys(value.providers);
+  if (providers.length === 0) {
+    throw new Error("result.providers must include at least one provider");
+  }
+  for (const provider of providers) {
+    if (!PROVIDER_KEY_PATTERN.test(provider)) {
+      throw new Error(`result.providers has invalid provider key: ${provider}`);
+    }
     const entry = value.providers[provider];
     assertExactKeys(entry, ["observed", "ceiling"], `result.providers.${provider}`);
     assertExactKeys(entry.observed, OBSERVED_KEYS, `result.providers.${provider}.observed`);
@@ -270,22 +290,23 @@ function renderComment(input) {
   const ceilingChanges = [];
   let failed = false;
 
-  for (const provider of PROVIDERS) {
+  const providers = Object.keys(current.providers);
+  for (const provider of providers) {
+    const label = providerDisplayName(provider);
+    const baselineEntry = comparable ? baseline.providers[provider] : undefined;
     for (const metric of METRICS) {
       const observed = current.providers[provider].observed[metric.key];
       const ceiling = current.providers[provider].ceiling[metric.key];
-      const baselineObserved = comparable
-        ? baseline.providers[provider].observed[metric.key]
-        : undefined;
+      const baselineObserved = baselineEntry?.observed[metric.key];
       const pass = observed <= ceiling;
       failed ||= !pass;
       rows.push(
-        `| ${providerLabel(provider)} | ${metric.label} | ${baselineObserved === undefined ? "—" : formatValue(baselineObserved, metric.kind)} | ${formatValue(observed, metric.kind)} | ${formatImpact(observed, baselineObserved, metric.kind)} | ${formatValue(ceiling, metric.kind)} | ${pass ? "✅" : "❌"} |`,
+        `| ${label} | ${metric.label} | ${baselineObserved === undefined ? "—" : formatValue(baselineObserved, metric.kind)} | ${formatValue(observed, metric.kind)} | ${formatImpact(observed, baselineObserved, metric.kind)} | ${formatValue(ceiling, metric.kind)} | ${pass ? "✅" : "❌"} |`,
       );
 
-      if (comparable && baseline.providers[provider].ceiling[metric.key] !== ceiling) {
+      if (baselineEntry !== undefined && baselineEntry.ceiling[metric.key] !== ceiling) {
         ceilingChanges.push(
-          `- ${providerLabel(provider)} ${metric.label}: ${formatValue(baseline.providers[provider].ceiling[metric.key], metric.kind)} → ${formatValue(ceiling, metric.kind)}`,
+          `- ${label} ${metric.label}: ${formatValue(baselineEntry.ceiling[metric.key], metric.kind)} → ${formatValue(ceiling, metric.kind)}`,
         );
       }
     }
@@ -343,9 +364,9 @@ function renderComment(input) {
     "",
     `${current.scenario.historyTurns} historical turns, ${current.scenario.historyCommandToolsPerTurn} command tools per turn, ${formatBytes(current.scenario.historyMcpResultBytes)} retained MCP result per historical turn, and a ${formatBytes(current.scenario.measuredMcpResultBytes)} retained result in the measured turn.`,
     "",
-    ...PROVIDERS.map(
+    ...providers.map(
       (provider) =>
-        `- ${providerLabel(provider)} decoded thread snapshot: ${formatBytes(current.providers[provider].observed.threadSnapshotDecodedBytes)}`,
+        `- ${providerDisplayName(provider)} decoded thread snapshot: ${formatBytes(current.providers[provider].observed.threadSnapshotDecodedBytes)}`,
     ),
     "",
     "</details>",

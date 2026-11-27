@@ -56,39 +56,98 @@ schema, and little else written, because the trial accepts no commands and runs 
 background work before commit. Attachments and other files outside SQLite are outside this
 rollback boundary.
 
+## Client acknowledgement
+
+An accepted update is still pending. Clients correlate the launcher's update ID
+with the ready event after reconnecting, then check the outcome and target version.
+A reconnect alone cannot distinguish successful replacement from rollback. Older
+servers without an update ID retain version-only correlation.
+
+Desktop updates have a separate two-phase handoff because installing the app stops
+its bundled backend. Preparation returns a token while the connection is alive;
+the client commits that token only after receiving it. Otherwise backend shutdown
+could lose the only successful RPC result. The client must then observe the
+prepared version after reconnecting. If installation fails, desktop restarts the
+stopped backends and replays the failure for the same token.
+
+The native backend sends update commands over the telemetry control descriptor. For a primary
+backend in WSL, Electron polls authenticated HTTP for the oldest unacknowledged command and
+acknowledges it after handing it to the same command handler. A cancellation supersedes queued
+commands for its own request ID. Commands for other requests retain their order.
+
 ## Automatic installs
 
-With `installUpdatesAutomatically` on, a launcher-managed server starts the same update a client
-would, but waits by a stricter rule than a user's "Update when it finishes": nobody chose to cut
-anything, so it waits until a restart hold lists no work and no running turn
-(`untilRestartHoldIsEmpty`, shared with the desktop app). A running turn would resume after the
-restart, so a manual update ignores `runningTurns` and waits only for its tool calls (below), but
-an automatic one must not cut a chat mid answer. A machine that always has a turn running (scheduled
-runs, autopilot) would then never idle, so after `AUTO_UPDATE_IDLE_PATIENCE` (2 hours) the update
-drains: `UpdateDrain` holds new scheduled starts ([`updateDrain.ts`](../../apps/server/src/cloud/updateDrain.ts)),
-so the running turns can end and the install follows them. Only turns still running after
-`AUTO_UPDATE_DRAIN_LIMIT` (3 hours) are cut: the wait then becomes the user's rule, background
-work and tool calls only, the last check before the handoff no longer holds off on chats, and the
-log line names the cut threads (`cutThreadIds`); those turns resume after the restart. Scheduled
-starts that came due while draining start right after the install. A fixed-time one is saved as held
-(`scheduled_task_drain_holds`), because the drain and restart can outlast the missed-run grace and
-the held run must not count as missed or depend on its task's catch-up choice. Since each install
-restarts the server, `minHoursBetweenAutomaticUpdates` (default 4) keeps the next one from installing until the
-server has run that long, so a machine that gets many releases a day drains a few times, not at
-every release. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
-the hold once more right before the launcher takes over
-([`autoUpdate.ts`](../../apps/server/src/cloud/autoUpdate.ts)). A busy hold there puts the update
-off to the next check without counting as a failed attempt. A user's update keeps
-`untilListedRestartHoldWorkEnds`: it waits for the background work running when they chose it,
-and for each chat then running tool calls until it is first seen running none. Nothing
-else about the update is special: staging, preflight, trial and rollback all apply. The
-back-off for a release that rolled back reads the launcher's settled outcome, which survives the
-restart that the failed attempt's process did not. Failures before the handoff are remembered only
-in memory, because the process that made them is still running. The desktop app does not use this
-path: its renderer installs, because the app, not the server, owns the restart and the install. It
-waits by the same rule, reads each hosted server's hold again right before installing and goes back
-to waiting when work or a turn started, and ends its own wait when the setting is turned off.
-`runningTurns` is optional in the hold: a server that predates it reports none.
+The same [automatic update service](../../apps/server/src/cloud/autoUpdate.ts) runs in the
+launcher-managed server and the desktop app's bundled server, when the app can apply an update.
+Whoever starts any other server updates it. `server-runtime.json` records which kind of server is
+running (`automaticUpdates`), so a diagnosis can tell them apart. The service checks at activation, at the daily install time and when a retry is due,
+with at most 30 minutes between checks while `installUpdatesAutomatically` is on. An update becomes due when a release
+newer than the running version was published by the most recent daily `automaticUpdateTime`
+(default `03:00`, in the server's local time). The GitHub release index supplies the publication
+times; the index is newest first but not strictly by version, so the service reads every entry
+above the running release. Once due, the launcher installs the newest release on the running
+track. The desktop shell installs its feed's newest release, which can lag the index, so it gets
+the newest due release as the least it may install. A local time skipped by a clock change moves
+forward by the gap. A repeated time uses the later occurrence once it has passed. An install
+leaves the machine on a release at least as new as every due one, so nothing is due again until
+the next day's time.
+
+The service waits up to two hours for a restart hold with no running turns or work, then
+[`UpdateDrain`](../../apps/server/src/cloud/updateDrain.ts) holds new scheduled starts for up to
+three more hours while existing chats finish. After that, the wait follows **Update when it
+finishes** and waits only for the listed background work and tool calls, for at most one hour so
+work that never ends cannot hold every later day. The log names the threads that may be cut;
+they resume according to the server's restart-continuation setting. Timed and webhook runs share
+the drain admission check: accepted webhook deliveries stay in the persisted dispatch queue, and
+manual task starts remain available. A fixed-time occurrence held during the drain is recorded in
+`scheduled_task_drain_holds`. When the drain ends or the server restarts, it runs once if its
+scheduled time is closer than the next regular occurrence, regardless of its catch-up setting.
+
+On desktop the policy runs only in the primary backend, while Electron's install stops every
+backend the app runs, such as a WSL backend beside the Windows one. So the waits and the drain go
+through [`MachineRestartHold`](../../apps/server/src/cloud/machineRestartHold.ts), which merges the
+primary's own hold with each other backend's. Electron lists non-primary backends from spawn
+through process exit, including those still starting. It sends the inventory over the telemetry
+descriptor and replays it on each new stream. For a WSL primary it posts changes and replays
+the current inventory on its HTTP control poll. The primary waits up to a minute for the first
+inventory, even on a machine where the eventual list is empty.
+
+Each listed backend streams JSON lines from `GET /api/desktop/restart-hold` and repeats its
+hold every 20 seconds. The backend-control token uses its own HMAC purpose and the same clock
+windows as desktop bootstrap. With `drain=1`, the backend holds scheduled starts and waits for
+admissions already in progress to become visible before sending its first line. Preparation
+waits for local admission and an acknowledgement from each listed backend, each bounded by a
+minute. Overlapping drains share links through the handoff. A dropped or silent link loses its
+acknowledgement until the backend reconnects and reports again.
+
+The final check reads the setting, managed policy, local hold, current inventory and each live
+drain link's latest hold. An unknown inventory, an unreachable backend or a missing acknowledgement
+counts as a failed attempt and triggers backoff, including in the cut phase. Once the deadline
+passes, a successfully read busy hold allows the cut. When a chat
+started during preparation, the service waits again with the same two-hour or drain deadline, so
+a busy machine cannot restart those waits with each preparation. `UpdateDrain` counts holds:
+every preparation holds scheduled starts, and an accepted handoff keeps holding them for up to
+five minutes, until the installer stops the server, so none starts in the launcher's handoff
+window. The subscription to setting changes opens before the settings are read, so turning
+automatic updates off or changing the time during the release lookup still ends the wait. The
+bundled server prepares and commits the update through the desktop shell's update channel; the
+launcher stages and trials the release. Both apply the server's restart-continuation setting.
+
+Before each handoff, and after each failure before one, the service writes
+`runtime/automatic-update.json` with the running version, the target, the attempt count and the
+next allowed attempt: 15 minutes, doubling per attempt up to six hours. The record outlives the
+process, so an install that did not apply, a launcher update that failed, or a handoff that left
+the same version running waits out that time, and new releases do not reset it. A record from an
+older version is ignored, and an unreadable one is replaced. A release the launcher rolled back,
+or a desktop update that did not apply, is skipped until a newer release is due. Manual updates
+can be started at any time.
+
+Every check that found a due release ends its "Automatic update" log lines with "Automatic update
+handed to its installer.", "Automatic update check ended without an install." (with the target
+and whether the settings changed), or "Automatic update check failed." when the check itself
+fails. A check can stop with no other line, when the
+schedule changes or the release is no longer due, so without that line its log would read as an
+install still under way.
 
 ## Recovering interrupted threads
 

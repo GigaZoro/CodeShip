@@ -650,6 +650,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     readonly port: number;
     readonly distro: string | null;
     readonly readiness: LaunchReadiness;
+    readonly primary?: true;
   },
 ): Effect.fn.Return<
   DesktopBackendManager.DesktopBackendStartConfig,
@@ -676,6 +677,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     desktopBootstrapToken: input.bootstrapToken,
     desktopBootstrapSecret: input.bootstrapSecret,
     desktopReadinessSecret: input.readiness.secret,
+    ...(input.primary ? { desktopUpdateHttpControl: true } : {}),
     // PortSchema rejects 0 even when Tailscale Serve is disabled.
     tailscaleServeEnabled: false,
     tailscaleServePort: 443,
@@ -911,6 +913,7 @@ export const make = Effect.gen(function* () {
       port: backendExposure.port,
       distro: persistedSettings.wslDistro,
       readiness: yield* makeLaunchReadiness,
+      primary: true,
     }).pipe(
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
       Effect.provideService(DesktopWslEnvironment.DesktopWslEnvironment, wslEnvironment),

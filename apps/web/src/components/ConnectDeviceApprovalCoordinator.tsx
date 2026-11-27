@@ -131,7 +131,7 @@ function NewConnectDeviceToast({
         onClick: () => {
           markSeen();
           close();
-          void navigate({ to: "/settings/access", search: { machine: environmentId } });
+          void navigate({ to: "/settings/connections", search: { machine: environmentId } });
         },
       },
       data: {
@@ -275,7 +275,10 @@ function ConnectDeviceRequestToasts({
               props: {
                 children: t(msg("Review")),
                 onClick: () =>
-                  void navigate({ to: "/settings/access", search: { machine: environmentId } }),
+                  void navigate({
+                    to: "/settings/connections",
+                    search: { machine: environmentId },
+                  }),
               },
             },
           ],

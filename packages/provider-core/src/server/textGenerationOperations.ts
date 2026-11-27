@@ -1,3 +1,4 @@
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -22,7 +23,15 @@ import {
 
 export const TranscriptionPostProcessingOutput = Schema.Struct({ transcription: Schema.String });
 
-export type Operation = keyof ProviderTextGeneration;
+export type Operation = Exclude<keyof ProviderTextGeneration, "supportsInvestigation">;
+
+/** Observers must be synchronous and nonthrowing. SDK acceptance can arrive after interruption. */
+export const OnDispatch = Context.Reference<() => void>(
+  "t3/provider-core/textGeneration/OnDispatch",
+  {
+    defaultValue: () => () => {},
+  },
+);
 
 export interface Request<S extends Schema.Top> {
   readonly operation: Operation;
@@ -53,12 +62,16 @@ export type Runner = <S extends Schema.Top>(
   request: Request<S>,
 ) => Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]>;
 
-export const withoutInvestigation =
-  (provider: string, run: Runner): Runner =>
-  (request) =>
+const nonInvestigatingRunners = new WeakSet<Runner>();
+
+export const withoutInvestigation = (provider: string, run: Runner): Runner => {
+  const wrapped: Runner = (request) =>
     request.investigate
       ? Effect.fail(investigationUnsupported(request.operation, provider))
       : run(request);
+  nonInvestigatingRunners.add(wrapped);
+  return wrapped;
+};
 
 export const decodeJsonReply = <S extends Schema.Top>(
   request: Pick<Request<S>, "operation" | "outputSchema">,
@@ -265,6 +278,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
   });
 
   return {
+    ...(nonInvestigatingRunners.has(run) ? {} : { supportsInvestigation: true }),
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

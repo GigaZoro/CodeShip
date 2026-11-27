@@ -31,9 +31,9 @@ import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDi
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { SnapShotCoordinator } from "../components/desktop/SnapShotCoordinator";
+import { UiFeedbackHost } from "../uiFeedback/UiFeedbackHost";
 import { DesktopAppActivationCoordinator } from "../components/desktop/DesktopAppActivationCoordinator";
 import { DesktopWebLinkCoordinator } from "../components/desktop/DesktopWebLinkCoordinator";
-import { DesktopAutoUpdateCoordinator } from "../components/desktop/DesktopAutoUpdateCoordinator";
 import { RunningThreadKeepAlive } from "../components/desktop/RunningThreadKeepAlive";
 import { ReopenClosedViewShortcut } from "../components/ReopenClosedViewShortcut";
 import { ReopenLastArchivedShortcut } from "../components/ReopenLastArchivedShortcut";
@@ -201,11 +201,11 @@ function RootRouteBranch() {
         </>
       ) : null}
       {isElectron ? <RunningThreadKeepAlive /> : null}
-      {isElectron && primaryEnvironmentAuthenticated ? <DesktopAutoUpdateCoordinator /> : null}
       <RelayClientInstallDialog />
       <ConnectOnboardingDialog />
       <SshPasswordPromptDialog />
       <SnapShotCoordinator />
+      <UiFeedbackHost />
       <ReopenClosedViewShortcut />
       {primaryEnvironmentAuthenticated ? <ReopenLastArchivedShortcut /> : null}
       <ConfirmDialogHost />

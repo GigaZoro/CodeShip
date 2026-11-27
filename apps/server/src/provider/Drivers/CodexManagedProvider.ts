@@ -11,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
@@ -518,18 +519,25 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     models,
     resolveRuntime,
   );
+  const isTextGenerationError = Schema.is(TextGenerationError);
   const protect = <A>(operation: string, effect: Effect.Effect<A, TextGenerationError>) =>
     runtime.auth.controller.withAccess!(effect).pipe(
       Effect.scoped,
-      Effect.mapError(
-        (cause) =>
-          new TextGenerationError({
-            operation,
-            detail: "detail" in cause ? cause.detail : "Codex text generation failed.",
-          }),
+      Effect.mapError((cause) =>
+        isTextGenerationError(cause)
+          ? cause
+          : new TextGenerationError({
+              operation,
+              detail: "detail" in cause ? cause.detail : "Codex text generation failed.",
+              ...("retryable" in cause && cause.retryable !== undefined
+                ? { retryable: cause.retryable }
+                : {}),
+              cause,
+            }),
       ),
     );
   const textGeneration: ProviderInstance["textGeneration"] = {
+    ...(nativeGeneration.supportsInvestigation ? { supportsInvestigation: true } : {}),
     generateCommitMessage: (value) =>
       protect("generateCommitMessage", nativeGeneration.generateCommitMessage(value)),
     generatePrContent: (value) =>

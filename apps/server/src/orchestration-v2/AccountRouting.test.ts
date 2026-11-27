@@ -326,12 +326,22 @@ describe("routeAutoAccount", () => {
 
   it.each([
     ["a scheduled run takes the account whose weekly usage resets first", true, third],
-    ["any other run follows the saved order", false, primary],
+    ["any other run prefers remaining headroom over an earlier weekly reset", false, primary],
   ] as const)("%s", (_, scheduled, expected) => {
-    const weekly = (resetsAt: string, id = "seven_day") => ({
+    const weekly = (
+      windows: ReadonlyArray<{
+        readonly id: string;
+        readonly usedPercent: number;
+        readonly resetsAt: string;
+      }>,
+    ) => ({
       usageLimits: {
         checkedAt: "2026-11-03T11:59:00.000Z",
-        windows: [{ id, kind: "weekly" as const, label: id, usedPercent: 50, resetsAt }],
+        windows: windows.map((window) => ({
+          ...window,
+          kind: "weekly" as const,
+          label: window.id,
+        })),
       },
     });
     const routed = routeAutoAccount({
@@ -339,10 +349,22 @@ describe("routeAutoAccount", () => {
       projectId,
       currentInstanceId: null,
       providers: [
-        provider(primary, weekly("2026-11-08T00:00:00.000Z")),
+        provider(
+          primary,
+          weekly([{ id: "seven_day", usedPercent: 20, resetsAt: "2026-11-08T00:00:00.000Z" }]),
+        ),
         // Fable's own weekly meter does not hold Opus, so it does not move this account up.
-        provider(second, weekly("2026-11-04T00:00:00.000Z", "seven_day_fable")),
-        provider(third, weekly("2026-11-05T00:00:00.000Z")),
+        provider(
+          second,
+          weekly([
+            { id: "seven_day", usedPercent: 50, resetsAt: "2026-11-09T00:00:00.000Z" },
+            { id: "seven_day_fable", usedPercent: 50, resetsAt: "2026-11-04T00:00:00.000Z" },
+          ]),
+        ),
+        provider(
+          third,
+          weekly([{ id: "seven_day", usedPercent: 50, resetsAt: "2026-11-05T00:00:00.000Z" }]),
+        ),
       ],
       settings: settings([primary, second, third]),
       mcpSignInsNeeded: signIns(),
@@ -2738,4 +2760,764 @@ describe("MCP sign-ins in the layer", () => {
       );
     }),
   );
+
+  it.effect(
+    "skips an account whose usage_limit refusal was recorded silently in SQLite without a visible error item",
+    () =>
+      Effect.gen(function* () {
+        const dbLayer = ProjectionStore.layer.pipe(
+          Layer.provideMerge(SqlitePersistence.layerMemory),
+        );
+        const routingLayer = AccountRouting.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              dbLayer,
+              ServerSettings.layerTest(settings([primary, second, third])),
+              Layer.mock(ProviderMcp.ProviderMcp)({
+                discover: () => Effect.succeedSome([]),
+                listLoaded: () => Effect.succeedSome([]),
+              }),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([
+                  provider(primary),
+                  provider(second),
+                  provider(third),
+                ]),
+              }),
+            ),
+          ),
+        );
+        const fullLayer = Layer.mergeAll(dbLayer, routingLayer);
+        const result = yield* Effect.gen(function* () {
+          const store = yield* ProjectionStore.ProjectionStoreV2;
+          const routing = yield* AccountRouting.AccountRouting;
+          const refusedAt = yield* DateTime.now;
+          yield* store.recordUsageLimitRefusal({
+            providerInstanceId: primary,
+            refusedAt,
+            resetAt: DateTime.formatIso(DateTime.add(refusedAt, { hours: 2 })),
+            code: "usage_limit_reached",
+          });
+          const withRoom = yield* routing.accountsWithRoom({
+            driver: claude,
+            projectId,
+            model: "claude-opus-5-5",
+          });
+          const routed = yield* routing.route({
+            selection: auto,
+            projectId,
+            currentInstanceId: null,
+            started: false,
+          });
+          return {
+            withRoom: withRoom.map((candidate) => candidate.instanceId),
+            routed: routed.instanceId,
+          };
+        }).pipe(Effect.provide(fullLayer));
+
+        assert.deepEqual(result.withRoom, [second, third]);
+        assert.equal(result.routed, second);
+      }),
+  );
+});
+
+describe("soft-drain avoidance and headroom spreading", () => {
+  const sessionResetsAt = "2026-11-03T16:00:00.000Z";
+  const weeklyResetsAt = "2026-11-08T00:00:00.000Z";
+
+  const withUsage = (
+    instanceId: ProviderInstanceId,
+    windows: ReadonlyArray<{
+      readonly id: string;
+      readonly kind: "session" | "weekly";
+      readonly usedPercent: number;
+      readonly resetsAt?: string;
+    }>,
+    overrides: Partial<ServerProvider> = {},
+  ) =>
+    provider(instanceId, {
+      usageLimits: {
+        checkedAt: "2026-11-03T11:59:00.000Z",
+        windows: windows.map((window) => ({
+          id: window.id,
+          kind: window.kind,
+          label: window.id,
+          usedPercent: window.usedPercent,
+          resetsAt:
+            window.resetsAt ?? (window.kind === "weekly" ? weeklyResetsAt : sessionResetsAt),
+        })),
+      },
+      ...overrides,
+    });
+
+  const session = (usedPercent: number, resetsAt = sessionResetsAt) => ({
+    id: "5h",
+    kind: "session" as const,
+    usedPercent,
+    resetsAt,
+  });
+
+  const weekly = (usedPercent: number, resetsAt = weeklyResetsAt, id = "seven_day") => ({
+    id,
+    kind: "weekly" as const,
+    usedPercent,
+    resetsAt,
+  });
+
+  it("avoids soft-draining accounts on new threads even when earlier in saved failover order", () => {
+    const providers = [
+      withUsage(primary, [session(90), weekly(30)]),
+      withUsage(second, [session(20), weekly(93)]),
+      withUsage(third, [session(55), weekly(40)]),
+    ];
+    const base = {
+      projectId,
+      providers,
+      settings: settings([primary, second, third]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+    };
+
+    assert.deepEqual(
+      accountsWithRoom({ ...base, driver: claude, model: "claude-opus-5-5" }).map(
+        (account) => account.instanceId,
+      ),
+      [third, primary, second],
+    );
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        selection: auto,
+        currentInstanceId: null,
+        started: false,
+      }).instanceId,
+      third,
+    );
+  });
+
+  it("applies model-scoped soft-drain only to the affected model", () => {
+    const models = [
+      ...provider(primary).models,
+      {
+        slug: "claude-sonnet-5-5",
+        name: "Claude Sonnet 5.5",
+        isCustom: false,
+        capabilities: null,
+      },
+    ];
+    const providers = [
+      withUsage(primary, [session(25), weekly(94, weeklyResetsAt, "seven_day_opus")], { models }),
+      withUsage(second, [session(45), weekly(45)], { models }),
+    ];
+    const base = {
+      projectId,
+      driver: claude,
+      providers,
+      settings: settings([primary, second]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+    };
+
+    assert.deepEqual(
+      accountsWithRoom({ ...base, model: "claude-opus-5-5" }).map((account) => account.instanceId),
+      [second, primary],
+    );
+    assert.deepEqual(
+      accountsWithRoom({ ...base, model: "claude-sonnet-5-5" }).map(
+        (account) => account.instanceId,
+      ),
+      [primary, second],
+    );
+  });
+
+  it("spreads new threads across healthy accounts by remaining headroom, breaking ties by reset then saved order", () => {
+    const spreadProviders = [
+      withUsage(primary, [session(70), weekly(30)]),
+      withUsage(second, [session(40), weekly(35)]),
+      withUsage(third, [session(15), weekly(20)]),
+    ];
+    const base = {
+      projectId,
+      settings: settings([primary, second, third]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+    };
+
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        driver: claude,
+        model: "claude-opus-5-5",
+        providers: spreadProviders,
+      }).map((account) => account.instanceId),
+      [third, second, primary],
+    );
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        providers: spreadProviders,
+        selection: auto,
+        currentInstanceId: null,
+        started: false,
+      }).instanceId,
+      third,
+    );
+
+    // Tied headroom breaks by soonest weekly reset (compareAccountsByHeadroom semantics).
+    const resetTieProviders = [
+      withUsage(primary, [weekly(40, "2026-11-09T00:00:00.000Z")]),
+      withUsage(second, [weekly(40, "2026-11-05T00:00:00.000Z")]),
+      withUsage(third, [weekly(40, "2026-11-07T00:00:00.000Z")]),
+    ];
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        driver: claude,
+        model: "claude-opus-5-5",
+        providers: resetTieProviders,
+      }).map((account) => account.instanceId),
+      [second, third, primary],
+    );
+
+    // Full ties (equal headroom & reset, or missing usage windows) preserve saved failover order.
+    const fullTieProviders = [
+      withUsage(third, [weekly(40, weeklyResetsAt)]),
+      withUsage(second, [weekly(40, weeklyResetsAt)]),
+      withUsage(primary, [weekly(40, weeklyResetsAt)]),
+    ];
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        driver: claude,
+        model: "claude-opus-5-5",
+        providers: fullTieProviders,
+      }).map((account) => account.instanceId),
+      [primary, second, third],
+    );
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        driver: claude,
+        model: "claude-opus-5-5",
+        providers: [provider(third), provider(second), provider(primary)],
+      }).map((account) => account.instanceId),
+      [primary, second, third],
+    );
+  });
+
+  it("still picks a runnable account when every eligible account is soft-draining", () => {
+    const allDraining = [
+      withUsage(primary, [session(96)]),
+      withUsage(second, [session(90)]),
+      withUsage(third, [session(94)]),
+    ];
+    const base = {
+      projectId,
+      settings: settings([primary, second, third]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+    };
+
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        driver: claude,
+        model: "claude-opus-5-5",
+        providers: allDraining,
+      }).map((account) => account.instanceId),
+      [second, third, primary],
+    );
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        providers: allDraining,
+        selection: auto,
+        currentInstanceId: null,
+        started: false,
+      }).instanceId,
+      second,
+    );
+
+    // Tied soft-draining accounts fall back to saved order.
+    const tiedDraining = [
+      withUsage(third, [session(92)]),
+      withUsage(primary, [session(92)]),
+      withUsage(second, [session(92)]),
+    ];
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        driver: claude,
+        model: "claude-opus-5-5",
+        providers: tiedDraining,
+      }).map((account) => account.instanceId),
+      [primary, second, third],
+    );
+  });
+
+  it("keeps an already-started thread sticky on its current account even when soft-draining or lower headroom", () => {
+    const base = {
+      projectId,
+      settings: settings([primary, second, third]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+      selection: { ...auto, instanceId: primary },
+      currentInstanceId: primary,
+      started: true,
+    };
+
+    // Soft-draining current stays put (KV prompt cache preservation).
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        providers: [
+          withUsage(primary, [session(95)]),
+          withUsage(second, [session(10)]),
+          withUsage(third, [session(20)]),
+        ],
+      }).instanceId,
+      primary,
+    );
+
+    // Lower-headroom current stays put.
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        providers: [
+          withUsage(primary, [session(75)]),
+          withUsage(second, [session(10)]),
+          withUsage(third, [session(20)]),
+        ],
+      }).instanceId,
+      primary,
+    );
+
+    // Hard-limited current moves off to the highest-headroom healthy account, avoiding soft-draining second.
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        providers: [
+          withUsage(primary, [session(100)]),
+          withUsage(second, [session(93)]),
+          withUsage(third, [session(25)]),
+        ],
+      }).instanceId,
+      third,
+    );
+
+    // Current needing MCP sign-in moves off to the highest-headroom healthy signed-in account.
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        mcpSignInsNeeded: signIns([primary]),
+        providers: [
+          withUsage(primary, [session(10)]),
+          withUsage(second, [session(93)]),
+          withUsage(third, [session(30)]),
+        ],
+      }).instanceId,
+      third,
+    );
+  });
+
+  it("avoids soft-draining accounts on scheduled runs, then prefers earliest weekly reset, headroom, and saved order", () => {
+    const base = {
+      projectId,
+      settings: settings([primary, second, third]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+      selection: auto,
+      currentInstanceId: null,
+      started: false,
+      scheduled: true,
+    };
+
+    // Soft-draining primary resets earliest, but scheduled run avoids it and picks earliest healthy reset (third).
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        providers: [
+          withUsage(primary, [weekly(93, "2026-11-04T00:00:00.000Z")]),
+          withUsage(second, [weekly(20, "2026-11-08T00:00:00.000Z")]),
+          withUsage(third, [weekly(50, "2026-11-06T00:00:00.000Z")]),
+        ],
+      }).instanceId,
+      third,
+    );
+
+    // Equal weekly reset breaks ties by remaining headroom.
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        providers: [
+          withUsage(primary, [weekly(60, "2026-11-05T00:00:00.000Z")]),
+          withUsage(second, [weekly(20, "2026-11-05T00:00:00.000Z")]),
+          withUsage(third, [weekly(45, "2026-11-05T00:00:00.000Z")]),
+        ],
+      }).instanceId,
+      second,
+    );
+
+    // Equal weekly reset and headroom breaks ties by saved order.
+    assert.equal(
+      routeAutoAccount({
+        ...base,
+        providers: [
+          withUsage(third, [weekly(40, "2026-11-05T00:00:00.000Z")]),
+          withUsage(second, [weekly(40, "2026-11-05T00:00:00.000Z")]),
+          withUsage(primary, [weekly(40, "2026-11-05T00:00:00.000Z")]),
+        ],
+      }).instanceId,
+      primary,
+    );
+  });
+
+  it("preserves plan-usage precedence over prepaid credits and metered/API-key accounts, and MCP sign-in precedence", () => {
+    // 1. Subscription plan account (40% used or even 95% soft-draining) beats metered/API-key accounts (no windows / 100% headroom).
+    const apiKeyAccount = provider(primary, {
+      auth: { status: "authenticated", type: "apiKey" },
+    });
+    const meteredAccount = provider(second, {
+      auth: { status: "authenticated", funding: "metered" },
+    });
+    const planUsed40 = withUsage(third, [session(40), weekly(40)], {
+      auth: { status: "authenticated", funding: "included" },
+    });
+    const meteredBase = {
+      projectId,
+      providers: [apiKeyAccount, meteredAccount, planUsed40],
+      settings: settings([primary, second, third]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+    };
+
+    assert.deepEqual(
+      accountsWithRoom({ ...meteredBase, driver: claude, model: "claude-opus-5-5" }).map(
+        (account) => account.instanceId,
+      ),
+      [third],
+    );
+    assert.deepEqual(
+      accountsWithRoom({
+        ...meteredBase,
+        driver: claude,
+        model: "claude-opus-5-5",
+        funding: "verified",
+      }).map((account) => account.instanceId),
+      [third],
+    );
+    assert.equal(
+      routeAutoAccount({
+        ...meteredBase,
+        selection: { ...auto, instanceId: primary },
+        currentInstanceId: null,
+        started: false,
+      }).instanceId,
+      third,
+    );
+
+    // Even when the subscription plan account is soft-draining (95%), it still beats an API-key account.
+    const planSoftDraining = withUsage(third, [session(95), weekly(50)], {
+      auth: { status: "authenticated", funding: "included" },
+    });
+    assert.equal(
+      routeAutoAccount({
+        ...meteredBase,
+        providers: [apiKeyAccount, planSoftDraining],
+        selection: { ...auto, instanceId: primary },
+        currentInstanceId: null,
+        started: false,
+      }).instanceId,
+      third,
+    );
+
+    // 2. Plan usage (even soft-draining at 95%) beats Codex prepaid credits (onCredits === true),
+    // and an active thread on credits moves to the highest-headroom healthy plan account.
+    const codexDriver = ProviderDriverKind.make("codex");
+    const codexPaid = ProviderInstanceId.make("codex_paid_precedence");
+    const codexDraining = ProviderInstanceId.make("codex_draining_precedence");
+    const codexHealthy = ProviderInstanceId.make("codex_healthy_precedence");
+    const codexModel = "gpt-5.5";
+    const epochSeconds = (iso: string) => Date.parse(iso) / 1000;
+    const makeCodex = (instanceId: ProviderInstanceId, primaryUsed: number, weeklyUsed: number) =>
+      provider(instanceId, {
+        driver: codexDriver,
+        auth: { status: "authenticated", type: "chatgpt", funding: "included" },
+        models: [{ ...provider(primary).models[0]!, slug: codexModel, aliases: [] }],
+        usageLimits: codexRateLimitsToLimits({
+          checkedAt: "2026-11-03T11:59:00.000Z",
+          read: {
+            rateLimits: {
+              planType: "plus",
+              primary: {
+                usedPercent: primaryUsed,
+                windowDurationMins: 300,
+                resetsAt: epochSeconds(sessionResetsAt),
+              },
+              secondary: {
+                usedPercent: weeklyUsed,
+                windowDurationMins: 10_080,
+                resetsAt: epochSeconds(weeklyResetsAt),
+              },
+              credits: { balance: "25.00", hasCredits: true, unlimited: false },
+            },
+            ordinaryUsageAllowed: weeklyUsed < 100 && primaryUsed < 100,
+          },
+        }),
+      });
+    const codexSettings: ServerSettingsValue = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [codexPaid]: { driver: codexDriver, config: { spendCredits: { capCredits: 3000 } } },
+        [codexDraining]: { driver: codexDriver },
+        [codexHealthy]: { driver: codexDriver },
+      },
+      providerInstanceFailoverOrder: [codexPaid, codexDraining, codexHealthy],
+      failoverLimitedThreads: true,
+      autoModeProvider: codexDriver,
+      autoModeModels: { [codexDriver]: { model: codexModel } },
+    };
+    const codexContext = {
+      projectId,
+      settings: codexSettings,
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+      creditAccess: {
+        spent: new Map([[codexPaid, 0]]),
+        requesters: [],
+      },
+    };
+    // Plan-usage soft-draining still beats prepaid credits.
+    assert.deepEqual(
+      accountsWithRoom({
+        ...codexContext,
+        driver: codexDriver,
+        model: codexModel,
+        providers: [makeCodex(codexPaid, 10, 100), makeCodex(codexDraining, 95, 50)],
+      }).map(({ instanceId, onCredits }) => ({ instanceId, onCredits })),
+      [
+        { instanceId: codexDraining, onCredits: false },
+        { instanceId: codexPaid, onCredits: true },
+      ],
+    );
+    // Active thread on credits moves to the healthy plan account rather than the soft-draining one.
+    assert.equal(
+      routeAutoAccount({
+        ...codexContext,
+        providers: [
+          makeCodex(codexPaid, 10, 100),
+          makeCodex(codexDraining, 95, 50),
+          makeCodex(codexHealthy, 20, 30),
+        ],
+        selection: { instanceId: codexPaid, model: codexModel, autoAccount: true },
+        currentInstanceId: codexPaid,
+        started: true,
+      }).instanceId,
+      codexHealthy,
+    );
+
+    // 3. Signed-in MCP (even soft-draining at 93%) beats pending MCP sign-in (even at 10% used),
+    // and within accounts needing sign-in, healthy/higher-headroom accounts still rank ahead.
+    const mcpProviders = [
+      withUsage(primary, [session(10)]),
+      withUsage(second, [session(93)]),
+      withUsage(third, [session(94)]),
+    ];
+    assert.deepEqual(
+      accountsWithRoom({
+        projectId,
+        driver: claude,
+        model: "claude-opus-5-5",
+        providers: mcpProviders,
+        settings: settings([primary, second, third]),
+        recordedLimits: new Map(),
+        mcpSignInsNeeded: signIns([primary, third]),
+        nowMs,
+      }).map((account) => account.instanceId),
+      [second, primary, third],
+    );
+  });
+
+  it("avoids soft-draining targets and picks highest headroom on limit failover while keeping soft-draining pinned launches put", () => {
+    const pinned: ModelSelection = { instanceId: third, model: "claude-opus-5-5" };
+    const base = {
+      projectId,
+      settings: settings([primary, second, third]),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+    };
+
+    // Pinned account that is merely soft-draining (93% < 100%) stays put.
+    assert.deepEqual(
+      failoverLimitedLaunch({
+        ...base,
+        selection: pinned,
+        recordedLimits: new Map(),
+        providers: [
+          withUsage(primary, [session(10)]),
+          withUsage(second, [session(20)]),
+          withUsage(third, [session(93)]),
+        ],
+      }),
+      { selection: pinned, failover: null },
+    );
+
+    // Hard-limited pinned account avoids soft-draining primary and picks healthy second.
+    assert.deepEqual(
+      failoverLimitedLaunch({
+        ...base,
+        selection: pinned,
+        recordedLimits: new Map(),
+        providers: [
+          withUsage(primary, [session(92)]),
+          withUsage(second, [session(35)]),
+          withUsage(third, [session(100)]),
+        ],
+      }),
+      {
+        selection: { ...pinned, instanceId: second },
+        failover: { reason: "usageLimit" },
+      },
+    );
+
+    // Hard-limited pinned account picks highest-headroom healthy target over earlier saved order.
+    assert.deepEqual(
+      failoverLimitedLaunch({
+        ...base,
+        selection: pinned,
+        recordedLimits: new Map(),
+        providers: [
+          withUsage(primary, [session(65)]),
+          withUsage(second, [session(15)]),
+          withUsage(third, [session(100)]),
+        ],
+      }),
+      {
+        selection: { ...pinned, instanceId: second },
+        failover: { reason: "usageLimit" },
+      },
+    );
+
+    // Cross-provider failover avoids soft-draining accounts on the alternate provider.
+    const codexDriver = ProviderDriverKind.make("codex");
+    const codexDraining = ProviderInstanceId.make("codex_alt_draining");
+    const codexHealthy = ProviderInstanceId.make("codex_alt_healthy");
+    const codexModel = "gpt-5.5";
+    const codexModels = [{ ...provider(primary).models[0]!, slug: codexModel, aliases: [] }];
+    assert.deepEqual(
+      failoverLimitedLaunch({
+        projectId,
+        selection: { instanceId: primary, model: "claude-opus-5-5" },
+        mcpSignInsNeeded: signIns(),
+        recordedLimits: new Map(),
+        nowMs,
+        providers: [
+          withUsage(primary, [session(100)]),
+          withUsage(codexDraining, [session(94)], { driver: codexDriver, models: codexModels }),
+          withUsage(codexHealthy, [session(25)], { driver: codexDriver, models: codexModels }),
+        ],
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: {
+            [primary]: { driver: claude },
+            [codexDraining]: { driver: codexDriver },
+            [codexHealthy]: { driver: codexDriver },
+          },
+          providerInstanceFailoverOrder: [primary, codexDraining, codexHealthy],
+          failoverLimitedThreads: true,
+          autoModeProvider: claude,
+          autoModeModels: { [codexDriver]: { model: codexModel } },
+        },
+      }),
+      {
+        selection: { instanceId: codexHealthy, model: codexModel },
+        failover: { reason: "usageLimit", crossProviderFrom: primary },
+      },
+    );
+  });
+
+  it("ranks known-healthy accounts ahead of unread accounts and unread ahead of soft-draining", () => {
+    const base = {
+      projectId,
+      driver: claude,
+      model: "claude-opus-5-5",
+      settings: settings([primary, second, third]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+    };
+
+    // Account with no usage reading does not jump ahead of a known-healthy account (20% used),
+    // but still ranks ahead of a known soft-draining account (92% used).
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        providers: [
+          provider(primary),
+          withUsage(second, [session(20)]),
+          withUsage(third, [session(92)]),
+        ],
+      }).map((account) => account.instanceId),
+      [second, primary, third],
+    );
+
+    // Expired or non-applicable windows count as unread rather than 100%-headroom known-healthy.
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        providers: [
+          withUsage(primary, [
+            {
+              id: "5h",
+              kind: "session",
+              usedPercent: 10,
+              resetsAt: "2026-11-03T11:00:00.000Z",
+            },
+          ]),
+          withUsage(second, [
+            {
+              id: "seven_day_fable",
+              kind: "weekly",
+              usedPercent: 15,
+              resetsAt: weeklyResetsAt,
+            },
+          ]),
+          withUsage(third, [session(40)]),
+        ],
+      }).map((account) => account.instanceId),
+      [third, primary, second],
+    );
+
+    // When no account has a live usage reading, saved failover order is preserved.
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        providers: [provider(third), provider(primary), provider(second)],
+        settings: settings([second, third, primary]),
+      }).map((account) => account.instanceId),
+      [second, third, primary],
+    );
+
+    // Scheduled runs also keep known-healthy > unread > soft-draining.
+    assert.deepEqual(
+      accountsWithRoom({
+        ...base,
+        preferEarliestReset: true,
+        providers: [
+          provider(primary),
+          withUsage(second, [weekly(93, "2026-11-04T00:00:00.000Z")]),
+          withUsage(third, [weekly(30, "2026-11-08T00:00:00.000Z")]),
+        ],
+      }).map((account) => account.instanceId),
+      [third, primary, second],
+    );
+  });
 });

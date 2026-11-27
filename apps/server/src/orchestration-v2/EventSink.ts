@@ -232,11 +232,17 @@ export interface EventSinkV2Shape {
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
     };
+    /** Rechecked inside the commit transaction so concurrent writes cannot invalidate an auto-settle. */
+    readonly autoSettleGuard?: {
+      readonly snapshotAt: DateTime.Utc;
+      readonly parentResultKey?: string;
+    };
   }) => Effect.Effect<
     {
       readonly receipt: CommandReceiptStore.CommandReceiptV2;
       readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
       readonly committed: boolean;
+      readonly rejectedByGuard?: boolean;
       readonly cancelledEffectCount: number;
     },
     EventSinkV2Error
@@ -876,6 +882,33 @@ const layerBase: Layer.Layer<
         return { receipt: existing.value, storedEvents };
       });
 
+    const checkAutoSettleGuard = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+      guard: NonNullable<Parameters<EventSinkV2Shape["commitCommand"]>[0]["autoSettleGuard"]>,
+    ) {
+      const thread = yield* projectionStore
+        .getThread(threadId)
+        .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }));
+      if (
+        thread === null ||
+        thread.settledOverride !== null ||
+        DateTime.toEpochMillis(thread.updatedAt) > DateTime.toEpochMillis(guard.snapshotAt)
+      ) {
+        return `Thread ${threadId} changed before automatic settlement.`;
+      }
+      if (thread.lineage.relationshipToParent === "subagent") {
+        const [candidate] = yield* projectionStore.getSettlementCandidates(threadId);
+        if (
+          candidate === undefined ||
+          (guard.parentResultKey !== undefined &&
+            candidate.parentResultKey !== guard.parentResultKey)
+        ) {
+          return `Thread ${threadId}'s parent task changed before automatic settlement.`;
+        }
+      }
+      return null;
+    });
+
     const commitCommandEffect = Effect.fn("orchestrationV2.EventSink.commitCommand")(function* (
       input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
     ) {
@@ -893,7 +926,38 @@ const layerBase: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
-            return { ...existing, committed: false as const, cancelledEffectIds: [] };
+            return {
+              ...existing,
+              committed: false as const,
+              rejectedByGuard: false as const,
+              cancelledEffectIds: [],
+            };
+          }
+
+          const guardFailure =
+            input.autoSettleGuard === undefined
+              ? null
+              : yield* checkAutoSettleGuard(input.threadId, input.autoSettleGuard);
+          if (guardFailure !== null) {
+            const sequence = yield* eventStore.latestSequence({ threadId: input.threadId });
+            const receipt: CommandReceiptStore.CommandReceiptV2 = {
+              commandId: input.commandId,
+              threadId: input.threadId,
+              commandType: input.commandType,
+              acceptedAt: input.acceptedAt,
+              resultSequence: sequence,
+              status: "rejected",
+              error: guardFailure,
+            };
+            yield* commandReceipts.upsert(receipt);
+            return {
+              receipt,
+              storedEvents: [],
+              outcomes: [],
+              committed: false as const,
+              rejectedByGuard: true as const,
+              cancelledEffectIds: [],
+            };
           }
 
           // Planning does not lock the source. Once deletion commits, maintenance
@@ -963,7 +1027,14 @@ const layerBase: Layer.Layer<
                   threadId: input.threadId,
                   ...input.cancelUnsettledEffects,
                 });
-          return { receipt, storedEvents, outcomes, committed: true as const, cancelledEffectIds };
+          return {
+            receipt,
+            storedEvents,
+            outcomes,
+            committed: true as const,
+            rejectedByGuard: false as const,
+            cancelledEffectIds,
+          };
         }),
         (result) =>
           Effect.gen(function* () {
@@ -978,6 +1049,7 @@ const layerBase: Layer.Layer<
         receipt: result.receipt,
         storedEvents: result.storedEvents,
         committed: result.committed,
+        ...(result.rejectedByGuard ? { rejectedByGuard: true as const } : {}),
         cancelledEffectCount: result.cancelledEffectIds.length,
       };
     });

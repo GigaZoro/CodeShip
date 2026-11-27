@@ -3,7 +3,7 @@ import { composerTargetKey, type ComposerThreadTarget } from "../../composerDraf
 
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import { usePreparingComposerImages } from "./preparingComposerImages";
 
 export const HELD_COMPOSER_SEND_BANNER_ID = "held-composer-send";
@@ -28,9 +28,10 @@ export function heldComposerSendBannerItem(
     readonly onCancel: () => void;
   },
   resolve: typeof t = t,
-): ComposerBannerStackItem {
+): ThreadNotice {
   return {
     id: HELD_COMPOSER_SEND_BANNER_ID,
+    producer: "heldComposerSend",
     variant: "info",
     icon: <Spinner size="xs" aria-hidden="true" />,
     title: <HeldComposerSendStatus draftTarget={input.draftTarget} />,

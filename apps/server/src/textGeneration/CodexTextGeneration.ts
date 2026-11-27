@@ -33,6 +33,8 @@ import {
   codexMcpListLaunchArgs,
   resolveCodexLaunchArgs,
 } from "../provider/codexLaunchArgs.ts";
+import { isCodexLoginRejected } from "../provider/CodexLoginRejected.ts";
+import { isNonRetryableCodexManagedError } from "../provider/CodexManagedErrors.ts";
 import { codexAppServerEnvironment } from "../provider/CodexProvider.ts";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import {
@@ -62,6 +64,30 @@ const CODEX_NO_PLUGIN_ARGS = [
   "--config",
   "features.apps=false",
 ] as const;
+const CODEX_NOISE_LINE_PATTERN =
+  /^(?:warn(?:ing)?|info|debug)\s*:|^\d{4}-\d{2}-\d{2}T\S+\s+(?:WARN|INFO|DEBUG)\b/i;
+const CODEX_MCP_LINE_PATTERN = /\bMCP\b/u;
+const NON_RETRYABLE_CODEX_CLI_PATTERN =
+  /\b(?:usage[\s_-]+limit|rate[\s_-]+limit(?:ed)?|too\s+many\s+requests|you(?:'ve|\s+have)\s+(?:hit|reached)\s+(?:your|the)\s+(?:[a-z0-9-]+\s+)?limit|exceeded\s+(?:your\s+)?(?:current\s+)?quota|insufficient[\s_]+quota|quota[\s_]+(?:exceeded|exhausted)|unexpected\s+status\s+(?:401|402|403|429)|http\s+(?:401|402|403|429)|(?:401\s+unauthorized|402\s+payment\s+required|403\s+forbidden|429\s+too\s+many\s+requests)|model[\s_]+not[\s_]+supported|unsupported\s+model|authentication[\s_]+(?:failed|error)|invalid[\s_]+api[\s_]+key|incorrect\s+api\s+key)\b/i;
+
+function isNonRetryableCodexCliDetail(detail: string): boolean {
+  const line = detail
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find(
+      (entry) =>
+        entry.length > 0 &&
+        !CODEX_NOISE_LINE_PATTERN.test(entry) &&
+        !CODEX_MCP_LINE_PATTERN.test(entry),
+    );
+  if (line === undefined) return false;
+  if (isNonRetryableCodexManagedError(line) || isCodexLoginRejected({ message: line })) {
+    return true;
+  }
+  const sanitized = line.replace(/https?:\/\/\S+/gi, " ").replace(/`[^`]*`/g, " ");
+  return NON_RETRYABLE_CODEX_CLI_PATTERN.test(sanitized);
+}
+
 const CodexMcpServers = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ name: Schema.String, enabled: Schema.Boolean })),
 );
@@ -125,6 +151,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         hostOverride === undefined
           ? `Reinstall CodeShip to restore its bundled Codex metadata runtime. The installed executable must support ${CODEX_METADATA_FLAG}.`
           : `Set ${CODEX_METADATA_BINARY_ENV} on the CodeShip host to the absolute path of an executable patched Codex that supports ${CODEX_METADATA_FLAG}, then restart CodeShip.`,
+      retryable: false,
     });
     if (
       !path.isAbsolute(configuredPath) ||
@@ -158,6 +185,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         return yield* new TextGenerationError({
           operation,
           detail: `This Codex instance uses a different custom launcher. Provision that launcher for metadata and point ${CODEX_METADATA_BINARY_ENV} at it, or unset the host override to use this account’s launcher.`,
+          retryable: false,
         });
       }
       executable = matched;
@@ -358,7 +386,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     S["DecodingServices"]
   > {
     const metadataBinaryPath = yield* Effect.fromResult(selectedMetadataPath).pipe(
-      Effect.mapError((cause) => new TextGenerationError({ operation, detail: cause.message })),
+      Effect.mapError(
+        (cause) =>
+          new TextGenerationError({
+            operation,
+            detail: cause.message,
+            retryable: false,
+            cause,
+          }),
+      ),
     );
     const imagePaths = yield* materializeImageAttachments(attachments);
     const schemaJson = yield* encodeJsonForOperation(
@@ -381,7 +417,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       const resolved = resolveRuntime
         ? yield* resolveRuntime.pipe(
             Effect.mapError(
-              (cause) => new TextGenerationError({ operation, detail: cause.detail }),
+              (cause) =>
+                new TextGenerationError({
+                  operation,
+                  detail: cause.detail,
+                  ...(cause.retryable === undefined ? {} : { retryable: cause.retryable }),
+                  cause,
+                }),
             ),
           )
         : undefined;
@@ -421,7 +463,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ? effectiveConfig.binaryPath
           : yield* resolveBinaryPath.pipe(
               Effect.mapError(
-                (cause) => new TextGenerationError({ operation, detail: cause.detail }),
+                (cause) =>
+                  new TextGenerationError({
+                    operation,
+                    detail: cause.detail,
+                    ...(cause.retryable === undefined ? {} : { retryable: cause.retryable }),
+                    cause,
+                  }),
               ),
             )) ||
           defaultCodexBinary);
@@ -527,6 +575,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             detail.length > 0
               ? `Codex CLI command failed: ${detail}`
               : `Codex CLI command failed with code ${exitCode}.`,
+          ...(detail.length > 0 && isNonRetryableCodexCliDetail(detail)
+            ? { retryable: false }
+            : {}),
         });
       }
       return stdout;

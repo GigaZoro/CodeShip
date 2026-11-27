@@ -53,6 +53,7 @@ const unsupportedTextGeneration: ProviderTextGeneration = (() => {
       new TextGenerationError({
         operation,
         detail: "fx does not provide application text generation.",
+        retryable: false,
       }),
     );
   return {

@@ -41,6 +41,8 @@ import {
   workEntryDisplayLabel,
   threadReadLabelPrefix,
   workEntryReadOutput,
+  timelineEntryFoldWork,
+  resolveTimelineMinimapMarkerPercent,
 } from "./MessagesTimeline.logic";
 import { workEntryIconName } from "./TimelineWorkEntryRow.logic";
 
@@ -1310,7 +1312,7 @@ describe("deriveMessagesTimelineRows", () => {
     );
     expect(foldRow?.runId).toBe("turn-1");
     expect(foldRow?.expanded).toBe(false);
-    expect(foldRow?.label).toBe("Worked for 22s");
+    expect(foldRow?.label).toBe("Worked for 22s · 1 tool");
     expect(collapsedRows.map((row) => row.id)).toEqual([
       "user-entry",
       "turn-fold:turn-1",
@@ -1539,7 +1541,7 @@ describe("deriveMessagesTimelineRows", () => {
         row.kind === "turn-fold",
     );
     expect(foldRow?.runId).toBe("turn-1");
-    expect(foldRow?.label).toBe("Worked for 12s");
+    expect(foldRow?.label).toBe("Worked for 12s · 1 tool");
   });
 
   it("uses latest-turn timings and the stopped label for an interrupted latest turn", () => {
@@ -1574,7 +1576,7 @@ describe("deriveMessagesTimelineRows", () => {
       expect.objectContaining({
         kind: "turn-fold",
         runId: "turn-1",
-        label: "You stopped after 47s",
+        label: "You stopped after 47s · 1 tool",
         expanded: false,
       }),
     ]);
@@ -1649,7 +1651,8 @@ describe("deriveMessagesTimelineRows", () => {
             "steer",
           ]);
           expect(rows[1]?.createdAt).toBe(time(0));
-          if (!isWorking) expect(rows[1]).toMatchObject({ label: "Worked for 20s", expanded });
+          if (!isWorking)
+            expect(rows[1]).toMatchObject({ label: "Worked for 20s · 1 tool", expanded });
           expect(rows.some((row) => row.id === "final")).toBe(true);
           expect(rows.some((row) => row.id === "work")).toBe(isWorking || expanded);
         }
@@ -1724,8 +1727,11 @@ describe("deriveMessagesTimelineRows", () => {
       "final",
       "late-subagent",
     ]);
-    expect(collapsed[1]).toMatchObject({ label: "Worked for 30s" });
-    expect(collapsed[3]).toMatchObject({ label: "Continued for 20s", createdAt: time(10) });
+    expect(collapsed[1]).toMatchObject({ label: "Worked for 30s · 1 tool" });
+    expect(collapsed[3]).toMatchObject({
+      label: "Continued for 20s · 1 tool",
+      createdAt: time(10),
+    });
 
     expect(rows(new Set([segmentKey])).map((row) => row.id)).toEqual([
       "prompt",
@@ -2282,10 +2288,10 @@ describe("deriveMessagesTimelineRows", () => {
     const settled = rows({ resume: "completed", working: false });
     expect(shape(settled)).toEqual([
       "user:launch",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:launch-answer",
       "user:resume",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:resume-answer",
     ]);
 
@@ -2298,17 +2304,17 @@ describe("deriveMessagesTimelineRows", () => {
     });
     expect(shape(expanded)).toEqual([
       "user:launch",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "work-toggle",
       "assistant:launch-answer",
       "user:resume",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:resume-answer",
     ]);
 
     expect(shape(rows({ resume: "running", working: true }))).toEqual([
       "user:launch",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:launch-answer",
       "user:resume",
       "working",
@@ -2317,7 +2323,7 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(shape(rows({ resume: "failed", working: false }))).toEqual([
       "user:launch",
-      "fold:Worked for 8s",
+      "fold:Worked for 8s · 1 tool",
       "assistant:launch-answer",
       "user:resume",
       "work",
@@ -3130,7 +3136,7 @@ describe("v2 run and attempt history", () => {
     );
     expect(foldRow?.runId).toBe("turn-1");
     expect(foldRow?.expanded).toBe(false);
-    expect(foldRow?.label).toBe("Worked for 22s");
+    expect(foldRow?.label).toBe("Worked for 22s · 1 tool");
     expect(collapsedRows.map((row) => row.id)).toEqual([
       "user-entry",
       "turn-fold:turn-1",
@@ -3817,6 +3823,7 @@ it.each([
     runId: RunId.make("run"),
     createdAt: "2026-01-01T00:00:00Z",
     label: "Worked for 1m",
+    failedLabel: null,
     expanded: true,
     ...(before === undefined ? {} : { deferredWorkItemIds: before }),
   };
@@ -5381,5 +5388,197 @@ describe("workEntryReadOutput", () => {
         "/workspace/t3code",
       ),
     ).toBe("/workspace/t3code/src/app.ts\n~/.claude/CLAUDE.md\n~/.gitconfig");
+  });
+});
+
+describe("turn fold labels", () => {
+  const at = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
+  const user = (id: string, second: number, runId: string | null = null): TimelineEntry => ({
+    id,
+    kind: "message",
+    createdAt: at(second),
+    message: {
+      id: MessageId.make(id),
+      role: "user",
+      text: id,
+      runId: runId === null ? null : RunId.make(runId),
+      createdAt: at(second),
+      updatedAt: at(second),
+      streaming: false,
+    },
+  });
+  const assistant = (
+    id: string,
+    runId: string,
+    second: number,
+  ): Extract<TimelineEntry, { kind: "message" }> => ({
+    id,
+    kind: "message",
+    createdAt: at(second),
+    message: {
+      id: MessageId.make(id),
+      role: "assistant",
+      text: "Done",
+      runId: RunId.make(runId),
+      createdAt: at(second),
+      updatedAt: at(second),
+      streaming: false,
+    },
+  });
+  const tool = (
+    id: string,
+    runId: string,
+    second: number,
+    fields: { failed?: boolean; changedFiles?: ReadonlyArray<string> } = {},
+  ): Extract<TimelineEntry, { kind: "work" }> => ({
+    id,
+    kind: "work",
+    createdAt: at(second),
+    entry: {
+      id,
+      createdAt: at(second),
+      runId: RunId.make(runId),
+      label: "Ran command",
+      tone: "tool",
+      toolLifecycleStatus: fields.failed ? "failed" : "completed",
+      ...(fields.changedFiles ? { changedFiles: fields.changedFiles } : {}),
+    },
+  });
+  const twoTurns: TimelineEntry[] = [
+    user("u1", 0),
+    tool("w1", "run-1", 2, { changedFiles: ["a.ts", "b.ts"] }),
+    tool("w2", "run-1", 4, { failed: true, changedFiles: ["b.ts"] }),
+    tool("w3", "run-1", 6),
+    assistant("a1", "run-1", 10),
+    user("u2", 20),
+    tool("w4", "run-2", 22),
+    assistant("a2", "run-2", 30),
+  ];
+  const folds = (foldFinishedWork?: "always" | "older" | "never") =>
+    deriveMessagesTimelineRows({
+      timelineEntries: twoTurns,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+      ...(foldFinishedWork ? { foldFinishedWork } : {}),
+    }).flatMap((row) =>
+      row.kind === "turn-fold"
+        ? [{ runId: row.runId, label: row.label, failed: row.failedLabel }]
+        : [],
+    );
+
+  it("says what the turn did, with failures kept apart for their own tone", () => {
+    expect(folds("always")).toEqual([
+      { runId: "run-1", label: "Worked for 10s · 3 tools · 2 files", failed: "1 failed" },
+      { runId: "run-2", label: "Worked for 10s · 1 tool", failed: null },
+    ]);
+  });
+
+  it.each([
+    ["always", ["run-1", "run-2"]],
+    ["older", ["run-1"]],
+    ["never", []],
+  ] as const)("folds finished work %s", (foldFinishedWork, runIds) => {
+    expect(folds(foldFinishedWork).map((fold) => fold.runId)).toEqual(runIds);
+  });
+
+  it("keeps the latest turn open when a notification lands inside it", () => {
+    const notification: TimelineEntry = {
+      ...tool("n1", "run-2", 24),
+      entry: { ...tool("n1", "run-2", 24).entry, tone: "info", itemType: "notification" },
+    };
+    expect(
+      deriveMessagesTimelineRows({
+        timelineEntries: [
+          ...twoTurns.slice(0, 5),
+          user("u2", 20, "run-2"),
+          tool("w4", "run-2", 22),
+          notification,
+          assistant("a2", "run-2", 30),
+        ],
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        foldFinishedWork: "older",
+      }).flatMap((row) => (row.kind === "turn-fold" ? [row.runId] : [])),
+    ).toEqual(["run-1"]);
+  });
+
+  it("keeps the turn still running open in every mode", () => {
+    const running = twoTurns.slice(0, 7);
+    expect(
+      deriveMessagesTimelineRows({
+        timelineEntries: running,
+        isWorking: true,
+        activeTurnStartedAt: at(20),
+        latestRun: {
+          runId: RunId.make("run-2"),
+          status: "running",
+          startedAt: at(20),
+          completedAt: null,
+          turnEnded: false,
+        },
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        foldFinishedWork: "always",
+      }).flatMap((row) => (row.kind === "turn-fold" ? [row.runId] : [])),
+    ).toEqual(["run-1"]);
+  });
+
+  // A new entry kind must say whether it is work a fold counts; the record fails to typecheck
+  // until it does.
+  const entryOfEveryKind = {
+    message: assistant("message", "run-1", 1),
+    "proposed-plan": {
+      id: "plan",
+      kind: "proposed-plan",
+      createdAt: at(1),
+      proposedPlan: {} as never,
+    },
+    "html-render": {
+      id: "html",
+      kind: "html-render",
+      createdAt: at(1),
+      runId: null,
+      htmlRender: {} as never,
+    },
+    "mcp-app": {
+      id: "app",
+      kind: "mcp-app",
+      createdAt: at(1),
+      runId: null,
+      sourceThreadId: ThreadId.make("thread"),
+      itemId: TurnItemId.make("item"),
+      revision: "1",
+      mcpApp: {} as never,
+    },
+    work: tool("work", "run-1", 1),
+    event: { id: "event", kind: "event", createdAt: at(1), projectedItem: {} as never },
+    "sent-message": { id: "sent", kind: "sent-message", createdAt: at(1), runId: null, text: "hi" },
+  } satisfies { [Kind in TimelineEntry["kind"]]: Extract<TimelineEntry, { kind: Kind }> };
+
+  it.each(Object.entries(entryOfEveryKind))(
+    "counts a %s entry only when it is work",
+    (kind, entry) => {
+      const work = timelineEntryFoldWork(entry);
+      expect(work).toBe(kind === "work" && entry.kind === "work" ? entry.entry : null);
+    },
+  );
+});
+
+describe("resolveTimelineMinimapMarkerPercent", () => {
+  it.each([
+    ["on the strip of the turn it opens", 10, 50],
+    ["halfway into the turn it falls inside", 12, 75],
+    ["before the first strip", 0, 0],
+    ["after the last strip", 30, 100],
+  ])("places a marker %s", (_name, rowIndex, percent) => {
+    expect(resolveTimelineMinimapMarkerPercent([2, 10, 20], rowIndex)).toBe(percent);
+  });
+
+  it("draws no marker while the rail is hidden", () => {
+    expect(resolveTimelineMinimapMarkerPercent([2], 1)).toBe(null);
   });
 });

@@ -1678,6 +1678,7 @@ function ThreadDetailBody(
                   rewindTargets={rewind.targets}
                   rewindActions={rewind.actions}
                   unseenWindow={unseenWindow}
+                  pullRequests={props.selectedThread.pullRequests}
                 />
               </ColumnWidth>
             </WorkspaceMutationIdProvider>

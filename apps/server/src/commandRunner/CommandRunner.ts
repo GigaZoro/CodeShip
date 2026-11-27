@@ -2,6 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
+import * as NodeURL from "node:url";
 import { flow } from "effect/Function";
 import { admitWorkspaceProcess } from "../workspace/workspaceLease.ts";
 
@@ -26,6 +27,7 @@ import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
 import { overrideEnvironment } from "@t3tools/shared/shell";
 import {
+  WINDOWS_PROCESS_CLOCK_SKEW_MS,
   WINDOWS_PROCESS_TREE_FUNCTIONS,
   windowsStopTreeArgs,
 } from "@t3tools/shared/windowsProcessTreeScript";
@@ -60,9 +62,12 @@ import * as CpuAdmission from "../resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import { forkParked } from "../serverActivation.ts";
 import { readProcessStartedAt } from "../serverRuntimeState.ts";
+import { LOG_KEEP_BYTES, LOG_TRIM_AT_BYTES, TRIMMED_MARKER } from "./posixLogWriter.ts";
 import {
   compareIdentity,
   ENDED_IDENTITY,
+  identityTime,
+  identityWindow,
   launchIdentity,
   linuxIdentity,
   recordedIdentity,
@@ -87,10 +92,11 @@ const LOG_FILE = "output.log";
 const STATUS_FILE = "exit-status";
 const PID_FILE = "pid";
 const IDENTITY_FILE = "identity";
-const LOG_TRIM_AT_BYTES = 8 * 1024 * 1024;
-const LOG_KEEP_BYTES = 4 * 1024 * 1024;
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
-const RESULT_TAIL_BYTES = 4 * 1024;
+// Read double the diagnostic tail so dense ANSI sequences do not crowd out final lines.
+const RESULT_TAIL_READ_BYTES = 8 * 1024;
+export const RESULT_SUCCESS_TAIL_CHARS = 1536;
+export const RESULT_FAILURE_TAIL_CHARS = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
 const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
@@ -105,7 +111,6 @@ const WAVE_WINDOW = Duration.minutes(1);
  */
 export const LOSS_LOG_FILE = "command-losses.ndjson";
 const COMMAND_DRIVER = ProviderDriverKind.make("command");
-const TRIMMED_MARKER = "[CodeShip removed earlier output to keep this log small]\n";
 // Win32_ProcessStartup's Create_Unicode_Environment (without it the block is ANSI).
 const CREATE_UNICODE_ENVIRONMENT = 0x400;
 // Win32_ProcessStartup's ShowWindow as SW_HIDE: the wrapper's console, which only it uses, opens
@@ -153,10 +158,8 @@ const windowsWrapper = (cwd: string) =>
 export const windowsStartOrEnded = (pid: string) =>
   `$made = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($made) { $made.StartTime.ToUniversalTime().ToString('o') } else { '${ENDED_IDENTITY}' }`;
 
-// Records its own identity, then names itself, then runs the command and outlives it to write its
-// exit status; each rename makes its file appear whole. Arguments: log, status file, pid file,
-// identity file, then the command's argv. Linux writes its stat line and the boot id, elsewhere
-// ps's start; a file with no usable line gives a later server no ownership.
+// The registered wrapper stays the command's parent. A separate reader owns the log across
+// server restarts and acknowledges completion even when descendants inherit the output pipe.
 const POSIX_WRAPPER = [
   'if [ -r "/proc/$$/stat" ]; then',
   '  { read -r s <"/proc/$$/stat" && read -r b </proc/sys/kernel/random/boot_id && printf "%s\\n%s\\n" "$s" "$b"; } >"$4.tmp" && mv -f "$4.tmp" "$4"',
@@ -164,11 +167,25 @@ const POSIX_WRAPPER = [
   '  { LC_ALL=C TZ=UTC ps -p "$$" -o lstart=; } >"$4.tmp" 2>/dev/null && mv -f "$4.tmp" "$4"',
   "fi",
   'printf "%s\\n" "$$" >"$3.tmp" && mv -f "$3.tmp" "$3"',
-  'exec >>"$1" 2>&1 </dev/null',
-  'run() { shift 4; "$@"; }',
-  'run "$@"',
-  "code=$?",
-  'printf "%s\\n" "$code" >"$2.tmp" && mv -f "$2.tmp" "$2"',
+  'fail() { printf "%s\\n" "CodeShip could not capture command output." >>"$1"; printf "1\\n" >"$2.tmp" && mv -f "$2.tmp" "$2"; exit 1; }',
+  'mkfifo -m 600 "$1.pipe" "$1.ack" || fail "$1" "$2"',
+  "writer() {",
+  '  if [ -n "$6" ]; then set -- "$5" "$6" __command-log "$1" "$2";',
+  '  else set -- "$5" __command-log "$1" "$2"; fi',
+  '  exec /usr/bin/env -i ELECTRON_RUN_AS_NODE=1 "$@"',
+  "}",
+  'writer "$@" <"$1.pipe" >"$1.ack" &',
+  'exec 4>"$1.pipe" 3<"$1.ack"',
+  'rm -f "$1.pipe" "$1.ack"',
+  'set -- "$(IFS= read -r token <&3 && printf %s "$token")" "$@"',
+  '[ -n "$1" ] || fail "$2" "$3"',
+  'run() { shift 7; "$@"; }',
+  'run "$@" </dev/null >&4 2>&1 3<&- 4>&-',
+  'printf "%s\\n" "$?" >"$3.tmp" || exit 1',
+  "trap '' PIPE",
+  'printf "\\000%s\\000" "$1" >&4 || fail "$2" "$3"',
+  "exec 4>&-",
+  'IFS= read -r ack <&3 || fail "$2" "$3"',
 ].join("\n");
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
@@ -194,6 +211,7 @@ interface CommandRunRow {
   readonly pid: number | null;
   /** What tells the wrapper from a later process under its pid (`processIdentity.ts`). */
   readonly process_identity: string | null;
+  readonly later_started_at: number | null;
   readonly unit: string | null;
   readonly status: CommandRunStatus;
   readonly exit_code: number | null;
@@ -306,6 +324,7 @@ export const placeLosses = <L extends { readonly at: number }>(
 interface Loss {
   readonly lost_reason: LostReason;
   readonly probe_error: string | null;
+  readonly later_started_at?: number;
 }
 
 /**
@@ -485,12 +504,65 @@ const runInGitBash = (scriptPath: string) => [
   "exit $t3Bash.ExitCode",
 ];
 
-/** The last lines of a log, starting at a whole line when the start was cut. */
-const decodeTail = (bytes: Uint8Array, cut: boolean) => {
-  const text = new TextDecoder().decode(bytes);
-  if (!cut) return text;
-  const newline = text.indexOf("\n");
-  return newline < 0 ? text : text.slice(newline + 1);
+// Matches line-bounded OSC and DCS/SOS/PM/APC, 7/8-bit CSI, and ECMA-48 ESC sequences.
+// `\x9b`/`\x9c` match UTF-8-encoded C1 sequences (C2 9B / C2 9C) after TextDecoder.
+const ANSI_ESCAPE_PATTERN =
+  /\x1b\][^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)|\x1b[PX^_][^\x1b\x9c\n]*(?:\x1b\\|\x9c)|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-Z\\^-~]/g;
+
+const isCleanExit = (row: Pick<CommandRunRow, "status" | "exit_code">) =>
+  row.status === "exited" && row.exit_code === 0;
+
+/** Removes ANSI escape codes and keeps the final in-place carriage-return segment per line. */
+export const stripAnsi = (text: string): string => {
+  const cleaned = text.replaceAll("\r\n", "\n").replace(ANSI_ESCAPE_PATTERN, "");
+  if (!cleaned.includes("\r")) return cleaned;
+  return cleaned
+    .split("\n")
+    .map((line) => {
+      if (!line.includes("\r")) return line;
+      const trimmed = line.replace(/\r+$/, "");
+      const cr = trimmed.lastIndexOf("\r");
+      return cr < 0 ? trimmed : trimmed.slice(cr + 1);
+    })
+    .join("\n");
+};
+
+const sliceStartFromEnd = (text: string, limit: number): number => {
+  let start = text.length - limit;
+  const code = text.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff) start += 1;
+  return start;
+};
+
+/** Decodes a log tail cleanly across UTF-8, UTF-16, and line boundaries, capped to `maxChars`. */
+export const decodeTail = (
+  bytes: Uint8Array,
+  cut: boolean,
+  maxChars: number = RESULT_FAILURE_TAIL_CHARS,
+): string => {
+  if (maxChars <= 0) return "";
+  let offset = 0;
+  if (cut) {
+    // Skip continuation bytes from a multi-byte UTF-8 sequence split at the seek offset.
+    while (offset < bytes.length && offset < 3 && (bytes[offset]! & 0xc0) === 0x80) {
+      offset += 1;
+    }
+  }
+  const decoded = new TextDecoder().decode(offset === 0 ? bytes : bytes.subarray(offset));
+  const text = stripAnsi(decoded).trimEnd();
+  if (text === "") return "";
+  const start = text.length <= maxChars ? 0 : sliceStartFromEnd(text, maxChars);
+  const tail = start === 0 ? text : text.slice(start);
+  const startsMidLine = (start === 0 && cut) || (start > 0 && text.charCodeAt(start - 1) !== 10);
+  if (!startsMidLine) return tail;
+  const newline = tail.indexOf("\n");
+  if (newline >= 0 && newline + 1 <= maxChars / 2) {
+    const after = tail.slice(newline + 1);
+    if (after !== "") return after;
+  }
+  if (maxChars <= 1) return tail;
+  if (tail.length < maxChars) return `…${tail}`;
+  return `…${text.slice(sliceStartFromEnd(text, maxChars - 1))}`;
 };
 
 const make = Effect.gen(function* () {
@@ -506,6 +578,12 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const { logsDir } = yield* ServerConfig.ServerConfig;
   const platform = yield* HostProcess.Platform;
+  const runtime = yield* HostProcess.ExecutablePath;
+  const cliEntry = (yield* HostProcess.IsExecutable)
+    ? ""
+    : NodeURL.fileURLToPath(
+        new URL(import.meta.url.endsWith(".ts") ? "../bin.ts" : "./bin.mjs", import.meta.url),
+      );
   const windows = platform === "win32";
   const hostEnv = yield* HostProcess.Environment;
   const watchInterval = yield* WatchInterval;
@@ -599,13 +677,24 @@ const make = Effect.gen(function* () {
     const probe_error = row.probe_error;
     if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
     if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
+    if (row.later_started_at !== null) return { lost_reason: "pid-reused", probe_error };
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
     if (row.process_identity === null) return undefined;
     if (row.process_identity === ENDED_IDENTITY) return { lost_reason: "pid-reused", probe_error };
-    const verdict = compareIdentity(row.process_identity, yield* identityOf(row.pid));
+    const current = yield* identityOf(row.pid);
+    const verdict = compareIdentity(row.process_identity, current);
     if (verdict === "unknown") return "unconfirmed";
-    return verdict === "same" ? undefined : { lost_reason: "pid-reused", probe_error };
+    if (verdict === "same") return undefined;
+    const later = windows ? identityTime(current ?? null) : undefined;
+    const original = identityWindow(row.process_identity);
+    return {
+      lost_reason: "pid-reused",
+      probe_error,
+      ...(later !== undefined && original !== undefined && later > original.to
+        ? { later_started_at: later }
+        : {}),
+    };
   });
   const isSameProcess = (row: CommandRunRow) =>
     // Unknown identity stays conservative for a stop: the wrapper's group is signalled.
@@ -646,15 +735,16 @@ const make = Effect.gen(function* () {
         yield* processRunner
           .run({
             command: "powershell.exe",
-            args: windowsStopTreeArgs(
-              windowsStopRoot({
+            args: windowsStopTreeArgs({
+              ...windowsStopRoot({
                 pid,
                 identity: row.process_identity,
                 recordedAt: Date.parse(row.started_at),
                 namedAt: named?.writtenAt?.getTime(),
                 ended: row.ended_at === null ? "running" : Date.parse(row.ended_at),
               }),
-            ),
+              ...(row.later_started_at === null ? {} : { later: row.later_started_at }),
+            }),
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
           })
@@ -668,6 +758,7 @@ const make = Effect.gen(function* () {
     sql`
       UPDATE command_runs
       SET pid = ${row.pid}, process_identity = ${row.process_identity}, unit = ${row.unit},
+        later_started_at = ${row.later_started_at},
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
         delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
         probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
@@ -690,23 +781,20 @@ const make = Effect.gen(function* () {
     remember(row);
   });
 
-  const readTail = (row: CommandRunRow) =>
+  const readTail = (row: CommandRunRow, maxChars: number = RESULT_FAILURE_TAIL_CHARS) =>
     Effect.scoped(
       Effect.gen(function* () {
         const file = yield* fs.open(logPathOf(row), { flag: "r" });
         const size = Number((yield* file.stat).size);
-        const start = Math.max(0, size - RESULT_TAIL_BYTES);
+        const start = Math.max(0, size - RESULT_TAIL_READ_BYTES);
         yield* file.seek(BigInt(start), "start");
         const bytes = yield* file.readAlloc(size - start);
         return Option.match(bytes, {
           onNone: () => "",
-          onSome: (read) => decodeTail(read, start > 0),
+          onSome: (read) => decodeTail(read, start > 0, maxChars),
         });
       }),
-    ).pipe(
-      Effect.map((tail) => tail.trimEnd()),
-      Effect.orElseSucceed(() => ""),
-    );
+    ).pipe(Effect.orElseSucceed(() => ""));
 
   const resultText = Effect.fn("CommandRunner.resultText")(function* (row: CommandRunRow) {
     const elapsed = formatDuration(
@@ -721,7 +809,8 @@ const make = Effect.gen(function* () {
             ? `Ended after ${elapsed} with an unreadable exit status.`
             : `Exited with code ${row.exit_code} after ${elapsed}.`;
     const logPath = logPathOf(row);
-    const output = yield* readTail(row);
+    const maxChars = isCleanExit(row) ? RESULT_SUCCESS_TAIL_CHARS : RESULT_FAILURE_TAIL_CHARS;
+    const output = yield* readTail(row, maxChars);
     return [
       ending,
       output === "" ? "No output." : `Last output:\n${output}`,
@@ -770,19 +859,15 @@ const make = Effect.gen(function* () {
   });
 
   const deliver = Effect.fn("CommandRunner.deliver")(function* (row: CommandRunRow) {
-    const status = row.status === "exited" && row.exit_code === 0 ? "completed" : "failed";
+    const status = isCleanExit(row) ? "completed" : "failed";
     if (yield* completeTask(row, status, yield* resultText(row))) {
       yield* settle({ ...row, delivered_at: yield* nowIso });
     }
   });
 
-  /**
-   * Keeps a log that keeps growing to its last part; on Windows only once the command ends. The
-   * wrapper still appends to it, so the last part moves to the front in place, following what
-   * lands meanwhile. Output that lands after the last copy, before the cut, is lost, never
-   * reordered.
-   */
-  const trimLog = Effect.fn("CommandRunner.trimLog")(function* (row: CommandRunRow) {
+  // Pre-upgrade POSIX wrappers and Windows redirect directly to this inode. The new writer
+  // rotates before the limit, so its log never enters this compatibility path.
+  const trimDirectLog = Effect.fn("CommandRunner.trimLog")(function* (row: CommandRunRow) {
     const logPath = logPathOf(row);
     const grown = yield* fs.stat(logPath).pipe(
       Effect.map((info) => Number(info.size) > LOG_TRIM_AT_BYTES),
@@ -870,15 +955,21 @@ const make = Effect.gen(function* () {
    * anything is stopped, and when it was last seen alive. What it started is not left running.
    */
   const recordLoss = Effect.fn("CommandRunner.recordLoss")(function* (
-    row: CommandRunRow,
+    previous: CommandRunRow,
     loss: Loss,
   ) {
+    const row = {
+      ...previous,
+      later_started_at: loss.later_started_at ?? previous.later_started_at,
+    };
+    if (row.later_started_at !== previous.later_started_at) yield* settle(row);
     const output = yield* readTail(row);
     yield* killTree(row);
     const endedAt = yield* nowIso;
     const lost: CommandRunRow = {
       ...row,
-      ...loss,
+      lost_reason: loss.lost_reason,
+      probe_error: loss.probe_error,
       status: "lost",
       ended_at: endedAt,
       lost_output: output === "" ? null : output,
@@ -1030,7 +1121,7 @@ const make = Effect.gen(function* () {
     });
     const exit = yield* readExitStatus(row);
     if (exit !== undefined) {
-      yield* trimLog(row);
+      yield* trimDirectLog(row);
       return yield* ended("exited", exit.code, exit.endedAt);
     }
     // A deadline that passed while no server ran is enforced at the first check after.
@@ -1055,7 +1146,11 @@ const make = Effect.gen(function* () {
       }
     } else {
       // A wrapper recorded as ended left its pid to whatever holds it now.
-      if (unconfirmed.has(row.task_id) || row.process_identity === ENDED_IDENTITY) {
+      if (
+        unconfirmed.has(row.task_id) ||
+        row.process_identity === ENDED_IDENTITY ||
+        row.later_started_at !== null
+      ) {
         const loss = yield* lossOf(row);
         if (loss === undefined) unconfirmed.delete(row.task_id);
         else if (loss !== "unconfirmed") return yield* lose(loss);
@@ -1070,7 +1165,7 @@ const make = Effect.gen(function* () {
         yield* settle(seen);
       }
     }
-    if (!windows) yield* trimLog(row);
+    if (!windows) yield* trimDirectLog(row);
   });
 
   const watchOnce = lock.withPermits(1)(
@@ -1214,6 +1309,8 @@ const make = Effect.gen(function* () {
           statusPath,
           path.join(directory, PID_FILE),
           path.join(directory, IDENTITY_FILE),
+          runtime,
+          cliEntry,
           ...prefix,
           resolveCommandShell(platform, env, shell ?? undefined).path,
           "-c",
@@ -1464,17 +1561,16 @@ const make = Effect.gen(function* () {
     // A step back stamps a wrapper that started before it up to this late, and one that started
     // after it up to this early.
     const lagMs = Math.max(0, Math.ceil(tookMs - (returned.wall - recorded.wall)));
+    const window = { from: recorded.wall - lagMs, to: returned.wall + lagMs };
+    const read = identity === undefined ? yield* identityOf(pid) : undefined;
+    const made = windows ? identityTime(read ?? null) : undefined;
     const launched: CommandRunRow = {
       ...row,
       pid,
       // Taken before the read, which can take seconds and find a later process.
-      process_identity:
-        identity ??
-        launchIdentity(
-          yield* identityOf(pid),
-          { from: recorded.wall - lagMs, to: returned.wall + lagMs },
-          platform,
-        ),
+      process_identity: identity ?? launchIdentity(read, window, platform),
+      later_started_at:
+        made !== undefined && made > window.to + WINDOWS_PROCESS_CLOCK_SKEW_MS ? made : null,
       unit,
       last_alive_at: yield* nowIso,
     };
@@ -1802,6 +1898,7 @@ const make = Effect.gen(function* () {
                 directory,
                 pid: null,
                 process_identity: null,
+                later_started_at: null,
                 unit: null,
                 status: startEnv === undefined ? "queued" : "running",
                 exit_code: null,
@@ -1896,7 +1993,14 @@ const make = Effect.gen(function* () {
       // It started before it wrote the file; a later process reusing the pid did not. ps reports
       // whole seconds.
       if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
-        return { ...row, lost_reason: "pid-reused" as const };
+        const recovered: CommandRunRow = {
+          ...row,
+          pid,
+          process_identity: ENDED_IDENTITY,
+          later_started_at: startedAt,
+        };
+        yield* writeRow(recovered);
+        return recovered;
       }
     }
     const recovered: CommandRunRow = {

@@ -9,12 +9,27 @@ import {
   DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS,
   currentDesktopBootstrapToken,
   isValidDesktopBootstrapToken,
+  currentDesktopControlToken,
+  isValidDesktopControlToken,
 } from "./desktopBootstrapToken.ts";
 
 const SECRET = "desktop-secret";
 const WINDOW = DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS;
 
 describe("desktop bootstrap token", () => {
+  it.effect("isolates control from bootstrap across the accepted clock windows", () =>
+    Effect.gen(function* () {
+      const control = yield* currentDesktopControlToken(SECRET, 10 * WINDOW);
+      const bootstrap = yield* currentDesktopBootstrapToken(SECRET, 10 * WINDOW);
+      for (const window of [9, 10, 11]) {
+        expect(yield* isValidDesktopControlToken(SECRET, control, window * WINDOW)).toBe(true);
+        expect(yield* isValidDesktopControlToken(SECRET, bootstrap, window * WINDOW)).toBe(false);
+        expect(yield* isValidDesktopBootstrapToken(SECRET, control, window * WINDOW)).toBe(false);
+      }
+      expect(yield* isValidDesktopControlToken(SECRET, control, 12 * WINDOW)).toBe(false);
+    }).pipe(Effect.provide(PlatformNodeCrypto.layerMac)),
+  );
+
   it.effect("rotates every window and stays accepted for one more", () =>
     Effect.gen(function* () {
       const issuedAt = 10 * WINDOW + 1;

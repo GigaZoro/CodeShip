@@ -536,7 +536,14 @@ const RUN_CONDITION_NEEDS_FULL_ACCESS =
  * get a short list by default and search for the rest. These providers have
  * small official catalogs, so all their current models are listed.
  */
-const FULL_CATALOG_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent", "muse", "grok"]);
+const FULL_CATALOG_DRIVERS: ReadonlySet<string> = new Set([
+  "codex",
+  "claudeAgent",
+  "antigravity",
+  "muse",
+  "grok",
+  "fx",
+]);
 const LISTED_MODEL_LIMIT = 8;
 
 /**

@@ -52,7 +52,7 @@ export const MACHINE_SHARED_SETTING_KEYS = [
   "enableProviderUpdateChecks",
   "autoUpdateProviders",
   "installUpdatesAutomatically",
-  "minHoursBetweenAutomaticUpdates",
+  "automaticUpdateTime",
   "continueThreadsAfterServerUpdate",
   "backgroundActivity",
   "providerInstanceFailoverOrder",

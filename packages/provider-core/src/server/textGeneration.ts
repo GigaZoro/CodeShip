@@ -144,6 +144,8 @@ export interface TranscriptionPostProcessingResult {
 }
 
 export interface ProviderTextGeneration {
+  readonly supportsInvestigation?: boolean | undefined;
+
   readonly generateTranscriptionPostProcessing: (
     input: TranscriptionPostProcessingInput,
   ) => Effect.Effect<TranscriptionPostProcessingResult, TextGenerationError>;

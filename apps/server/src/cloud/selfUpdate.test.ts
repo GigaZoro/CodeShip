@@ -338,6 +338,8 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         policy,
         desktopAppUpdate: {
           available: true,
+          notAppliedVersion: Effect.undefined,
+          cancel: () => Effect.void,
           run: () => Effect.die("unexpected desktop app update run"),
           commit: () => Effect.never,
         },
@@ -390,6 +392,8 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         mode: "desktop",
         desktopAppUpdate: {
           available: true,
+          notAppliedVersion: Effect.undefined,
+          cancel: () => Effect.void,
           run: (reportProgress) =>
             reportProgress("downloading").pipe(
               Effect.andThen(reportProgress("installing")),

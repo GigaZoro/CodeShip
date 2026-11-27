@@ -26,7 +26,7 @@ import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { Button, InlineButton } from "../ui/button";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { toastManager } from "../ui/toast";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import { RetryAccountButton } from "./RetryAccountButton";
 import { copyAdminRequest } from "./ThreadErrorBanner";
 
@@ -85,7 +85,7 @@ function limitRecoveryScheduleState(
 export function useUsageLimitRecoveryBannerItem(
   props: RecoveryProps | null,
   resolve: typeof t = t,
-): ComposerBannerStackItem | null {
+): ThreadNotice | null {
   const displayAt = props === null ? null : limitRecoveryScheduleState(props).displayAt;
   const resetPassed = useDeadlinePassed(props === null ? null : parseEpochMs(props.resetAt));
   const displayPassed = useDeadlinePassed(parseEpochMs(displayAt));
@@ -96,7 +96,7 @@ export function useUsageLimitRecoveryBannerItem(
 export function usageLimitRecoveryBannerItem(
   props: RecoveryProps,
   resolve: typeof t = t,
-): ComposerBannerStackItem {
+): ThreadNotice {
   const { runId, errorCode, resetAt, timestampFormat } = props;
   const { canSchedule, resumes, displayAt } = limitRecoveryScheduleState(props);
   const resetAtMs = parseEpochMs(resetAt);
@@ -125,6 +125,7 @@ export function usageLimitRecoveryBannerItem(
   if (!chatGptLimit) {
     return {
       id: `usage-limit-recovery:${runId}`,
+      producer: "usageLimitRecovery",
       variant: "warning",
       group: "environment",
       icon: <GaugeIcon />,
@@ -136,6 +137,7 @@ export function usageLimitRecoveryBannerItem(
   if (appCap) {
     return {
       id: `usage-limit-recovery:${runId}`,
+      producer: "usageLimitRecovery",
       variant: "warning",
       group: "environment",
       icon: <OpenAI aria-hidden="true" />,
@@ -169,6 +171,7 @@ export function usageLimitRecoveryBannerItem(
   // OpenAI's partner guidelines specify this ChatGPT notice and its actions.
   return {
     id: `usage-limit-recovery:${runId}`,
+    producer: "usageLimitRecovery",
     variant: "warning",
     group: "environment",
     icon: <OpenAI aria-hidden="true" />,

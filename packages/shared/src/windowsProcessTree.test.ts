@@ -588,6 +588,14 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       1,
     ],
     [
+      "spares a child created at the recorded later holder's start after that holder ended",
+      "$gone $early $early $early -later (Ms $real)",
+      "(P $target $gone ([DateTimeOffset]::FromUnixTimeMilliseconds((Ms $real)).UtcDateTime))",
+      "",
+      "spared",
+      1,
+    ],
+    [
       "ends the target the walk saw, told it runs",
       "$target 0 -running",
       "(P $target 0 $real)",

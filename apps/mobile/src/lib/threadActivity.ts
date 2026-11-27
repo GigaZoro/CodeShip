@@ -11,6 +11,7 @@ import {
   waitingOnSubagentsLabel,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
+import { tallyTurnFoldWork, turnFoldLabel } from "@t3tools/client-runtime/work-log/turn-fold-label";
 import {
   turnItemDetailRevision,
   turnItemHasDetail,
@@ -259,6 +260,8 @@ type ThreadFeedEntryContent =
       readonly createdAt: string;
       readonly runId: RunId;
       readonly label: string;
+      /** Failed tool calls, shown apart from the label in the alarm tone. */
+      readonly failedLabel: string | null;
       readonly expanded: boolean;
     }
   | {
@@ -1115,6 +1118,7 @@ interface ThreadFeedRunFold {
   readonly createdAt: string;
   readonly hiddenEntryIds: ReadonlySet<string>;
   readonly label: string;
+  readonly failedLabel: string | null;
 }
 
 export function failedFeedRunIds(
@@ -1348,20 +1352,26 @@ function deriveThreadFeedRunFolds(
     const duration = elapsedMs === null ? null : formatDuration(elapsedMs, resolve);
     const interrupted =
       latestRunMatches && (latestRun.status === "interrupted" || latestRun.status === "cancelled");
-    const label = interrupted
-      ? duration
-        ? resolve(msg("You stopped after {duration}"), { duration })
-        : resolve(msg("You stopped this response"))
-      : duration
-        ? resolve(msg("Worked for {duration}"), { duration })
-        : resolve(msg("Worked"));
-    // The top row keeps the whole turn's time. Work after a steer folds under
+    // The top row keeps the whole turn's time and work summary. Work after a steer folds under
     // its own row below that steer, keyed apart so each segment opens alone.
+    const topEntries = group.entries.slice(0, group.steerSegments[0]?.startIndex);
+    const topLabel = turnFoldLabel(
+      interrupted ? "stopped" : "worked",
+      duration,
+      tallyTurnFoldWork(
+        topEntries.flatMap((entry) =>
+          entry.type === "activity-group"
+            ? entry.activities.map((activity) => activity.workEntry)
+            : [],
+        ),
+      ),
+    );
     const segments = [
       {
         runId,
-        entries: group.entries.slice(0, group.steerSegments[0]?.startIndex),
-        label,
+        entries: topEntries,
+        label: topLabel.text,
+        failedLabel: topLabel.failed,
       },
       ...group.steerSegments.map(({ startIndex, steer }, index) => {
         const entries = group.entries.slice(startIndex, group.steerSegments[index + 1]?.startIndex);
@@ -1380,6 +1390,7 @@ function deriveThreadFeedRunFolds(
                   duration: formatDuration(segmentMs, resolve),
                 })
               : resolve(msg("Continued")),
+          failedLabel: null,
         };
       }),
     ];
@@ -1403,6 +1414,7 @@ function deriveThreadFeedRunFolds(
           segment.entries.flatMap((entry) => (hiddenEntryIds.has(entry.id) ? [entry.id] : [])),
         ),
         label: segment.label,
+        failedLabel: segment.failedLabel,
       });
     }
   }
@@ -1420,6 +1432,7 @@ function deriveThreadFeedRunFolds(
       createdAt: entry.createdAt,
       hiddenEntryIds: new Set([entry.id]),
       label: resolve(msg("Earlier work")),
+      failedLabel: null,
       deferredWorkItemIds,
     });
   }
@@ -1882,6 +1895,7 @@ export function deriveThreadFeedPresentation(
         row.runId !== fold.runId ||
         row.createdAt !== fold.createdAt ||
         row.label !== fold.label ||
+        row.failedLabel !== fold.failedLabel ||
         row.expanded !== expanded ||
         row.deferredWorkItemIds?.join("|") !== fold.deferredWorkItemIds?.join("|")
       ) {
@@ -1892,6 +1906,7 @@ export function deriveThreadFeedPresentation(
           createdAt: fold.createdAt,
           runId: fold.runId,
           label: fold.label,
+          failedLabel: fold.failedLabel,
           expanded,
         };
         runFoldRowsCache.set(entry, row);
@@ -2086,6 +2101,7 @@ function liveRunFoldRow(runId: RunId, startedAt: string, resolve: typeof t) {
       createdAt: startedAt,
       runId,
       label,
+      failedLabel: null,
       expanded: false,
       workingSince: startedAt,
     };

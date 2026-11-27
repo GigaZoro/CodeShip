@@ -15,7 +15,8 @@ import {
 } from "../../state/linkedThreadView";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
-import { ComposerBannerStack, type ComposerBannerStackItem } from "./ComposerBannerStack";
+import { ThreadNoticeSlot } from "./ThreadNoticeSlot";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import { ComposerSurface } from "./ComposerSurface";
 import {
   ReadOnlyComposerBar,
@@ -38,13 +39,15 @@ function LinkedThreadComposer(props: {
   readonly via: string;
   readonly working: boolean;
   readonly action?: ReactNode;
-  readonly notice?: ComposerBannerStackItem | null;
+  readonly notice?: ThreadNotice | null;
 }) {
   const { label, via } = props;
 
   return (
     <div className="chat-composer-lane flex shrink-0 flex-col gap-1 pt-1.5 pb-4 sm:pt-2 sm:pb-5">
-      {props.notice ? <ComposerBannerStack items={[props.notice]} detached /> : null}
+      {props.notice ? (
+        <ThreadNoticeSlot detached slot={{ top: props.notice, rest: [], restTier: null }} />
+      ) : null}
       <ComposerSurface.Shell>
         <ComposerSurface.Host>
           <div className="relative z-10">
@@ -106,10 +109,11 @@ export function LinkedThread(props: {
       });
     }
   };
-  const connectNotice: ComposerBannerStackItem | null =
+  const connectNotice: ThreadNotice | null =
     connectState.phase === "connecting"
       ? {
           id: "connecting",
+          producer: "linkedEnvironment",
           variant: "info",
           icon: <Spinner size="sm" />,
           title: t("Connecting to {label}…", { label }),
@@ -117,6 +121,7 @@ export function LinkedThread(props: {
       : connectState.phase === "unreachable"
         ? {
             id: "unreachable",
+            producer: "linkedEnvironment",
             variant: "warning",
             icon: <PlugIcon />,
             title: t("{label} is not reachable from this device", { label: connectState.label }),
@@ -127,6 +132,7 @@ export function LinkedThread(props: {
         : connectState.phase === "manual"
           ? {
               id: "manual",
+              producer: "linkedEnvironment",
               variant: "info",
               icon: <PlugIcon />,
               title: t("{label} needs a pairing code", { label: connectState.prefill.label }),

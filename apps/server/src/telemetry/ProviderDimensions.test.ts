@@ -5,6 +5,8 @@ import {
   type AgentThread,
   agentToolProperties,
   handoffSettings,
+  modelLabel,
+  providerDimensions,
   toolOutcome,
 } from "./ProviderDimensions.ts";
 
@@ -27,6 +29,8 @@ const providers = [
     { slug: "my-private-finetune", isCustom: true },
   ]),
   provider("opencode", "opencode", [{ slug: "ollama/acme-internal", isCustom: false }]),
+  provider("muse", "muse", [{ slug: "muse-wonder", isCustom: false }]),
+  provider("pi", "pi", [{ slug: "local/custom-model", isCustom: false }]),
 ];
 
 const thread = (
@@ -111,4 +115,20 @@ it("reports only identifier-shaped failure codes and known delivery values", () 
     delivery: "queued",
   });
   expect(handoffSettings("t3_thread_send", {}, { delivery: "/Users/julius" })).toEqual({});
+});
+
+it("reports vendor catalog models for muse while reporting user-configured pi models as custom:pi", () => {
+  expect(
+    providerDimensions(providers, {
+      instanceId: ProviderInstanceId.make("muse"),
+      model: "muse-wonder",
+    }),
+  ).toEqual({ provider: "muse", model: "muse-wonder" });
+  expect(modelLabel(providers, "muse", "muse-wonder")).toBe("muse-wonder");
+  expect(
+    providerDimensions(providers, {
+      instanceId: ProviderInstanceId.make("pi"),
+      model: "local/custom-model",
+    }),
+  ).toEqual({ provider: "pi", model: "custom:pi" });
 });

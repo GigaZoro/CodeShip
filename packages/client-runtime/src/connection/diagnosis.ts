@@ -168,7 +168,7 @@ function steps(
   resolve: typeof t,
 ): string[] {
   const checkHost = resolve(
-    msg("On {host}, check Settings > Sharing & access or run `t3 connect status`."),
+    msg("On {host}, check Settings > Machines & access or run `t3 connect status`."),
     { host },
   );
   switch (located.cause) {
@@ -217,7 +217,7 @@ function steps(
         resolve(
           msg("Check that this device is signed in to the same T3 Connect account as the host."),
         ),
-        resolve(msg("On {host}, open Settings > Sharing & access and turn T3 Connect on."), {
+        resolve(msg("On {host}, open Settings > Machines & access and turn T3 Connect on."), {
           host,
         }),
       ];
@@ -230,7 +230,7 @@ function steps(
       ];
     case "tunnel_not_enabled":
       return [
-        resolve(msg("On {host}, open Settings > Sharing & access and turn T3 Connect on."), {
+        resolve(msg("On {host}, open Settings > Machines & access and turn T3 Connect on."), {
           host,
         }),
       ];

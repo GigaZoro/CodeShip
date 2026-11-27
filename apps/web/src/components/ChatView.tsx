@@ -376,7 +376,7 @@ import { useThreadLinkedPullRequest } from "./pullRequest/useThreadLinkedPullReq
 import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
-import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import type { ThreadNotice } from "./chat/threadNoticeSlot.logic";
 import { modelFallbackBannerItem } from "./chat/ComposerUsageLimits";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import { resolveThreadSyncPhase } from "../threadSync";
@@ -455,7 +455,7 @@ const EMPTY_FEEDBACK_SUBMISSIONS: ReadonlyArray<CodexFeedbackSubmission> = [];
 const EMPTY_TURN_ITEMS: ThreadStructure["turnItems"] = [];
 const EMPTY_RUNS: ThreadStructure["runs"] = [];
 const EMPTY_AUTO_UPDATE_ENVIRONMENTS: ReadonlyArray<EnvironmentPresentation> = [];
-const EMPTY_COMPOSER_BANNER_ITEMS: ReadonlyArray<ComposerBannerStackItem> = [];
+const EMPTY_COMPOSER_BANNER_ITEMS: ReadonlyArray<ThreadNotice> = [];
 
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 
@@ -811,6 +811,7 @@ export default function ChatView(props: ChatViewProps) {
   const legendListRef = useRef<LegendListRef | null>(null);
   const conversationArea = workspaceAreaProps("conversation", 1, t("Conversation"));
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
+  const [heroNoticeElement, setHeroNoticeElement] = useState<HTMLDivElement | null>(null);
   const [composerTimelineInset, setComposerTimelineInset] = useState(0);
   const composerTimelineInsetRef = useRef(0);
   const [composerReservedHeight, setComposerReservedHeight] = useState(0);
@@ -2860,7 +2861,7 @@ export default function ChatView(props: ChatViewProps) {
       : null,
     t,
   );
-  const composerBannerItems = (() => {
+  const composerBannerItems = ((): ThreadNotice[] => {
     const fallbackSelection = draftFallback?.selection;
     const defaultSelection =
       draftDefaultModelSelection ??
@@ -2882,7 +2883,7 @@ export default function ChatView(props: ChatViewProps) {
     const fallbackWindow = fallback
       ? `${fallback.provider.instanceId}:${fallback.resetsAt ?? ""}`
       : null;
-    const fallbackItems: ComposerBannerStackItem[] =
+    const fallbackItems: ThreadNotice[] =
       fallback &&
       fallbackSelection &&
       defaultSelection &&
@@ -2979,7 +2980,7 @@ export default function ChatView(props: ChatViewProps) {
         t,
       ),
     ];
-  })() as ComposerBannerStackItem[];
+  })();
 
   if (
     terminalUiLaunchContext !== null &&
@@ -3998,6 +3999,7 @@ export default function ChatView(props: ChatViewProps) {
                   markdownCwd={gitCwd ?? undefined}
                   resolvedTheme={resolvedTheme}
                   timestampFormat={timestampFormat}
+                  foldFinishedWork={settings.foldFinishedWork}
                   workspaceRoot={activeWorkspaceRoot}
                   skills={timelineSkills}
                   anchorMessageId={timelineAnchorMessageId}
@@ -4015,6 +4017,7 @@ export default function ChatView(props: ChatViewProps) {
                     ? {}
                     : { historyControls: threadHistoryControls })}
                   unseenWindow={unseenWindow}
+                  pullRequests={(activeThreadShell ?? activeThread)?.pullRequests}
                 />
               </WorkspaceMutationIdContext>
 
@@ -4183,9 +4186,12 @@ export default function ChatView(props: ChatViewProps) {
                                 }
                                 isPreparingWorktree={isPreparingWorktree && !sendQueuesBehindSetup}
                                 bannerItems={
-                                  isDraftHeroState || composerBannerItems.length === 0
+                                  composerBannerItems.length === 0
                                     ? EMPTY_COMPOSER_BANNER_ITEMS
                                     : composerBannerItems
+                                }
+                                detachedNoticeTarget={
+                                  isDraftHeroState ? heroNoticeElement : undefined
                                 }
                                 resumeCompactionTokens={resumeCompactionTokens}
                                 keepFullHistory={keepFullHistory}
@@ -4343,16 +4349,16 @@ export default function ChatView(props: ChatViewProps) {
                           </div>
                         </div>
                       </ComposerSurface.Shell>
-                      {isDraftHeroState && (composerBannerItems.length > 0 || !embedded) ? (
+                      {isDraftHeroState ? (
                         // Out of flow, like the headline, so a notice never moves the centered composer.
                         // Short windows pin the composer to the bottom, where an out-of-flow notice
                         // would fall off-screen, so there it takes space and lifts the composer.
                         <div className="absolute inset-x-0 top-full flex flex-col gap-1 [@media(max-height:34rem)]:static">
-                          {composerBannerItems.length > 0 ? (
-                            <div className="flex flex-col gap-1 pt-4">
-                              <ComposerBannerStack items={composerBannerItems} detached />
-                            </div>
-                          ) : null}
+                          {/* The composer renders its notice slot here. */}
+                          <div
+                            ref={setHeroNoticeElement}
+                            className="flex flex-col gap-1 pt-4 empty:hidden"
+                          />
                           {embedded ? null : (
                             <DraftRecentThreads draftTarget={composerDraftTarget} />
                           )}

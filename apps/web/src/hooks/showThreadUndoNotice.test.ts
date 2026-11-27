@@ -70,6 +70,15 @@ describe("thread undo notice", () => {
     expect(threadUndoClaimsShortcut()).toBe(false);
   });
 
+  it("keeps a notice that asks for longer until its own time runs out", () => {
+    const { options } = setup();
+    showThreadUndoNotice({ ...options, durationMs: 8_000 });
+    vi.advanceTimersByTime(7_999);
+    expect(notice().count).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(useThreadUndoNotice.getState().notice).toBeNull();
+  });
+
   it("announces each new summary once, and cancels it when the notice clears", async () => {
     const { options } = setup();
     vi.mocked(announce).mockClear();

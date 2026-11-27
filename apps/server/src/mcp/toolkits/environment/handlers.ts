@@ -32,7 +32,7 @@ export function preferences(settings: ServerSettings) {
     newWorktreesStartFromOrigin,
     enableProviderUpdateChecks,
     installUpdatesAutomatically,
-    minHoursBetweenAutomaticUpdates,
+    automaticUpdateTime,
     backgroundActivity,
     sourceControlWritingStyle,
   } = settings;
@@ -46,7 +46,7 @@ export function preferences(settings: ServerSettings) {
     newWorktreesStartFromOrigin,
     enableProviderUpdateChecks,
     installUpdatesAutomatically,
-    minHoursBetweenAutomaticUpdates,
+    automaticUpdateTime,
     backgroundActivity: { profile: backgroundActivity.profile },
     providerUpdates: providerUpdatesChoice(settings),
     usageLimitRecovery: usageLimitRecoveryChoice(settings),

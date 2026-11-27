@@ -1,4 +1,6 @@
 import {
+  type DesktopBackendEndpoint,
+  type DesktopBackendsReport,
   DesktopHostTelemetryMessage,
   type DesktopHostTelemetrySnapshot,
   type DesktopTelemetryControlMessage,
@@ -20,6 +22,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronPowerMonitor from "../electron/ElectronPowerMonitor.ts";
@@ -71,9 +74,15 @@ export class DesktopTelemetryPublisher extends Context.Service<
     ) => Effect.Effect<void>;
     readonly removeControlSource: (sourceId: string) => Effect.Effect<void>;
     readonly publishUpdateReport: (report: DesktopUpdateStatusReport) => Effect.Effect<void>;
+    readonly updateReports: Stream.Stream<DesktopUpdateStatusReport>;
+    readonly latestUpdateReport: Effect.Effect<Option.Option<DesktopUpdateStatusReport>>;
     readonly updateRequests: Stream.Stream<DesktopTelemetryRequestDesktopUpdate>;
     readonly updateCommits: Stream.Stream<DesktopTelemetryCommitDesktopUpdate>;
     readonly updateCancellations: Stream.Stream<DesktopTelemetryCancelDesktopUpdate>;
+    readonly setServingBackend: (backend: DesktopBackendEndpoint) => Effect.Effect<void>;
+    readonly removeServingBackend: (id: string) => Effect.Effect<void>;
+    /** The backends besides the primary that serve now: the current set, then each change. */
+    readonly servingBackends: Stream.Stream<DesktopBackendsReport>;
   }
 >()("@t3tools/desktop/telemetry/DesktopTelemetryPublisher") {}
 
@@ -177,6 +186,7 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
   const updateRequestQueue = yield* Queue.unbounded<DesktopTelemetryRequestDesktopUpdate>();
   const updateCommitQueue = yield* Queue.unbounded<DesktopTelemetryCommitDesktopUpdate>();
   const updateCancellationQueue = yield* Queue.unbounded<DesktopTelemetryCancelDesktopUpdate>();
+  const servingBackendSet = yield* SubscriptionRef.make<ReadonlyArray<DesktopBackendEndpoint>>([]);
 
   const offer = (event: PowerEvent): void => {
     Queue.offerUnsafe(powerEvents, event);
@@ -398,13 +408,23 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
       );
     }),
   );
+  const servingBackends = SubscriptionRef.changes(servingBackendSet).pipe(
+    Stream.map((backends): DesktopBackendsReport => ({
+      version: 1,
+      type: "desktopBackends",
+      backends,
+    })),
+  );
   const encoded = Stream.concat(
     Stream.make({
       version: 1,
       type: "desktopTelemetryHello",
       electronPid: process.pid,
     } as const),
-    Stream.merge(Stream.merge(snapshots, updateReports), shellEnvironment.updates),
+    Stream.mergeAll<DesktopHostTelemetryMessage, never, never>(
+      [snapshots, updateReports, servingBackends, shellEnvironment.updates],
+      { concurrency: "unbounded" },
+    ),
   ).pipe(Stream.map((message) => textEncoder.encode(`${encodeMessage(message)}\n`)));
 
   const publishUpdateReport: DesktopTelemetryPublisher["Service"]["publishUpdateReport"] = (
@@ -422,9 +442,29 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
     handleControlForSource,
     removeControlSource,
     publishUpdateReport,
+    updateReports,
+    latestUpdateReport: Ref.get(latestUpdateReport),
     updateRequests: Stream.fromQueue(updateRequestQueue),
     updateCommits: Stream.fromQueue(updateCommitQueue),
     updateCancellations: Stream.fromQueue(updateCancellationQueue),
+    setServingBackend: Effect.fn("DesktopTelemetryPublisher.setServingBackend")(function* (
+      backend: DesktopBackendEndpoint,
+    ) {
+      yield* SubscriptionRef.update(servingBackendSet, (backends) => [
+        ...backends.filter((serving) => serving.id !== backend.id),
+        backend,
+      ]);
+    }),
+    removeServingBackend: Effect.fn("DesktopTelemetryPublisher.removeServingBackend")(function* (
+      id: string,
+    ) {
+      yield* SubscriptionRef.updateSome(servingBackendSet, (backends) =>
+        backends.some((serving) => serving.id === id)
+          ? Option.some(backends.filter((serving) => serving.id !== id))
+          : Option.none(),
+      );
+    }),
+    servingBackends,
   });
 });
 

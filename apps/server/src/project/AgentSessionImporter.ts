@@ -283,9 +283,7 @@ const make = Effect.gen(function* () {
           ),
         ))
         // An import's own thread still gets reread so an interrupted import can finish.
-        .filter(
-          (owner) => owner.threadId !== importThreadId(owner.providerInstanceId, owner.nativeId),
-        )
+        .filter((owner) => !owner.threadId.startsWith(`import:${owner.providerInstanceId}:`))
         .map((owner) =>
           AgentSessionScanner.ownedSessionKey(owner.providerInstanceId, owner.nativeId),
         ),

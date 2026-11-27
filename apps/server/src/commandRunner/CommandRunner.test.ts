@@ -459,6 +459,145 @@ describe("awaitFile", () => {
   );
 });
 
+describe("stripAnsi and decodeTail", () => {
+  it("strips CSI, OSC, and 2-byte ESC sequences without altering plain text", () => {
+    const input = [
+      "\u001b[1;38;5;208mWARN\u001b[0m: \u001b[?25lcheck\u001b[?25h",
+      "\u001b]0;window title\u0007title stripped",
+      "\u001b]8;;https://example.test/docs\u001b\\docs link\u001b]8;;\u001b\\",
+      "\u001b7saved\u001b8 \u001bMup \u001bcreset \u001b(Bascii",
+    ].join("\n");
+    assert.equal(
+      CommandRunner.stripAnsi(input),
+      "WARN: check\ntitle stripped\ndocs link\nsaved up reset ascii",
+    );
+  });
+
+  it("normalizes CRLF and collapses in-place carriage-return progress bars", () => {
+    assert.equal(CommandRunner.stripAnsi("one\r\ntwo\r\n"), "one\ntwo\n");
+    assert.equal(
+      CommandRunner.stripAnsi("step 1\rstep 2\rstep 3\nnext\r\ndone 10%\rdone 100%\r"),
+      "step 3\nnext\ndone 100%",
+    );
+    assert.equal(
+      CommandRunner.stripAnsi("\u001b[33m10%\u001b[0m\r\u001b[2K\u001b[32m100%\u001b[0m\r\n"),
+      "100%\n",
+    );
+  });
+
+  it("recovers clean text from a dense ANSI tail within maxChars", () => {
+    const lines = Array.from(
+      { length: 60 },
+      (_, index) =>
+        `\u001b[38;2;100;200;255m\u001b[1mPASS\u001b[0m \u001b[2mtest-${String(index).padStart(2, "0")}\u001b[0m`,
+    ).join("\n");
+    const bytes = new TextEncoder().encode(`partial-before-seek\n${lines}\n`);
+    const tail = CommandRunner.decodeTail(bytes, true, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+    assert.isAtMost(tail.length, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+    assert.notInclude(tail, "\u001b");
+    assert.include(tail, "PASS test-00");
+    assert.include(tail, "PASS test-59");
+  });
+
+  it("strips 8-bit CSI and line-bounded OSC and DCS/SOS/PM/APC without swallowing diagnostic lines", () => {
+    assert.equal(CommandRunner.stripAnsi("\u009b31mred"), "red");
+    assert.equal(CommandRunner.stripAnsi("a\u001bPq#0;2;0;0;0\u001b\\b"), "ab");
+    assert.equal(CommandRunner.stripAnsi("a\u001bPq#0;2;0;0;0\u009cb"), "ab");
+    assert.equal(CommandRunner.stripAnsi("a\u001b_apc\u001b\\b"), "ab");
+
+    const unterminatedOsc = CommandRunner.stripAnsi(
+      "\u001b]0;t\nERROR line 1\nERROR line 2\n\u0007end",
+    );
+    assert.include(unterminatedOsc, "ERROR line 1");
+    assert.include(unterminatedOsc, "ERROR line 2");
+
+    const st8BitOsc = CommandRunner.stripAnsi("\u001b]0;t\u009cvisible\nnext\u0007z");
+    assert.include(st8BitOsc, "visible\nnext");
+    assert.isTrue(st8BitOsc.startsWith("visible\nnext"));
+
+    const unterminatedDcs = CommandRunner.stripAnsi("a\u001bPunterminated\nERROR line\n\u001b\\b");
+    assert.include(unterminatedDcs, "ERROR line");
+  });
+
+  it("keeps a truncated first line prefixed with an ellipsis when dropping it would discard over half of maxChars", () => {
+    const encoder = new TextEncoder();
+    const longError = encoder.encode(`${"E".repeat(5000)}\nlast`);
+    const tail = CommandRunner.decodeTail(
+      longError,
+      false,
+      CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+    );
+    assert.equal(tail.length, CommandRunner.RESULT_FAILURE_TAIL_CHARS);
+    assert.isTrue(tail.startsWith("…E"));
+    assert.isTrue(tail.endsWith("EEE\nlast"));
+
+    const cutLongError = encoder.encode(`${"E".repeat(8187)}\nlast`);
+    for (const limit of [
+      CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+      CommandRunner.RESULT_SUCCESS_TAIL_CHARS,
+    ]) {
+      const cutTail = CommandRunner.decodeTail(cutLongError, true, limit);
+      assert.isAtMost(cutTail.length, limit);
+      assert.isTrue(cutTail.startsWith("…E"));
+      assert.isTrue(cutTail.endsWith("\nlast"));
+    }
+
+    assert.equal(
+      CommandRunner.decodeTail(
+        encoder.encode("partial\nok"),
+        true,
+        CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+      ),
+      "ok",
+    );
+
+    const cutNoNewline = CommandRunner.decodeTail(
+      encoder.encode("E".repeat(5000)),
+      true,
+      CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+    );
+    assert.isAtMost(cutNoNewline.length, CommandRunner.RESULT_FAILURE_TAIL_CHARS);
+    assert.isTrue(cutNoNewline.startsWith("…E"));
+
+    assert.equal(
+      CommandRunner.decodeTail(
+        encoder.encode("partial\n   "),
+        true,
+        CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+      ),
+      "…partial",
+    );
+
+    // A short partial first line (<= 50% of budget) still drops cleanly at the next line boundary.
+    const lines = Array.from({ length: 10 }, (_, i) => `line-${i}-${"x".repeat(20)}`).join("\n");
+    const shortPartial = CommandRunner.decodeTail(encoder.encode(lines), false, 120);
+    assert.isFalse(shortPartial.startsWith("…"));
+    assert.isAtMost(shortPartial.length, 120);
+    assert.isTrue(shortPartial.startsWith("line-"));
+  });
+
+  it("avoids broken UTF-8 sequences and lone UTF-16 surrogates when slicing", () => {
+    const encoder = new TextEncoder();
+    for (const sample of ["é", "✓", "🚀"]) {
+      const repeated = encoder.encode(sample.repeat(20));
+      for (let cutOffset = 1; cutOffset < 5; cutOffset += 1) {
+        const sliced = CommandRunner.decodeTail(repeated.subarray(cutOffset), true, 100);
+        assert.notInclude(sliced, "\uFFFD");
+        assert.isTrue(sliced.length > 0);
+        assert.equal(Buffer.from(sliced, "utf8").toString("utf8"), sliced);
+      }
+    }
+    const astral = encoder.encode(`a${"🚀".repeat(1000)}z`);
+    for (const limit of [1535, 1536, 4095, 4096]) {
+      const sliced = CommandRunner.decodeTail(astral, false, limit);
+      assert.isAtMost(sliced.length, limit);
+      assert.notInclude(sliced, "\uFFFD");
+      assert.equal(Buffer.from(sliced, "utf8").toString("utf8"), sliced);
+      assert.isTrue(sliced.endsWith("🚀z"));
+    }
+  });
+});
+
 const commandRow = (taskId: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -467,6 +606,7 @@ const commandRow = (taskId: string) =>
       readonly exit_code: number | null;
       readonly pid: number | null;
       readonly process_identity: string | null;
+      readonly later_started_at: number | null;
       readonly started_at: string;
       readonly deadline_at: string;
       readonly delivered_at: string | null;
@@ -476,7 +616,7 @@ const commandRow = (taskId: string) =>
       readonly lost_output: string | null;
       readonly directory: string;
     }>`
-      SELECT status, exit_code, pid, process_identity, started_at, deadline_at, delivered_at,
+      SELECT status, exit_code, pid, process_identity, later_started_at, started_at, deadline_at, delivered_at,
         last_alive_at, probe_error, lost_reason, lost_output, directory
       FROM command_runs WHERE task_id = ${taskId}
     `;
@@ -682,9 +822,11 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-survives");
+        // The child's stdout stays open until liveChat stops the group after delivery.
+        NodeChildProcess.execFileSync("mkfifo", [NodePath.join(chat.workspace, "child-input")]);
         const started = yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), {
-            command: "until [ -e go ]; do sleep 0.05; done; echo checked; exit 3",
+            command: "cat child-input & until [ -e go ]; do sleep 0.05; done; echo checked; exit 3",
             label: "Checks",
           }),
         );
@@ -714,7 +856,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   it.effect.skipIf(isWindowsHost)(
-    "delivers an end that came while no server was running, once one starts",
+    "delivers an end that came while no server was running and bounds a pre-upgrade log",
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-ends-while-down");
@@ -726,6 +868,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
         const statusFile = NodePath.join(NodePath.dirname(started.logPath), "exit-status");
         yield* awaitFile(statusFile);
+        // A pre-upgrade wrapper appended directly to this file while the server was down.
+        NodeFS.writeFileSync(started.logPath, Buffer.alloc(9 * 1024 * 1024, "x"));
+        NodeFS.appendFileSync(started.logPath, "\nbuilt\n");
         // The status file is written as it ends, so its time is the end, not the next server's start.
         const startedAt = Date.parse((yield* commandRow(started.taskId))!.started_at);
         const endedAtSeconds = (startedAt + 42_000) / 1000;
@@ -733,7 +878,11 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         yield* withServer(() => nextWake(chat.threadId));
         const task = yield* taskOf(chat.threadId, started.taskId);
         assert.equal(task?.status, "completed");
-        assert.match(task?.result ?? "", /^Exited with code 0 after 42s\.\nLast output:\nbuilt\n/);
+        assert.match(
+          task?.result ?? "",
+          /^Exited with code 0 after 42s\.\nLast output:\n…x+\nbuilt\n/,
+        );
+        assert.isBelow(NodeFS.statSync(started.logPath).size, 8 * 1024 * 1024);
       }),
   );
 
@@ -762,23 +911,134 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   it.effect.skipIf(isWindowsHost)(
-    "keeps the end of a log that grew too large, after a note that it was cut",
+    "keeps the exact tail of a large command log while the server is down",
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-log-trimmed");
+        const input = NodePath.join(chat.workspace, "input");
+        NodeChildProcess.execFileSync("mkfifo", [input]);
+        const started = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "cat input && echo last-line >&2" }),
+        );
+        const output = Array.from(
+          { length: 9 * 1024 },
+          (_, line) => `${String(line).padEnd(1023, "x")}\n`,
+        ).join("");
+        yield* Effect.promise(() => NodeFS.promises.writeFile(input, output));
+        yield* awaitFile(NodePath.join(NodePath.dirname(started.logPath), "exit-status"));
+        const log = NodeFS.readFileSync(started.logPath, "utf8");
+        assert.isBelow(log.length, 8 * 1024 * 1024);
+        const marker = "[CodeShip removed earlier output to keep this log small]\n";
+        assert.isTrue(log.startsWith(marker));
+        const tail = log.slice(marker.length);
+        assert.isAtLeast(tail.length, 4 * 1024 * 1024);
+        assert.isTrue(`${output}last-line\n`.endsWith(tail));
+
+        yield* withServer(() => nextWake(chat.threadId));
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "completed");
+        assert.include(task?.result ?? "", `last-line\nFull output: ${started.logPath}`);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "strips ANSI sequences and collapses carriage-return progress in Last output while keeping raw disk logs",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-ansi-tail");
+        const raw = [
+          "\u001b]0;build-title\u0007\u001b[32mPASS\u001b[0m suite-a",
+          "\u001b[33mDownloading 10%\u001b[0m\r\u001b[2K\u001b[33mDownloading 50%\u001b[0m\r\u001b[2K\u001b[32mDownloading 100%\u001b[0m",
+          "\u001b]8;;https://example.test\u001b\\report\u001b]8;;\u001b\\ \u001b7saved\u001b8\u001b(B",
+        ].join("\n");
+        const fixture = NodePath.join(chat.workspace, "raw.log");
+        NodeFS.writeFileSync(fixture, `${raw}\n`, "utf8");
         const started = yield* withServer((runner) =>
           runner
-            .run(callerOf(chat.threadId), {
-              command: "head -c 9000000 /dev/zero | tr '\\0' x; echo; echo last-line",
-            })
+            .run(callerOf(chat.threadId), { command: "cat raw.log" })
             .pipe(Effect.tap(() => nextWake(chat.threadId))),
         );
-        const log = NodeFS.readFileSync(started.logPath, "utf8");
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "completed");
+        const result = task?.result ?? "";
         assert.match(
-          log,
-          /^\[CodeShip removed earlier output to keep this log small\]\nx+\nlast-line\n$/,
+          result,
+          /^Exited with code 0 after .+\.\nLast output:\nPASS suite-a\nDownloading 100%\nreport saved\nFull output: /,
         );
-        assert.isBelow(log.length, 8 * 1024 * 1024);
+        assert.notInclude(result, "\u001b");
+        assert.notInclude(result, "Downloading 10%");
+        assert.equal(NodeFS.readFileSync(started.logPath, "utf8"), `${raw}\n`);
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "caps clean exit 0 tails to 1536 chars while preserving up to 4096 chars on non-zero failure",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-tail-caps");
+        const lines = Array.from(
+          { length: 120 },
+          (_, index) =>
+            `\u001b[36mline-${String(index).padStart(3, "0")}\u001b[0m ${"x".repeat(40)}`,
+        ).join("\n");
+        NodeFS.writeFileSync(NodePath.join(chat.workspace, "many.log"), `${lines}\n`, "utf8");
+        const [passed, failed] = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const ok = yield* runner.run(callerOf(chat.threadId), { command: "cat many.log" });
+            yield* nextWake(chat.threadId);
+            const bad = yield* runner.run(callerOf(chat.threadId), {
+              command: "cat many.log; exit 2",
+            });
+            yield* nextWake(chat.threadId);
+            return [ok, bad] as const;
+          }),
+        );
+        const extractTail = (result: string) => {
+          const match = /\nLast output:\n([\s\S]*)\nFull output: /.exec(result);
+          assert.isNotNull(match);
+          return match[1]!;
+        };
+        const okTask = yield* taskOf(chat.threadId, passed.taskId);
+        assert.equal(okTask?.status, "completed");
+        const okTail = extractTail(okTask?.result ?? "");
+        assert.isAtMost(okTail.length, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+        assert.isAbove(okTail.length, 1000);
+        assert.include(okTail, "line-119 ");
+        assert.notInclude(okTail, "\u001b");
+
+        const badTask = yield* taskOf(chat.threadId, failed.taskId);
+        assert.equal(badTask?.status, "failed");
+        const badTail = extractTail(badTask?.result ?? "");
+        assert.isAbove(badTail.length, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+        assert.isAtMost(badTail.length, CommandRunner.RESULT_FAILURE_TAIL_CHARS);
+        assert.isAbove(badTail.length, 3500);
+        assert.include(badTail, "line-119 ");
+        assert.notInclude(badTail, "\u001b");
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
+    "keeps valid UTF-8 in Last output when a large multi-byte log is sliced",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-utf8-tail");
+        // Leading ASCII offsets the 8 KB seek into the middle of a 4-byte UTF-8 character.
+        const payload = `a${"🚀".repeat(3000)}`;
+        NodeFS.writeFileSync(NodePath.join(chat.workspace, "utf8.log"), payload, "utf8");
+        const started = yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), { command: "cat utf8.log" })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        );
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "completed");
+        const match = /\nLast output:\n([\s\S]*)\nFull output: /.exec(task?.result ?? "");
+        assert.isNotNull(match);
+        const tail = match[1]!;
+        assert.isAtMost(tail.length, CommandRunner.RESULT_SUCCESS_TAIL_CHARS);
+        assert.notInclude(tail, "\uFFFD");
+        assert.equal(Buffer.from(tail, "utf8").toString("utf8"), tail);
+        assert.isTrue(tail.endsWith("🚀🚀🚀"));
       }),
   );
 
@@ -1098,12 +1358,14 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const chat = yield* liveChat(name);
         const { row, launched } = yield* cancelledWhileNoServerRan(windows, chat.threadId);
         const from = Date.parse(row.started_at);
+        assert.equal(row.later_started_at, holderMade);
         assert.deepEqual(yield* Queue.clear(windows.stops), [
           windowsStopTreeArgs({
             pid: windows.wrapper,
             since: from,
             created: { from, to: launched },
             ended: "running",
+            later: row.later_started_at!,
           }),
         ]);
       }),
@@ -1239,7 +1501,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             runner.run(callerOf(chat.threadId), { command: "Write-Output started" }),
           ),
         );
-        holder.startedAt = (yield* Queue.take(windows.launches)) + 60_000;
+        const laterStartedAt = (yield* Queue.take(windows.launches)) + 60_000;
+        holder.startedAt = laterStartedAt;
         // A run waits until the server has adopted what the earlier one left.
         yield* windows.on(
           withServer((runner) =>
@@ -1249,8 +1512,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const row = (yield* commandRow(started.taskId))!;
         const since = Date.parse(row.started_at);
         const bounds = identityWindow(row.process_identity)!;
+        assert.equal(row.later_started_at, laterStartedAt);
+        const stops = yield* Queue.clear(windows.stops);
         assert.deepEqual(
-          [row.status, row.lost_reason, row.pid, yield* Queue.clear(windows.stops)],
+          [row.status, row.lost_reason, row.pid, stops],
           [
             "lost",
             "pid-reused",
@@ -1261,7 +1526,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
                 since,
                 created: bounds,
                 ended: "running",
-              }),
+              }).map((arg, index) => (index === 3 ? `${arg} -later ${laterStartedAt}` : arg)),
             ],
           ],
         );
@@ -1272,31 +1537,53 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     [
       "once its wrapper had ended, with no holder of its pid as root",
       "command-win-recovered-gone",
-      true,
+      "gone",
     ],
     // Not from when it named itself: with no window for its start, that also bounds the root.
-    ["while its wrapper ran, its start unread, from its record on", "command-win-recovered", false],
+    [
+      "while its wrapper ran, its start unread, from its record on",
+      "command-win-recovered",
+      "running",
+    ],
+    ["after a later holder took its PID", "command-win-recovered-reused", "reused"],
   ] as const)(
     "stops a Windows command that a later server recovered from its pid file %s",
-    ([, name, gone]) =>
+    ([, name, state]) =>
       Effect.gen(function* () {
-        const windows = yield* fakeWindows({ startOf: () => undefined });
+        let laterStartedAt: number | undefined;
+        let readLater = false;
+        const windows = yield* fakeWindows({
+          startOf: () => {
+            if (!readLater) return undefined;
+            readLater = false;
+            return laterStartedAt;
+          },
+        });
         const chat = yield* liveChat(name);
         // Past any pid_max, so the probe finds no process.
-        const pid = gone ? 2 ** 31 - 1 : windows.wrapper;
+        const pid = state === "gone" ? 2 ** 31 - 1 : windows.wrapper;
         const { row } = yield* cancelledWhileNoServerRan(windows, chat.threadId, (taskId) =>
-          leavePidFile(taskId, pid).pipe(Effect.orDie),
+          Effect.gen(function* () {
+            const launched = (yield* commandRow(taskId))!;
+            yield* leavePidFile(taskId, pid);
+            if (state === "reused") {
+              laterStartedAt = Date.parse(launched.started_at) + 60_000;
+              readLater = true;
+            }
+          }).pipe(Effect.orDie),
         );
         const recorded = Date.parse(row.started_at);
-        const since = gone ? secondAfter(recorded) : recorded;
+        const since = state === "running" ? recorded : secondAfter(recorded);
+        assert.equal(row.later_started_at, laterStartedAt ?? null);
         assert.deepEqual(yield* Queue.clear(windows.stops), [
           // Whatever holds a gone wrapper's pid is another process, so it is no root. No clock
           // reading caps its children: one taken after a step back can come before their starts.
           windowsStopTreeArgs({
             pid,
             since,
-            created: gone ? { from: 0, to: 0 } : "unknown",
+            created: state === "running" ? "unknown" : { from: 0, to: 0 },
             ended: "running",
+            ...(laterStartedAt === undefined ? {} : { later: laterStartedAt }),
           }),
         ]);
       }),

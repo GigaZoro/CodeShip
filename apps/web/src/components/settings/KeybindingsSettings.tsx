@@ -1711,6 +1711,12 @@ function OtherShortcutsSection() {
       <SendShortcutRow />
       <QuitShortcutRow />
       <CloseWindowToTrayRow />
+      <SettingsRow
+        title={t("Needs you box")}
+        description={t(
+          "While a row in the box has focus: J and K move, A approves, D declines, L puts off until later, E settles, Enter opens, Escape returns to the chat. Settling offers Undo for 8 seconds.",
+        )}
+      />
       {isElectron ? (
         <SettingsRow
           title={t("Capture shortcut")}

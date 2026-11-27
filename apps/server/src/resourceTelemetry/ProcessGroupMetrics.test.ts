@@ -53,6 +53,11 @@ describe("groupProcesses", () => {
         "node /opt/node_modules/@anthropic-ai/claude-code/cli.js",
       ),
       process(90, 10, "node", "server-child", "node /srv/tools/report.js"),
+      process(100, 10, "muse"),
+      process(110, 10, "pi"),
+      process(120, 10, "fx"),
+      process(130, 10, "ping"),
+      process(140, 10, "firefox"),
     ]);
 
     assert.deepStrictEqual(Object.fromEntries(totals), {
@@ -61,10 +66,13 @@ describe("groupProcesses", () => {
       // The agent's shell and the build it ran belong to the agent, not the terminal group.
       claude: { residentBytes: 143_000, cpuPercent: 143, count: 4 },
       codex: { residentBytes: 30_000, cpuPercent: 30, count: 1 },
+      muse: { residentBytes: 100_000, cpuPercent: 100, count: 1 },
+      pi: { residentBytes: 110_000, cpuPercent: 110, count: 1 },
+      fx: { residentBytes: 120_000, cpuPercent: 120, count: 1 },
       terminal: { residentBytes: 40_000, cpuPercent: 40, count: 1 },
       browser: { residentBytes: 50_000, cpuPercent: 50, count: 1 },
-      // `git` whose arguments mention claude, a parentless process, and a node script.
-      other: { residentBytes: 220_000, cpuPercent: 220, count: 3 },
+      // `git` whose arguments mention claude, a parentless process, a node script, ping, and firefox.
+      other: { residentBytes: 490_000, cpuPercent: 490, count: 5 },
     });
   });
 });

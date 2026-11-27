@@ -1,4 +1,5 @@
 import {
+  PROVIDER_DISPLAY_NAMES,
   REASONING_EFFORT_OPTION_IDS,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -48,6 +49,10 @@ const AUTO_COORDINATOR_SUBAGENT_TOOLS: ReadonlyMap<string, string> = new Map([
 
 const CODEX_SPAWN_EFFORT_PARAMETER = "reasoning_effort";
 const MAX_AUTO_COORDINATOR_MODELS = 8;
+// Other providers' models listed together, each provider at most MAX_AUTO_COORDINATOR_MODELS.
+const MAX_OTHER_PROVIDER_MODELS = 16;
+// Codex truncates an entry over 4,000 bytes; this leaves room for the `t3_auto_mode` tags around the brief.
+const MAX_AUTO_BRIEF_BYTES = 3_900;
 const AUTO_MODEL_HINTS = [
   ["opus", "hardest design, subtle bugs, reviews"],
   ["fable", "frontier: the hardest problems"],
@@ -57,14 +62,25 @@ const AUTO_MODEL_HINTS = [
   ["sol", "coding and everyday work"],
   ["terra", "straightforward work"],
   ["luna", "fast and cheap: easier tasks"],
+  ["neon", "frontier: the hardest problems"],
+  ["hydrogen", "demanding reasoning and coding"],
+  ["carbon", "coding and everyday work"],
+  ["argon", "straightforward work"],
+  ["flash", "fast and cheap: searches, mechanical edits, test runs"],
 ] as const;
 
-const autoProviderName = (driver: ProviderDriverKind) =>
-  driver === "claudeAgent" ? "Claude" : "Codex";
+const autoProviderName = (driver: ProviderDriverKind, fallback?: string) =>
+  PROVIDER_DISPLAY_NAMES[driver] ?? fallback ?? driver;
+
+function formatProviderChoice(names: ReadonlyArray<string>): string {
+  if (names.length <= 2) return `either ${names.join(" or ")}`;
+  return `${names.slice(0, -1).join(", ")}, or ${names.at(-1)}`;
+}
 
 interface AutoBriefModel {
   readonly slug: string;
   readonly name: string;
+  readonly nativeModelFamily?: string | undefined;
   readonly aliases?: ReadonlyArray<string> | undefined;
   readonly capabilities?:
     | { readonly optionDescriptors?: ReadonlyArray<ProviderOptionDescriptor> | undefined }
@@ -80,7 +96,7 @@ export function autoModePromptBlock(brief: string): string {
   return `<${AUTO_MODE_CONTEXT_KEY}>\n${brief}\n</${AUTO_MODE_CONTEXT_KEY}>`;
 }
 
-/** A provider's Settings primary on an account with room to run it as a `delegate_task` reviewer. */
+/** A provider's Settings primary, else its Auto profile, on an account with room to run it as a `delegate_task` reviewer. */
 interface AutoReviewer {
   readonly providerInstanceId: string;
   readonly model: string;
@@ -95,9 +111,9 @@ export function autoCoordinatorInstructions(input: {
     readonly model: string;
     readonly options?: ReadonlyArray<ProviderOptionSelection>;
   } | null;
-  /** The other provider's reviewer, absent while none of its accounts can run its primary. */
+  /** Another provider's reviewer, absent while no other provider's account can run its primary. */
   readonly otherReviewer?: AutoReviewer;
-  /** This provider's reviewer, which takes the independent review while the other provider cannot. */
+  /** This provider's reviewer, which takes the independent review while no other provider can. */
   readonly ownReviewer?: AutoReviewer;
   readonly otherProviders?: ReadonlyArray<{
     readonly providerInstanceId: string;
@@ -114,10 +130,23 @@ export function autoCoordinatorInstructions(input: {
     input.driver === "claudeAgent"
       ? model.aliases?.find((alias) => CLAUDE_MODEL_FAMILIES.includes(alias))
       : model.slug;
-  const effort = (model: AutoBriefModel) => {
-    const descriptor = model.capabilities?.optionDescriptors?.find(
-      (option) => option.type === "select" && REASONING_EFFORT_OPTION_IDS.includes(option.id),
+  const modelHint = (model: AutoBriefModel) => {
+    const tokens = new Set(
+      `${model.slug} ${model.nativeModelFamily ?? ""}`
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean),
     );
+    return AUTO_MODEL_HINTS.find(([family]) => tokens.has(family))?.[1];
+  };
+  const effort = (model: AutoBriefModel) => {
+    const descriptor =
+      model.capabilities?.optionDescriptors?.find(
+        (option) => option.type === "select" && option.role === "reasoning",
+      ) ??
+      model.capabilities?.optionDescriptors?.find(
+        (option) => option.type === "select" && REASONING_EFFORT_OPTION_IDS.includes(option.id),
+      );
     return descriptor?.type === "select"
       ? { id: descriptor.id, values: descriptor.options.map((option) => option.id).join(", ") }
       : null;
@@ -135,9 +164,7 @@ export function autoCoordinatorInstructions(input: {
     const commonKey = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
     const common = models.map(effort).find((_, index) => effortKey(models[index]!) === commonKey);
     const lines = models.map((model) => {
-      const hint = AUTO_MODEL_HINTS.find(([family]) =>
-        model.slug.toLowerCase().includes(family),
-      )?.[1];
+      const hint = modelHint(model);
       const own = effort(model);
       const differs = !(native && input.driver === "claudeAgent") && effortKey(model) !== commonKey;
       const effortNote = !differs
@@ -160,25 +187,65 @@ export function autoCoordinatorInstructions(input: {
   const sections = [
     `- ${autoProviderName(input.driver)} native subagents (${tool})${nativeEffort}:\n${own.lines}`,
   ];
-  const seen = new Set<string>();
-  let remaining = MAX_AUTO_COORDINATOR_MODELS;
-  let omitted = nativeModels.length > remaining;
-  for (const provider of input.otherProviders ?? []) {
-    const available = provider.models.filter((model) => !seen.has(model.slug));
-    const models = available.slice(0, remaining);
-    omitted ||= available.length > remaining;
-    if (models.length === 0) continue;
-    remaining -= models.length;
-    for (const model of models) seen.add(model.slug);
-    const group = describeModels(models, false);
-    const target = JSON.stringify({
-      providerInstanceId: provider.providerInstanceId,
-      model: "<slug>",
-      ...(group.common === null ? {} : { options: { [group.common.id]: "<effort>" } }),
+  const otherProviders = input.otherProviders ?? [];
+  // Each provider's distinct models, in its fullest account's catalog order, so a model only a later
+  // account has room for (Claude on an Antigravity account whose first sibling is out of that quota)
+  // still ranks where the catalog puts it.
+  const byDriver = new Map<
+    ProviderDriverKind,
+    { readonly accounts: typeof otherProviders; readonly slugs: string[] }
+  >();
+  for (const driver of new Set(otherProviders.map((provider) => provider.driver))) {
+    const accounts = otherProviders.filter((provider) => provider.driver === driver);
+    const catalog = accounts.reduce((fullest, account) =>
+      account.models.length > fullest.models.length ? account : fullest,
+    ).models;
+    const slugs = [
+      ...new Set([...catalog, ...accounts.flatMap((account) => account.models)].map((m) => m.slug)),
+    ];
+    byDriver.set(driver, { accounts, slugs });
+  }
+  // Water-filling: the smallest providers take their models first and hand any unused share to the
+  // rest, so the shared budget fills before any provider is cut. Reversed first, so on a tie the
+  // paired provider, listed first, goes last and takes the remainder.
+  const limits = new Map<ProviderDriverKind, number>();
+  let budget = MAX_OTHER_PROVIDER_MODELS;
+  [...byDriver]
+    .reverse()
+    .sort(([, left], [, right]) => left.slugs.length - right.slugs.length)
+    .forEach(([driver, { slugs }], index, ordered) => {
+      const limit = Math.min(
+        MAX_AUTO_COORDINATOR_MODELS,
+        slugs.length,
+        Math.floor(budget / (ordered.length - index)),
+      );
+      limits.set(driver, limit);
+      budget -= limit;
     });
-    sections.push(
-      `- ${autoProviderName(provider.driver)} via \`delegate_task\`, target \`${target}\`${group.common === null ? "" : `, effort ${group.common.values}`}:\n${group.lines}`,
-    );
+  let omitted = nativeModels.length > MAX_AUTO_COORDINATOR_MODELS;
+  const otherSections: Array<{ readonly driver: ProviderDriverKind; readonly text: string }> = [];
+  for (const [driver, { accounts, slugs }] of byDriver) {
+    const chosen = new Set(slugs.slice(0, limits.get(driver)));
+    omitted ||= slugs.length > chosen.size;
+    // Each chosen model is listed once, on the first account in failover order with room for it.
+    const placed = new Set<string>();
+    for (const provider of accounts) {
+      const models = provider.models.filter(
+        (model) => chosen.has(model.slug) && !placed.has(model.slug),
+      );
+      if (models.length === 0) continue;
+      for (const model of models) placed.add(model.slug);
+      const group = describeModels(models, false);
+      const target = JSON.stringify({
+        providerInstanceId: provider.providerInstanceId,
+        model: "<slug>",
+        ...(group.common === null ? {} : { options: { [group.common.id]: "<effort>" } }),
+      });
+      otherSections.push({
+        driver,
+        text: `- ${autoProviderName(driver, provider.displayName)} via \`delegate_task\`, target \`${target}\`${group.common === null ? "" : `, effort ${group.common.values}`}:\n${group.lines}`,
+      });
+    }
   }
   const ownPrimary = input.models.find((model) => model.slug === input.primary!.model);
   const primary = `${ownPrimary?.name ?? input.primary.model}${(input.primary.options ?? []).map(({ id, value }) => `, ${id} ${value}`).join("")}`;
@@ -192,14 +259,30 @@ export function autoCoordinatorInstructions(input: {
       : `take the review from your own provider's Settings primary instead, target ${target(input.ownReviewer)}; if neither can run, ${alone}`;
   const review =
     input.otherReviewer !== undefined
-      ? ` Also obtain an independent review from the other provider's Settings primary: \`delegate_task\` role "review", target ${target(input.otherReviewer)}. Preserve its model and options. If it cannot run, ${otherFallback}`
+      ? ` Also obtain an independent review from another provider: \`delegate_task\` role "review", target ${target(input.otherReviewer)}. Preserve its model and options. If it cannot run, ${otherFallback}`
       : input.ownReviewer !== undefined
-        ? ` The other provider's Settings primary cannot run now, so take the independent review from your own provider's Settings primary: \`delegate_task\` role "review", target ${target(input.ownReviewer)}. Preserve its model and options. If it cannot run, ${alone}`
+        ? ` No other provider can review now, so take the independent review from your own provider's Settings primary: \`delegate_task\` role "review", target ${target(input.ownReviewer)}. Preserve its model and options. If it cannot run, ${alone}`
         : ` No account can run an independent reviewer now, so ${alone}`;
-  return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise choose the best model for each task from either Claude or Codex. Use the cheapest capable model for straightforward work. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
-${sections.join("\n")}
+  const render = (kept: typeof otherSections, cut: boolean) => {
+    const listedDrivers = new Set([input.driver, ...kept.map(({ driver }) => driver)]);
+    const choiceNames =
+      listedDrivers.size <= 1
+        ? ["Claude", "Codex"]
+        : [...listedDrivers].map((driver) => autoProviderName(driver));
+    return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise choose the best model for each task from ${formatProviderChoice(choiceNames)}. Use the cheapest capable model for straightforward work. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
+${[...sections, ...kept.map(({ text }) => text)].join("\n")}
 - After implementation, review the diff yourself on your Settings primary, ${primary}.${review}
-- Read results and diffs, run relevant checks, fix small issues yourself; take over or reassign bigger ones.${omitted ? "\n- More accounts and models: call `orchestrator_capabilities`." : ""}`;
+- Read results and diffs, run relevant checks, fix small issues yourself; take over or reassign bigger ones.${cut ? "\n- More accounts and models: call `orchestrator_capabilities`." : ""}`;
+  };
+  // The review instructions close the brief, so trailing roster sections go first when it would
+  // pass Codex's 4,000-byte entry limit. Every coordinator gets the same cap, so one brief fits all.
+  let kept = otherSections;
+  let brief = render(kept, omitted);
+  while (new TextEncoder().encode(brief).length > MAX_AUTO_BRIEF_BYTES && kept.length > 0) {
+    kept = kept.slice(0, -1);
+    brief = render(kept, true);
+  }
+  return brief;
 }
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `

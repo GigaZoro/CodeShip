@@ -80,32 +80,35 @@ are waiting on, and shows how many tasks it waits for, with **Update now** and
 
 ## Install updates automatically
 
-Turn on **Settings → Maintenance & about → Updates → Install updates automatically when
-idle** on a machine to have it install each new release itself. The setting belongs to each machine
-and can be shared like other settings. It is off by default.
+Turn on **Install updates automatically** under **Settings → Maintenance & about → Updates**.
+Set **Automatic update time** in the machine's local time. It defaults to **03:00**. The machine checks at that time. If a newer
+release was published by then, the machine installs the newest available release.
+The desktop app installs the newest release its update feed offers, which is never older than
+the one due. A machine that was off or asleep checks when it comes back. If only releases
+published after the scheduled time are available, it waits for the next day. You can share the
+setting across machines.
 
-A machine installs only when no chat on it is answering and none has background work that a
-restart would stop, chats and work that started while it waited included, and it checks again right
-before it restarts. If a chat started in that moment, it waits again. This is stricter than
-**Update when it finishes** above, which you start yourself and which waits only for the work
-running when you chose it and for each chat then running tool calls to pause between them.
+The machine first gives chats two hours to finish, then holds new scheduled starts and gives
+running chats another three hours. After that it waits up to one more hour for background work
+and running tool calls, then installs. A chat that starts while the release downloads does not
+restart these waits. Scheduled starts and accepted webhooks stay held while the release downloads
+and until the restart, and run after it (or when the wait ends without an install). A held
+fixed-time occurrence runs once if its scheduled time is closer than the next regular occurrence,
+even with **Catch up a missed run** off. You can still run tasks manually. Turn automatic updates
+off to cancel the wait, or use the manual update controls to install at any time.
 
-- **Desktop app (Mac, Windows, Linux).** While the app is open, it downloads a new release in the
-  background and installs it through a Safe update, so cut chats resume whatever **Continue threads
-  after restarts** says. The update button shows the wait, and **Stop waiting** cancels it, as does
-  turning the setting off. The app does not retry a release it failed to download or install; the
-  update button stays available.
-  After the restart a notice says "Updated to …". Updates turned off by your administrator or by
-  `T3CODE_DISABLE_AUTO_UPDATE` stay off.
-- **Background service (a server running under systemd or launchd).** The server checks for a new
-  release every 30 minutes, then installs it exactly as **Update server** does: it stages the
-  release, checks it, and hands it to the service launcher, which can roll back. If a chat started
-  answering or started background work while the release was prepared, or the setting was turned
-  off, it does not hand it off and tries again at the next check. Cut chats resume according to
-  **Continue threads after restarts**. A release that rolled back is not tried again; the next release is. Other failures
-  are retried after 15 minutes, then 30, and so on up to 6 hours. Each attempt is in the server log
-  as "Automatic update".
-- **A server you started by hand** (`t3 serve`) never updates itself.
+Chats the update interrupted resume after the restart according to **Continue threads after
+restarts**, which is on by default. On desktop, the app installs even when its window is closed
+if it is still running. The install restarts every server the app runs, such as its WSL server,
+so the waits cover every server, including one that is still starting. Even after the chat
+deadline, the app retries later if it cannot confirm which servers are running and that each
+has paused scheduled starts and reported its work. You can start updates manually on a
+server you run with `t3 serve`.
+
+An update that fails, or restarts the same version, is tried again after 15 minutes, then after
+twice as long each time, up to six hours, also across restarts. A release the launcher rolled
+back, or a desktop update that did not apply, holds off automatic installation until a newer
+release reaches its daily install time.
 
 ## Switch between Stable and Nightly
 

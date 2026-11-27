@@ -181,6 +181,11 @@ function layerPool(
           updateRequests: Stream.empty,
           updateCommits: Stream.empty,
           updateCancellations: Stream.empty,
+          updateReports: Stream.empty,
+          latestUpdateReport: Effect.succeedNone,
+          setServingBackend: () => Effect.void,
+          removeServingBackend: () => Effect.void,
+          servingBackends: Stream.empty,
         }),
         DesktopBrowserHost.layer,
         Layer.succeed(DesktopBackendConfiguration.DesktopBackendConfiguration, {

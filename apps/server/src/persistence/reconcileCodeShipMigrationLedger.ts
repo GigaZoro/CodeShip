@@ -42,6 +42,8 @@ export const legacyCodeShipMigrationNames = [
   "IncrementalEventStoreCompaction",
   "UsageStopReplay",
   "UsageStopSteerTargets",
+  "CommandRunLaterPidHolder",
+  "UsageLimitRefusals",
 ] as const;
 
 /** Resumable fork migrations whose cursor released builds kept in `migration_progress`. */

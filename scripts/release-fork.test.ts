@@ -16,8 +16,14 @@ const WorkflowJob = Schema.Struct({
   steps: Schema.optional(
     Schema.Array(
       Schema.Struct({
+        uses: Schema.optional(Schema.String),
         run: Schema.optional(Schema.String),
-        env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+        env: Schema.optional(
+          Schema.Record(
+            Schema.String,
+            Schema.Union([Schema.String, Schema.Number, Schema.Boolean]),
+          ),
+        ),
       }),
     ),
   ),
@@ -189,7 +195,9 @@ describe("fork release", () => {
     expect(new Set([recover.needs].flat())).toEqual(
       new Set(Object.keys(jobs).filter((name) => name !== "recover")),
     );
-    expect(recover.if).toContain("!cancelled()");
+    // Runner-acquisition timeouts mark a needed job cancelled, which makes !cancelled() false.
+    expect(recover.if).toContain("always()");
+    expect(recover.if).not.toContain("!cancelled()");
     expect(recover.if).toContain("contains(needs.*.result, 'failure')");
     expect(recover.if).toContain("contains(needs.*.result, 'cancelled')");
     expect(recover["runs-on"]).toBe("ubuntu-24.04");
@@ -198,6 +206,18 @@ describe("fork release", () => {
     expect(step.run).toBe("node .github/scripts/fork-release.cjs recover-macos");
     expect(step.env?.RUN_ID).toBe("${{ github.run_id }}");
     expect(step.env?.RUN_ATTEMPT).toBe("${{ github.run_attempt }}");
+    // actions/checkout persist-credentials:false fails on .repos gitlinks missing from .gitmodules.
+    const retry = readWorkflow("release-fork-retry.yml");
+    for (const job of [recover, retry.jobs["catch-up-macos"]!]) {
+      expect(job.steps!.some((candidate) => candidate.uses?.startsWith("actions/checkout"))).toBe(
+        false,
+      );
+      expect(
+        job.steps!.some((candidate) =>
+          candidate.run?.includes("contents/.github/scripts/fork-release.cjs"),
+        ),
+      ).toBe(true);
+    }
   });
 
   it("recovers a Mac build only from a dispatch on its published tag", () => {

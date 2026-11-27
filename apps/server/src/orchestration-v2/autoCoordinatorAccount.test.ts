@@ -568,3 +568,478 @@ it.each([false, true])(
     expect(result.otherReviewer?.providerInstanceId).toBe(otherLimited ? undefined : first);
   },
 );
+
+it("includes enabled Antigravity accounts after the paired provider, honors per-model limits, and treats unmeasured usage as available", () => {
+  const ownId = ProviderInstanceId.make("claude_own");
+  const agDisabled = ProviderInstanceId.make("antigravity_disabled");
+  const agLimited = ProviderInstanceId.make("antigravity_limited");
+  const agRefused = ProviderInstanceId.make("antigravity_refused");
+  const agMetered = ProviderInstanceId.make("antigravity_metered");
+  const agUnmeasured = ProviderInstanceId.make("antigravity_unmeasured");
+  const agPartial = ProviderInstanceId.make("antigravity_partial");
+  const agNullUsage = ProviderInstanceId.make("antigravity_null_usage");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const codex = ProviderDriverKind.make("codex");
+  const antigravity = ProviderDriverKind.make("antigravity");
+  const agModels = [
+    { slug: "gemini-4-neon", name: "Gemini 4 Neon", isCustom: false, capabilities: null },
+    { slug: "gemini-4-argon", name: "Gemini 4 Argon", isCustom: false, capabilities: null },
+    { slug: "gemini-3.8-flash", name: "Gemini 3.8 Flash", isCustom: false, capabilities: null },
+    { slug: "claude-opus-5-5", name: "Claude Opus 5.5", isCustom: false, capabilities: null },
+    { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", isCustom: false, capabilities: null },
+    {
+      slug: "gpt-oss-120b-medium",
+      name: "GPT-OSS 120B (Medium)",
+      isCustom: false,
+      capabilities: null,
+    },
+  ];
+  const baseInput = {
+    driver: claude,
+    selection: { instanceId: ownId, model: "claude-opus-5-5" },
+    projectId: ProjectId.make("project:auto"),
+    nowMs: Date.parse("2026-11-27T12:00:00Z"),
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      autoModeModels: {
+        [claude]: { model: "claude-opus-5-5" },
+        [codex]: { model: "gpt-6-astra" },
+      },
+      providerInstances: {
+        [ownId]: { driver: claude, enabled: true },
+        [agDisabled]: { driver: antigravity, enabled: false },
+        [agLimited]: { driver: antigravity, enabled: true },
+        [agRefused]: { driver: antigravity, enabled: true },
+        [agMetered]: { driver: antigravity, enabled: true },
+        [agUnmeasured]: { driver: antigravity, enabled: true },
+        [agPartial]: { driver: antigravity, enabled: true },
+        [agNullUsage]: { driver: antigravity, enabled: true },
+        [first]: { driver: codex, enabled: true },
+      },
+      providerInstanceFailoverOrder: [
+        agDisabled,
+        agLimited,
+        agRefused,
+        agMetered,
+        agUnmeasured,
+        agPartial,
+        agNullUsage,
+        first,
+      ],
+    },
+    orchestrationCapableInstanceIds: new Set([
+      ownId,
+      agDisabled,
+      agLimited,
+      agRefused,
+      agMetered,
+      agUnmeasured,
+      agPartial,
+      agNullUsage,
+      first,
+    ]),
+    providers: [
+      provider(ownId, {
+        driver: claude,
+        models: [{ slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null }],
+      }),
+      provider(agDisabled, { driver: antigravity, enabled: false, models: agModels }),
+      provider(agLimited, {
+        driver: antigravity,
+        models: agModels,
+        usageLimits: {
+          checkedAt: "2026-11-27T11:55:00Z",
+          windows: [
+            {
+              id: "session",
+              kind: "session",
+              label: "Session",
+              scope: "account",
+              usedPercent: 100,
+            },
+          ],
+        },
+      }),
+      provider(agRefused, { driver: antigravity, models: agModels }),
+      provider(agMetered, {
+        driver: antigravity,
+        auth: { status: "authenticated", type: "apiKey" },
+        models: agModels,
+      }),
+      provider(agUnmeasured, {
+        driver: antigravity,
+        models: agModels,
+        usageLimits: {
+          checkedAt: "2026-11-27T11:55:00Z",
+          windows: [],
+          unavailable: { reason: "unsupported" },
+        },
+      }),
+      provider(agPartial, {
+        driver: antigravity,
+        models: agModels,
+        usageLimits: {
+          checkedAt: "2026-11-27T11:55:00Z",
+          windows: [
+            {
+              id: "gemini-default",
+              kind: "session",
+              label: "Gemini",
+              scope: "gemini-default",
+              usedPercent: 30,
+            },
+            {
+              id: "gemini-argon",
+              kind: "session",
+              label: "Gemini Argon",
+              scope: "gemini-argon",
+              usedPercent: 10,
+            },
+            {
+              id: "third-party",
+              kind: "session",
+              label: "Claude / GPT-OSS",
+              scope: "third-party",
+              usedPercent: 100,
+            },
+          ],
+        },
+      }),
+      provider(agNullUsage, {
+        driver: antigravity,
+        models: agModels,
+        usageLimits: undefined,
+      }),
+      provider(first),
+    ],
+  };
+
+  // Paired provider (Codex) comes first even when Antigravity precedes it in failover order.
+  const bothReady = autoCoordinatorBriefInput({
+    ...baseInput,
+    recordedLimits: new Map([[agRefused, [{ resetAt: null, refusedAt: "2026-11-27T11:30:00Z" }]]]),
+  });
+  expect(bothReady.otherProviders?.map((entry) => entry.providerInstanceId)).toEqual([
+    first,
+    agUnmeasured,
+    agPartial,
+    agNullUsage,
+  ]);
+  expect(
+    bothReady.otherProviders
+      ?.find((entry) => entry.providerInstanceId === agPartial)
+      ?.models.map((model) => model.slug),
+  ).toEqual(["gemini-4-neon", "gemini-4-argon", "gemini-3.8-flash"]);
+  expect(
+    bothReady.otherProviders
+      ?.find((entry) => entry.providerInstanceId === agUnmeasured)
+      ?.models.map((model) => model.slug),
+  ).toContain("claude-opus-5-5");
+  expect(
+    bothReady.otherProviders
+      ?.find((entry) => entry.providerInstanceId === agNullUsage)
+      ?.models.map((model) => model.slug),
+  ).toContain("gpt-oss-120b-medium");
+  expect(bothReady.otherReviewer?.providerInstanceId).toBe(first);
+});
+
+it("falls back to Antigravity for cross-provider review using gemini-4-neon and highest thinking_level", () => {
+  const ownId = ProviderInstanceId.make("claude_own");
+  const agNoGemini = ProviderInstanceId.make("antigravity");
+  const agWithGemini = ProviderInstanceId.make("antigravity_asd");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const codex = ProviderDriverKind.make("codex");
+  const antigravity = ProviderDriverKind.make("antigravity");
+  const thinking = (values: ReadonlyArray<string>) => ({
+    optionDescriptors: [
+      {
+        id: "thinking_level",
+        label: "Thinking",
+        type: "select" as const,
+        role: "reasoning" as const,
+        options: values.map((id) => ({ id, label: id })),
+      },
+    ],
+  });
+  const baseInput = {
+    driver: claude,
+    selection: { instanceId: ownId, model: "claude-opus-5-5" },
+    projectId: ProjectId.make("project:auto"),
+    nowMs: Date.parse("2026-11-27T12:00:00Z"),
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      autoModeModels: {
+        [claude]: { model: "claude-opus-5-5" },
+        [codex]: { model: "gpt-6-astra" },
+      },
+      providerInstances: {
+        [ownId]: { driver: claude, enabled: true },
+        [first]: { driver: codex, enabled: true },
+        [agNoGemini]: { driver: antigravity, enabled: true },
+        [agWithGemini]: { driver: antigravity, enabled: true },
+      },
+      providerInstanceFailoverOrder: [first, agNoGemini, agWithGemini],
+    },
+    recordedLimits: new Map([[first, [{ resetAt: null, refusedAt: "2026-11-27T11:00:00Z" }]]]),
+    orchestrationCapableInstanceIds: new Set([ownId, first, agNoGemini, agWithGemini]),
+    providers: [
+      provider(ownId, {
+        driver: claude,
+        models: [{ slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null }],
+      }),
+      provider(first),
+      provider(agNoGemini, {
+        driver: antigravity,
+        usageLimits: {
+          checkedAt: "2026-11-27T11:55:00Z",
+          windows: [
+            {
+              id: "gemini-default",
+              kind: "session",
+              label: "Gemini",
+              scope: "gemini-default",
+              usedPercent: 100,
+            },
+            {
+              id: "third-party",
+              kind: "session",
+              label: "Claude",
+              scope: "third-party",
+              usedPercent: 15,
+            },
+          ],
+        },
+        models: [
+          {
+            slug: "gemini-4-neon",
+            name: "Gemini 4 Neon",
+            isCustom: false,
+            capabilities: thinking(["low", "medium", "high", "xhigh"]),
+          },
+          {
+            slug: "claude-opus-5-5",
+            name: "Claude Opus 5.5",
+            isCustom: false,
+            capabilities: thinking(["low", "high"]),
+          },
+        ],
+      }),
+      provider(agWithGemini, {
+        driver: antigravity,
+        models: [
+          {
+            slug: "gemini-3.8-flash",
+            name: "Gemini 3.8 Flash",
+            isCustom: false,
+            isDefault: true,
+            // What a live Antigravity session reports for its current model.
+            aliases: ["antigravity-default"],
+            capabilities: thinking(["low", "medium", "high"]),
+          },
+          {
+            slug: "gemini-4-carbon",
+            name: "Gemini 4 Carbon",
+            isCustom: false,
+            capabilities: thinking(["low", "high"]),
+          },
+          {
+            slug: "gemini-4-neon",
+            name: "Gemini 4 Neon",
+            isCustom: false,
+            capabilities: thinking(["low", "medium", "high", "xhigh"]),
+          },
+        ],
+      }),
+    ],
+  };
+
+  // Without autoModeModels.antigravity configured, prefers gemini-4-neon on the account with room.
+  const preferred = autoCoordinatorBriefInput(baseInput);
+  expect(preferred.otherReviewer).toEqual({
+    model: "gemini-4-neon",
+    options: [{ id: "thinking_level", value: "xhigh" }],
+    providerInstanceId: agWithGemini,
+  });
+
+  // Without the frontier model, Antigravity offers no reviewer: Auto's profile is the one choice.
+  const withoutNeon = autoCoordinatorBriefInput({
+    ...baseInput,
+    providers: baseInput.providers.map((entry) =>
+      entry.instanceId === agNoGemini || entry.instanceId === agWithGemini
+        ? {
+            ...entry,
+            models: entry.models.filter((model) => model.slug !== "gemini-4-neon"),
+          }
+        : entry,
+    ),
+  });
+  expect(withoutNeon.otherReviewer).toBeUndefined();
+
+  // When Settings explicitly configures Antigravity's primary, honors that model and options.
+  const configured = autoCoordinatorBriefInput({
+    ...baseInput,
+    settings: {
+      ...baseInput.settings,
+      autoModeModels: {
+        ...baseInput.settings.autoModeModels,
+        [antigravity]: {
+          model: "gemini-4-carbon",
+          options: [{ id: "thinking_level", value: "high" }],
+        },
+      },
+    },
+  });
+  expect(configured.otherReviewer).toEqual({
+    model: "gemini-4-carbon",
+    options: [{ id: "thinking_level", value: "high" }],
+    providerInstanceId: agWithGemini,
+  });
+});
+
+it("reviews on a provider without an Auto profile with its default model and options", () => {
+  const ownId = ProviderInstanceId.make("claude_own");
+  const grokId = ProviderInstanceId.make("grok_main");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const grok = ProviderDriverKind.make("grok");
+  const brief = autoCoordinatorBriefInput({
+    driver: claude,
+    selection: { instanceId: ownId, model: "claude-opus-5-5" },
+    projectId: ProjectId.make("project:auto"),
+    nowMs: Date.parse("2026-11-27T12:00:00Z"),
+    recordedLimits: new Map(),
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [ownId]: { driver: claude, enabled: true },
+        [grokId]: { driver: grok, enabled: true },
+      },
+      providerInstanceFailoverOrder: [grokId],
+    },
+    orchestrationCapableInstanceIds: new Set([ownId, grokId]),
+    providers: [
+      provider(ownId, {
+        driver: claude,
+        models: [{ slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null }],
+      }),
+      provider(grokId, {
+        driver: grok,
+        models: [{ slug: "grok-build", name: "Grok Build", isCustom: false, capabilities: null }],
+      }),
+    ],
+  });
+  expect(brief.otherReviewer).toEqual({
+    model: "grok-build",
+    options: [],
+    providerInstanceId: grokId,
+  });
+});
+
+it("reviews on Claude's and Codex's default models when no Auto model is saved", () => {
+  const ownId = ProviderInstanceId.make("claude_own");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const xhigh = {
+    optionDescriptors: [
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select" as const,
+        role: "reasoning" as const,
+        options: ["high", "xhigh"].map((id) => ({ id, label: id })),
+      },
+    ],
+  };
+  const brief = autoCoordinatorBriefInput({
+    driver: claude,
+    selection: { instanceId: ownId, model: "claude-opus-5-5" },
+    projectId: ProjectId.make("project:auto"),
+    nowMs: Date.parse("2026-11-27T12:00:00Z"),
+    recordedLimits: new Map(),
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      autoModeModels: {},
+      providerInstances: enabledInstances([ownId, first]),
+      providerInstanceFailoverOrder: [first],
+    },
+    orchestrationCapableInstanceIds: new Set([ownId, first]),
+    providers: [
+      provider(ownId, {
+        driver: claude,
+        models: [{ slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null }],
+      }),
+      provider(first, {
+        models: [
+          { slug: "gpt-6-astra", name: "Astra", isCustom: false, capabilities: xhigh },
+          { slug: "gpt-6-astra-mini", name: "Astra Mini", isCustom: false, capabilities: xhigh },
+        ],
+      }),
+    ],
+  });
+  // An unsaved default is still the Settings primary: no switch to the xhigh Auto profile.
+  expect(brief.otherReviewer).toEqual({
+    model: "gpt-6-astra",
+    options: [],
+    providerInstanceId: first,
+  });
+  expect(brief.ownReviewer).toEqual({
+    model: "claude-opus-5-5",
+    options: [],
+    providerInstanceId: ownId,
+  });
+});
+
+it("discovers all distinct enabled providers for delegation and independent review", () => {
+  const ownId = ProviderInstanceId.make("claude_own");
+  const museId = ProviderInstanceId.make("muse_main");
+  const antigravityId = ProviderInstanceId.make("antigravity_main");
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const muse = ProviderDriverKind.make("muse");
+  const antigravity = ProviderDriverKind.make("antigravity");
+  const result = autoCoordinatorBriefInput({
+    driver: claude,
+    selection: { instanceId: ownId, model: "claude-opus-5-5" },
+    projectId: ProjectId.make("project:auto"),
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      autoModeModels: {
+        [claude]: { model: "claude-opus-5-5" },
+        [muse]: { model: "muse-wonder" },
+      },
+      providerInstances: {
+        [ownId]: { driver: claude, enabled: true },
+        [museId]: { driver: muse, enabled: true },
+        [antigravityId]: { driver: antigravity, enabled: true },
+      },
+      providerInstanceFailoverOrder: [museId, antigravityId],
+    },
+    nowMs: Date.parse("2026-11-08T12:00:00Z"),
+    recordedLimits: new Map(),
+    orchestrationCapableInstanceIds: new Set([ownId, museId, antigravityId]),
+    providers: [
+      provider(ownId, {
+        driver: claude,
+        models: [{ slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null }],
+      }),
+      provider(museId, {
+        driver: muse,
+        displayName: "Muse Code",
+        models: [{ slug: "muse-wonder", name: "Muse Wonder", isCustom: false, capabilities: null }],
+      }),
+      provider(antigravityId, {
+        driver: antigravity,
+        displayName: "Antigravity",
+        models: [
+          { slug: "gemini-3-pro", name: "Gemini 3 Pro", isCustom: false, capabilities: null },
+        ],
+      }),
+    ],
+  });
+  expect(result.otherProviders?.map((entry) => [entry.providerInstanceId, entry.driver])).toEqual([
+    [museId, muse],
+    [antigravityId, antigravity],
+  ]);
+  expect(result.otherReviewer).toEqual({
+    model: "muse-wonder",
+    options: [],
+    providerInstanceId: museId,
+  });
+});

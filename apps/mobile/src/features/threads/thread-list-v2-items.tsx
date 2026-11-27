@@ -276,6 +276,12 @@ export function ThreadListV2Section(props: {
     readonly accessibilityLabel: string;
     readonly accessibilityHint: string;
   };
+  /** A text button at the end of the header. It keeps a 44-point target and names itself. */
+  readonly action?: {
+    readonly label: string;
+    readonly accessibilityLabel: string;
+    readonly onPress: () => void;
+  };
 }) {
   const snoozed = props.tone === "snoozed";
   const attention = props.tone === "attention";
@@ -333,6 +339,18 @@ export function ThreadListV2Section(props: {
           style={{ transform: [{ rotate: props.disclosure.expanded ? "180deg" : "0deg" }] }}
         />
       ) : null}
+      {props.action ? (
+        <Pressable
+          accessibilityLabel={props.action.accessibilityLabel}
+          accessibilityRole="button"
+          className="-my-2 min-h-11 min-w-11 items-center justify-center"
+          hitSlop={4}
+          onPress={props.action.onPress}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          <Text className="text-xs font-t3-medium text-primary">{props.action.label}</Text>
+        </Pressable>
+      ) : null}
     </>
   );
 
@@ -381,6 +399,31 @@ export const ThreadListV2NeedsYouHeader = memo(function ThreadListV2NeedsYouHead
     />
   );
 });
+
+/** Heads the threads the user started that finished while they were away. */
+export const ThreadListV2FinishedNotSeenHeader = memo(
+  function ThreadListV2FinishedNotSeenHeader(props: {
+    readonly count: number;
+    readonly onSettleAll: () => void;
+    readonly pane?: "screen" | "sidebar";
+  }) {
+    return (
+      <ThreadListV2Section
+        label={t("Finished, not seen ({count})", { count: props.count })}
+        pane={props.pane}
+        action={{
+          label: t("Settle all"),
+          accessibilityLabel: tn(
+            props.count,
+            "Settle all, {count} finished thread",
+            "Settle all, {count} finished threads",
+          ),
+          onPress: props.onSettleAll,
+        }}
+      />
+    );
+  },
+);
 
 type ThreadListV2ShelfHeaderProps = {
   readonly count: number;

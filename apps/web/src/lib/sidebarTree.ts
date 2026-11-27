@@ -6,10 +6,27 @@ export function attachSidebarTree(element: HTMLElement | null) {
 }
 
 /**
- * Arrow keys move focus between rows without opening them, as in VS Code's list commands.
- * Rows stay ordinary buttons in the Tab order so screen readers can browse the list.
+ * The Latin letter a key press stands for, with Caps Lock on or on a non-Latin layout, where
+ * the key's position names it; any other key unchanged.
  */
-export function installSidebarTree(root: HTMLElement) {
+export function latinLetterOf(event: Pick<KeyboardEvent, "key" | "code">): string {
+  if (/^[a-z]$/i.test(event.key)) return event.key.toLowerCase();
+  if (event.key.length === 1 && /^Key[A-Z]$/.test(event.code)) {
+    return event.code.slice(3).toLowerCase();
+  }
+  return event.key;
+}
+
+/** The Needs you box's tree, where J and K also move, since its rows take no typing. */
+export function attachTriageTree(element: HTMLElement | null) {
+  return element ? installSidebarTree(element, { letterKeys: true }) : undefined;
+}
+
+/** A roving DOM focus, separate from thread activation, as in VS Code's list commands. */
+export function installSidebarTree(
+  root: HTMLElement,
+  options: { readonly letterKeys?: boolean } = {},
+) {
   let focusedId: string | undefined;
   let focusedParent: string | undefined;
   let focusedIndex = -1;
@@ -109,7 +126,10 @@ export function installSidebarTree(root: HTMLElement) {
     const index = rows.indexOf(row);
     if (index < 0) return;
     let target: HTMLElement | undefined;
-    switch (event.key) {
+    const key = options.letterKeys
+      ? ({ j: "ArrowDown", k: "ArrowUp" }[latinLetterOf(event)] ?? event.key)
+      : event.key;
+    switch (key) {
       case "ArrowDown":
         target = rows[Math.min(index + 1, rows.length - 1)];
         break;

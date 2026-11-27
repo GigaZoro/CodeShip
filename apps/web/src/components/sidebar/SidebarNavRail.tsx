@@ -79,6 +79,7 @@ function resolveActiveDestination(pathname: string): SidebarNavDestination | nul
 }
 
 function SidebarNavRailItem({
+  destination,
   icon,
   label,
   tooltip = label,
@@ -86,6 +87,7 @@ function SidebarNavRailItem({
   isActive,
   onClick,
 }: {
+  destination: SidebarNavDestination;
   icon: ReactNode;
   label: string;
   tooltip?: ReactNode;
@@ -99,6 +101,7 @@ function SidebarNavRailItem({
         <TooltipTrigger
           render={
             <SidebarMenuButton
+              data-ui-usage={destination}
               aria-label={label}
               aria-current={isActive ? "page" : undefined}
               isActive={isActive}
@@ -127,6 +130,7 @@ function SidebarNavRailMonitoringItem({
   const shortcut = shortcutLabelForCommand(keybindings, "monitoring.open");
   return (
     <SidebarNavRailItem
+      destination="monitoring"
       icon={<ActivityIcon />}
       label={t("Monitoring")}
       tooltip={shortcut ? t("Monitoring ({shortcut})", { shortcut }) : t("Monitoring")}
@@ -152,6 +156,7 @@ export function SidebarNavRailUsageItem({
   if (!tightest) {
     return (
       <SidebarNavRailItem
+        destination="usage"
         icon={<ChartNoAxesColumnIcon />}
         label={t("Usage")}
         tooltip={shortcut ? t("Usage ({shortcut})", { shortcut }) : t("Usage")}
@@ -163,6 +168,7 @@ export function SidebarNavRailUsageItem({
   const { pool, window } = tightest;
   return (
     <SidebarNavRailItem
+      destination="usage"
       icon={
         <ProgressRing
           value={window.usedPercent}
@@ -193,6 +199,7 @@ function SidebarNavRailMachinesItem({
   const machines = useSidebarMachines();
   return (
     <SidebarNavRailItem
+      destination="machines"
       icon={<GaugeIcon />}
       label={t("Machines")}
       tooltip={machines.length === 0 ? t("Machines") : <MachinesGlance machines={machines} />}
@@ -222,12 +229,14 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
 
   return (
     <nav
+      data-ui-usage-area="nav-rail"
       aria-label={t("Sections")}
       className="flex shrink-0 flex-col items-center justify-between border-r border-sidebar-border pt-2 pb-1"
       style={{ width: THREAD_SIDEBAR_NAV_RAIL_WIDTH }}
     >
       <SidebarMenu className="items-center">
         <SidebarNavRailItem
+          destination="threads"
           icon={<MessagesSquareIcon />}
           label={threads.label}
           badge={threads.badge}
@@ -235,6 +244,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           onClick={go(navigateToMainApp)}
         />
         <SidebarNavRailItem
+          destination="projects"
           icon={<LayoutGridIcon />}
           label={t("Projects")}
           isActive={active === "projects"}
@@ -242,6 +252,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         />
         {pullRequestsSupported ? (
           <SidebarNavRailItem
+            destination="pull-requests"
             icon={<PullRequestGlyph.pullRequest />}
             label={pullRequests.label}
             badge={pullRequests.badge}
@@ -252,6 +263,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           />
         ) : null}
         <SidebarNavRailItem
+          destination="scheduled-tasks"
           icon={<CalendarClockIcon />}
           label={scheduledTasks.label}
           badge={scheduledTasks.badge}
@@ -259,6 +271,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           onClick={go(() => navigate({ to: "/scheduled-tasks" }))}
         />
         <SidebarNavRailItem
+          destination="extensions"
           icon={<PuzzleIcon />}
           label={extensions.label}
           badge={extensions.badge}
@@ -266,12 +279,14 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           onClick={go(() => navigate({ to: "/extensions" }))}
         />
         <SidebarNavRailItem
+          destination="artifacts"
           icon={<ShapesIcon />}
           label={t("Artifacts")}
           isActive={active === "artifacts"}
           onClick={go(() => navigate({ to: "/artifacts" }))}
         />
         <SidebarNavRailItem
+          destination="manual-steps"
           icon={<HandIcon />}
           label={manualSteps.label}
           badge={manualSteps.badge}
@@ -281,6 +296,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         {/* The browser cannot embed thread.page, so the page is desktop only. */}
         {isElectron ? (
           <SidebarNavRailItem
+            destination="thread-page"
             icon={<NotebookPenIcon />}
             label={"ThreadPage"}
             isActive={active === "thread-page"}
@@ -303,11 +319,12 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
           onClick={go(() => navigate({ to: "/usage" }))}
         />
         <SidebarNavRailItem
+          destination="settings"
           icon={<SettingsIcon />}
           label={settings.label}
           badge={settings.badge}
           isActive={active === "settings"}
-          onClick={go(() => navigate({ to: "/settings" }))}
+          onClick={go(() => navigate({ to: "/settings/general" }))}
         />
       </SidebarMenu>
     </nav>

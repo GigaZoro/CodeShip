@@ -99,11 +99,35 @@ const ClaudeErrorResult = Schema.Struct({
 const isClaudeErrorResult = Schema.is(ClaudeErrorResult);
 const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
+const NON_RETRYABLE_CLAUDE_STATUSES = new Set([401, 402, 403, 429]);
+const NON_RETRYABLE_CLAUDE_ERROR_CODES = new Set([
+  "rate_limit",
+  "authentication_failed",
+  "billing_error",
+  "invalid_request",
+]);
+const NON_RETRYABLE_CLAUDE_RESULT_PATTERN =
+  /\b(?:5-hour\s+limit\s+reached|weekly\s+limit\s+reached|your\s+organization\s+has\s+disabled\s+this\s+model|invalid\s+bearer\s+token|claude\s+auth\s+login|credit\s+balance\s+(?:is\s+)?too\s+low|usage\s+limit|rate\s+limit(?:ed)?|too\s+many\s+requests|you(?:'ve|\s+have)\s+(?:hit|reached)\s+(?:your|the)\s+(?:[a-z0-9-]+\s+)?limit|authentication[\s_]+(?:failed|error)|not\s+logged\s+in|signed\s+out|logged\s+out|invalid\s+(?:api[\s_]+key|x-api-key)|api\s+error:\s*(?:401|402|403|429)|http\s+(?:401|402|403|429)|(?:401\s+unauthorized|402\s+payment\s+required|403\s+forbidden|429\s+too\s+many\s+requests))\b/i;
+
+function hasNonRetryableClaudeEnvelope(messages: ReadonlyArray<unknown>): boolean {
+  return messages.some((message) => {
+    if (typeof message !== "object" || message === null) return false;
+    const status = Reflect.get(message, "api_error_status");
+    if (typeof status === "number" && NON_RETRYABLE_CLAUDE_STATUSES.has(status)) {
+      return true;
+    }
+    const errorCode = Reflect.get(message, "error");
+    return typeof errorCode === "string" && NON_RETRYABLE_CLAUDE_ERROR_CODES.has(errorCode);
+  });
+}
+
 // Claude reports JSON errors on stdout; stderr may contain only wrapper notices.
-function claudeErrorResult(stdout: string): string | undefined {
+function claudeErrorResult(
+  stdout: string,
+): { readonly detail: string; readonly retryable?: false } | undefined {
   const output = Option.getOrUndefined(decodeJsonOption(stdout));
   const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
-  return messages
+  const detail = messages
     .filter(isClaudeErrorResult)
     .map((message) =>
       (
@@ -114,6 +138,10 @@ function claudeErrorResult(stdout: string): string | undefined {
       ).trim(),
     )
     .findLast((result) => result.length > 0);
+  if (detail === undefined) return undefined;
+  const nonRetryable =
+    hasNonRetryableClaudeEnvelope(messages) || NON_RETRYABLE_CLAUDE_RESULT_PATTERN.test(detail);
+  return nonRetryable ? { detail, retryable: false } : { detail };
 }
 
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
@@ -410,9 +438,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         if (exitCode === 0) return Effect.succeed(stdout);
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
+        const structuredError = claudeErrorResult(stdoutDetail);
         const detail =
-          claudeErrorResult(stdoutDetail) ??
-          (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
+          structuredError?.detail ?? (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
         return Effect.fail(
           new TextGenerationError({
             operation,
@@ -420,6 +448,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
               detail.length > 0
                 ? `Claude CLI command failed: ${detail}`
                 : `Claude CLI command failed with code ${exitCode}.`,
+            ...(structuredError?.retryable === false ? { retryable: false } : {}),
           }),
         );
       }),

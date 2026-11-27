@@ -316,6 +316,29 @@ export const DesktopUpdateStatusReport = Schema.Struct({
 });
 export type DesktopUpdateStatusReport = typeof DesktopUpdateStatusReport.Type;
 
+/** A backend besides the primary that the desktop app runs. Its install stops it too. */
+export const DesktopBackendEndpoint = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  httpBaseUrl: TrimmedNonEmptyString,
+});
+export type DesktopBackendEndpoint = typeof DesktopBackendEndpoint.Type;
+
+/** Every other backend that serves now, sent to the primary whenever that set changes. */
+export const DesktopBackendsReport = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("desktopBackends"),
+  backends: Schema.Array(DesktopBackendEndpoint),
+});
+export type DesktopBackendsReport = typeof DesktopBackendsReport.Type;
+
+/** What the desktop app posts to a primary it controls over HTTP. */
+export const DesktopUpdateControlReport = Schema.Union([
+  DesktopUpdateStatusReport,
+  DesktopBackendsReport,
+]);
+export type DesktopUpdateControlReport = typeof DesktopUpdateControlReport.Type;
+
 export const ShellEnvironmentPatch = Schema.Struct({
   PATH: Schema.optionalKey(Schema.NullOr(Schema.String)),
   ANDROID_HOME: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -365,6 +388,7 @@ export const DesktopHostTelemetryMessage = Schema.Union([
   DesktopShellEnvironmentSnapshot,
   DesktopHostTelemetrySnapshot,
   DesktopUpdateStatusReport,
+  DesktopBackendsReport,
 ]);
 export type DesktopHostTelemetryMessage = typeof DesktopHostTelemetryMessage.Type;
 
@@ -384,7 +408,7 @@ export const DesktopTelemetrySetHostPowerIntervals = Schema.Struct({
 export type DesktopTelemetrySetHostPowerIntervals =
   typeof DesktopTelemetrySetHostPowerIntervals.Type;
 
-/** Runs check/download/quit-and-install without local confirmation; the remote RPC click supplies consent. */
+/** Prepares a desktop release. The server sends a separate commit to start installation. */
 export const DesktopTelemetryRequestDesktopUpdate = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("requestDesktopUpdate"),
@@ -392,6 +416,7 @@ export const DesktopTelemetryRequestDesktopUpdate = Schema.Struct({
   /** A track switch: move to this channel first, and install only `targetVersion`. */
   channel: Schema.optionalKey(DesktopUpdateChannelSchema),
   targetVersion: Schema.optionalKey(TrimmedNonEmptyString),
+  minimumVersion: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type DesktopTelemetryRequestDesktopUpdate = typeof DesktopTelemetryRequestDesktopUpdate.Type;
 
@@ -415,6 +440,27 @@ export const DesktopTelemetryServerReady = Schema.Struct({
   type: Schema.Literal("serverReady"),
 });
 export type DesktopTelemetryServerReady = typeof DesktopTelemetryServerReady.Type;
+
+export const DesktopUpdateControlCommand = Schema.Union([
+  DesktopTelemetryRequestDesktopUpdate,
+  DesktopTelemetryCommitDesktopUpdate,
+  DesktopTelemetryCancelDesktopUpdate,
+]);
+export type DesktopUpdateControlCommand = typeof DesktopUpdateControlCommand.Type;
+
+const DesktopUpdateControlAcknowledgement = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("desktopUpdateControlAcknowledgement"),
+  requestId: TrimmedNonEmptyString,
+  command: Schema.Literals(["requestDesktopUpdate", "commitDesktopUpdate", "cancelDesktopUpdate"]),
+});
+export type DesktopUpdateControlAcknowledgement = typeof DesktopUpdateControlAcknowledgement.Type;
+
+export const DesktopUpdateControlPost = Schema.Union([
+  DesktopUpdateStatusReport,
+  DesktopBackendsReport,
+  DesktopUpdateControlAcknowledgement,
+]);
 
 export const DesktopTelemetryControlMessage = Schema.Union([
   DesktopTelemetryServerReady,

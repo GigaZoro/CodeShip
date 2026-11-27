@@ -161,3 +161,5 @@ export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-lo
 export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
 
 export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
+export const UI_FEEDBACK_CAPTURE_WINDOW_CHANNEL = "desktop:ui-feedback-capture-window";
+export const UI_FEEDBACK_WRITE_EXPORT_CHANNEL = "desktop:ui-feedback-write-export";

@@ -302,6 +302,7 @@ export const AntigravityDriver: ProviderDriver<
           instanceId,
           operation: "configure",
           detail: authConfigIssue,
+          retryable: false,
         });
       }
       const executable = yield* installation.acquire(settings.binaryPath, processEnvironment).pipe(
@@ -311,6 +312,7 @@ export const AntigravityDriver: ProviderDriver<
               instanceId,
               operation: "resolve",
               detail: cause.detail,
+              retryable: false,
               cause,
             }),
         ),
@@ -323,6 +325,7 @@ export const AntigravityDriver: ProviderDriver<
           instanceId,
           operation: "resolve",
           detail: "This Antigravity runtime does not support quota checks.",
+          retryable: false,
         });
       }
       const profile = yield* prepareAntigravityProfile({
@@ -341,6 +344,7 @@ export const AntigravityDriver: ProviderDriver<
                 instanceId,
                 operation: "start",
                 detail: nodeRuntimeUnavailableMessage("Antigravity sign-in"),
+                retryable: false,
                 cause,
               })
             : cause,

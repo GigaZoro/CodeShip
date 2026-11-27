@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-11-26T15:37:00Z",
+  "updatedAt": "2026-11-27T00:30:00Z",
   "compatibility": [
     {
       "driver": "codex",
@@ -143,9 +143,14 @@
     ],
     "claudeAgent": ["claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
     "antigravity": [
+      "gemini-4-neon",
+      "gemini-4-hydrogen",
       "gemini-4-carbon",
       "gemini-4-argon",
       "gemini-3.8-flash",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "gpt-oss-120b-medium",
       "gemini-3.8-flash-high",
       "gemini-3.8-flash-medium",
       "gemini-3.8-flash-low"
@@ -969,13 +974,46 @@
       "profiles": {},
       "models": [
         {
+          "slug": "gemini-4-neon",
+          "name": "Gemini 4 Neon",
+          "status": "current"
+        },
+        {
+          "slug": "gemini-4-hydrogen",
+          "name": "Gemini 4 Hydrogen",
+          "status": "current"
+        },
+        {
           "slug": "gemini-4-carbon",
           "name": "Gemini 4 Carbon",
           "status": "current",
           "releasedAt": "2026-11-10"
         },
-        { "slug": "gemini-4-argon", "name": "Gemini 4 Argon", "status": "current" },
-        { "slug": "gemini-3.8-flash", "name": "Gemini 3.8 Flash", "status": "current" },
+        {
+          "slug": "gemini-4-argon",
+          "name": "Gemini 4 Argon",
+          "status": "current"
+        },
+        {
+          "slug": "gemini-3.8-flash",
+          "name": "Gemini 3.8 Flash",
+          "status": "current"
+        },
+        {
+          "slug": "claude-opus-5-5",
+          "name": "Claude Opus 5.5",
+          "status": "current"
+        },
+        {
+          "slug": "claude-sonnet-5-5",
+          "name": "Claude Sonnet 5.5",
+          "status": "current"
+        },
+        {
+          "slug": "gpt-oss-120b-medium",
+          "name": "GPT-OSS 120B (Medium)",
+          "status": "current"
+        },
         {
           "slug": "gemini-3.8-flash-high",
           "name": "Gemini 3.8 Flash (High)",

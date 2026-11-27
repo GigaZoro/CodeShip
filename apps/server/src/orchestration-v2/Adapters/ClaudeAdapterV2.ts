@@ -74,8 +74,9 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- the SDK takes a Node ChildProcess for the CLI.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeModule from "node:module";
 import * as NodeUtil from "node:util";
-import * as z from "zod";
+import type * as Zod from "zod";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { AgentScope, agentScopeCommand } from "@t3tools/shared/AgentScope";
@@ -842,16 +843,31 @@ export const ClaudeProviderCapabilitiesV2 = {
 const CLAUDE_NATIVE_TASK_SERVER = "t3-native";
 const CLAUDE_NATIVE_TASK_TOOL = "await_task";
 const CLAUDE_NATIVE_TASK_HINT_LIMIT = 12;
-const claudeNativeTaskId = z.string().min(1).max(128);
-const claudeNativeTaskWaitInput = z.object({ task_id: claudeNativeTaskId });
-// Claude Code attaches the originating tool call to the SDK MCP request's metadata.
-const claudeNativeTaskRequest = z.object({
-  _meta: z.object({
-    "claudecode/toolUseId": z.string().min(1),
-    "claudecode/agentId": z.never().optional(),
-  }),
-  signal: z.instanceof(AbortSignal),
-});
+// zod is external to the CLI bundle; Node single-executables can load it from disk only with require.
+const requireForZod = NodeModule.createRequire(import.meta.url);
+function buildClaudeNativeTaskSchemas() {
+  const z = requireForZod("zod") as typeof Zod;
+  const claudeNativeTaskId = z.string().min(1).max(128);
+  const claudeNativeTaskWaitInput = z.object({ task_id: claudeNativeTaskId });
+  // Claude Code attaches the originating tool call to the SDK MCP request's metadata.
+  const claudeNativeTaskRequest = z.object({
+    _meta: z.object({
+      "claudecode/toolUseId": z.string().min(1),
+      "claudecode/agentId": z.never().optional(),
+    }),
+    signal: z.instanceof(AbortSignal),
+  });
+  return {
+    z,
+    claudeNativeTaskId,
+    claudeNativeTaskWaitInput,
+    claudeNativeTaskRequest,
+  };
+}
+let cachedClaudeNativeTaskSchemas: ReturnType<typeof buildClaudeNativeTaskSchemas> | undefined;
+function getClaudeNativeTaskSchemas() {
+  return (cachedClaudeNativeTaskSchemas ??= buildClaudeNativeTaskSchemas());
+}
 
 export const CLAUDE_NATIVE_TASK_WAIT_TOOL = {
   name: `mcp__${CLAUDE_NATIVE_TASK_SERVER}__${CLAUDE_NATIVE_TASK_TOOL}`,
@@ -859,6 +875,7 @@ export const CLAUDE_NATIVE_TASK_WAIT_TOOL = {
     "Keep this turn open for a native Bash or Monitor task whose result is needed. Mark its ID once, then end the Claude turn. CodeShip will keep the conversation open for the result. If the task already ended, the tool returns its result. Leave dev servers and watchers running without calling this tool.",
   successText: "This turn will stay open for the task’s result.",
   get inputSchema() {
+    const { z, claudeNativeTaskWaitInput } = getClaudeNativeTaskSchemas();
     return z.toJSONSchema(claudeNativeTaskWaitInput);
   },
   stopFeedback(taskIds: ReadonlyArray<string>) {
@@ -15796,7 +15813,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           >();
           const markNativeTaskAwaited = Effect.fn("ClaudeAdapterV2.markNativeTaskAwaited")(
             function* (taskId: string, extra: unknown) {
-              const request = claudeNativeTaskRequest.safeParse(extra);
+              const request = getClaudeNativeTaskSchemas().claudeNativeTaskRequest.safeParse(extra);
               const result = yield* Ref.modify(pendingBackgroundTasksByNativeThread, (current) => {
                 const context = nativeTasksTurn();
                 if (context === null || !request.success) return [null, current] as const;
@@ -15866,7 +15883,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               tool(
                 CLAUDE_NATIVE_TASK_TOOL,
                 CLAUDE_NATIVE_TASK_WAIT_TOOL.description,
-                claudeNativeTaskWaitInput.shape,
+                getClaudeNativeTaskSchemas().claudeNativeTaskWaitInput.shape,
                 ({ task_id }, extra) => runPromise(markNativeTaskAwaited(task_id, extra)),
               ),
             ],
@@ -15883,7 +15900,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               return {};
             }
             const context = nativeTasksTurn();
-            const input = claudeNativeTaskWaitInput.safeParse(hookInput.tool_input);
+            const input = getClaudeNativeTaskSchemas().claudeNativeTaskWaitInput.safeParse(
+              hookInput.tool_input,
+            );
             if (
               signal.aborted ||
               hookInput.agent_id !== undefined ||
@@ -15936,7 +15955,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               return {};
             }
             const context = nativeTasksTurn();
-            const taskId = claudeNativeTaskId.safeParse(
+            const taskId = getClaudeNativeTaskSchemas().claudeNativeTaskId.safeParse(
               Reflect.get(
                 hookInput.tool_response,
                 hookInput.tool_name === "Bash" ? "backgroundTaskId" : "taskId",

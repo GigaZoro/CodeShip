@@ -44,8 +44,10 @@ export class DesktopAppUpdate extends Context.Service<
       reportProgress: (
         stage: ServerSelfUpdateProgressStage,
       ) => Effect.Effect<void, ServerSelfUpdateError>,
-      trackSwitch?: DesktopTelemetryReceiver.DesktopTrackSwitch,
+      options?: DesktopTelemetryReceiver.DesktopUpdatePreparation,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
+    readonly notAppliedVersion: Effect.Effect<string | undefined>;
+    readonly cancel: (requestId: string) => Effect.Effect<void>;
     /** Success stops the server; returns only on installation failure or timeout. */
     readonly commit: (
       requestId: string,
@@ -60,7 +62,7 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
   const receiver = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
   const inFlight = yield* Ref.make(false);
 
-  const available = config.mode === "desktop" && config.desktopTelemetryControlFd !== undefined;
+  const available = ServerConfig.supportsDesktopAppUpdate(config);
   const failWith = (reason: string, cause?: unknown) =>
     cause === undefined
       ? new ServerSelfUpdateError({ reason })
@@ -152,7 +154,7 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
   });
 
   const run: DesktopAppUpdate["Service"]["run"] = Effect.fn("desktopUpdate.desktopAppUpdate.run")(
-    function* (reportProgress, trackSwitch) {
+    function* (reportProgress, options) {
       if (!available) {
         return yield* failWith(
           "This server was not started by the T3.CodeShip desktop app, so it cannot drive a desktop update.",
@@ -174,7 +176,7 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
           // Subscribe before requesting to catch fast reports.
           const { changes } = yield* receiver.desktopUpdates;
           yield* receiver
-            .requestDesktopUpdate(requestId, trackSwitch)
+            .requestDesktopUpdate(requestId, options)
             .pipe(
               Effect.mapError((error) =>
                 failWith("Could not reach the T3.CodeShip desktop app on this machine.", error),
@@ -184,7 +186,7 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
             requestId,
             changes,
             reportProgress,
-            trackSwitch !== undefined,
+            options !== undefined && "channel" in options,
           ).pipe(
             Effect.onInterrupt(() => receiver.cancelDesktopUpdate(requestId).pipe(Effect.ignore)),
           );
@@ -241,7 +243,20 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
     );
   });
 
-  return DesktopAppUpdate.of({ available, run, commit });
+  const notAppliedVersion = Effect.scoped(
+    receiver.desktopUpdates.pipe(
+      Effect.map(({ latest }) => Option.getOrUndefined(latest)?.state.notAppliedVersion),
+    ),
+  );
+  const cancel = (requestId: string) =>
+    receiver
+      .cancelDesktopUpdate(requestId)
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Could not cancel a prepared desktop update.", { error }),
+        ),
+      );
+  return DesktopAppUpdate.of({ available, run, commit, notAppliedVersion, cancel });
 });
 
 export const layer = Layer.effect(DesktopAppUpdate, make());

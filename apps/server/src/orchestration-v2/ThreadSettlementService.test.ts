@@ -78,6 +78,7 @@ type SettlementShell = OrchestrationV2ThreadShell &
     | "parentWorktreePath"
     | "parentResultAt"
     | "parentDone"
+    | "parentResultKey"
   >;
 
 function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
@@ -124,6 +125,7 @@ function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
     parentWorktreePath: null,
     parentResultAt: null,
     parentDone: false,
+    parentResultKey: null,
     createdAt: at(-30 * DAY_MS),
     updatedAt: at(-10 * DAY_MS),
     archivedAt: null,
@@ -2955,6 +2957,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
         latestRunCompletedAt: ranAt,
         status: "completed",
         parentResultAt: resultAt,
+        parentResultKey: `task:${id}:hash`,
         ...overrides,
       });
     const delivered = child("delivered");
@@ -2972,8 +2975,8 @@ describe("ThreadSettlementServiceV2 worker", () => {
     const parentDone = child("parent-done", { parentDone: true, worktreePath: "/worktrees/own" });
     // The parent's latest task on these has no result, or the child ran again after it.
     const keptActive = [
-      child("failed", { status: "failed", parentResultAt: null }),
-      child("interrupted", { status: "interrupted", parentResultAt: null }),
+      child("failed", { status: "failed", parentResultAt: null, parentResultKey: null }),
+      child("interrupted", { status: "interrupted", parentResultAt: null, parentResultKey: null }),
       child("ran-again", { latestRunCompletedAt: DateTime.makeUnsafe(nowMs) }),
       child("waiting", {
         status: "waiting",
@@ -3004,19 +3007,30 @@ describe("ThreadSettlementServiceV2 worker", () => {
             const settled = (yield* Ref.get(fixture.commands)).map((command) => ({
               threadId: command.threadId,
               settledAt: command.settledAt,
-              parentResultAt: command.parentResultAt,
+              parentResultKey: command.parentResultKey,
               rule: command.commandId.split(":").slice(0, 2).join(":"),
             }));
-            const onResult = { parentResultAt: resultAt, rule: "server:settle-delivered-child" };
+            const onResult = { rule: "server:settle-delivered-child" };
             expect(
               settled.toSorted((left, right) => left.threadId.localeCompare(right.threadId)),
             ).toEqual([
-              { threadId: delivered.id, settledAt: ranAt, ...onResult },
-              { threadId: native.id, settledAt: resultAt, ...onResult },
+              {
+                threadId: delivered.id,
+                settledAt: ranAt,
+                parentResultKey: "task:delivered:hash",
+                ...onResult,
+              },
+              {
+                threadId: native.id,
+                settledAt: resultAt,
+                parentResultKey: "task:native:hash",
+                ...onResult,
+              },
               {
                 threadId: parentDone.id,
                 settledAt: ranAt,
                 parentResultAt: undefined,
+                parentResultKey: undefined,
                 rule: "server:settle-delivered-child",
               },
             ]);
@@ -3081,7 +3095,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
       Effect.scoped(
         Effect.gen(function* () {
           yield* TestClock.setTime(nowMs);
-          const waiting = child("awaiting-result", { parentResultAt: null });
+          const waiting = child("awaiting-result", { parentResultAt: null, parentResultKey: null });
           const fixture = yield* makeHarness({
             snapshot: makeSnapshot([waiting]),
             settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 },
@@ -3092,7 +3106,13 @@ describe("ThreadSettlementServiceV2 worker", () => {
             assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
             yield* Ref.set(
               fixture.snapshots,
-              makeSnapshot([{ ...waiting, parentResultAt: resultAt }]),
+              makeSnapshot([
+                {
+                  ...waiting,
+                  parentResultAt: resultAt,
+                  parentResultKey: "task:awaiting-result:hash",
+                },
+              ]),
             );
             yield* fixture.publishEvent({
               type: "subagent.updated",

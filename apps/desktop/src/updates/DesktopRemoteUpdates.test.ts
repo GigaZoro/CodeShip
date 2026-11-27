@@ -61,9 +61,14 @@ function runRemoteUpdatesTest(
           Effect.sync(() => {
             reports.push(report);
           }),
+        updateReports: Stream.empty,
+        latestUpdateReport: Effect.succeedNone,
         updateRequests: Stream.fromQueue(requests),
         updateCommits: Stream.fromQueue(commits),
         updateCancellations: Stream.fromQueue(cancellations),
+        setServingBackend: () => Effect.void,
+        removeServingBackend: () => Effect.void,
+        servingBackends: Stream.empty,
       });
 
       const updates = yield* DesktopUpdates.DesktopUpdates;

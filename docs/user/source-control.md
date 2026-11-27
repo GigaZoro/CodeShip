@@ -32,7 +32,7 @@ A commit link from a supported code host opens in the Diff pane when the thread'
 that commit locally, on any branch. Otherwise a pull request commit link opens the pull request. Other
 commit links follow your **Open links in** setting; on web, when that opens a new tab, T3.CodeShip first
 shows an **Open link** button. Command/Ctrl+Click always opens the link in your browser. Commit links follow the **Open pull requests in T3.CodeShip**
-setting in **Settings → Diffs**.
+setting in **Settings → Source control & worktrees**.
 
 ## Connect an account
 

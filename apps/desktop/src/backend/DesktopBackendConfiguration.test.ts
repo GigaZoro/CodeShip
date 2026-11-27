@@ -754,6 +754,7 @@ describe("DesktopBackendConfiguration", () => {
         );
 
         assert.equal(config.bootstrapDelivery, "stdin");
+        assert.notProperty(config.bootstrap, "desktopUpdateHttpControl");
         assert.deepEqual(config.args, [
           "-d",
           "Ubuntu",

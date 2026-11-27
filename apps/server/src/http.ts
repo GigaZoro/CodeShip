@@ -2,9 +2,12 @@ import * as Mime from "effect/http/Mime";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
-  DESKTOP_AUTO_INSTALL_READINESS_PATH,
+  DESKTOP_RESTART_HOLD_PATH,
+  DESKTOP_UPDATE_CONTROL_PATH,
+  DesktopUpdateControlPost,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
+import { isValidDesktopControlToken } from "@t3tools/shared/desktopBootstrapToken";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import {
   injectMcpAppCookieBootstrap,
@@ -21,6 +24,7 @@ import {
 } from "@t3tools/shared/desktopReadinessProof";
 import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
 import * as ByteSize from "effect/ByteSize";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -46,6 +50,8 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { OtlpTracer, OtlpSerialization } from "effect/observability";
 
 import * as ServerConfig from "./config.ts";
+import { MachineRestartHold } from "./cloud/machineRestartHold.ts";
+import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { ASSET_ROUTE_PREFIX, readMcpAppHtml, resolveAsset } from "./assets/AssetAccess.ts";
 import { sourceControlMediaResponse } from "./assets/sourceControlMediaResponse.ts";
 import { statMediaFile, streamMediaFile, type OpenMediaFile } from "./assets/MediaFile.ts";
@@ -56,7 +62,6 @@ import {
 } from "./assets/AttachmentUpload.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import { readDesktopAutoInstallReadiness } from "./cloud/desktopAutoInstallReadiness.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
 import {
   annotateEnvironmentRequest,
@@ -405,19 +410,82 @@ export const layerServerEnvironmentHttpApi = HttpApiBuilder.group(
   }),
 );
 
-export const layerDesktopAutoInstallReadinessRoute = HttpRouter.add(
+/** The desktop app and its backends share one bootstrap secret, so either can call these. */
+const authenticatedDesktopBackendCaller = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  if (config.mode !== "desktop") return false;
+  const authorization = request.headers.authorization;
+  return (
+    config.desktopBootstrapSecret !== undefined &&
+    authorization?.startsWith("Bearer ") === true &&
+    (yield* isValidDesktopControlToken(
+      config.desktopBootstrapSecret,
+      authorization.slice(7),
+      yield* Clock.currentTimeMillis,
+    ))
+  );
+});
+
+const authenticatedDesktopUpdateControl = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  return config.desktopUpdateHttpControl === true && (yield* authenticatedDesktopBackendCaller);
+});
+
+export const layerDesktopUpdateControlRoutes = Layer.merge(
+  HttpRouter.add(
+    "GET",
+    DESKTOP_UPDATE_CONTROL_PATH,
+    Effect.gen(function* () {
+      if (!(yield* authenticatedDesktopUpdateControl)) {
+        return HttpServerResponse.empty({ status: 404 });
+      }
+      const receiver = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
+      const command = yield* receiver.nextDesktopUpdateCommand.pipe(
+        Effect.timeoutOption("20 seconds"),
+      );
+      return yield* HttpServerResponse.json(Option.getOrNull(command), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }),
+  ),
+  HttpRouter.add(
+    "POST",
+    DESKTOP_UPDATE_CONTROL_PATH,
+    Effect.gen(function* () {
+      if (!(yield* authenticatedDesktopUpdateControl)) {
+        return HttpServerResponse.empty({ status: 404 });
+      }
+      const receiver = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
+      const message = yield* HttpServerRequest.schemaBodyJson(DesktopUpdateControlPost);
+      if (message.type === "desktopUpdateControlAcknowledgement") {
+        yield* receiver.acknowledgeDesktopUpdateCommand(message);
+      } else {
+        yield* receiver.receiveDesktopReport(message);
+      }
+      return HttpServerResponse.empty({ status: 204 });
+    }),
+  ),
+);
+
+export const layerDesktopRestartHoldRoute = HttpRouter.add(
   "GET",
-  DESKTOP_AUTO_INSTALL_READINESS_PATH,
+  DESKTOP_RESTART_HOLD_PATH,
   Effect.gen(function* () {
-    yield* authenticateRawRouteWithScope(AuthOrchestrationReadScope);
-    return yield* readDesktopAutoInstallReadiness.pipe(
-      Effect.flatMap((readiness) => HttpServerResponse.json(readiness)),
-      Effect.catch((cause) =>
-        Effect.logWarning("Could not read automatic install readiness.", { cause }).pipe(
-          Effect.as(HttpServerResponse.text("Internal Server Error", { status: 500 })),
-        ),
-      ),
+    if (!(yield* authenticatedDesktopBackendCaller)) {
+      return HttpServerResponse.empty({ status: 404 });
+    }
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const drain = Option.exists(
+      HttpServerRequest.toURL(request),
+      (url) => url.searchParams.get("drain") === "1",
     );
+    const machine = yield* MachineRestartHold;
+    // The compression middleware buffers a body it compresses; no-transform keeps lines flowing.
+    return HttpServerResponse.stream(machine.serveToPrimary(drain), {
+      contentType: "application/x-ndjson",
+      headers: { "Cache-Control": "no-store, no-transform" },
+    });
   }),
 );
 

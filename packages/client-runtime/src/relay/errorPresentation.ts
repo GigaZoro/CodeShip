@@ -71,7 +71,7 @@ export function relayProtectedErrorText(error: RelayProtectedError): MarkedText 
       if (error.reason === "endpoint_provider_not_managed") {
         return [
           msg(
-            "This environment is linked only to publish agent activity, so it cannot accept connections. On that computer, open Settings > Sharing & access and turn T3 Connect on.",
+            "This environment is linked only to publish agent activity, so it cannot accept connections. On that computer, open Settings > Machines & access and turn T3 Connect on.",
           ),
         ];
       }

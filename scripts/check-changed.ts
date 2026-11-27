@@ -64,6 +64,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   alternateObjectDirectory,
   recordPass,
+  sweepStaleTempDirs,
   workingTree,
 } from "../.github/scripts/check-changed-receipt.cjs";
 import { GIT_CALL_TIMEOUT_MS, REAL_HISTORY_ENV } from "../.github/scripts/git-history.cjs";
@@ -1060,6 +1061,72 @@ export const spawnVp = (
     }),
   ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
 
+const TEMP_ENV_KEYS = new Set(["TMPDIR", "TEMP", "TMP"]);
+const IGNORED_TEMP_CLEANUP_CODES = new Set(["EBUSY", "ENOTEMPTY"]);
+
+// Overwrites existing case variants (such as Windows' Temp/Tmp) alongside TMPDIR/TEMP/TMP.
+export const tempDirEnv = (
+  directory: string,
+  source: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string> => {
+  const env: Record<string, string> = { TMPDIR: directory, TEMP: directory, TMP: directory };
+  for (const key of Object.keys(source)) {
+    if (TEMP_ENV_KEYS.has(key.toUpperCase())) env[key] = directory;
+  }
+  return env;
+};
+
+const removeTempDirectory = (directory: string, platform: NodeJS.Platform): Effect.Effect<void> =>
+  Effect.tryPromise({
+    try: () =>
+      NodeFSP.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
+    catch: (cause) => ({
+      code:
+        typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : "",
+      message: String(cause),
+    }),
+  }).pipe(
+    Effect.catch(({ code, message }) =>
+      IGNORED_TEMP_CLEANUP_CODES.has(code) || (code === "EPERM" && platform === "win32")
+        ? Effect.void
+        : Console.warn(`check:changed: could not remove temp directory ${directory}: ${message}`),
+    ),
+  );
+
+// Removes the temp directory when the scope closes, swallowing Windows handle teardown noise.
+export const makeScopedTempDir = (
+  fs: FileSystem.FileSystem,
+  prefix: string,
+  platform: NodeJS.Platform,
+) =>
+  Effect.acquireRelease(fs.makeTempDirectory({ prefix }), (directory) =>
+    removeTempDirectory(directory, platform),
+  );
+
+export const spawnVpIsolated = (
+  fs: FileSystem.FileSystem,
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  platform: NodeJS.Platform,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  extraEnv: Record<string, string>,
+  collect: (chunk: string) => void,
+  prefix = "t3-ccs-",
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const stepTmp = yield* makeScopedTempDir(fs, prefix, platform);
+      return yield* spawnVp(
+        spawner,
+        platform,
+        args,
+        cwd,
+        { ...extraEnv, ...tempDirEnv(stepTmp) },
+        collect,
+      );
+    }),
+  ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
+
 // Every worktree of this repository shares its git directory, so their runs share one budget.
 const budgetDirectory = Effect.fn("checkChanged.budgetDirectory")(function* (root: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -1412,6 +1479,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
     }),
   );
+  yield* Effect.sync(() => sweepStaleTempDirs());
 
   // macOS counts its file cache as used, so available memory there would
   // starve a large Mac. Elsewhere availableMemory() honors a cgroup limit.
@@ -1447,7 +1515,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     }
     const results = yield* runSteps(
       suiteSteps(input.suites, concurrency, (directory, slots, collect) =>
-        spawnVp(
+        spawnVpIsolated(
+          fs,
           spawner,
           platform,
           ["run", "--filter", `./${directory}`, "test"],
@@ -1473,7 +1542,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   }
 
   // The checked tree's objects, which in the repository nothing would reference.
-  const objects = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-objects-" });
+  const objects = yield* makeScopedTempDir(fs, "t3-check-changed-objects-", platform);
   const names = (args: ReadonlyArray<string>) => gitNames(root, objects, args);
   const paths = (command: string, ...args: Array<string>) =>
     names([command, "-z", ...args]).pipe(Effect.map((listed) => listed.filter(Boolean)));
@@ -1848,7 +1917,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // Cached registry metadata limits this to patches stranded by local changes, not registry drift.
   const checkPatches = Effect.scoped(
     Effect.gen(function* () {
-      const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-patch-check-" });
+      const temp = yield* makeScopedTempDir(fs, "t3-patch-check-", platform);
       const copy = Effect.fnUntraced(function* (relative: string) {
         const dest = path.join(temp, relative);
         yield* fs.makeDirectory(path.dirname(dest), { recursive: true });
@@ -1890,6 +1959,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     name,
     run: (_slots: number, collect: (chunk: string) => void) => vp(args, root, collect),
   });
+  const isolatedCommand = (name: string, args: ReadonlyArray<string>) => ({
+    name,
+    run: (_slots: number, collect: (chunk: string) => void) =>
+      spawnVpIsolated(fs, spawner, platform, args, root, {}, collect),
+  });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
   const batched = <S>(
     items: ReadonlyArray<string>,
@@ -1912,7 +1986,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     run: (slots, collect) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-tests-" });
+          const temp = yield* makeScopedTempDir(fs, "t3-check-changed-tests-", platform);
+          // Keep the step TMPDIR a short sibling so Unix socket paths stay within sun_path.
+          const stepTmp = yield* makeScopedTempDir(fs, "t3-cct-", platform);
           const head = yield* gitCommit(root, "HEAD");
           const started = yield* testInputs(head, testGit);
           const { install, state } = started;
@@ -1935,6 +2011,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           const env = {
             ...changedTestRequestEnv(request, testRuntime, workers, cache, state, install),
             ...hostCapabilitiesEnv(hostCapabilities),
+            ...tempDirEnv(stepTmp),
           };
           yield* keepModuleCache(inRoot(`node_modules/.vitest-cache/check-changed/${install}`));
           const result = yield* runTestGroups(
@@ -2019,12 +2096,17 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     ),
     ...(vitestTests.length > 0 ? [testStep] : []),
     ...batched(nodeTests, (batch, part) =>
-      command(`node --test (${batch.length} files)${part}`, ["exec", "node", "--test", ...batch]),
+      isolatedCommand(`node --test (${batch.length} files)${part}`, [
+        "exec",
+        "node",
+        "--test",
+        ...batch,
+      ]),
     ),
     ...batched(
       compilerApps.flatMap((app) => app.pattern),
       (batch, part) => ({
-        ...command(`react compiler (${compilerFiles} files)${part}`, [
+        ...isolatedCommand(`react compiler (${compilerFiles} files)${part}`, [
           "test",
           "run",
           "--maxWorkers",

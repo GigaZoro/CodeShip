@@ -1,4 +1,5 @@
 import {
+  AgentSessionSource,
   AUTHENTICATION_FAILED_FAILURE_CODE,
   countOlderSettledFolders,
   isReadOnlyGuestShare,
@@ -12,6 +13,7 @@ import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/
 import { nodePayloadSql, stripNodePayloadColumns } from "./NodePayloadColumns.ts";
 import { TURN_ITEM_PAYLOAD_REMOVE_PATHS, turnItemPayloadSql } from "./TurnItemPayloadColumns.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
+import * as Hash from "effect/Hash";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { makeThreadFind } from "./ThreadFind.ts";
@@ -332,6 +334,8 @@ export type ProjectionSettlementCandidate = Pick<
     readonly parentResultAt: DateTime.Utc | null;
     /** The parent is deleted, archived or settled, so a subagent settles with it. */
     readonly parentDone: boolean;
+    /** Names that result by task and content, since a result can change under the same completedAt. */
+    readonly parentResultKey: string | null;
     /** Latest user or MCP agent message; automatic server and provider wakes are excluded. */
     readonly latestResumingMessageAt: DateTime.Utc | null;
   };
@@ -854,6 +858,17 @@ export interface ProjectionStoreV2Shape {
     instanceId: ProviderInstanceId,
     now: DateTime.Utc,
   ) => Effect.Effect<void, ProjectionStoreV2Error>;
+  /**
+   * Durably records a usage-limit refusal that did not emit a visible error turn item (for example
+   * during transparent in-run failover) so subsequent routing skips the account until reset or lift.
+   */
+  readonly recordUsageLimitRefusal: (input: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly refusedAt: DateTime.Utc;
+    readonly resetAt?: string | null;
+    readonly code?: string | null;
+    readonly modelScope?: string | null;
+  }) => Effect.Effect<void, ProjectionStoreV2Error>;
   /**
    * Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a
    * candidate. `waiting` counts every snooze end, since a stop may then move to another account.
@@ -1608,6 +1623,8 @@ type SettlementThreadRow = Pick<
   readonly parent_worktree_path: string | null;
   readonly parent_result_at: string | null;
   readonly parent_done: number;
+  readonly parent_result_task_id: string | null;
+  readonly parent_result_text: string | null;
 };
 
 type ShellRunItemCountRow = {
@@ -5839,6 +5856,58 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    let usageLimitRefusalsTablePresent = false;
+    const hasUsageLimitRefusalsTable = Effect.fn("ProjectionStore.hasUsageLimitRefusalsTable")(
+      function* () {
+        if (usageLimitRefusalsTablePresent) return true;
+        const rows = yield* sql<{ readonly present: number }>`
+          SELECT 1 AS present
+          FROM sqlite_master
+          WHERE type = 'table' AND name = 'orchestration_v2_usage_limit_refusals'
+          LIMIT 1
+        `;
+        if (rows.length > 0) {
+          usageLimitRefusalsTablePresent = true;
+          return true;
+        }
+        return false;
+      },
+    );
+
+    const recordUsageLimitRefusal = Effect.fn("ProjectionStore.recordUsageLimitRefusal")(
+      function* (input: {
+        readonly providerInstanceId: ProviderInstanceId;
+        readonly refusedAt: DateTime.Utc;
+        readonly resetAt?: string | null;
+        readonly code?: string | null;
+        readonly modelScope?: string | null;
+      }) {
+        if (!(yield* hasUsageLimitRefusalsTable())) return;
+        const refusedAtIso = DateTime.formatIso(input.refusedAt);
+        const resetAt = input.resetAt ?? null;
+        const code = input.code ?? null;
+        const modelScope = input.modelScope ?? null;
+        yield* sql`
+          DELETE FROM orchestration_v2_usage_limit_refusals
+          WHERE COALESCE(
+            julianday(reset_at),
+            julianday(refused_at, '+5 hours')
+          ) <= julianday(${refusedAtIso})
+        `;
+        yield* sql`
+          INSERT INTO orchestration_v2_usage_limit_refusals (
+            provider_instance_id,
+            refused_at,
+            reset_at,
+            code,
+            model_scope
+          )
+          VALUES (${input.providerInstanceId}, ${refusedAtIso}, ${resetAt}, ${code}, ${modelScope})
+        `;
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getUsageLimitedProviderInstances = Effect.fn(
       "ProjectionStore.getUsageLimitedProviderInstances",
     )(
@@ -5848,6 +5917,23 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         // sign-in changed or its plan reset: a completed run, or an attempt the provider answered
         // with token usage while it still runs. For a model-scoped refusal only work in its scope.
         const nowIso = DateTime.formatIso(now);
+        const includeSilentRefusals = yield* hasUsageLimitRefusalsTable();
+        const silentRefusalsUnion = includeSilentRefusals
+          ? sql`
+            UNION ALL
+            -- Silent failover refusals recorded without a visible error turn item.
+            SELECT silent.provider_instance_id,
+              silent.reset_at,
+              silent.refused_at,
+              silent.code,
+              silent.model_scope
+            FROM orchestration_v2_usage_limit_refusals silent
+            WHERE COALESCE(
+              julianday(silent.reset_at),
+              julianday(silent.refused_at, '+5 hours')
+            ) > julianday(${nowIso})
+          `
+          : sql.literal("");
         const rows = yield* sql<{
           readonly provider_instance_id: string;
           readonly reset_at: string | null;
@@ -5901,6 +5987,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND attempt.root_node_id = refusal.node_id
             WHERE json_extract(refusal.payload_json, '$.failure.resetAt') IS NULL
               OR julianday(json_extract(refusal.payload_json, '$.failure.resetAt')) > julianday(${nowIso})
+            ${silentRefusalsUnion}
           ),
           held AS (
             -- One account-wide row per known or unknown reset. A model-scoped row per scope and
@@ -10170,7 +10257,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ) AS has_pending_scheduled_work,
               json_extract(parent.payload_json, '$.worktreePath') AS parent_worktree_path,
               CASE WHEN ${parentHoldsResult} THEN task.completed_at END AS parent_result_at,
-              ${parentDone} AS parent_done
+              ${parentDone} AS parent_done,
+              CASE
+                WHEN task.status = 'completed'
+                  AND json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                THEN task.subagent_id
+              END AS parent_result_task_id,
+              CASE
+                WHEN task.status = 'completed'
+                  AND json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                THEN json_extract(task.payload_json, '$.result')
+              END AS parent_result_text
             FROM orchestration_v2_projection_threads t
             LEFT JOIN orchestration_v2_projection_threads parent
               ON parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
@@ -10287,6 +10384,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     row.parent_result_at === null
                       ? null
                       : DateTime.makeUnsafe(row.parent_result_at),
+                  parentResultKey:
+                    row.parent_result_task_id === null || row.parent_result_text === null
+                      ? null
+                      : `${row.parent_result_task_id}:${row.parent_result_at ?? ""}:${row.parent_result_text.length}:${Hash.string(row.parent_result_text)}`,
                   activityRunStatus: null,
                   activityRunStartedAt: null,
                   pendingRuntimeRequest: null,
@@ -10966,7 +11067,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         INNER JOIN orchestration_v2_projection_provider_threads AS provider_threads
           ON provider_threads.thread_id = threads.thread_id
         WHERE threads.project_id = ${projectId}
-          AND provider_threads.driver IN ('claudeAgent', 'codex')
+          AND provider_threads.driver IN ${sql.in(AgentSessionSource.literals)}
           AND provider_threads.provider_instance_id IS NOT NULL
           AND native_id IS NOT NULL
       `;
@@ -11457,6 +11558,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getSignedOutCandidates: readOnReader(getSignedOutCandidates),
       getUsageLimitedProviderInstances: readOnReader(getUsageLimitedProviderInstances),
       liftUsageLimitHolds,
+      recordUsageLimitRefusal,
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),
       getNetworkRecoveryCandidates: readOnReader(getNetworkRecoveryCandidates),
       getRecoveryThreadIds: readOnReader(getRecoveryThreadIds),

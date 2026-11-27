@@ -65,13 +65,11 @@ const resolveInstance = (
             new TextGenerationError({
               operation,
               detail: `No provider instance registered for id '${instanceId}'.`,
+              retryable: false,
             }),
           ),
     ),
   );
-
-// Review guides investigate the checkout read-only; the other drivers reject that request.
-const INVESTIGATING_DRIVERS = new Set(["codex", "claudeAgent"]);
 
 /** @public */
 export const make = Effect.gen(function* () {
@@ -93,6 +91,7 @@ export const make = Effect.gen(function* () {
       return yield* new TextGenerationError({
         operation,
         detail: "Auto needs a provider selection before starting text generation.",
+        retryable: false,
       });
     }
     const textGenerator = yield* textGenerators.runner(selection.instanceId);
@@ -106,11 +105,9 @@ export const make = Effect.gen(function* () {
         selection,
       );
     }
-    const snapshots = yield* registry.listInstances.pipe(
-      Effect.flatMap((instances) =>
-        Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot),
-      ),
-    );
+    const instances = yield* registry.listInstances;
+    const instanceById = new Map(instances.map((instance) => [instance.instanceId, instance]));
+    const snapshots = yield* Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot);
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const selected = snapshots.find((provider) => provider.instanceId === selection.instanceId);
     const selectedDisabled = selected?.enabled === false;
@@ -152,7 +149,8 @@ export const make = Effect.gen(function* () {
               isProviderTextGenerationCapable(provider) &&
               provider.models.find((candidate) => candidate.slug === model)
                 ?.supportsTextGeneration !== false &&
-              (operation !== "generateReviewGuide" || INVESTIGATING_DRIVERS.has(driver)) &&
+              (operation !== "generateReviewGuide" ||
+                instanceById.get(instanceId)?.textGeneration.supportsInvestigation === true) &&
               !exhaustedUsageWindow(provider, now, model)
             );
           },

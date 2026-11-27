@@ -76,6 +76,7 @@ export const withChatGptToken = Effect.fn("withChatGptToken")(function* <A, E, R
     instanceId,
     operation: CHATGPT_TOKEN_REVOKED,
     detail: CHATGPT_TOKEN_REVOKED_DETAIL,
+    retryable: false,
   });
   const renewed = yield* auth
     .renew(credentials)

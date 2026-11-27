@@ -510,6 +510,7 @@ export function commandLabel(command: KeybindingCommand): string {
   if (command === "view.reopenClosed") return t("Reopen Closed Tab");
   if (command === "preview.focusUrl") return t("Preview: Focus URL");
   if (command === "preview.find") return t("Preview: Find on Page");
+  if (command === "uiFeedback.capture") return t("Capture UI Feedback");
   const raw = String(command);
   if (raw.startsWith("script.") && raw.endsWith(".run")) {
     return t("Run Script: {script}", {

@@ -374,6 +374,7 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/appearance", msg("Accent color"), ["accentColor"]),
   restorable("/settings/appearance", msg("Effort display"), ["effortDisplay"]),
   restorable("/settings/chat", msg("Render math"), ["mathRenderingEnabled"]),
+  restorable("/settings/chat", msg("Fold finished work"), ["foldFinishedWork"]),
   restorable("/settings/appearance", msg("Panel animations"), ["panelAnimationDurationMs"]),
   restorable("/settings/appearance", msg("Environment identification"), [
     "environmentIdentificationMode",
@@ -440,12 +441,10 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     "enableProviderUpdateChecks",
     "autoUpdateProviders",
   ]),
-  restorable("/settings/maintenance", msg("Install updates automatically when idle"), [
+  restorable("/settings/maintenance", msg("Install updates automatically"), [
     "installUpdatesAutomatically",
   ]),
-  restorable("/settings/maintenance", msg("Time between automatic updates"), [
-    "minHoursBetweenAutomaticUpdates",
-  ]),
+  restorable("/settings/maintenance", msg("Automatic update time"), ["automaticUpdateTime"]),
   restorable("/settings/threads", msg("Continue threads after restarts"), [
     "continueThreadsAfterServerUpdate",
   ]),

@@ -3797,6 +3797,7 @@ export const OrchestrationV2Command = Schema.Union([
     settledAt: Schema.optional(Schema.DateTimeUtc),
     /** A delegated child's settle also rejects once its parent's latest task holds another result. */
     parentResultAt: Schema.optional(Schema.DateTimeUtc),
+    parentResultKey: Schema.optional(Schema.String),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.unsettle"),

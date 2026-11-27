@@ -129,6 +129,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "chat.previousPrompt",
   "chat.nextPrompt",
   "editor.openFavorite",
+  "uiFeedback.capture",
   "usage.cost",
   "usage.tokens",
   "usage.limits",

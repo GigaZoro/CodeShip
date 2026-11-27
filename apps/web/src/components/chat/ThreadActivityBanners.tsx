@@ -33,16 +33,17 @@ import { tickTextContent } from "~/lib/tickTextContent";
 import { BackgroundWorkDetails } from "./BackgroundWorkDetails";
 import { Button, InlineButton } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import type { ThreadNowItem } from "./ThreadNow";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function extensionStatusBannerItem(
   statuses: NonNullable<OrchestrationV2ProviderSession["extensionStatuses"]>,
-): ComposerBannerStackItem | null {
+): ThreadNotice | null {
   if (statuses.length === 0) return null;
   return {
     id: "pi-extension-status",
+    producer: "extensionStatus",
     variant: "default",
     icon: <span>▸</span>,
     title: (
@@ -317,10 +318,12 @@ export function branchMismatchBannerItem(
     readonly onDismiss: () => void;
   },
   resolve: typeof t = t,
-): ComposerBannerStackItem {
+): ThreadNotice {
   const { mismatch } = input;
   return {
     id: `branch-mismatch:${input.mismatchKey}`,
+    producer: "branchMismatch",
+    announcement: t("Branch changed from {from}", { from: mismatch.threadBranch }),
     variant: "info",
     icon: <GitBranchIcon />,
     title: (

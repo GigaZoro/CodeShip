@@ -6468,7 +6468,7 @@ it("names the other provider's reviewer by the id its account lists for an alias
       .join("\n") ?? "";
   assert.include(
     prompt,
-    'independent review from the other provider\'s Settings primary: `delegate_task` role "review", target `{"model":"gpt-6-astra","options":{"reasoningEffort":"xhigh"},"providerInstanceId":"codex"}`',
+    'independent review from another provider: `delegate_task` role "review", target `{"model":"gpt-6-astra","options":{"reasoningEffort":"xhigh"},"providerInstanceId":"codex"}`',
   );
 });
 

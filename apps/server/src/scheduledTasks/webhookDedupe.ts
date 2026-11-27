@@ -98,8 +98,10 @@ export const acceptImmediateWebhookDedupe = Effect.fn(
   request: WebhookRequest,
   deliveryId: string,
   now: number,
+  prompt: string,
   reserve: Effect.Effect<void, "first_rejected" | "rejected" | "queue_full" | ScheduledTaskError>,
 ) {
+  const sql = yield* SqlClient.SqlClient;
   const replayKey = key(
     task.schedule.type === "webhook" ? task.schedule.dedupe?.replayKey : undefined,
     request,
@@ -107,6 +109,9 @@ export const acceptImmediateWebhookDedupe = Effect.fn(
   if (yield* hasReplayKey(task.id, replayKey, now)) return "duplicate" as const;
   yield* reserve;
   yield* claimReplayKey(task.id, replayKey, deliveryId, now);
+  const requestJson = yield* encodePendingRequest({ prompt });
+  yield* sql`INSERT INTO scheduled_task_webhook_pending (delivery_id, task_id, coalesce_key, due_at, task_json, request_json, delivery_ids_json)
+    VALUES (${deliveryId}, ${task.id}, ${deliveryId}, ${now}, ${yield* encodePendingTask(task)}, ${requestJson}, json_array(${deliveryId}))`;
   return "run" as const;
 });
 
@@ -114,13 +119,16 @@ const PendingTaskJson = Schema.fromJsonString(ScheduledTask);
 export const encodePendingTask = Schema.encodeEffect(PendingTaskJson);
 export const decodePendingTask = Schema.decodeUnknownEffect(PendingTaskJson);
 const PendingRequestJson = Schema.fromJsonString(
-  Schema.Struct({
-    method: Schema.String,
-    path: Schema.String,
-    query: Schema.String,
-    headers: Schema.Record(Schema.String, Schema.String),
-    bodyText: Schema.String,
-  }),
+  Schema.Union([
+    Schema.Struct({
+      method: Schema.String,
+      path: Schema.String,
+      query: Schema.String,
+      headers: Schema.Record(Schema.String, Schema.String),
+      bodyText: Schema.String,
+    }),
+    Schema.Struct({ prompt: Schema.String }),
+  ]),
 );
 const encodePendingRequest = Schema.encodeEffect(PendingRequestJson);
 export const decodePendingRequest = Schema.decodeUnknownEffect(PendingRequestJson);

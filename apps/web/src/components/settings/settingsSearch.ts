@@ -445,6 +445,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["latex tex katex equations formulas markdown"],
   },
   {
+    id: "fold-finished-work",
+    title: msg("Fold finished work"),
+    to: "/settings/chat",
+    searchTerms: ["collapse fold tool calls rows worked for turn summary hide noise"],
+  },
+  {
     id: "panel-animations",
     title: msg("Panel animations"),
     to: "/settings/appearance",
@@ -917,7 +923,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "install-updates-automatically",
-    title: msg("Install updates automatically when idle"),
+    title: msg("Install updates automatically"),
     to: "/settings/maintenance",
     searchTerms: [
       "automatic auto install update release restart idle background service server desktop",
@@ -925,10 +931,10 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
-    id: "min-hours-between-automatic-updates",
-    title: msg("Time between automatic updates"),
+    id: "automatic-update-time",
+    title: msg("Automatic update time"),
     to: "/settings/maintenance",
-    searchTerms: ["automatic update install interval wait hours restart release frequency"],
+    searchTerms: ["automatic update install daily schedule time restart release"],
     scope: "environment-defaults",
   },
   {
@@ -998,7 +1004,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/projects",
     scope: "project-defaults",
     searchTerms: [
-      "claude code codex history sessions transcripts sync existing past old chats bring in",
+      "claude code codex pi history sessions transcripts sync existing past old chats bring in",
     ],
   },
   {
@@ -1119,6 +1125,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["OTel OTLP telemetry export endpoints logs traces metrics Grafana"],
   },
   {
+    id: "ui-feedback",
+    title: msg("UI feedback"),
+    to: "/settings/diagnostics",
+    targetId: "ui-feedback",
+    searchTerms: ["annoyance capture screenshot note usage counters clicks export markdown"],
+  },
+  {
+    id: "ui-feedback-reminder",
+    title: msg("Evening reminder"),
+    to: "/settings/diagnostics",
+    targetId: "ui-feedback-reminder",
+    searchTerms: ["UI feedback annoy reminder evening daily"],
+  },
+  {
     id: "diagnostics",
     title: msg("Diagnostics"),
     to: "/settings/diagnostics",
@@ -1201,7 +1221,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Providers"),
     to: "/settings/providers",
     searchTerms: [
-      "agents cli codex claude cursor grok fx kiro opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
+      "agents cli codex claude cursor grok fx kiro muse pi acp opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home grok_home pi_coding_agent_dir shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
     ],
   },
   {

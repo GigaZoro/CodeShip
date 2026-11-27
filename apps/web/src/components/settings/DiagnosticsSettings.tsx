@@ -52,6 +52,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { TelemetryExportSettings } from "./TelemetryExportSettings";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import { UiFeedbackSettingsSection } from "../../uiFeedback/UiFeedbackSettingsSection";
 import { getFormattingLocale, msg, t, tx } from "~/i18n";
 
 function formatCount(value: number): string {
@@ -899,6 +900,7 @@ function DiagnosticsSettingsBody() {
               ? t("Checking diagnostics access…")
               : diagnosticsAccess.error}
         </p>
+        <UiFeedbackSettingsSection />
       </SettingsPageContainer>
     );
   }
@@ -1332,6 +1334,7 @@ function DiagnosticsSettingsBody() {
         )}
       </SettingsSection>
       {exportFormEnvironmentId === environmentId && <TelemetryExportSettings />}
+      <UiFeedbackSettingsSection />
     </SettingsPageContainer>
   );
 }

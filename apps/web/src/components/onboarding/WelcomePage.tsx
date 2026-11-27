@@ -1039,7 +1039,7 @@ function PhoneConnectLink({ environmentId }: { readonly environmentId: Environme
   // The server checks the tunnel on its own; until it has, the result is unknown.
   const reachability = shared ? link.reachability?.status : undefined;
   const settingsLink = (label: string) => (
-    <Button variant="outline" size="xs" render={<Link to="/settings/access" />}>
+    <Button variant="outline" size="xs" render={<Link to="/settings/connections" />}>
       {label}
     </Button>
   );

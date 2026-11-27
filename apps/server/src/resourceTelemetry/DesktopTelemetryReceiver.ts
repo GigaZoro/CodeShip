@@ -5,12 +5,16 @@ import * as NodeTls from "node:tls";
 
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import {
+  type DesktopBackendEndpoint,
   DesktopHostTelemetryMessage,
   type DesktopHostTelemetryMessage as DesktopHostTelemetryMessageValue,
   type DesktopHostTelemetrySnapshot,
   type DesktopShellEnvironmentSnapshot,
   DesktopTelemetryControlMessage,
   type DesktopUpdateChannel,
+  type DesktopUpdateControlAcknowledgement,
+  type DesktopUpdateControlCommand,
+  type DesktopUpdateControlReport,
   type DesktopUpdateStatusReport,
   type ResourceTelemetrySourceStatus,
 } from "@t3tools/contracts";
@@ -20,6 +24,7 @@ import { applyShellEnvironment } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -31,6 +36,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Ndjson from "effect/encoding/Ndjson";
 
 import { eventVersion as messageVersion } from "./NativeTelemetryClient.ts";
@@ -44,6 +50,20 @@ const STALE_GRACE_MS = 30_000;
 const DEFAULT_HOST_POWER_ACTIVE_INTERVAL_MS = 30_000;
 const DEFAULT_HOST_POWER_IDLE_INTERVAL_MS = 120_000;
 const STALE_CHECK_INTERVAL = Duration.seconds(30);
+// A closed desktop app stops reading while each daily attempt still queues and cancels a request;
+// only the newest commands can still matter.
+export const HTTP_UPDATE_COMMANDS_LIMIT = 16;
+
+export const DESKTOP_BACKEND_SILENCE_LIMIT = Duration.minutes(1);
+
+export class DesktopBackendInventoryUnavailable extends Schema.TaggedError<DesktopBackendInventoryUnavailable>()(
+  "DesktopBackendInventoryUnavailable",
+  {},
+) {
+  override get message(): string {
+    return "The desktop app did not report its backend inventory.";
+  }
+}
 
 export class DesktopTelemetryDescriptorUnavailable extends Schema.TaggedError<DesktopTelemetryDescriptorUnavailable>()(
   "DesktopTelemetryDescriptorUnavailable",
@@ -156,11 +176,9 @@ export interface DesktopTelemetryReceiverHealth {
   readonly lastError: Option.Option<string>;
 }
 
-/** Moves the desktop app to `channel` and installs only `targetVersion`. */
-export interface DesktopTrackSwitch {
-  readonly channel: DesktopUpdateChannel;
-  readonly targetVersion: string;
-}
+export type DesktopUpdatePreparation =
+  | { readonly channel: DesktopUpdateChannel; readonly targetVersion: string }
+  | { readonly minimumVersion: string };
 
 export class DesktopTelemetryReceiver extends Context.Service<
   DesktopTelemetryReceiver,
@@ -193,7 +211,7 @@ export class DesktopTelemetryReceiver extends Context.Service<
     readonly announceServerReady: Effect.Effect<void, DesktopTelemetryControlError>;
     readonly requestDesktopUpdate: (
       requestId: string,
-      trackSwitch?: DesktopTrackSwitch,
+      options?: DesktopUpdatePreparation,
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -201,6 +219,16 @@ export class DesktopTelemetryReceiver extends Context.Service<
     readonly cancelDesktopUpdate: (
       requestId: string,
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
+    readonly nextDesktopUpdateCommand: Effect.Effect<DesktopUpdateControlCommand>;
+    readonly acknowledgeDesktopUpdateCommand: (
+      acknowledgement: DesktopUpdateControlAcknowledgement,
+    ) => Effect.Effect<void>;
+    readonly receiveDesktopReport: (report: DesktopUpdateControlReport) => Effect.Effect<void>;
+    /** The other backends the desktop app runs now, the current set first. */
+    readonly desktopBackends: Stream.Stream<
+      ReadonlyArray<DesktopBackendEndpoint>,
+      DesktopBackendInventoryUnavailable
+    >;
     readonly desktopUpdates: Effect.Effect<
       {
         readonly latest: Option.Option<DesktopUpdateStatusReport>;
@@ -443,6 +471,21 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
   const healthChanges = yield* PubSub.sliding<DesktopTelemetryReceiverHealth>(4);
   const latestUpdateReport = yield* Ref.make(Option.none<DesktopUpdateStatusReport>());
   const updateReportChanges = yield* PubSub.sliding<DesktopUpdateStatusReport>(16);
+  const httpUpdateCommands = yield* SubscriptionRef.make<
+    ReadonlyArray<DesktopUpdateControlCommand>
+  >([]);
+  const servingBackends = yield* SubscriptionRef.make<ReadonlyArray<DesktopBackendEndpoint>>([]);
+  const firstInventory = yield* Deferred.make<void>();
+  const receiveDesktopReport = (report: DesktopUpdateControlReport) =>
+    report.type === "desktopBackends"
+      ? SubscriptionRef.set(servingBackends, report.backends).pipe(
+          Effect.andThen(Deferred.succeed(firstInventory, undefined)),
+          Effect.asVoid,
+        )
+      : Ref.set(latestUpdateReport, Option.some(report)).pipe(
+          Effect.andThen(PubSub.publish(updateReportChanges, report)),
+          Effect.asVoid,
+        );
   const controlMutex = yield* Semaphore.make(1);
   const snapshotMutex = yield* Semaphore.make(1);
   const health = yield* Ref.make<DesktopTelemetryReceiverHealth>({
@@ -496,6 +539,18 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
         );
       }),
     );
+  const sendUpdateControlMessage = (message: DesktopUpdateControlCommand) =>
+    config.desktopUpdateHttpControl === true
+      ? SubscriptionRef.update(httpUpdateCommands, (pending) =>
+          [
+            ...(message.type === "cancelDesktopUpdate"
+              ? pending.filter((command) => command.requestId !== message.requestId)
+              : pending),
+            message,
+          ].slice(-HTTP_UPDATE_COMMANDS_LIMIT),
+        )
+      : sendControlMessage(message);
+
   const setDiagnosticsDemand: DesktopTelemetryReceiver["Service"]["setDiagnosticsDemand"] = (
     enabled,
   ) =>
@@ -623,12 +678,8 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
           return recordContact.pipe(Effect.andThen(shellEnvironment.apply(message)));
         }
 
-        if (message.type === "desktopUpdateStatus") {
-          return recordContact.pipe(
-            Effect.andThen(Ref.set(latestUpdateReport, Option.some(message))),
-            Effect.andThen(PubSub.publish(updateReportChanges, message)),
-            Effect.asVoid,
-          );
+        if (message.type === "desktopUpdateStatus" || message.type === "desktopBackends") {
+          return recordContact.pipe(Effect.andThen(receiveDesktopReport(message)));
         }
 
         const sampledAt = DateTime.makeUnsafe(message.sampledAtUnixMs);
@@ -745,25 +796,54 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
       Effect.withSpan("DesktopTelemetryReceiver.announceServerReady"),
     ),
     requestDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.requestDesktopUpdate")(
-      function (requestId, trackSwitch) {
-        return sendControlMessage({
+      function (requestId, options) {
+        return sendUpdateControlMessage({
           version: 1,
           type: "requestDesktopUpdate",
           requestId,
-          ...trackSwitch,
+          ...options,
         });
       },
     ),
     commitDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.commitDesktopUpdate")(
       function (requestId) {
-        return sendControlMessage({ version: 1, type: "commitDesktopUpdate", requestId });
+        return sendUpdateControlMessage({ version: 1, type: "commitDesktopUpdate", requestId });
       },
     ),
     cancelDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.cancelDesktopUpdate")(
       function (requestId) {
-        return sendControlMessage({ version: 1, type: "cancelDesktopUpdate", requestId });
+        return sendUpdateControlMessage({ version: 1, type: "cancelDesktopUpdate", requestId });
       },
     ),
+    nextDesktopUpdateCommand: SubscriptionRef.changes(httpUpdateCommands).pipe(
+      Stream.filter((pending) => pending.length > 0),
+      Stream.runHead,
+      Effect.map((pending) => Option.getOrThrow(pending)[0]!),
+    ),
+    acknowledgeDesktopUpdateCommand: Effect.fn(
+      "DesktopTelemetryReceiver.acknowledgeDesktopUpdateCommand",
+    )((acknowledgement) =>
+      SubscriptionRef.update(httpUpdateCommands, (pending) => {
+        const head = pending[0];
+        return head?.requestId === acknowledgement.requestId &&
+          head.type === acknowledgement.command
+          ? pending.slice(1)
+          : pending;
+      }),
+    ),
+    receiveDesktopReport,
+    desktopBackends:
+      config.mode === "desktop"
+        ? Stream.unwrap(
+            Deferred.await(firstInventory).pipe(
+              Effect.timeoutOrElse({
+                duration: DESKTOP_BACKEND_SILENCE_LIMIT,
+                orElse: () => Effect.fail(new DesktopBackendInventoryUnavailable()),
+              }),
+              Effect.as(SubscriptionRef.changes(servingBackends)),
+            ),
+          )
+        : Stream.make([]),
     desktopUpdates: Effect.gen(function* () {
       const subscription = yield* PubSub.subscribe(updateReportChanges);
       const initial = yield* Ref.get(latestUpdateReport);
@@ -825,6 +905,14 @@ export const layerTest = (
       cancelDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.cancelDesktopUpdate")(function () {
         return Effect.void;
       }),
+      nextDesktopUpdateCommand: Effect.never,
+      acknowledgeDesktopUpdateCommand: Effect.fn(
+        "DesktopTelemetryReceiver.acknowledgeDesktopUpdateCommand",
+      )(() => Effect.void),
+      receiveDesktopReport: Effect.fn("DesktopTelemetryReceiver.receiveDesktopReport")(
+        () => Effect.void,
+      ),
+      desktopBackends: Stream.make([]),
       desktopUpdates:
         overrides.desktopUpdates ??
         Effect.succeed({

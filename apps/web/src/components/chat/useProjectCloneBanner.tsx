@@ -15,7 +15,7 @@ import { useProjectClone } from "../../state/projectClones";
 import { projectCloneDisplayName, type ScopedProjectRef } from "@t3tools/contracts";
 import { projectCloneProgressSummary } from "@t3tools/client-runtime/contract-labels";
 import { dismissProjectFileCopy, useProjectFileCopy } from "../../lib/addProjectToMachine";
-import { type ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 
@@ -58,10 +58,11 @@ export function useProjectCloneBanner(activeProjectRef: ScopedProjectRef | null)
         : activeProjectFileCopy?.phase === "copying"
           ? t("Copying files")
           : null;
-  const projectCloneBannerItem = (() => {
+  const projectCloneBannerItem = ((): ThreadNotice | null => {
     if (activeProjectFileCopy?.phase === "failed" && activeProjectRef) {
       return {
         id: `project-file-copy:${activeProjectRef.projectId}`,
+        producer: "projectClone",
         variant: "error",
         icon: <DownloadIcon />,
         title: activeProjectFileCopy.title,
@@ -77,6 +78,7 @@ export function useProjectCloneBanner(activeProjectRef: ScopedProjectRef | null)
     if (activeProjectClone.phase === "running") {
       return {
         id: `project-clone:${projectId}`,
+        producer: "projectClone",
         variant: "info",
         icon: <DownloadIcon />,
         title: t("Cloning {name}", { name }),
@@ -99,6 +101,7 @@ export function useProjectCloneBanner(activeProjectRef: ScopedProjectRef | null)
     const cancelled = activeProjectClone.phase === "cancelled";
     return {
       id: `project-clone:${projectId}`,
+      producer: "projectClone",
       variant: cancelled ? "warning" : "error",
       icon: <DownloadIcon />,
       title: cancelled
@@ -128,7 +131,7 @@ export function useProjectCloneBanner(activeProjectRef: ScopedProjectRef | null)
         </>
       ),
     };
-  })() as ComposerBannerStackItem | null;
+  })();
   return {
     projectCloneBannerItem,
     projectCloneSendBlockReason,

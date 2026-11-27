@@ -1,5 +1,5 @@
 import {
-  AUTOMATIC_UPDATE_INTERVAL_HOURS,
+  isAutomaticUpdateTime,
   ProviderUpdatesChoice,
   providerUpdatesChoice,
   providerUpdatesPatch,
@@ -11,7 +11,8 @@ import { SettingsRow } from "./components/SettingsRow";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import { AppText as Text } from "../../components/ui/AppText";
+import { AppText as Text, AppTextInput } from "../../components/ui/AppText";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import {
   type AgentTerminalAccess,
   type ResponseStreamingMode,
@@ -59,9 +60,52 @@ import { hasSharedSettingsGroup } from "@t3tools/client-runtime/state/shared-set
 import { useEnvironments } from "../../state/environments";
 
 type SettingsPage = "threads" | "source-control" | "worktrees" | "maintenance";
+const AUTOMATIC_UPDATE_TIME_FORMAT = "HH:MM";
 
-const automaticUpdateIntervalLabel = (hours: number) =>
-  hours === 0 ? t("No wait") : t("{hours} h", { hours });
+function AutomaticUpdateTimeRow({
+  value,
+  description,
+  disabled,
+  onChange,
+}: {
+  readonly value: string | null;
+  readonly description: string;
+  readonly disabled: boolean;
+  readonly onChange: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+  const [invalid, setInvalid] = useState(false);
+  return (
+    <ListRowLayout
+      icon="clock"
+      label={t("Automatic update time")}
+      description={invalid ? t("Enter a time in 24-hour HH:MM format.") : description}
+      disabled={disabled}
+      accessory={
+        <AppTextInput
+          accessibilityLabel={t("Automatic update time")}
+          accessibilityHint={description}
+          autoCorrect={false}
+          editable={!disabled}
+          maxLength={5}
+          returnKeyType="done"
+          value={draft}
+          placeholder={value === null ? t("Mixed") : AUTOMATIC_UPDATE_TIME_FORMAT}
+          className="min-h-10 min-w-16 rounded-xl px-2 text-right text-base text-foreground"
+          onChangeText={(text) => {
+            setDraft(text);
+            setInvalid(false);
+          }}
+          onEndEditing={() => {
+            if (draft === (value ?? "")) return;
+            if (isAutomaticUpdateTime(draft)) onChange(draft);
+            else setInvalid(true);
+          }}
+        />
+      }
+    />
+  );
+}
 
 const updateLabels = {
   off: msg("Off"),
@@ -697,47 +741,24 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   />
                   <SettingsSwitchRow
                     icon="arrow.down.circle"
-                    label={t("Install updates automatically when idle")}
+                    label={t("Install updates automatically")}
                     subtitle={managedSubtitle(
                       "installUpdatesAutomatically",
-                      t("Installs a new CodeShip release when no chat is working."),
+                      t("Installs new CodeShip releases on a daily schedule."),
                     )}
                     value={uniform("installUpdatesAutomatically")}
                     disabled={disabledFor("installUpdatesAutomatically")}
                     onValueChange={(value) => write({ installUpdatesAutomatically: value })}
                   />
-                  <SettingsMenuRow
-                    icon="clock"
-                    label={t("Time between automatic updates")}
+                  <AutomaticUpdateTimeRow
+                    key={uniform("automaticUpdateTime")}
                     description={managedSubtitle(
-                      "minHoursBetweenAutomaticUpdates",
-                      t(
-                        "After a restart, automatic updates wait this long before installing the next release, so a busy machine restarts less often.",
-                      ),
+                      "automaticUpdateTime",
+                      t("Uses the server's local time in 24-hour HH:MM format."),
                     )}
-                    value={
-                      uniform("minHoursBetweenAutomaticUpdates") === null
-                        ? null
-                        : String(uniform("minHoursBetweenAutomaticUpdates"))
-                    }
-                    currentLabel={
-                      uniform("minHoursBetweenAutomaticUpdates") === null
-                        ? t("Mixed")
-                        : automaticUpdateIntervalLabel(
-                            reference!.settings.minHoursBetweenAutomaticUpdates,
-                          )
-                    }
-                    disabled={disabledFor("minHoursBetweenAutomaticUpdates")}
-                    options={AUTOMATIC_UPDATE_INTERVAL_HOURS.map((hours) => ({
-                      value: String(hours),
-                      label: automaticUpdateIntervalLabel(hours),
-                    }))}
-                    onChange={(value) => {
-                      const hours = AUTOMATIC_UPDATE_INTERVAL_HOURS.find(
-                        (option) => String(option) === value,
-                      );
-                      if (hours !== undefined) write({ minHoursBetweenAutomaticUpdates: hours });
-                    }}
+                    value={uniform("automaticUpdateTime")}
+                    disabled={disabledFor("automaticUpdateTime")}
+                    onChange={(automaticUpdateTime) => write({ automaticUpdateTime })}
                   />
                 </SettingsSection>
                 <SettingsSection title={t("Power")}>

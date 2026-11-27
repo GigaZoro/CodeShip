@@ -399,8 +399,15 @@ describe("cachedTestTasks", () => {
         // `vp test run --passWithNoTests` runs the files a package's config leaves out as passed.
         expect(task.command).toContain("run-cached-test-group.ts' --allow-excluded './");
         expect(task.command).toContain(" --passWithNoTests");
-        expect(task.cache && task.cache.untrackedEnv).toEqual(["T3CODE_TEST_MAX_WORKERS"]);
-        expect(task.cache && task.cache.env).not.toContain("T3CODE_TEST_MAX_WORKERS");
+        expect(task.cache && task.cache.untrackedEnv).toEqual([
+          "T3CODE_TEST_MAX_WORKERS",
+          "TMP",
+          "TEMP",
+          "TMPDIR",
+        ]);
+        for (const name of ["T3CODE_TEST_MAX_WORKERS", "TMP", "TEMP", "TMPDIR"]) {
+          expect(task.cache && task.cache.env).not.toContain(name);
+        }
       }
       const ci = cachedTestTasks(JSON.stringify(raw));
       for (const key of keys) {

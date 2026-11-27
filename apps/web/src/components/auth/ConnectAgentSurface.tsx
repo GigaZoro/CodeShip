@@ -331,7 +331,7 @@ export function McpConsent({
             />
             <p className="text-xs text-muted-foreground">
               {tx(
-                "Get one from Use T3.CodeShip in another app (MCP), Settings → Sharing & access, or {command} on this machine.",
+                "Get one from Use T3.CodeShip in another app (MCP), Settings → Machines & access, or {command} on this machine.",
                 { command: <code>{"t3 auth pairing create"}</code> },
               )}
             </p>

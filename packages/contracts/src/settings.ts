@@ -78,8 +78,10 @@ import {
   SpeechPostProcessingPromptSettings,
 } from "./speech.ts";
 
-export const AUTOMATIC_UPDATE_INTERVAL_HOURS = [0, 2, 4, 8, 12, 24] as const;
-export const AutomaticUpdateIntervalHours = Schema.Literals(AUTOMATIC_UPDATE_INTERVAL_HOURS);
+export const AutomaticUpdateTime = Schema.String.check(
+  Schema.isPattern(/^([01]\d|2[0-3]):[0-5]\d$/),
+);
+export const isAutomaticUpdateTime = Schema.is(AutomaticUpdateTime);
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
@@ -396,6 +398,11 @@ export type ChatWidth = typeof ChatWidth.Type;
 
 export const InterfaceDensity = Schema.Literals(["comfortable", "compact"]);
 export type InterfaceDensity = typeof InterfaceDensity.Type;
+
+/** Which settled turns fold their tool rows under one summary row; the live turn never folds. */
+export const FoldFinishedWork = Schema.Literals(["always", "older", "never"]);
+export type FoldFinishedWork = typeof FoldFinishedWork.Type;
+const DEFAULT_FOLD_FINISHED_WORK: FoldFinishedWork = "older";
 
 /** The hues an accent can take; their colors live in `@t3tools/shared/accentPalette`. */
 export const ACCENT_COLOR_HUES = [
@@ -718,6 +725,9 @@ export const ClientSettingsSchema = Schema.Struct({
   // Opt-in TeX typesetting in rendered Markdown. Off keeps math parsing and
   // KaTeX out of the render path entirely.
   mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  foldFinishedWork: FoldFinishedWork.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_FOLD_FINISHED_WORK)),
+  ),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -1690,13 +1700,13 @@ export const ServerSettings = Schema.Struct({
   }).pipe(Schema.withDecodingDefault(Effect.succeed({ mode: "off" as const }))),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  /** Fork-only. Installs a new CodeShip release once no chat waits on work a restart would stop. */
+  /** Fork-only. Installs CodeShip releases on a daily schedule. */
   installUpdatesAutomatically: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
-  /** Fork-only. Hours after a boot before an automatic update installs the next release. */
-  minHoursBetweenAutomaticUpdates: AutomaticUpdateIntervalHours.pipe(
-    Schema.withDecodingDefault(Effect.succeed(4 as const)),
+  /** Fork-only. Local wall-clock time used to decide which CodeShip releases are due. */
+  automaticUpdateTime: AutomaticUpdateTime.pipe(
+    Schema.withDecodingDefault(Effect.succeed("03:00")),
   ),
   continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
@@ -2282,7 +2292,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   autoUpdateProviders: Schema.optionalKey(Schema.Boolean),
   installUpdatesAutomatically: Schema.optionalKey(Schema.Boolean),
-  minHoursBetweenAutomaticUpdates: Schema.optionalKey(AutomaticUpdateIntervalHours),
+  automaticUpdateTime: Schema.optionalKey(AutomaticUpdateTime),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   importAgentConversations: Schema.optionalKey(Schema.Boolean),
   keepAwakeWhileAgentsWork: Schema.optionalKey(Schema.Boolean),
@@ -2663,5 +2673,6 @@ export const ClientSettingsPatch = Schema.Struct({
   followDeviceSettingsProfile: Schema.optionalKey(Schema.Boolean),
   deviceSettingsProfileBase: Schema.optionalKey(Schema.NullOr(DeviceSettingsProfile)),
   mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
+  foldFinishedWork: Schema.optionalKey(FoldFinishedWork),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

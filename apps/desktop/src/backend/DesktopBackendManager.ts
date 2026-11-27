@@ -1043,6 +1043,18 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           );
         });
 
+        // Register before spawn so closing the process scope reaps the child before withdrawing its endpoint.
+        if (spec.id !== PRIMARY_INSTANCE_ID) {
+          const label = yield* spec.label;
+          yield* Effect.acquireRelease(
+            desktopTelemetryPublisher.setServingBackend({
+              id: spec.id,
+              label,
+              httpBaseUrl: config.value.httpBaseUrl.href,
+            }),
+            () => desktopTelemetryPublisher.removeServingBackend(spec.id),
+          ).pipe(Scope.provide(runScope));
+        }
         const program = runBackendProcess({
           ...config.value,
           ...(spec.trackProcess === undefined ? {} : { trackProcess: spec.trackProcess }),
@@ -1156,11 +1168,11 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Scope.provide(runScope),
+          Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
           Effect.matchEffect({
             onFailure: (error) => finalizeRun(error.message),
             onSuccess: (exit) => finalizeRun(exit.reason, Option.getOrUndefined(exit.code)),
           }),
-          Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
         );
 
         const fiber = yield* Effect.forkIn(program, parentScope);

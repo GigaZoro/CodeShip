@@ -2,7 +2,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { ThreadPageTokenSettings } from "./ThreadPageTokenSettings";
 import { useAtomValue } from "@effect/atom-react";
 import {
-  AutomaticUpdateIntervalSetting,
+  AutomaticUpdateTimeSetting,
   InstallUpdatesAutomaticallySetting,
   ProviderUpdatesSettings,
   UsageLimitRecoverySettings,
@@ -26,7 +26,6 @@ import { idleCompactionModeLabel } from "@t3tools/shared/claudeCompaction";
 import { managedUpdatesDenial, managedUpdatesMessage } from "@t3tools/shared/managedPolicyMessages";
 import {
   DEFAULT_UNIFIED_SETTINGS,
-  type DiffLayout,
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
@@ -159,11 +158,7 @@ import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverythi
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
 import { SafeUpdateDialog, useThisAppRunningThreads } from "../sidebar/SafeUpdateDialog";
 import { installLocalUpdate, installLocalUpdateWhenIdle } from "../sidebar/SidebarUpdatePill";
-import {
-  usePendingLocalInstall,
-  usePendingLocalInstallTurns,
-  usePendingLocalInstallWork,
-} from "../sidebar/localInstallWait";
+import { usePendingLocalInstall, usePendingLocalInstallWork } from "../sidebar/localInstallWait";
 import { PendingLocalInstallDialog } from "../sidebar/PendingLocalInstallDialog";
 import { restartHoldTooltip, waitingOnWorkLabel } from "../restartHold.logic";
 
@@ -185,11 +180,6 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": msg("24-hour"),
 } as const;
 
-const DIFF_LAYOUT_LABELS: Record<DiffLayout, Message> = {
-  stacked: msg("Stacked"),
-  split: msg("Split"),
-};
-
 const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, Message> = {
   direct: msg("Direct"),
   hold: msg("Hold"),
@@ -204,7 +194,6 @@ function AboutVersionSection() {
   const [isShowingPendingInstall, setIsShowingPendingInstall] = useState(false);
   const pendingInstall = usePendingLocalInstall();
   const pendingWork = usePendingLocalInstallWork();
-  const pendingTurns = usePendingLocalInstallTurns();
   const thisAppThreads = useThisAppRunningThreads(
     resolveDesktopUpdatePendingAction(updateState) === "install",
   );
@@ -320,7 +309,7 @@ function AboutVersionSection() {
   const showUpdateButton = pendingAction !== "none" || isDownloading;
   const buttonTooltip =
     pendingInstall !== null
-      ? restartHoldTooltip(pendingWork, pendingTurns)
+      ? restartHoldTooltip(pendingWork)
       : updateState
         ? getDesktopUpdateButtonTooltip(updateState)
         : null;
@@ -329,7 +318,7 @@ function AboutVersionSection() {
     updateState?.status === "checking" || isDesktopUpdateButtonDisabled(updateState);
   const buttonLabel =
     pendingInstall !== null
-      ? waitingOnWorkLabel(pendingWork.length, pendingTurns.length)
+      ? waitingOnWorkLabel(pendingWork.length)
       : isDownloading
         ? t("Downloading…")
         : pendingAction === "install"
@@ -1150,6 +1139,14 @@ export function SendShortcutRow() {
   );
 }
 
+const FOLD_FINISHED_WORK_OPTIONS = ["always", "older", "never"] as const;
+
+const FOLD_FINISHED_WORK_LABEL = {
+  always: msg("Always"),
+  older: msg("Older turns"),
+  never: msg("Never"),
+} as const;
+
 const FOLLOW_UP_BEHAVIOR_LABEL = {
   steer: msg("Steer"),
   queue: msg("Queue"),
@@ -1302,6 +1299,47 @@ export function ChatSettingsPanel() {
               }
               aria-label={t("Render math")}
             />
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("fold-finished-work")}
+          description={t(
+            "Hide a finished turn's tool rows under one summary row. The turn still running never folds.",
+          )}
+          resetAction={
+            settings.foldFinishedWork !== DEFAULT_UNIFIED_SETTINGS.foldFinishedWork ? (
+              <SettingResetButton
+                label={t("fold finished work")}
+                onClick={() =>
+                  updateSettings({ foldFinishedWork: DEFAULT_UNIFIED_SETTINGS.foldFinishedWork })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.foldFinishedWork}
+              onValueChange={(value) => {
+                if (value === "always" || value === "older" || value === "never") {
+                  updateSettings({ foldFinishedWork: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-auto min-w-0"
+                aria-label={t("Fold finished work")}
+              >
+                <SelectValue>{t(FOLD_FINISHED_WORK_LABEL[settings.foldFinishedWork])}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FOLD_FINISHED_WORK_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {t(FOLD_FINISHED_WORK_LABEL[option])}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
           }
         />
       </SettingsSection>
@@ -1651,38 +1689,8 @@ function DiffsSettingsSections() {
         <SettingsRow
           {...searchableSetting("diff-layout")}
           description={t(
-            "Show diffs stacked or side by side. The toggle in the diff toolbar changes this too.",
+            "Switch between stacked and split views with the layout toggle in the diff panel toolbar.",
           )}
-          resetAction={
-            settings.diffLayout !== DEFAULT_UNIFIED_SETTINGS.diffLayout ? (
-              <SettingResetButton
-                label={t("diff layout")}
-                onClick={() => updateSettings({ diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout })}
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.diffLayout}
-              onValueChange={(value) => {
-                if (value === "stacked" || value === "split") {
-                  updateSettings({ diffLayout: value });
-                }
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-40" aria-label={t("Diff layout")}>
-                <SelectValue>{t(DIFF_LAYOUT_LABELS[settings.diffLayout])}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="stacked">
-                  {t(DIFF_LAYOUT_LABELS.stacked)}
-                </SelectItem>
-                <SelectItem hideIndicator value="split">
-                  {t(DIFF_LAYOUT_LABELS.split)}
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
         />
         <SettingsRow
           {...searchableSetting("hide-whitespace-changes")}
@@ -2369,7 +2377,7 @@ export function MaintenanceSettingsPanel() {
           <SettingsSection id="updates" title={t("Updates")}>
             <ProviderUpdatesSettings />
             <InstallUpdatesAutomaticallySetting />
-            <AutomaticUpdateIntervalSetting />
+            <AutomaticUpdateTimeSetting />
           </SettingsSection>
 
           <SettingsSection id="background" title={t("Background activity")}>

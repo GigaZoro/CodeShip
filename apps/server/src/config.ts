@@ -111,6 +111,7 @@ export class ServerConfig extends Context.Service<
     readonly desktopTelemetryFd?: number | undefined;
     readonly desktopTelemetryControlFd?: number | undefined;
     readonly desktopAppUpdate?: boolean | undefined;
+    readonly desktopUpdateHttpControl?: boolean | undefined;
     readonly desktopBrowserFd?: number | undefined;
     readonly desktopBrowserControlFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
@@ -125,6 +126,26 @@ export class ServerConfig extends Context.Service<
     baseDirOrPrefix: string | { readonly prefix: string },
   ) => layerTest(cwd, baseDirOrPrefix);
 }
+
+type DesktopUpdateConfig = Pick<
+  ServerConfig["Service"],
+  "mode" | "desktopAppUpdate" | "desktopTelemetryControlFd" | "desktopUpdateHttpControl"
+>;
+
+export const supportsDesktopAppUpdate = (config: DesktopUpdateConfig): boolean =>
+  config.mode === "desktop" &&
+  config.desktopAppUpdate !== false &&
+  (config.desktopTelemetryControlFd !== undefined || config.desktopUpdateHttpControl === true);
+
+/**
+ * Whether this server checks for and installs its own updates: the desktop app's backend when the
+ * app can apply one, or a server the service launcher runs. Whoever started any other server
+ * updates it. The server runtime file records it, so a diagnosis can tell the two apart.
+ */
+export const runsAutomaticUpdates = (
+  config: DesktopUpdateConfig,
+  launcherManaged: boolean,
+): boolean => (config.mode === "desktop" ? supportsDesktopAppUpdate(config) : launcherManaged);
 
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
 

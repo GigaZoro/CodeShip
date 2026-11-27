@@ -62,7 +62,7 @@ type SyncResult =
       readonly upstream: string;
       readonly conflicts: ReadonlyArray<string>;
     }
-  | { readonly status: "landed"; readonly commit: string }
+  | { readonly status: "landed"; readonly commit: string; readonly releaseConfirmed?: false }
   | {
       /** HEAD is not the commit step 7a last passed for against the run's base (`checked`, null when none did). */
       readonly status: "unchecked";
@@ -381,7 +381,7 @@ function holdsCandidate(worktree: string, candidate: string): boolean {
 export async function land(
   worktree: string,
   now: Date,
-  push: (options: Parameters<typeof pushChecked>[0]) => void | Promise<void> = pushChecked,
+  push: (options: Parameters<typeof pushChecked>[0]) => boolean | Promise<boolean> = pushChecked,
 ): Promise<SyncResult> {
   const state = readState(worktree);
   const hold = (reason: "conflicts" | "merge-limit" | "time-limit", from = state): SyncResult => ({
@@ -405,8 +405,8 @@ export async function land(
   if (main === state.base) {
     try {
       // Main refuses a push from anyone who does not hold its landing turn (.github/scripts/landing-turn.cjs).
-      await push({ cwd: worktree, remote: "origin", head: checked });
-      return landed;
+      const releaseConfirmed = await push({ cwd: worktree, remote: "origin", head: checked });
+      return releaseConfirmed ? landed : { ...landed, releaseConfirmed: false };
     } catch (error) {
       // Origin decides: a push whose reply was lost may have landed, and one git refused may mean main moved.
       failure = error instanceof Error ? error.message : String(error);

@@ -43,13 +43,16 @@ import {
   ignoredInputs,
   isTestInput,
   keepModuleCache,
+  makeScopedTempDir,
   runSpawner,
   runSteps,
   noticingSleep,
   runTestGroups,
   spawnVp,
+  spawnVpIsolated,
   splitTests,
   suiteSteps,
+  tempDirEnv,
   testStepTimeoutSeconds,
   type Step,
   testsReaching,
@@ -921,6 +924,115 @@ describe("check:changed", () => {
     }),
   );
 
+  it("sets TMPDIR, TEMP, TMP and overwrites existing case variants", () => {
+    assert.deepStrictEqual(
+      tempDirEnv("/isolated/tmp", { PATH: "/bin", Temp: "C:\\Temp", tmp: "/old" }),
+      {
+        TMPDIR: "/isolated/tmp",
+        TEMP: "/isolated/tmp",
+        TMP: "/isolated/tmp",
+        Temp: "/isolated/tmp",
+        tmp: "/isolated/tmp",
+      },
+    );
+  });
+
+  it.effect(
+    "silences expected teardown codes and warns on unexpected ones when releasing a scoped temp dir",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cases: ReadonlyArray<{
+          readonly code: string;
+          readonly platform: NodeJS.Platform;
+          readonly expectWarning: boolean;
+        }> = [
+          { code: "EBUSY", platform: "linux", expectWarning: false },
+          { code: "ENOTEMPTY", platform: "linux", expectWarning: false },
+          { code: "EPERM", platform: "win32", expectWarning: false },
+          { code: "EPERM", platform: "linux", expectWarning: true },
+          { code: "EACCES", platform: "linux", expectWarning: true },
+        ];
+        for (const { code, platform, expectWarning } of cases) {
+          let created = "";
+          const warnings: Array<string> = [];
+          const realRm = NodeFSP.rm;
+          try {
+            using rmSpy = vi.spyOn(NodeFSP, "rm").mockImplementation(async (target, options) => {
+              if (target === created) {
+                throw Object.assign(new Error(`simulated ${code}`), { code });
+              }
+              return realRm(target, options);
+            });
+            const value = yield* Effect.scoped(
+              Effect.gen(function* () {
+                created = yield* makeScopedTempDir(fs, "t3-ccs-", platform);
+                return "ok";
+              }),
+            ).pipe(
+              Effect.provideService(Console.Console, {
+                ...globalThis.console,
+                warn: (...args: ReadonlyArray<unknown>) => void warnings.push(args.join(" ")),
+              } as Console.Console),
+            );
+            assert.strictEqual(value, "ok");
+            assert.isTrue(rmSpy.mock.calls.some(([target]) => target === created));
+            assert.strictEqual(
+              warnings.some((line) => line.includes(`simulated ${code}`)),
+              expectWarning,
+            );
+          } finally {
+            if (created) NodeFS.rmSync(created, { recursive: true, force: true });
+          }
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each([0, 1])(
+    "isolates TMPDIR/TEMP/TMP for a step and removes leaked files after exit code %s",
+    (exitCode) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let seenEnv: NonNullable<ChildProcess.StandardCommand["options"]["env"]> = {};
+        let seenTmpDir = "";
+        let existedDuringChild = false;
+        const fakeSpawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (!ChildProcess.isStandardCommand(command)) {
+              assert.fail("expected standard command");
+            }
+            seenEnv = command.options.env ?? {};
+            const dir = seenEnv.TMPDIR;
+            if (typeof dir !== "string") {
+              assert.fail("expected TMPDIR string");
+            }
+            seenTmpDir = dir;
+            existedDuringChild = NodeFS.existsSync(dir);
+            NodeFS.mkdirSync(NodePath.join(dir, "leaked-subdir"), { recursive: true });
+            NodeFS.writeFileSync(NodePath.join(dir, "leaked-subdir", "artifact.tmp"), "leaked");
+            return yield* fakeGit(() => ({ exitCode: exited(exitCode), stdout: "done\n" })).spawn(
+              command,
+            );
+          }),
+        );
+        const result = yield* spawnVpIsolated(
+          fs,
+          fakeSpawner,
+          "linux",
+          ["exec", "node", "--test"],
+          "/repo",
+          {},
+          () => {},
+        );
+        assert.strictEqual(result.ok, exitCode === 0);
+        assert.isTrue(existedDuringChild);
+        assert.strictEqual(seenEnv.TMPDIR, seenEnv.TEMP);
+        assert.strictEqual(seenEnv.TMPDIR, seenEnv.TMP);
+        assert.include(NodePath.basename(seenTmpDir), "t3-ccs-");
+        assert.isFalse(NodeFS.existsSync(seenTmpDir));
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   // A git that exits while a process it started holds its output never reaches the end of that
   // output, so the call fails at its time limit. Its pipes then stop holding the event loop, or they
   // would keep check:changed from exiting until that process ends (the patch of
@@ -1454,14 +1566,67 @@ describe("check:changed", () => {
     );
   });
 
-  it.each([
-    "packages/shared/src/testing/longTempDir.ts",
-    "packages/shared/src/testing/providerEnv.ts",
-    "packages/shared/src/testing/gitEnv.ts",
-    "packages/shared/src/testing/gitRepositoryEnv.ts",
-  ])("tests every package when the shared test setup file %s changes", (file) => {
-    assert.strictEqual(decide([file], readWorkspace(), false).outputs.test_packages, "");
+  // Read from the test configs and from what those files import, so a setup file a config gains, or a module a
+  // setup file comes to import, that RUNS_EVERYTHING lacks fails here.
+  const repoRoot = NodePath.join(import.meta.dirname, "..");
+  const setupFilesIn = (config: string) =>
+    Array.from(
+      config.matchAll(/shared\/src\/testing\/([^"'`\s/]+\.ts)/g),
+      ([, name]) => `packages/shared/src/testing/${name}`,
+    );
+  const relativeImportsOf = (file: string) =>
+    Array.from(
+      NodeFS.readFileSync(NodePath.join(repoRoot, file), "utf8").matchAll(
+        /(?:from|import)\s+["'](\.{1,2}\/[^"']+\.ts)["']/g,
+      ),
+      ([, specifier]) => NodePath.posix.join(NodePath.posix.dirname(file), specifier!),
+    );
+  const sharedSetupFiles = new Set(
+    [".", ...readWorkspace().map((pkg) => pkg.dir)].flatMap((dir) => {
+      const config = NodePath.join(repoRoot, dir, "vite.config.ts");
+      return NodeFS.existsSync(config) ? setupFilesIn(NodeFS.readFileSync(config, "utf8")) : [];
+    }),
+  );
+  for (const file of sharedSetupFiles) {
+    for (const imported of relativeImportsOf(file)) sharedSetupFiles.add(imported);
+  }
+
+  it("reads whole setup file names from a test config", () => {
+    assert.deepStrictEqual(
+      setupFilesIn(
+        'setupFiles: ["../../packages/shared/src/testing/language-setup.ts", "../shared/src/testing/language.setup.ts"]',
+      ),
+      [
+        "packages/shared/src/testing/language-setup.ts",
+        "packages/shared/src/testing/language.setup.ts",
+      ],
+    );
   });
+
+  it("finds the shared test setup files and the modules they import", () => {
+    assert.includeMembers(
+      [...sharedSetupFiles],
+      [
+        "packages/shared/src/testing/locale.ts",
+        "packages/shared/src/i18n.ts",
+        "packages/shared/src/testing/longTempDir.ts",
+        "packages/shared/src/HostProcess.ts",
+        "packages/shared/src/testing/providerEnv.ts",
+      ],
+    );
+  });
+
+  it.each([...sharedSetupFiles].sort())(
+    "tests every package when the shared test setup file %s changes",
+    (file) => {
+      assert.deepInclude(decide([file], readWorkspace(), false).outputs, {
+        test: true,
+        test_packages: "",
+        test_web: true,
+        test_server: true,
+      });
+    },
+  );
 });
 
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config or the default
@@ -2103,15 +2268,17 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     export const probeHostCapabilities = async () =>
       JSON.parse(readFileSync(${JSON.stringify(capabilities)}, "utf8"));`,
   );
-  for (const name of ["effect", "@effect/platform-node", "@t3tools/shared", "vite-plus"]) {
-    const dest = NodePath.join(root, "node_modules", name);
+  const linkedPackages = ["effect", "@effect/platform-node", "@t3tools/shared", "vite-plus"];
+  const linkPackage = (modules: string, name: string) => {
+    const dest = NodePath.join(modules, name);
     NodeFS.mkdirSync(NodePath.dirname(dest), { recursive: true });
     NodeFS.symlinkSync(
       NodeFS.realpathSync(NodePath.join(import.meta.dirname, "node_modules", name)),
       dest,
       "junction",
     );
-  }
+  };
+  for (const name of linkedPackages) linkPackage(NodePath.join(root, "node_modules"), name);
   const git = (...args: Array<string>) =>
     NodeChildProcess.execFileSync("git", args, { cwd: root, stdio: "pipe", env });
   git("init");
@@ -2177,6 +2344,13 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
         });
       }
       const modules = NodePath.join(checkout, "node_modules");
+      // Windows copies a junction as a real folder, which loses the sibling packages that resolve
+      // beside its target, so the linked packages are linked again. Removing a link, or a copied
+      // folder, takes the same call.
+      for (const name of linkedPackages) {
+        NodeFS.rmSync(NodePath.join(modules, name), { recursive: true, force: true });
+        linkPackage(modules, name);
+      }
       const store = (name: string) => NodePath.join(modules, ".pnpm", name, "node_modules");
       const vitePlus = NodeFS.realpathSync(
         NodePath.join(import.meta.dirname, "node_modules/vite-plus"),
@@ -2210,7 +2384,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
           }
         }
       }
-      NodeFS.rmSync(NodePath.join(modules, "vite-plus"));
+      NodeFS.rmSync(NodePath.join(modules, "vite-plus"), { recursive: true, force: true });
       NodeFS.symlinkSync(
         NodePath.join(store("vite-plus"), "vite-plus"),
         NodePath.join(modules, "vite-plus"),
@@ -2523,11 +2697,10 @@ it("reruns a stable group after an empty commit", () => {
   expect(next.stdout).toContain("FAIL  test");
 });
 
-it.each(["USER", "T3_TEST_NU_PATH", "PLAYWRIGHT_CACHE_FIXTURE", "TZ", "TMPDIR"])(
+it.each(["USER", "T3_TEST_NU_PATH", "PLAYWRIGHT_CACHE_FIXTURE", "TZ"])(
   "delivers and fingerprints %s",
   (name) => {
     using project = launcherFixture();
-    // Folders outside the checkout, because the run writes its own temporary files to TMPDIR.
     const [first, changed] = [NodePath.dirname(project.capabilities), NodeOS.tmpdir()];
     project.write(
       "fixture.test.ts",
@@ -2542,6 +2715,93 @@ it.each(["USER", "T3_TEST_NU_PATH", "PLAYWRIGHT_CACHE_FIXTURE", "TZ", "TMPDIR"])
     expect(next.stdout).toContain("FAIL  test");
   },
 );
+
+it("isolates test TMPDIR without busting cache, removes leaked files on pass and fail, and sweeps stale temp dirs", () => {
+  using project = launcherFixture();
+  const outerTmp1 = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3o1-")),
+  );
+  const outerTmp2 = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3o2-")),
+  );
+  onTestFinished(() => {
+    NodeFS.rmSync(outerTmp1, { recursive: true, force: true });
+    NodeFS.rmSync(outerTmp2, { recursive: true, force: true });
+  });
+
+  const staleEpochSec = 1_600_000_000;
+  const staleDir = NodePath.join(outerTmp1, "t3-cct-stale");
+  const freshDir = NodePath.join(outerTmp1, "t3-cct-fresh");
+  const unrelatedDir = NodePath.join(outerTmp1, "unrelated-stale");
+  NodeFS.mkdirSync(freshDir, { recursive: true });
+  for (const dir of [staleDir, unrelatedDir]) {
+    NodeFS.mkdirSync(dir, { recursive: true });
+    NodeFS.utimesSync(dir, staleEpochSec, staleEpochSec);
+  }
+
+  project.write(
+    "fixture.test.ts",
+    `import { writeFileSync } from "node:fs";
+    import os from "node:os";
+    import path from "node:path";
+    import { it, expect } from "vite-plus/test";
+    it("runs inside an isolated step temp dir", () => {
+      const dir = process.env.TMPDIR ?? "";
+      expect(dir).toBeTruthy();
+      expect(process.env.TEMP).toBe(dir);
+      expect(process.env.TMP).toBe(dir);
+      expect(os.tmpdir()).toBe(dir);
+      expect(path.basename(dir)).toMatch(/^t3-cct-/);
+      writeFileSync(path.join(dir, "leaked.txt"), "left behind");
+      console.log("STEP_TMP=" + dir);
+    });`,
+  );
+
+  const first = project.run("lint", "", project.source, [], {
+    TMPDIR: outerTmp1,
+    TEMP: outerTmp1,
+    TMP: outerTmp1,
+  });
+  expect(first.status, first.stdout + first.stderr).toBe(1);
+  expect(first.stdout).toContain("pass  test (1 files)");
+  const matched = /STEP_TMP=(.+)/.exec(first.stdout);
+  expect(matched, first.stdout).not.toBeNull();
+  const stepTmp = matched![1]!.trim();
+  expect(NodePath.dirname(stepTmp)).toBe(outerTmp1);
+  expect(NodeFS.existsSync(stepTmp)).toBe(false);
+  expect(NodeFS.existsSync(staleDir)).toBe(false);
+  expect(NodeFS.existsSync(freshDir)).toBe(true);
+  expect(NodeFS.existsSync(unrelatedDir)).toBe(true);
+
+  const second = project.run("lint", "", project.source, [], {
+    TMPDIR: outerTmp2,
+    TEMP: outerTmp2,
+    TMP: outerTmp2,
+  });
+  expect(second.status, second.stdout + second.stderr).toBe(1);
+  expect(second.stdout).toContain("pass  test (1 files)");
+  expect(second.stdout).toContain("cache hit, replaying");
+  expect(NodeFS.readdirSync(outerTmp2)).toEqual([]);
+
+  project.write(
+    "fixture.test.ts",
+    `import { writeFileSync } from "node:fs";
+    import path from "node:path";
+    import { it } from "vite-plus/test";
+    it("leaves a file behind and fails", () => {
+      writeFileSync(path.join(process.env.TMPDIR!, "leaked-on-fail.txt"), "boom");
+      throw new Error("expected failure");
+    });`,
+  );
+  const failed = project.run("", "", project.source, [], {
+    TMPDIR: outerTmp2,
+    TEMP: outerTmp2,
+    TMP: outerTmp2,
+  });
+  expect(failed.status, failed.stdout + failed.stderr).toBe(1);
+  expect(failed.stdout).toContain("FAIL  test (1 files)");
+  expect(NodeFS.readdirSync(outerTmp2)).toEqual([]);
+});
 
 it("reuses passes in another worktree with the same inputs and tracked environment, at another worker count", () => {
   using project = launcherFixture();

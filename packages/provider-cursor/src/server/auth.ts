@@ -133,6 +133,7 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
         instanceId: options.instanceId,
         operation: "credentials",
         detail: "Sign in with Cursor or add CURSOR_API_KEY in provider settings.",
+        retryable: false,
       });
     }
     return apiKey;

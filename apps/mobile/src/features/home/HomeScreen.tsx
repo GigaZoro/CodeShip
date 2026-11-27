@@ -82,6 +82,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2OlderThreadsFooter,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2FinishedNotSeenHeader,
   ThreadListV2NeedsYouHeader,
   ThreadListV2WorkingShelfHeader,
 } from "../threads/thread-list-v2-items";
@@ -154,6 +155,7 @@ interface HomeScreenProps {
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly onSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  readonly onSettleThreads: (threads: ReadonlyArray<EnvironmentThreadShell>) => Promise<void>;
   readonly onSnoozeThread: (
     thread: EnvironmentThreadShell,
     snoozedUntil: string,
@@ -592,6 +594,15 @@ export function HomeScreen(props: HomeScreenProps) {
         />
       );
     }
+    if (item.type === "v2-finished-not-seen") {
+      return (
+        <ThreadListV2FinishedNotSeenHeader
+          count={item.count}
+          pane={primaryColumn ? "sidebar" : "screen"}
+          onSettleAll={() => void props.onSettleThreads(item.threads)}
+        />
+      );
+    }
     if (item.type === "v2-working-shelf") {
       return (
         <ThreadListV2WorkingShelfHeader
@@ -681,6 +692,7 @@ export function HomeScreen(props: HomeScreenProps) {
         arrangementSupported={activeReorderEnvironmentIds.has(thread.environmentId)}
         reorderSupported={
           item.item.needsYou !== true &&
+          item.item.finishedNotSeen !== true &&
           (item.item.pinned
             ? pinReorderEnvironmentIds.has(thread.environmentId)
             : threadListV2Layout.listedSections.activeManualOrder &&

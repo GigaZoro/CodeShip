@@ -935,7 +935,7 @@ export function useThreadActions() {
 
   const settleThread = async (
     target: ScopedThreadRef,
-    options: { readonly unmergedWorkConfirmed?: boolean } = {},
+    options: { readonly unmergedWorkConfirmed?: boolean; readonly undoNoticeMs?: number } = {},
   ) => {
     if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
       return AsyncResult.failure(
@@ -978,6 +978,7 @@ export function useThreadActions() {
       claim: action,
       undo: () => runUndoPlan(target, undoPlan),
       failureTitle: t("Failed to undo settle"),
+      ...(options.undoNoticeMs === undefined ? {} : { durationMs: options.undoNoticeMs }),
     });
     return result;
   };

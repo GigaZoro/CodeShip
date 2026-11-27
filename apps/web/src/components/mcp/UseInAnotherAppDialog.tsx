@@ -900,7 +900,10 @@ function ManageAccessButton({
       variant="ghost"
       onClick={() => {
         close();
-        void navigate({ to: "/settings/access", search: { machine: environment.environmentId } });
+        void navigate({
+          to: "/settings/connections",
+          search: { machine: environment.environmentId },
+        });
       }}
     >
       {label ?? t("Manage access")}

@@ -20,6 +20,7 @@ import { vi } from "vite-plus/test";
 import { renderBootServicePlist, renderBootServiceUnit } from "./cloud/bootService.ts";
 import { ServiceLauncherHostProcess } from "./cloud/serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_CONTEXT_ENV } from "./cloud/serviceProtocol.ts";
+import * as ServerConfig from "./config.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as ServerOwnership from "./serverOwnership.ts";
 import * as ServerRuntimeState from "./serverRuntimeState.ts";
@@ -488,4 +489,41 @@ describe("server ownership", () => {
       }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
     );
   });
+});
+
+describe("automatic updates in the server runtime file", () => {
+  it("names the servers that install their own updates", () => {
+    const desktop = { mode: "desktop" } as const;
+    assert.equal(
+      ServerConfig.runsAutomaticUpdates({ ...desktop, desktopUpdateHttpControl: true }, false),
+      true,
+    );
+    assert.equal(
+      ServerConfig.runsAutomaticUpdates({ ...desktop, desktopTelemetryControlFd: 3 }, false),
+      true,
+    );
+    // A desktop app that cannot apply an update, though a launcher service exists on the machine.
+    assert.equal(ServerConfig.runsAutomaticUpdates(desktop, true), false);
+    assert.equal(ServerConfig.runsAutomaticUpdates({ mode: "web" }, true), true);
+    assert.equal(ServerConfig.runsAutomaticUpdates({ mode: "web" }, false), false);
+  });
+
+  it.effect("records whether this server installs its own updates, and reads it back", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-runtime-updates-" });
+      const statePath = path.join(root, "server-runtime.json");
+      for (const automaticUpdates of [true, false]) {
+        const state = yield* ServerRuntimeState.makePersistedServerRuntimeState({
+          config: { host: undefined, devUrl: undefined },
+          port: 3773,
+          automaticUpdates,
+        });
+        yield* ServerRuntimeState.persistServerRuntimeState({ path: statePath, state });
+        const read = yield* ServerRuntimeState.readPersistedServerRuntimeState(statePath);
+        assert.equal(Option.getOrThrow(read).automaticUpdates, automaticUpdates);
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

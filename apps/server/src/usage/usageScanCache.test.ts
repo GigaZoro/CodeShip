@@ -1,14 +1,19 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  carrySuperseded,
   decodeScanCache,
+  hasRetainedSuperseded,
   isFullSaveDue,
   markMissing,
   markPresent,
+  pruneSuperseded,
+  retainedSuperseded,
   mergeCachedSource,
   mergeScanEntry,
   SCAN_CACHE_PIECE_CHARS,
   scanCacheDocumentPieces,
+  settleTailGroups,
   type CachedFile,
   type CachedSource,
   type ScanCache,
@@ -16,6 +21,7 @@ import {
 import type { UsageRecord } from "@t3tools/provider-core/server/usage";
 
 import { TEST_FORMAT_MAP } from "./usageTestFormats.ts";
+import { seededRandom } from "../testUtils/seededRandom.ts";
 import { initialCodexScanState, parseCodexLine } from "../provider/Drivers/codexUsage.ts";
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
@@ -37,6 +43,13 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
     ...overrides,
   };
 }
+
+const museCall = (id: string, outputTokens: number) =>
+  record({
+    provider: "muse",
+    dedupeKey: JSON.stringify(["muse", id]),
+    totals: { ...record().totals, outputTokens },
+  });
 
 function position(overrides: Partial<CachedFile["position"]> = {}): CachedFile["position"] {
   return {
@@ -67,6 +80,8 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
 
 const encode = (cache: ScanCache, extra: Readonly<Record<string, unknown>> = {}) =>
   [...scanCacheDocumentPieces(cache, extra)].join("");
+const reload = (entry: CachedFile) =>
+  decodeScanCache(JSON.parse(encode(new Map([["/a", entry]]))), TEST_FORMAT_MAP).get("/a")!;
 
 describe("scan cache round trip", () => {
   it("restores cached history unchanged except for Claude local placeholders", () => {
@@ -537,8 +552,29 @@ describe("scan cache merge", () => {
     ...overrides,
   });
 
+  const codexReadAcrossMidnight = (resolvedIndex: 0 | 1) =>
+    row({
+      provider: "codex",
+      records: ["2026-08-01T23:59:59Z", "2026-08-02T00:00:01Z"].map((time, index) =>
+        record({
+          provider: "codex",
+          model: "gpt-5",
+          timestampMs: Date.parse(time),
+          dedupeKey: null,
+          ...(index === resolvedIndex
+            ? { speed: "fast" }
+            : { unresolvedServiceTierTurnId: "d9b9635f-1fc8-4d62-927a-cf8ed6499355" }),
+        }),
+      ),
+    });
+
   it.each([
     ["the later observation over a larger file", row({ observedAtMs: 2_001 }), row({ size: 900 })],
+    [
+      "the same simultaneous rewrite when the sizes and read times tie",
+      row({ records: [record({ dedupeKey: "a:" })] }),
+      row({ records: [record({ dedupeKey: "b:" })] }),
+    ],
     [
       "a current row over a legacy row seen at the same time",
       row(),
@@ -576,14 +612,303 @@ describe("scan cache merge", () => {
       }),
     ],
     [
+      "the first record fast when two day windows each resolve one record of the same Codex turn",
+      codexReadAcrossMidnight(0),
+      codexReadAcrossMidnight(1),
+    ],
+    [
       "one of two reads that each resolved a different speed tier",
       row({ records: [record({ unresolvedServiceTierTurnId: "turn-a" })] }),
       row({ records: [record({ unresolvedServiceTierTurnId: "turn-b" })] }),
     ],
   ])("keeps %s in either order", (_name, winner, loser) => {
-    expect(mergeScanEntry(winner, loser)).toBe(winner);
-    expect(mergeScanEntry(loser, winner)).toBe(winner);
+    const merged = mergeScanEntry(winner, loser);
+    expect(merged).toMatchObject(winner);
+    expect(mergeScanEntry(loser, winner)).toEqual(merged);
     expect(mergeScanEntry(winner, winner)).toBe(winner);
+  });
+
+  it("dates each displaced key from the first read after its last sighting across peers", () => {
+    const snapshots = ["a:", "b:", "a:", "c:", "d:"].map((dedupeKey, index) =>
+      row({ observedAtMs: (index + 1) * 10, records: [record({ dedupeKey })] }),
+    );
+    const merged = snapshots.reduce(mergeScanEntry);
+    for (const order of [
+      [4, 3, 2, 1, 0],
+      [0, 3, 4, 1, 2],
+      [3, 1, 2, 4, 0],
+    ]) {
+      expect(
+        order.map((index) => snapshots[index]!).reduce((a, b) => reload(mergeScanEntry(a, b))),
+      ).toEqual(merged);
+    }
+    expect(
+      merged.superseded?.map(({ record, seenMs, sinceMs }) => [record.dedupeKey, seenMs, sinceMs]),
+    ).toEqual([
+      ["a:", 30, 40],
+      ["b:", 20, 30],
+      ["c:", 40, 50],
+    ]);
+    const pruned = reload(pruneSuperseded(merged, 100, 40));
+    expect(mergeScanEntry(pruned, snapshots[1]!)).toEqual(pruned);
+    expect(
+      retainedSuperseded(pruned, 40, "claude")
+        .map((entry) => entry.dedupeKey)
+        .sort(),
+    ).toEqual(["a:", "c:"]);
+  });
+
+  it("keeps one historical value when simultaneous reads disagree about the same call", () => {
+    const larger = row({ size: 200, records: [record({ reportedCostUsd: 9 })] });
+    const smaller = row({ size: 100, records: [record({ reportedCostUsd: 1 })] });
+    const later = row({ observedAtMs: 3000, records: [] });
+    const tied = mergeScanEntry(larger, smaller);
+    expect(tied.records).toEqual(larger.records);
+    expect(retainedSuperseded(tied, 0, "claude")).toEqual([]);
+    const merged = mergeScanEntry(tied, later);
+    expect(retainedSuperseded(merged, 0, "claude")).toHaveLength(1);
+    expect(mergeScanEntry(mergeScanEntry(later, smaller), larger)).toEqual(merged);
+    expect(mergeScanEntry(mergeScanEntry(later, larger), smaller)).toEqual(merged);
+    const clockBehind = reload(pruneSuperseded(tied, 1_500, 1_480));
+    expect(mergeScanEntry(clockBehind, reload(clockBehind))).toEqual(clockBehind);
+  });
+
+  it.each(["claude", "muse"] as const)(
+    "counts ambiguous %s identities together only when one version contained both",
+    (provider) => {
+      const call = (index: number) =>
+        record({
+          provider,
+          dedupeKey:
+            provider === "claude"
+              ? `msg:req:advisor:${index}`
+              : JSON.stringify(["muse", `envelope-${index}`]),
+        });
+      const both = row({ provider, records: [call(0), call(1)] });
+      const renamed = row({ provider, records: [call(2)] });
+      const firstOnly = row({ provider, records: [call(0)] });
+      const replaced = row({ provider, observedAtMs: 3000, records: [] });
+      const merged = [both, firstOnly, renamed, replaced].reduce(mergeScanEntry);
+      for (const order of [
+        [replaced, renamed, firstOnly, both],
+        [firstOnly, renamed, replaced, both],
+        [replaced, both, firstOnly, renamed],
+      ]) {
+        expect(order.reduce((a, b) => reload(mergeScanEntry(a, b)))).toEqual(merged);
+      }
+      expect(retainedSuperseded(merged, 0, provider)).toEqual(both.records);
+      expect(
+        retainedSuperseded([firstOnly, renamed, replaced].reduce(mergeScanEntry), 0, provider),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(["muse", "claude"] as const)(
+    "reserves a surviving %s call before matching its co-observed sibling",
+    (provider) => {
+      const call = (key: string) =>
+        record({
+          provider,
+          dedupeKey: provider === "muse" ? JSON.stringify(["muse", key]) : key,
+          totals: { ...record().totals, outputTokens: 5 },
+        });
+      const first = call("a:");
+      const second = call(provider === "muse" ? "b:" : ":request");
+      const both = row({ provider, observedAtMs: 10, records: [first, second] });
+      const surviving = row({ provider, observedAtMs: 20, records: [first] });
+      const empty = row({ provider, observedAtMs: 30, records: [] });
+      const tokens = (entry: CachedFile, cutoff = 0) =>
+        [...entry.records, ...retainedSuperseded(entry, cutoff, provider)].reduce(
+          (sum, record) => sum + record.totals.outputTokens,
+          0,
+        );
+      expect(tokens(mergeScanEntry(both, surviving))).toBe(10);
+      const renamed = row({
+        provider,
+        observedAtMs: 20,
+        records: [call(provider === "muse" ? "renamed" : "a:request")],
+      });
+      expect(tokens(mergeScanEntry(both, renamed))).toBe(10);
+      const elsewhere = (key: string) => ({
+        ...call(key),
+        sessionId: "elsewhere",
+        timestampMs: 100,
+      });
+      const twoSessions = {
+        ...both,
+        records: [first, second, elsewhere("z:"), elsewhere(":other")],
+      };
+      const mixed = mergeScanEntry(twoSessions, {
+        ...surviving,
+        records: [first, elsewhere("z:other")],
+      });
+      expect(tokens(mixed)).toBe(20);
+      expect(retainedSuperseded(mixed, 0, provider)).toContainEqual(second);
+      const merged = [both, surviving, empty].reduce(mergeScanEntry);
+      expect(tokens(merged)).toBe(10);
+      expect(tokens(merged, 21)).toBe(5);
+      expect(tokens(merged, 31)).toBe(0);
+      for (const order of [
+        [empty, both, surviving],
+        [surviving, empty, both],
+        [empty, surviving, both],
+      ]) {
+        const restored = decodeScanCache(
+          JSON.parse(encode(new Map([["/a", order.reduce(mergeScanEntry)]]))),
+          TEST_FORMAT_MAP,
+        ).get("/a");
+        expect(restored).toEqual(merged);
+      }
+    },
+  );
+
+  it("discards older identities when a different provider read the same path", () => {
+    const before = row({ observedAtMs: 10 });
+    const switched = row({ observedAtMs: 20, provider: "codex", records: [] });
+    const after = row({ observedAtMs: 30, records: [] });
+    const merged = mergeScanEntry(mergeScanEntry(before, switched), after);
+    expect(merged.superseded).toBeUndefined();
+    expect(mergeScanEntry(mergeScanEntry(after, before), switched)).toEqual(merged);
+    expect(mergeScanEntry(mergeScanEntry(after, switched), before)).toEqual(merged);
+  });
+
+  it("promotes a parsed EOF record only after a full read confirms its replacement", () => {
+    const previous = row({ records: [], tailRecords: [record()] });
+    const complete = row({ observedAtMs: 3000, records: [record({ dedupeKey: "other:" })] });
+    const liveKeys = new Set(["other:"]);
+    expect(
+      carrySuperseded(complete, previous, { retainedPrefix: previous, liveKeys }).superseded,
+    ).toBeUndefined();
+    expect(mergeScanEntry(complete, previous).superseded).toBeUndefined();
+    const replaced = carrySuperseded(complete, previous, { liveKeys });
+    expect(retainedSuperseded(replaced, 3000, "claude")).toEqual(previous.tailRecords);
+    const tentative = row({ observedAtMs: 4000, records: [], tailRecords: previous.tailRecords });
+    const overlapped = carrySuperseded(tentative, replaced, { liveKeys: new Set(["msg_1:"]) });
+    expect(retainedSuperseded(overlapped, 0, "claude")).toEqual(complete.records);
+    const appended = { ...complete, observedAtMs: 5000 };
+    const corrected = carrySuperseded(appended, overlapped, {
+      retainedPrefix: overlapped,
+      liveKeys,
+    });
+    expect(retainedSuperseded(corrected, 3000, "claude")).toEqual(previous.tailRecords);
+  });
+
+  it("keeps peer EOF usage only when the next observed size proves a replacement", () => {
+    const previous = row({ size: 240, records: [], tailRecords: [record()] });
+    const merge = (a: CachedFile, b: CachedFile) => reload(mergeScanEntry(a, b));
+    const later = row({ observedAtMs: 4000, size: 300, records: [] });
+    for (const size of [0, 100, 240, 300]) {
+      const replacement = row({ observedAtMs: 3000, size, records: [] });
+      const expected = size < previous.size ? previous.tailRecords : [];
+      for (const order of [
+        [previous, replacement, later],
+        [previous, later, replacement],
+        [replacement, later, previous],
+      ]) {
+        const entry = order.reduce(merge);
+        expect(retainedSuperseded(entry, 3000, "claude")).toEqual(expected);
+        expect(retainedSuperseded(entry, 3001, "claude")).toEqual([]);
+      }
+    }
+    const completion = { ...later, observedAtMs: 2500 };
+    const truncation = { ...later, size: 0 };
+    expect(
+      retainedSuperseded([previous, truncation, completion].reduce(merge), 0, "claude"),
+    ).toEqual([]);
+  });
+
+  it("keeps the latest confirmed value and expiry for a call first witnessed at EOF", () => {
+    const old = museCall("A", 1);
+    const sibling = museCall("B", 2);
+    const latest = museCall("A", 99);
+    const first = row({
+      provider: "muse",
+      observedAtMs: 10,
+      size: 100,
+      records: [sibling],
+      tailRecords: [old],
+    });
+    const empty = row({ provider: "muse", observedAtMs: 20, size: 0, records: [] });
+    const returned = row({ provider: "muse", observedAtMs: 30, size: 80, records: [latest] });
+    const last = row({ provider: "muse", observedAtMs: 40, size: 90, records: [sibling] });
+    const merge = (a: CachedFile, b: CachedFile) => reload(mergeScanEntry(a, b));
+    const orders = (rows: readonly CachedFile[]): CachedFile[][] =>
+      rows.length === 0
+        ? [[]]
+        : rows.flatMap((item) =>
+            orders(rows.filter((other) => other !== item)).map((rest) => [item, ...rest]),
+          );
+    for (const order of orders([first, empty, returned, last])) {
+      const merged = order.reduce(merge);
+      for (const cutoff of [20, 21, 40])
+        expect(retainedSuperseded(merged, cutoff, "muse")).toEqual([latest]);
+      expect(retainedSuperseded(merged, 41, "muse")).toEqual([]);
+    }
+    for (const cutoff of [21, 31]) {
+      const pruned = reload(pruneSuperseded([first, empty, returned].reduce(merge), 35, cutoff));
+      expect(pruned.peerTails).toBeUndefined();
+      expect(retainedSuperseded(merge(pruned, last), 40, "muse")).toEqual([latest]);
+    }
+    const prunedBeforeReturn = reload(pruneSuperseded([first, empty, last].reduce(merge), 113, 21));
+    for (const merged of [
+      merge(prunedBeforeReturn, returned),
+      merge(returned, prunedBeforeReturn),
+    ]) {
+      for (const cutoff of [21, 40])
+        expect(retainedSuperseded(merged, cutoff, "muse")).toEqual([latest]);
+      expect(retainedSuperseded(merged, 41, "muse")).toEqual([]);
+    }
+    const completion = { ...empty, observedAtMs: 15, size: first.size + 1 };
+    expect(
+      retainedSuperseded([first, empty, returned, last, completion].reduce(merge), 40, "muse"),
+    ).toEqual([]);
+    const completedBeforePrune = reload(
+      pruneSuperseded([first, completion, empty, last].reduce(merge), 40, 21),
+    );
+    for (const merged of [
+      merge(completedBeforePrune, returned),
+      merge(merge(prunedBeforeReturn, returned), completion),
+      merge(merge(prunedBeforeReturn, completion), returned),
+      merge(prunedBeforeReturn, merge(completion, returned)),
+    ]) {
+      for (const cutoff of [21, 40, 41])
+        expect(retainedSuperseded(merged, cutoff, "muse")).toEqual([]);
+    }
+    const prunedWithoutFirst = reload(
+      pruneSuperseded([completion, empty, last].reduce(merge), 113, 21),
+    );
+    const lateFirst = merge(merge(prunedWithoutFirst, returned), first);
+    expect(lateFirst.peerTails).toBeUndefined();
+    expect(
+      hasRetainedSuperseded(
+        merge(reload(pruneSuperseded([empty, last].reduce(merge), 113, 21)), first),
+        21,
+      ),
+    ).toBe(false);
+    expect(retainedSuperseded(reload(pruneSuperseded(lateFirst, 123, 31)), 31, "muse")).toEqual([]);
+  });
+
+  it("proves a peer EOF tail only from the read right after it, not one past expired reads", () => {
+    const prune = (entry: CachedFile) => reload(pruneSuperseded(entry, 351, 331));
+    const held = row({
+      provider: "muse",
+      observedAtMs: 330,
+      records: [museCall("B", 3)],
+      tailRecords: [museCall("D", 7)],
+      priorReads: [[328, 100]],
+      expiredThroughMs: 327,
+    });
+    const peer = row({
+      provider: "muse",
+      observedAtMs: 134,
+      size: 200,
+      records: [museCall("A", 1)],
+      tailRecords: [museCall("D", 7)],
+      expiredThroughMs: 134,
+    });
+    const prunedFirst = prune(mergeScanEntry(prune(held), peer));
+    expect(prunedFirst.peerTailGroups).toBeUndefined();
+    expect(prunedFirst).toEqual(prune(mergeScanEntry(held, peer)));
   });
 
   it("keeps the held row when nothing tells two rows apart", () => {
@@ -652,5 +977,174 @@ describe("scan cache merge", () => {
     expect(mergeCachedSource(filled, earlier)).toBe(filled);
     expect(mergeCachedSource(later, moved)).toBe(later);
     expect(mergeCachedSource({ dir: "/projects", volumeId: "1:2" }, later)).toEqual(filled);
+  });
+});
+
+describe("scan cache retention", () => {
+  const RETENTION_MS = 20;
+  const KEYS = ["A", "B", "C", "D"];
+  const merge = (a: CachedFile, b: CachedFile) => reload(mergeScanEntry(a, b));
+  const answers = (entry: CachedFile, cutoffMs: number) =>
+    [cutoffMs, cutoffMs + 5, cutoffMs + 15].map((at) => retainedSuperseded(entry, at, "muse"));
+
+  function fileVersion(next: () => number, atMs: number): CachedFile {
+    const records = KEYS.filter(() => next() < 0.4).map((id) =>
+      museCall(id, 1 + Math.floor(next() * 3)),
+    );
+    const tail = next() < 0.5 ? KEYS[Math.floor(next() * KEYS.length)]! : undefined;
+    return {
+      size: Math.floor(next() * 5) * 50,
+      mtimeMs: atMs,
+      observedAtMs: atMs,
+      provider: "muse",
+      records,
+      tailRecords:
+        tail === undefined || records.some((item) => item.dedupeKey === museCall(tail, 7).dedupeKey)
+          ? []
+          : [museCall(tail, 7)],
+      malformedRecords: [],
+      position: position(),
+    };
+  }
+
+  interface PeerStep {
+    readonly label: string;
+    readonly nowMs: number;
+    readonly held: CachedFile;
+    /** Prunes as this peer's next save does, settling what no unretired input can change. */
+    readonly prune: (entry: CachedFile) => CachedFile;
+  }
+
+  interface PeerVisits {
+    readonly merge?: (step: PeerStep, input: CachedFile) => void;
+    readonly stale?: (step: PeerStep, input: CachedFile) => void;
+    readonly row?: (step: PeerStep) => void;
+  }
+
+  /**
+   * Three peers read one changing file, merge each other's snapshots in random order and prune.
+   * A full save that leaves no unmerged peer snapshot settles everything before its cutoff.
+   */
+  function runPeers(seed: number, steps: number, visits: PeerVisits) {
+    const next = seededRandom(seed);
+    const held: (CachedFile | undefined)[] = [undefined, undefined, undefined];
+    const settledThroughMs = held.map(() => -Infinity);
+    const merged = held.map(() => new Set<CachedFile>());
+    let snapshots: { readonly writer: number; readonly row: CachedFile }[] = [];
+    const written: CachedFile[] = [];
+    let file = fileVersion(next, 0);
+    let quietUntilMs = 0;
+    for (let nowMs = 1; nowMs <= steps; nowMs++) {
+      if (nowMs >= quietUntilMs && next() < 0.03)
+        quietUntilMs = nowMs + Math.floor(RETENTION_MS * (1 + next()));
+      if (nowMs >= quietUntilMs && next() < 0.4) file = fileVersion(next, nowMs);
+      for (let peer = 0; peer < held.length; peer++) {
+        const prune = (entry: CachedFile) =>
+          reload(
+            settleTailGroups(
+              pruneSuperseded(entry, nowMs, nowMs - RETENTION_MS),
+              settledThroughMs[peer]!,
+            ),
+          );
+        const step = (entry: CachedFile): PeerStep => ({
+          label: `seed ${seed}, peer ${peer} at ${nowMs}`,
+          nowMs,
+          held: entry,
+          prune,
+        });
+        const own = held[peer];
+        if (next() < 0.3 && own?.mtimeMs !== file.mtimeMs) {
+          const read = { ...file, observedAtMs: nowMs };
+          const liveKeys = new Set(read.records.map((item) => item.dedupeKey!));
+          held[peer] = own === undefined ? read : reload(carrySuperseded(read, own, { liveKeys }));
+        }
+        if (held[peer] !== undefined && next() < 0.6) {
+          const inputs = snapshots.filter(
+            (item) => item.writer !== peer && !merged[peer]!.has(item.row),
+          );
+          for (let index = inputs.length - 1; index > 0; index--) {
+            const other = Math.floor(next() * (index + 1));
+            [inputs[index], inputs[other]] = [inputs[other]!, inputs[index]!];
+          }
+          for (const input of inputs) {
+            merged[peer]!.add(input.row);
+            visits.merge?.(step(held[peer]!), input.row);
+            held[peer] = merge(held[peer]!, input.row);
+          }
+        }
+        if (held[peer] !== undefined && next() < 0.25) {
+          held[peer] = prune(held[peer]!);
+          if (next() < 0.3) {
+            snapshots = snapshots.filter(
+              (item) => item.writer !== peer && !merged[peer]!.has(item.row),
+            );
+            if (snapshots.length === 0) settledThroughMs[peer] = nowMs - RETENTION_MS;
+          }
+          snapshots.push({ writer: peer, row: held[peer]! });
+          written.push(held[peer]!);
+        }
+        const current = held[peer];
+        if (current === undefined) continue;
+        if (written.length > 0 && next() < 0.3)
+          visits.stale?.(step(current), written[Math.floor(next() * written.length)]!);
+        visits.row?.(step(current));
+      }
+    }
+  }
+
+  it("saves the same row whichever order peers merge and prune, for every saved field", () => {
+    for (let seed = 1; seed <= 6; seed++) {
+      runPeers(seed, 10 * RETENTION_MS, {
+        merge: ({ label, nowMs, held, prune }, input) => {
+          const expected = prune(mergeScanEntry(held, input));
+          expect(prune(mergeScanEntry(prune(held), input)), label).toEqual(expected);
+          expect(prune(mergeScanEntry(input, held)), label).toEqual(expected);
+          // Pruning the input first can drop a tail group the held row's live keys still name.
+          expect(
+            answers(prune(mergeScanEntry(prune(held), prune(input))), nowMs - RETENTION_MS),
+            label,
+          ).toEqual(answers(expected, nowMs - RETENTION_MS));
+        },
+        stale: ({ label, nowMs, held, prune }, input) => {
+          // An old row's tail can need a read that only the unpruned held row still has (AB#7268).
+          expect(
+            answers(prune(mergeScanEntry(prune(held), input)), nowMs - RETENTION_MS),
+            label,
+          ).toEqual(answers(prune(mergeScanEntry(held, input)), nowMs - RETENTION_MS));
+        },
+        row: ({ label, held }) => {
+          expect(merge(held, reload(held)), label).toEqual(held);
+          const behindMs = held.observedAtMs - 5;
+          const behind = reload(pruneSuperseded(held, behindMs, behindMs - RETENTION_MS));
+          expect(merge(behind, reload(behind)), label).toEqual(behind);
+        },
+      });
+    }
+  });
+
+  it("keeps saved metadata bounded through a long peer history", () => {
+    const largest = { superseded: 0, priorReads: 0, peerTails: 0, peerTailGroups: 0 };
+    for (let seed = 1; seed <= 6; seed++) {
+      runPeers(seed, 60 * RETENTION_MS, {
+        row: ({ label, nowMs, held, prune }) => {
+          const saved = prune(held);
+          const cutoffMs = nowMs - RETENTION_MS;
+          expect(answers(saved, cutoffMs), label).toEqual(
+            answers(reload(pruneSuperseded(held, nowMs, cutoffMs)), cutoffMs),
+          );
+          for (const key of Object.keys(largest) as (keyof typeof largest)[])
+            largest[key] = Math.max(largest[key], saved[key]?.length ?? 0);
+        },
+      });
+    }
+    const bounds = {
+      superseded: KEYS.length * 4,
+      priorReads: RETENTION_MS + 1,
+      peerTails: RETENTION_MS + 1,
+      // One settled proof per group of keys, plus the groups whose next read is recent.
+      peerTailGroups: 2 ** KEYS.length + RETENTION_MS,
+    };
+    for (const key of Object.keys(bounds) as (keyof typeof bounds)[])
+      expect(largest[key], key).toBeLessThanOrEqual(bounds[key]);
   });
 });

@@ -204,6 +204,7 @@ export class ProviderSetupError extends Schema.TaggedError<ProviderSetupError>()
     instanceId: ProviderInstanceId,
     operation: Schema.String,
     detail: Schema.String,
+    retryable: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

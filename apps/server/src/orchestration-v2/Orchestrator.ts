@@ -18268,6 +18268,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const resultAt = candidate?.parentResultAt ?? null;
           if (
             candidate === undefined ||
+            (command.parentResultKey !== undefined &&
+              candidate.parentResultKey !== command.parentResultKey) ||
             (command.parentResultAt === undefined
               ? !candidate.parentDone
               : resultAt === null ||
@@ -19027,9 +19029,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
+        ...(command.type === "thread.auto-settle"
+          ? {
+              autoSettleGuard: {
+                snapshotAt: command.snapshotAt,
+                ...(command.parentResultKey === undefined
+                  ? {}
+                  : { parentResultKey: command.parentResultKey }),
+              },
+            }
+          : {}),
       })
       .pipe(mapDispatchError(command));
 
+    if (committed.rejectedByGuard === true) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          committed.receipt.error ??
+          `Thread ${commandThreadId(command)} changed before automatic settlement.`,
+      });
+    }
     if (!committed.committed) {
       return yield* replayCommandReceipt(command, committed.receipt, committed.storedEvents);
     }
@@ -19141,6 +19162,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? withSubagentParentLock(message.threadId, dispatch)
           : dispatch,
       );
+    // The parent's task result is part of this decision: taking the parent's lock before the
+    // child's serializes command writers, while autoSettleGuard rechecks inside the commit tx.
+    if (command.type === "thread.auto-settle") {
+      const child = yield* findThread(command.threadId);
+      const parentThreadId =
+        child?.lineage.relationshipToParent === "subagent" ? child.lineage.parentThreadId : null;
+      return yield* parentThreadId === null || parentThreadId === command.threadId
+        ? dispatch
+        : threadDispatch.withLock(parentThreadId, dispatch);
+    }
     // Answering a message-mode question can also start a follow-up.
     return yield* command.type === "runtime-request.respond"
       ? withSubagentParentLock(command.threadId, dispatch)

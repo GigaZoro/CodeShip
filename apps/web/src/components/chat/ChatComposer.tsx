@@ -76,8 +76,7 @@ import {
   useRef,
   useState,
 } from "react";
-
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -134,7 +133,8 @@ import {
 import { ComposerBanner } from "./ComposerBanner";
 import { ComposerSurface } from "./ComposerSurface";
 import { CollapsedComposerPromptPreview } from "./CollapsedComposerPromptPreview";
-import { ComposerBannerStack, type ComposerBannerStackItem } from "./ComposerBannerStack";
+import { ThreadNoticeSlot, ThreadNoticeStatus, useThreadNoticeSlot } from "./ThreadNoticeSlot";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import {
   attachmentsToReleaseOnUploadCapabilityLoss,
   composerOtherFilesForPresentation,
@@ -428,7 +428,12 @@ export interface ChatComposerProps {
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
   canSteer: boolean;
-  bannerItems: readonly ComposerBannerStackItem[];
+  bannerItems: readonly ThreadNotice[];
+  /**
+   * Renders the notice slot apart from the composer, in this element, for layouts where a notice
+   * must not move it. Null while that element mounts; omitted, the slot sits on the composer.
+   */
+  detachedNoticeTarget?: HTMLElement | null | undefined;
   resumeCompactionTokens: number | null;
   keepFullHistory: boolean;
   onToggleKeepFullHistory: () => void;
@@ -2860,10 +2865,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     codexFeedback: selectedProvider === "codex" && multipleModelSelections === null,
     freshSession: props.onFreshSession !== undefined,
   });
-  const replyBannerItems: readonly ComposerBannerStackItem[] = replyTo
+  const replyBannerItems: readonly ThreadNotice[] = replyTo
     ? [
         {
           id: "reply-to",
+          producer: "replyTo",
           variant: "default",
           icon: <ReplyIcon />,
           title: replyTo.subagents
@@ -2891,7 +2897,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         },
       ]
     : [];
-  const bannerItems: readonly ComposerBannerStackItem[] =
+  const bannerItems: readonly ThreadNotice[] =
     runtimeModeCeilingDenial === undefined || activePendingProgress
       ? [...props.bannerItems, ...replyBannerItems]
       : [
@@ -2899,6 +2905,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ...replyBannerItems,
           {
             id: "managed-runtime-mode",
+            producer: "managedRuntimeMode",
             variant: "warning",
             icon: <BuildingIcon />,
             title: runtimeModeCeilingDenial,
@@ -2927,6 +2934,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             (item.variant === "error" || item.variant === "warning")),
       )
     : bannerItems;
+  const noticeSlot = useThreadNoticeSlot(shelfItems);
+  const focusComposerAtEnd = () => composerEditorRef.current?.focusAtEnd();
+  const noticeSlotView = (
+    <ThreadNoticeSlot
+      slot={noticeSlot}
+      detached={props.detachedNoticeTarget !== undefined}
+      onFocusLost={focusComposerAtEnd}
+    />
+  );
 
   const insertComposerText = (
     text: string,
@@ -3814,7 +3830,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     >
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
-          <ComposerBannerStack items={shelfItems} />
+          {props.detachedNoticeTarget === undefined ? noticeSlotView : null}
           {showComposerTopDrawer ? (
             <ComposerBanner.Attachment>
               <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
@@ -3854,6 +3870,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           focusComposer={focusComposer}
         />
       ) : null}
+      <ThreadNoticeStatus slot={noticeSlot} />
+      {props.detachedNoticeTarget ? createPortal(noticeSlotView, props.detachedNoticeTarget) : null}
       <div className="relative">
         <ComposerSurface.Main
           ref={composerMainSurfaceRef}

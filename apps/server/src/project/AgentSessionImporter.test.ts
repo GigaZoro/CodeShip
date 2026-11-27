@@ -353,11 +353,8 @@ it.effect(
       });
       expect(importer.ownedSessions[0]).toEqual(
         new Set(
-          [active, archived, deleted].map(({ source }) =>
-            AgentSessionScanner.ownedSessionKey(
-              source.providerInstanceId,
-              source.providerSessionId,
-            ),
+          [active, archived, deleted, ownedPi].map((entry) =>
+            AgentSessionScanner.ownedSessionKey(entry.source.providerInstanceId, nativeId(entry)),
           ),
         ),
       );

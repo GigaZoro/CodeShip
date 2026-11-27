@@ -209,6 +209,8 @@ const HOME_VARIABLES: ReadonlyMap<
     ProviderDriverKind.make("codex"),
     { variable: "CODEX_HOME", fields: ["homePath", "shadowHomePath"] },
   ],
+  [ProviderDriverKind.make("grok"), { variable: "GROK_HOME", fields: [] }],
+  [ProviderDriverKind.make("pi"), { variable: "PI_CODING_AGENT_DIR", fields: [] }],
 ]);
 
 const configRecord = (instance: ProviderInstanceConfig | undefined): Record<string, unknown> =>

@@ -23,12 +23,12 @@ import {
 } from "../ServerUpdateAction";
 import { InlineButton } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import { ComposerServerUpdateIcon } from "./ComposerServerUpdateStatus";
 
 export function useAutoBalanceUpdateBanner(
   environments: readonly EnvironmentPresentation[],
-): ComposerBannerStackItem | null {
+): ThreadNotice | null {
   const updateStates = useAtomValue(
     environmentUpdateStatesAtom(
       environmentIdsKey(environments.map(({ environmentId }) => environmentId)),
@@ -88,6 +88,8 @@ export function useAutoBalanceUpdateBanner(
       : tn(count, "Update available for {count} machine", "Update available for {count} machines");
   return {
     id: `auto-balance-server-updates-${dismissedNotices.size}`,
+    producer: "autoBalanceUpdate",
+    announcement: title,
     variant: failed ? "error" : "default",
     group: "environment",
     icon: <ComposerServerUpdateIcon status={status} />,

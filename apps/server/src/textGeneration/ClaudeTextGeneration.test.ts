@@ -866,4 +866,65 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       }),
     ),
   );
+
+  it.effect.each([
+    [
+      "structured 5-hour limit error",
+      JSON.stringify({ is_error: true, result: "5-hour limit reached ∙ resets 3pm" }),
+      "",
+      false,
+    ],
+    [
+      "structured organization model-disabled error",
+      JSON.stringify({ is_error: true, result: "Your organization has disabled this model" }),
+      "",
+      false,
+    ],
+    [
+      "structured api_error_status 429 envelope",
+      JSON.stringify({ is_error: true, api_error_status: 429, result: "Upstream throttled" }),
+      "",
+      false,
+    ],
+    [
+      "verbose assistant authentication_failed error",
+      JSON.stringify([
+        { type: "assistant", error: "authentication_failed" },
+        { type: "result", is_error: true, result: "Session rejected" },
+      ]),
+      "",
+      false,
+    ],
+    [
+      "noisy MCP stderr without structured JSON",
+      "not json",
+      'MCP server "linear" connection failed: HTTP 403 Forbidden',
+      undefined,
+    ],
+    [
+      "transient 503 stdout error",
+      JSON.stringify({ is_error: true, api_error_status: 503, result: "Service Unavailable" }),
+      "",
+      undefined,
+    ],
+  ] as const)(
+    "sets retryable=%s on Claude CLI failure (%s)",
+    ([, output, stderr, expectedRetryable]) =>
+      withFakeClaudeEnv({ output, stderr, exitCode: 1 }, (textGeneration) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            textGeneration.generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Name this thread",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("claudeAgent"),
+                model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              },
+            }),
+          );
+
+          expect(error.retryable).toBe(expectedRetryable);
+        }),
+      ),
+  );
 });

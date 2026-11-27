@@ -45,6 +45,7 @@ import { sourceControlHostSecretName } from "./sourceControl/sourceControlHostSe
 import * as ServerConfig from "./config.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as ServerSettingsModule from "./serverSettings.ts";
 import { SECRET_REDACTED } from "./settingsSecrets.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
@@ -70,6 +71,7 @@ const decodePreHttpUsageLimitSources = Schema.decodeUnknownSync(
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
+const isServerSettingsPatch = Schema.is(ServerSettingsPatch);
 
 const layerServerSettings = (policy?: ManagedPolicyDocument) =>
   ServerSettingsModule.layer.pipe(
@@ -421,26 +423,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
-  it.effect("saves through a symlinked settings file without replacing the link", () =>
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const service = yield* ServerSettingsModule.ServerSettingsService;
-      const dotfiles = yield* fs.makeTempDirectoryScoped({ prefix: "t3-settings-dotfiles-" });
-      const linkedSettingsPath = path.join(dotfiles, "settings.json");
-      yield* fs.writeFileString(linkedSettingsPath, `{ "responseStreamingMode": "turn" }`);
-      yield* fs.remove(config.settingsPath, { force: true });
-      yield* fs.symlink(linkedSettingsPath, config.settingsPath);
+  it.effect.skipIf(!symlinksSupported)(
+    "saves through a symlinked settings file without replacing the link",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const dotfiles = yield* fs.makeTempDirectoryScoped({ prefix: "t3-settings-dotfiles-" });
+        const linkedSettingsPath = path.join(dotfiles, "settings.json");
+        yield* fs.writeFileString(linkedSettingsPath, `{ "responseStreamingMode": "turn" }`);
+        yield* fs.remove(config.settingsPath, { force: true });
+        yield* fs.symlink(linkedSettingsPath, config.settingsPath);
 
-      yield* service.updateSettings({ responseStreamingMode: "paragraph" });
+        yield* service.updateSettings({ responseStreamingMode: "paragraph" });
 
-      assert.equal(yield* fs.readLink(config.settingsPath), linkedSettingsPath);
-      const persisted = yield* decodeServerSettingsJson(
-        yield* fs.readFileString(linkedSettingsPath),
-      );
-      assert.equal(persisted.responseStreamingMode, "paragraph");
-    }).pipe(Effect.provide(layerServerSettings())),
+        assert.equal(yield* fs.readLink(config.settingsPath), linkedSettingsPath);
+        const persisted = yield* decodeServerSettingsJson(
+          yield* fs.readFileString(linkedSettingsPath),
+        );
+        assert.equal(persisted.responseStreamingMode, "paragraph");
+      }).pipe(Effect.provide(layerServerSettings())),
   );
 
   it.effect("retries a failed settings read instead of keeping the failure", () =>
@@ -525,6 +529,33 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           ],
         ),
       );
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("reads settings with the former update interval and removes it on write", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig.ServerConfig;
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        config.settingsPath,
+        '{ "installUpdatesAutomatically": true, "minHoursBetweenAutomaticUpdates": 12 }',
+      );
+
+      const previous = yield* settings.getSettings;
+      assert.equal(previous.automaticUpdateTime, "03:00");
+      assert.equal(previous.installUpdatesAutomatically, true);
+      assert.notProperty(previous, "minHoursBetweenAutomaticUpdates");
+      assert.isFalse(isServerSettingsPatch({ automaticUpdateTime: "24:00" }));
+      assert.isFalse(isServerSettingsPatch({ automaticUpdateTime: "3:00" }));
+
+      yield* settings.updateSettings({ automaticUpdateTime: "00:00" });
+      const persisted = JSON.parse(yield* fileSystem.readFileString(config.settingsPath));
+      assert.notProperty(persisted, "minHoursBetweenAutomaticUpdates");
+      assert.include(persisted, {
+        automaticUpdateTime: "00:00",
+        installUpdatesAutomatically: true,
+      });
     }).pipe(Effect.provide(layerServerSettings())),
   );
 

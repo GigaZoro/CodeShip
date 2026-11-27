@@ -378,6 +378,7 @@ describe("readAntigravityUsage", () => {
           yield* createTables(db);
           for (const [idx, name] of [
             "gemini-4-argon-high",
+            "gemini-4-neon-xhigh",
             "gemini-4-argon",
             "gemini-3.7-flash-safety-le",
             "gemini-3-flash-agent",
@@ -420,6 +421,7 @@ describe("readAntigravityUsage", () => {
         records(result).map(({ model, rateModel }) => [model, rateModel]),
         [
           ["gemini-4-argon-high", "gemini-4-argon"],
+          ["gemini-4-neon-xhigh", "gemini-4-neon"],
           ["gemini-4-argon", undefined],
           ["gemini-3.7-flash-safety-le", "gemini-3.7-flash"],
           ["gemini-3-flash-agent", "gemini-3.5-flash"],

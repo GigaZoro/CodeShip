@@ -863,6 +863,7 @@ for (const [skew, clockRuns] of SKEWS) {
             awakeClock: () => time,
             now: () => wall + skew,
             pollMs: LEASE_RENEW_MS,
+            random: () => 0.5,
             sleep: (pause) => {
               time += pause;
               wall += pause;
@@ -945,6 +946,7 @@ test("a waiter on its holder's machine leaves the lease alone through a sleep th
           },
           now: () => wall,
           pollMs: LEASE_RENEW_MS,
+          random: () => 0.5,
           sleep: (pause) => {
             (steps.shift() ?? pass)(pause);
             assert.ok(
@@ -3068,6 +3070,128 @@ test("a waiting lander that cannot fetch the holder's lease leaves it in place",
   }
 });
 
+test("a waiting lander staggers its polls and fetches an unchanged lease once", () => {
+  const { root, origin, git, clone } = setup();
+  const trace = path.join(root, "git-trace.jsonl");
+  try {
+    const holder = clone("holder");
+    const waiter = clone("waiter");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const pauses = [];
+    const samples = [0, 0.75];
+    let clock = 0;
+    process.env.GIT_TRACE2_EVENT = trace;
+
+    assert.throws(
+      () =>
+        acquire({
+          cwd: waiter,
+          remote: origin,
+          pollMs: 5_000,
+          // Poll 2 observes this waiter's own entry as the queue head and resets movedAt to 4_000; poll 3 runs at 9_500.
+          maxWaitMs: 5_500,
+          clock: () => clock,
+          awakeClock: () => clock,
+          random: () => {
+            assert.ok(samples.length > 0, "polled past maxWaitMs");
+            return samples.shift();
+          },
+          sleep: (ms) => {
+            clock += ms;
+            pauses.push(ms);
+          },
+        }),
+      /still holds/,
+    );
+    assert.deepEqual(pauses, [4_000, 5_500]);
+    const commands = fs
+      .readFileSync(trace, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter(({ event }) => event === "start")
+      .map(({ argv }) => argv);
+    assert.equal(
+      commands.filter((argv) => argv.includes("ls-remote") && argv.at(-1) === LEASE_REF).length,
+      3,
+    );
+    assert.equal(
+      commands.filter((argv) => argv.includes("fetch") && argv.at(-1) === held).length,
+      1,
+    );
+    assert.equal(git(waiter, "ls-remote", "--refs", origin, LEASE_REF).split("\t")[0], held);
+  } finally {
+    delete process.env.GIT_TRACE2_EVENT;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a landing reports an unconfirmed lease release without throwing from finally, and exits nonzero", async (t) => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const hooks = path.join(origin, "hooks");
+    git(origin, "config", "core.hooksPath", hooks);
+    fs.writeFileSync(
+      path.join(hooks, "update"),
+      `#!/bin/sh\n[ "$1 $3" != '${LEASE_REF} ${ZERO}' ]\n`,
+      { mode: 0o755 },
+    );
+
+    // Non-push exit under the turn: release fails in finally without throwing, and land surfaces releaseConfirmed: false.
+    const lander = clone("lander");
+    const mover = clone("mover");
+    commit(lander, "change.txt");
+    let checks = 0;
+    const failedCheck = await land({
+      cwd: lander,
+      remote: origin,
+      failingMs: 0,
+      every: () => () => {},
+      check: () => {
+        checks += 1;
+        if (checks === 1) {
+          commit(mover, "other.txt");
+          git(mover, "push", "-q", "origin", "HEAD:main");
+          return true;
+        }
+        return false;
+      },
+    });
+    assert.deepEqual(failedCheck, { status: "check-failed", releaseConfirmed: false });
+    assert.ok(git(origin, "rev-parse", LEASE_REF));
+
+    // Clear the lease directly on the bare remote before exercising the CLI land and push paths.
+    git(origin, "update-ref", "-d", LEASE_REF);
+
+    // When main already holds the commit while fallback release fails, CLI land prints the landed commit and exits 1.
+    const cliLander = clone("cli-lander");
+    const head = git(cliLander, "rev-parse", "HEAD");
+    const reports = [];
+    t.mock.method(console, "log", (line) => reports.push(line));
+    const landExitCode = await main(["land"], { cwd: cliLander, failingMs: 0, check: () => true });
+    assert.equal(landExitCode, 1);
+    assert.deepEqual(reports, [
+      JSON.stringify({ status: "landed", commit: head, releaseConfirmed: false }),
+    ]);
+    assert.ok(git(origin, "rev-parse", LEASE_REF));
+
+    // Clear the lease directly on the bare remote before exercising the CLI push path.
+    git(origin, "update-ref", "-d", LEASE_REF);
+    reports.length = 0;
+
+    // When main already holds the commit while fallback release fails, CLI push prints the landed commit and exits 1.
+    const pusher = clone("pusher");
+    const pushExitCode = await main(["push", head], { cwd: pusher, failingMs: 0 });
+    assert.equal(pushExitCode, 1);
+    assert.deepEqual(reports, [
+      JSON.stringify({ status: "landed", commit: head, releaseConfirmed: false }),
+    ]);
+    assert.ok(git(origin, "rev-parse", LEASE_REF));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a take whose push fails or times out is the lander's when origin took it, and a failed poll when it did not", () => {
   const { root, origin, git, clone } = setup();
   try {
@@ -3090,16 +3214,25 @@ test("a take whose push fails or times out is the lander's when origin took it, 
     );
     // A release tries a passing failure of origin again, and logs one that goes on instead of throwing it.
     git(lander, "config", "remote.origin.pushurl", path.join(root, "missing.git"));
-    release({ cwd: lander, remote: "origin", failingMs: 0 }, turn);
+    assert.equal(release({ cwd: lander, remote: "origin", failingMs: 0 }, turn), false);
     assert.equal(git(origin, "rev-parse", "landing-lease/main"), turn);
-    release(
-      {
-        cwd: lander,
-        remote: "origin",
-        sleep: () => git(lander, "config", "--unset", "remote.origin.pushurl"),
-      },
-      turn,
+    let retries = 0;
+    assert.equal(
+      release(
+        {
+          cwd: lander,
+          remote: "origin",
+          awakeClock: () => 0,
+          sleep: () => {
+            assert.ok(++retries <= 2, "continued retrying after the push URL was restored");
+            if (retries === 2) git(lander, "config", "--unset", "remote.origin.pushurl");
+          },
+        },
+        turn,
+      ),
+      true,
     );
+    assert.equal(retries, 2);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
 
     const stall = path.join(origin, "stall");

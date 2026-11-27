@@ -15,8 +15,6 @@ import {
   type EnvironmentId,
   type ThreadId,
   type EnvironmentStartup,
-  type OrchestrationV2RestartHold,
-  OrchestrationV2RestartHoldError,
   type OrchestrationV2RestartHoldWork,
   type ProviderInstanceId,
   type ServerConfig,
@@ -102,11 +100,7 @@ import {
   type ServerConfigProjection,
   withoutEnvironmentThemes,
 } from "./serverConfigProjection.ts";
-
-import {
-  untilListedRestartHoldWorkEnds,
-  untilRestartHoldIsEmpty,
-} from "@t3tools/shared/restartHold";
+import { untilListedRestartHoldWorkEnds } from "@t3tools/shared/restartHold";
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
@@ -1226,14 +1220,12 @@ export function createServerEnvironmentAtoms<R, E>(
     environmentId === null ? EMPTY_SERVER_UPDATE_STATE_ATOM : updateStateValueAtom(environmentId);
   /**
    * Ends when the work chats there waited on has ended and each chat then running tool calls ran
-   * none, or when the user decides first. With `untilIdle`, as for an automatic install, it also
-   * waits for work that started meanwhile and for every running turn to end.
+   * none, or when the user decides first.
    */
   const awaitRestartHoldClear = Effect.fn("ServerUpdate.awaitRestartHoldClear")(function* (
     environmentId: EnvironmentId,
     atomRegistry: AtomRegistry.AtomRegistry,
     onWaiting: (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) => void,
-    untilIdle = false,
   ) {
     const environmentRegistry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const decisions = restartHoldDecisions(atomRegistry, environmentId);
@@ -1247,9 +1239,7 @@ export function createServerEnvironmentAtoms<R, E>(
         atomRegistry.set(waitingOnAtom, work);
         onWaiting(work);
       });
-    const cleared = untilIdle
-      ? untilRestartHoldIsEmpty(holds, (hold) => record(hold.work))
-      : untilListedRestartHoldWorkEnds(holds, record);
+    const cleared = untilListedRestartHoldWorkEnds(holds, record);
     const outcome = yield* Stream.merge(cleared, decisions).pipe(
       Stream.runHead,
       Effect.ensuring(Effect.sync(() => atomRegistry.set(waitingOnAtom, []))),
@@ -1259,42 +1249,14 @@ export function createServerEnvironmentAtoms<R, E>(
   const awaitRestartHold = createRuntimeCommand<
     EnvironmentRegistry.EnvironmentRegistry | R,
     E,
-    { readonly environmentId: EnvironmentId; readonly untilIdle?: boolean },
+    { readonly environmentId: EnvironmentId },
     "clear" | RestartHoldDecision,
     unknown
   >(runtime, {
     label: "environment-data:server:await-restart-hold",
     concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
     execute: (input, atomRegistry) =>
-      awaitRestartHoldClear(
-        input.environmentId,
-        atomRegistry,
-        () => undefined,
-        input.untilIdle === true,
-      ),
-  });
-  /** The work chats there wait on right now, for a last check before a restart. */
-  const readRestartHold = createRuntimeCommand<
-    EnvironmentRegistry.EnvironmentRegistry | R,
-    E,
-    { readonly environmentId: EnvironmentId },
-    OrchestrationV2RestartHold,
-    unknown
-  >(runtime, {
-    label: "environment-data:server:read-restart-hold",
-    execute: Effect.fn("ServerUpdate.readRestartHold")(function* (input) {
-      const environmentRegistry = yield* EnvironmentRegistry.EnvironmentRegistry;
-      const first = yield* environmentRegistry
-        .followStream(input.environmentId, subscribe(WS_METHODS.serverWatchRestartHold, {}))
-        .pipe(Stream.runHead);
-      if (Option.isNone(first)) {
-        return yield* new OrchestrationV2RestartHoldError({
-          // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
-          message: "The server stopped reporting background work before it answered.",
-        });
-      }
-      return first.value;
-    }),
+      awaitRestartHoldClear(input.environmentId, atomRegistry, () => undefined),
   });
   const restartHold = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:restart-hold",
@@ -1932,7 +1894,6 @@ export function createServerEnvironmentAtoms<R, E>(
     databaseCompactionRecommendations,
     restartHold,
     awaitRestartHold,
-    readRestartHold,
     reclaimDatabaseSpace: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:reclaim-database-space",
       tag: WS_METHODS.serverReclaimDatabaseSpace,

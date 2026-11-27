@@ -271,7 +271,7 @@ export function WorkflowsPage() {
               title={t("Workflows are off")}
               description={tx("Turn them on for this server in {settings}.", {
                 settings: (
-                  <Link to="/settings/labs" className="underline underline-offset-2">
+                  <Link to="/settings/general" className="underline underline-offset-2">
                     {t("Settings → Labs")}
                   </Link>
                 ),

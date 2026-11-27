@@ -148,6 +148,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+alt+shift+e", command: "thread.reopenLastArchived", when: "!terminalFocus" },
   { key: "mod+z", command: "thread.undo", when: "!terminalFocus && !editableFocus" },
   { key: "mod+.", command: "thread.stop", when: "!terminalFocus" },
+  { key: "mod+shift+.", command: "uiFeedback.capture" },
   { key: "mod+alt+y", command: "approval.approve", when: "approvalPending" },
   { key: "mod+alt+shift+y", command: "approval.alwaysAllow", when: "approvalPending" },
   { key: "mod+alt+x", command: "approval.decline", when: "approvalPending" },
