@@ -5,57 +5,50 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { memo, useRef, useState } from "react";
-import { InfoIcon, XIcon } from "lucide-react";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
-import { Button, InlineButton } from "../ui/button";
+import { useRef, useState } from "react";
+import { InfoIcon } from "lucide-react";
+import { Button } from "../ui/button";
 import { formatProviderDriverKindLabel } from "../../providerModels";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { RefreshIcon } from "../ui/refresh-icon";
+import { deriveProviderStatus } from "../settings/providerStatus";
+import type { ThreadNotice } from "./threadNoticeSlot.logic";
 
-function getIncompatibleVersion(status: ServerProvider) {
-  const compatibility = status.compatibilityAdvisory;
-  if (status.status === "error" && status.auth.status === "unauthenticated") return null;
+function getIncompatibleVersion(provider: ServerProvider) {
+  const compatibility = provider.compatibilityAdvisory;
+  const { key } = deriveProviderStatus(provider);
+  if (key === "error" && provider.auth.status === "unauthenticated") return null;
   return compatibility?.status === "broken" ||
-    (status.status === "ready" && compatibility?.status === "unsupported")
+    (key === "ready" && compatibility?.status === "unsupported")
     ? compatibility
     : null;
 }
 
-export function getProviderStatusBannerKey(status: ServerProvider | null): string | null {
-  if (!status || status.status === "disabled") return null;
-  const incompatible = getIncompatibleVersion(status);
+/** Names the problem the thread notice reports, so a dismissal holds until it changes. */
+export function getProviderStatusNoticeKey(provider: ServerProvider | null): string | null {
+  if (!provider) return null;
+  const { key } = deriveProviderStatus(provider);
+  if (key === "disabled") return null;
+  const incompatible = getIncompatibleVersion(provider);
   if (incompatible) {
     return [
-      status.instanceId,
+      provider.instanceId,
       incompatible.status,
-      status.version ?? "",
+      provider.version ?? "",
       incompatible.message ?? "",
     ].join("\u0000");
   }
-  if (status.status === "ready") return null;
-  // Antigravity validates credentials at session start; unknown restart auth is not failure.
-  if (
-    status.driver === "antigravity" &&
-    status.installed &&
-    status.status === "warning" &&
-    status.auth.status === "unknown"
-  ) {
-    return null;
-  }
-  return [status.instanceId, status.status, status.auth.status, status.message ?? ""].join(
-    "\u0000",
-  );
+  if (key !== "error" && key !== "warning") return null;
+  return [provider.instanceId, key, provider.auth.status, provider.message ?? ""].join("\u0000");
 }
 
-export function shouldShowProviderStatusBanner(
-  status: ServerProvider | null,
-  dismissedBannerKey: string | null,
+export function shouldShowProviderStatusNotice(
+  provider: ServerProvider | null,
+  dismissedNoticeKey: string | null,
 ): boolean {
-  const bannerKey = getProviderStatusBannerKey(status);
-  return bannerKey !== null && bannerKey !== dismissedBannerKey;
+  const noticeKey = getProviderStatusNoticeKey(provider);
+  return noticeKey !== null && noticeKey !== dismissedNoticeKey;
 }
 
 export function hasProviderSetup(status: ServerProvider): boolean {
@@ -89,14 +82,16 @@ export function getProviderStatusMessage(status: ServerProvider): string {
     }
     return t("Sign in via the CLI to authenticate again.");
   }
-  return status.status === "ready"
+  const { key } = deriveProviderStatus(status);
+  return key === "ready"
     ? t("No models are available for this provider.")
-    : status.status === "error"
+    : key === "error"
       ? t("{provider} provider is unavailable.", { provider: providerName })
       : t("{provider} provider has limited availability.", { provider: providerName });
 }
 
-export const ProviderStatusBanner = memo(function ProviderStatusBanner({
+/** The active provider's problem, as one producer of the thread's notice slot. */
+export function providerStatusNotice({
   environmentId,
   onDismiss,
   onOpenProviderSetup,
@@ -105,33 +100,11 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   environmentId: EnvironmentId;
   onDismiss: () => void;
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
-  status: ServerProvider | null;
-}) {
-  const canRefresh = useAtomValue(serverEnvironment.refreshProviders.permissionAtom(environmentId));
-  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
-    label: "Refresh provider status",
-  });
-  const refreshingRef = useRef(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-
-  const refresh = async () => {
-    if (!status || !canRefresh || refreshingRef.current) return;
-    refreshingRef.current = true;
-    setIsRefreshing(true);
-    await refreshProviders({
-      environmentId,
-      input: { instanceId: status.instanceId, refreshModels: true },
-    });
-    refreshingRef.current = false;
-    setIsRefreshing(false);
-  };
-
-  if (!status || getProviderStatusBannerKey(status) === null) {
-    return null;
-  }
-
+  status: ServerProvider;
+}): ThreadNotice {
+  const derived = deriveProviderStatus(status);
   const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
-  const isUnauthenticated = status.status === "error" && status.auth.status === "unauthenticated";
+  const isUnauthenticated = derived.key === "error" && status.auth.status === "unauthenticated";
   const incompatible = getIncompatibleVersion(status);
   const driverLabel = formatProviderDriverKindLabel(status.driver);
   const accountedName =
@@ -149,57 +122,73 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
             version: status.version ?? "",
           })
       : t("{provider} provider status", { provider: providerName });
-  const message = incompatible?.message ?? getProviderStatusMessage(status);
-  const isWarning =
-    incompatible?.status !== "broken" && (status.status === "warning" || incompatible !== null);
+  const isWarning = incompatible ? incompatible.status !== "broken" : derived.key === "warning";
+  return {
+    id: `provider-status:${status.instanceId}`,
+    producer: "providerStatus",
+    // A provider that cannot answer is why a reply beside an open question would fail.
+    group: "environment",
+    variant: isWarning ? "warning" : "error",
+    icon: <InfoIcon />,
+    title,
+    description: incompatible?.message ?? getProviderStatusMessage(status),
+    actions: (
+      <>
+        {onOpenProviderSetup && hasProviderSetup(status) ? (
+          <Button size="xs" variant="ghost" onClick={() => onOpenProviderSetup(status.instanceId)}>
+            {t("Open provider setup")}
+          </Button>
+        ) : null}
+        <ProviderStatusRefreshButton
+          environmentId={environmentId}
+          instanceId={status.instanceId}
+          providerName={providerName}
+        />
+      </>
+    ),
+    dismissLabel: t("Dismiss {provider} provider {status}", {
+      provider: providerName,
+      status: status.status,
+    }),
+    onDismiss,
+  };
+}
+
+function ProviderStatusRefreshButton({
+  environmentId,
+  instanceId,
+  providerName,
+}: {
+  environmentId: EnvironmentId;
+  instanceId: ProviderInstanceId;
+  providerName: string;
+}) {
+  const canRefresh = useAtomValue(serverEnvironment.refreshProviders.permissionAtom(environmentId));
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    label: "Refresh provider status",
+  });
+  const refreshingRef = useRef(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const refresh = async () => {
+    if (!canRefresh || refreshingRef.current) return;
+    refreshingRef.current = true;
+    setIsRefreshing(true);
+    await refreshProviders({ environmentId, input: { instanceId, refreshModels: true } });
+    refreshingRef.current = false;
+    setIsRefreshing(false);
+  };
 
   return (
-    <div className="mx-auto w-fit max-w-[calc(100%-2rem)] pt-3">
-      <Alert
-        variant={isWarning ? "warning" : "error"}
-        role={incompatible && incompatible.status !== "broken" ? "status" : "alert"}
-        surface="glass"
-        controlAlignment="first-line"
-      >
-        <InfoIcon />
-        <AlertTitle>{title}</AlertTitle>
-        <AlertDescription>
-          <Tooltip>
-            <TooltipTrigger render={<div className="line-clamp-3" />}>{message}</TooltipTrigger>
-            <TooltipPopup side="top" className="whitespace-pre-wrap">
-              {message}
-            </TooltipPopup>
-          </Tooltip>
-          {onOpenProviderSetup && hasProviderSetup(status) ? (
-            <InlineButton onClick={() => onOpenProviderSetup(status.instanceId)}>
-              {t("Open provider setup")}
-            </InlineButton>
-          ) : null}
-        </AlertDescription>
-        <AlertAction>
-          <Button
-            aria-label={t("Refresh {provider} provider status", { provider: providerName })}
-            disabled={!canRefresh || isRefreshing}
-            onClick={() => void refresh()}
-            size="xs"
-            variant="ghost-muted"
-          >
-            <RefreshIcon />
-            {isRefreshing ? t("Refreshing...") : t("Refresh")}
-          </Button>
-          <Button
-            aria-label={t("Dismiss {provider} provider {status}", {
-              provider: providerName,
-              status: status.status,
-            })}
-            onClick={onDismiss}
-            size="icon-xs"
-            variant="ghost-muted"
-          >
-            <XIcon />
-          </Button>
-        </AlertAction>
-      </Alert>
-    </div>
+    <Button
+      aria-label={t("Refresh {provider} provider status", { provider: providerName })}
+      disabled={!canRefresh || isRefreshing}
+      onClick={() => void refresh()}
+      size="xs"
+      variant="ghost"
+    >
+      <RefreshIcon />
+      {isRefreshing ? t("Refreshing...") : t("Refresh")}
+    </Button>
   );
-});
+}

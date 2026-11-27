@@ -58,7 +58,7 @@ describe("subscription widget snapshots", () => {
     expect(snapshot.checkedAt).toBe(now);
     expect(snapshot.providers[0]).toMatchObject({
       name: "Codex",
-      windows: [{ remaining: 60 }],
+      windows: [{ remaining: 60, tone: null }],
       expiresAt: now + 10 * 60_000,
     });
     expect(snapshot.url).toBe(deepLink);

@@ -1,3 +1,9 @@
+## 2026-11-27 — Provider status and quota warnings read the same everywhere
+
+- Quota bars turn amber at 25% left and red at 10% left in the thread details, the sidebar, the mobile usage screen and the home-screen widgets alike.
+- Settings, the model picker and the thread now agree on a provider's status. A provider that is signed out, missing or unavailable no longer shows as ready in Settings, and the picker names the same problem Settings does.
+- A provider problem in a thread now appears in the thread's one notice slot, beside the thread's other notices, instead of a separate banner. Antigravity API-key and Agent Platform warnings that Settings flags now show there too.
+
 ## 2026-11-27 — Register material for assignment-isolated reviews
 
 - The new `t3_review_assignment` MCP tool registers files for an assignment-isolated review and returns a handle the server picks; pass it to `delegate_task` with `isolation: { type: "assignment", handle }`. The files are copied when you register them (up to 256 files and 8 MiB per assignment), so later edits do not change what the reviewer reads, and `task_status` read receipts carry each file's size and SHA-256. `revoke` ends the handle.

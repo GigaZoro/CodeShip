@@ -6,6 +6,7 @@ import { SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+import { deriveProviderStatus } from "../settings/providerStatus";
 import {
   isProviderInstancePickerReady,
   shouldShowInstanceBadge,
@@ -14,23 +15,12 @@ import {
 
 function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
   const label = entry.displayName;
-  // An unavailable instance (a driver this build lacks or the policy leaves out) says why instead.
-  if ((!entry.enabled && entry.isAvailable) || entry.status === "disabled") {
-    return t("{label}: Disabled in settings.", { label });
-  }
-  if (entry.status === "ready" && entry.isAvailable) {
-    return label;
-  }
-  const kind =
-    entry.status === "error"
-      ? t("Unavailable")
-      : entry.status === "warning"
-        ? t("Limited")
-        : t("Not ready");
-  const msg = entry.snapshot.message?.trim();
-  return msg
-    ? t("{label}: {kind}. {message}", { label, kind, message: msg })
-    : t("{label}: {kind}.", { label, kind });
+  const { key, headline, detail } = deriveProviderStatus(entry.snapshot);
+  if (key === "ready") return label;
+  const message = detail?.trim();
+  return message
+    ? t("{label}: {kind}. {message}", { label, kind: headline, message })
+    : t("{label}: {kind}.", { label, kind: headline });
 }
 
 const PICKER_TOOLTIP_SIDE = "left" as const;

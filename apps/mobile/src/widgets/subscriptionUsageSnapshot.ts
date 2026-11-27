@@ -5,6 +5,8 @@ import {
   collectLimitPools,
   type LimitAccount,
   type LimitPresentations,
+  type UsageLimitTone,
+  usageLimitTone,
 } from "@t3tools/shared/usageLimits";
 
 import type { WidgetTheme } from "./widgetTheme";
@@ -16,7 +18,14 @@ export interface SubscriptionUsageSnapshot {
   providers: Array<{
     name: string;
     detail: string;
-    windows: Array<{ kind?: string; label: string; remaining: number; reset: string }>;
+    windows: Array<{
+      kind?: string;
+      label: string;
+      remaining: number;
+      /** Computed here because the widget runtime cannot import the shared threshold. */
+      tone: UsageLimitTone;
+      reset: string;
+    }>;
     expiresAt: number;
     totalWindows: number;
   }>;
@@ -113,6 +122,7 @@ function subscriptionUsageProps(
               kind: window.kind,
               label: window.label,
               remaining: Math.round(window.remainingPercent),
+              tone: usageLimitTone(Math.round(window.remainingPercent)),
               reset: window.resets[0]
                 ? `Next reset ${new Date(window.resets[0].at).toLocaleString("en-US", {
                     month: "short",

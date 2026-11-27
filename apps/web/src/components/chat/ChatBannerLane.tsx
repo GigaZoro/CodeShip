@@ -1,24 +1,13 @@
-import type {
-  EnvironmentId,
-  OrchestrationV2ProviderFailureClass,
-  ProviderInstanceId,
-  ServerProvider,
-  ThreadId,
-} from "@t3tools/contracts";
+import type { OrchestrationV2ProviderFailureClass, ThreadId } from "@t3tools/contracts";
 import type { Dispatch, SetStateAction } from "react";
-import { ProviderStatusBanner } from "./ProviderStatusBanner";
 import { dismissThreadErrorBannerForSession, ThreadErrorBanner } from "./ThreadErrorBanner";
 
 /**
- * The banners above the timeline. They take their own row, so they never cover messages. The dismiss handlers are built here from plain
- * values, so a ChatView render that changes neither banner leaves both cached.
+ * The thread error above the timeline. It takes its own row, so it never covers messages. The
+ * dismiss handler is built here from plain values, so a ChatView render that leaves the error
+ * unchanged keeps the banner cached.
  */
 export function ChatBannerLane(props: {
-  environmentId: EnvironmentId;
-  providerStatus: ServerProvider | null;
-  providerStatusBannerKey: string | null;
-  setDismissedProviderStatusBannerKey: Dispatch<SetStateAction<string | null>>;
-  onOpenProviderSetup: (instanceId: ProviderInstanceId) => void;
   threadId: ThreadId;
   threadError: string | null;
   threadErrorClass: OrchestrationV2ProviderFailureClass | null;
@@ -28,10 +17,6 @@ export function ChatBannerLane(props: {
   setThreadErrorBannerDismissTick: Dispatch<SetStateAction<number>>;
 }) {
   const {
-    providerStatus,
-    providerStatusBannerKey,
-    setDismissedProviderStatusBannerKey,
-    onOpenProviderSetup,
     threadId,
     threadError,
     threadErrorClass,
@@ -42,12 +27,6 @@ export function ChatBannerLane(props: {
   } = props;
   return (
     <div className="z-30 flex shrink-0 flex-col ps-(--chat-lane-inset-start,0px) pe-(--chat-lane-inset-end,0px) empty:hidden not-empty:pb-2">
-      <ProviderStatusBanner
-        environmentId={props.environmentId}
-        status={providerStatus}
-        onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
-        onOpenProviderSetup={onOpenProviderSetup}
-      />
       <ThreadErrorBanner
         error={threadError}
         errorClass={threadErrorClass}

@@ -39,40 +39,52 @@ function isAntigravitySignInUnchecked(provider: ServerProvider): boolean {
   );
 }
 
-export function getProviderStatusKey(provider: ServerProvider | undefined): ProviderStatusKey {
-  if (provider && !provider.enabled) return "disabled";
-  if (provider?.availability === "unavailable") return "error";
-  if (provider && isAntigravitySignInUnchecked(provider)) return "neutral";
-  return provider?.status ?? "warning";
+export interface ProviderStatus {
+  readonly key: ProviderStatusKey;
+  readonly headline: string;
+  readonly detail: string | null;
 }
 
-export function getProviderSummary(provider: ServerProvider | undefined) {
+/**
+ * The one reading of a provider's state. Settings, the model picker and the thread notice render
+ * it, so a provider never reads as ready in one place and as needing attention in another.
+ */
+export function deriveProviderStatus(provider: ServerProvider | undefined): ProviderStatus {
   if (!provider) {
     return {
+      key: "warning",
       headline: t("Checking provider status"),
       detail: t("Waiting for the server to report installation and authentication details."),
     };
   }
   if (!provider.enabled || provider.status === "disabled") {
     return {
+      key: "disabled",
       headline: t("Disabled"),
       detail:
         provider.message ??
         t("This provider is installed but disabled for new sessions in T3.CodeShip."),
     };
   }
+  if (provider.availability === "unavailable") {
+    return {
+      key: "error",
+      headline: t("Unavailable"),
+      detail: provider.unavailableReason ?? null,
+    };
+  }
+  const problem = provider.status === "error" ? "error" : "warning";
   if (!provider.installed) {
     return {
+      key: problem,
       headline: t("Not found"),
       detail: provider.message ?? t("CLI not detected on PATH."),
     };
   }
-  if (provider.availability === "unavailable") {
-    return { headline: t("Unavailable"), detail: provider.unavailableReason ?? null };
-  }
   if (provider.auth.status === "unauthenticated") {
     const authLabel = provider.auth.label ?? provider.auth.type;
     return {
+      key: problem,
       headline: authLabel
         ? t("Not authenticated · {authLabel}", { authLabel })
         : t("Not authenticated"),
@@ -81,12 +93,14 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
   }
   if (isAntigravitySignInUnchecked(provider)) {
     return {
+      key: "neutral",
       headline: t("Installed · Sign-in not checked"),
       detail: provider.message ?? null,
     };
   }
   if (provider.status === "warning") {
     return {
+      key: "warning",
       headline: t("Needs attention"),
       detail:
         provider.message ??
@@ -95,6 +109,7 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
   }
   if (provider.status === "error") {
     return {
+      key: "error",
       headline: t("Unavailable"),
       detail: provider.message ?? t("The provider failed its startup checks."),
     };
@@ -102,14 +117,12 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
   if (provider.auth.status === "authenticated") {
     const authLabel = provider.auth.label ?? provider.auth.type;
     return {
+      key: "ready",
       headline: authLabel ? t("Authenticated · {authLabel}", { authLabel }) : t("Authenticated"),
       detail: provider.message ?? null,
     };
   }
-  return {
-    headline: t("Available"),
-    detail: provider.message ?? null,
-  };
+  return { key: "ready", headline: t("Available"), detail: provider.message ?? null };
 }
 
 export function getProviderVersionLabel(version: string | null | undefined) {

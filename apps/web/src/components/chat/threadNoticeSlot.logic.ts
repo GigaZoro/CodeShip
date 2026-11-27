@@ -27,6 +27,7 @@ const PRODUCER_TIERS = {
   feedback: { error: "failure", otherwise: "info" },
   usageLimitRecovery: { error: "usageLimitRecovery", otherwise: "usageLimitRecovery" },
   modelFallback: { error: "usageLimitRecovery", otherwise: "usageLimitRecovery" },
+  providerStatus: { error: "providerStatus", otherwise: "providerStatus" },
   usageLimits: { error: "info", otherwise: "info" },
 } as const satisfies Record<
   string,

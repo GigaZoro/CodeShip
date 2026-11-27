@@ -50,6 +50,10 @@ const PRODUCER_ROWS = {
   ],
   usageLimitRecovery: [["warning", "usageLimitRecovery", "default"]],
   modelFallback: [["info", "usageLimitRecovery", "info"]],
+  providerStatus: [
+    ["error", "providerStatus", "default"],
+    ["warning", "providerStatus", "default"],
+  ],
   usageLimits: [["info", "info", "info"]],
 } as const satisfies Record<ThreadNoticeProducer, ReadonlyArray<Row>>;
 

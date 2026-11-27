@@ -3,7 +3,7 @@ import type { ManualStepsView } from "@t3tools/client-runtime/state/manualSteps"
 import type { ProviderMcpProblem } from "@t3tools/client-runtime/state/provider-mcp-problems";
 import type { ServerProvider, ThreadPullRequestLink } from "@t3tools/contracts";
 
-import { getProviderStatusKey } from "../settings/providerStatus";
+import { deriveProviderStatus } from "../settings/providerStatus";
 
 export type NeedsYouBreakdown = Readonly<Record<NeedsYouReason, number>>;
 
@@ -101,7 +101,7 @@ export function brokenProviders(
         ({ provider }) =>
           provider.enabled &&
           provider.installed &&
-          (getProviderStatusKey(provider) === "error" ||
+          (deriveProviderStatus(provider).key === "error" ||
             provider.auth.status === "unauthenticated"),
       )
       .map(({ name }) => ({ name, environmentLabel })),

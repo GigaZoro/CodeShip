@@ -88,7 +88,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
                 </Text>
               ) : null}
               {shown.map((window) => {
-                const low = window.remaining <= 10;
+                const low = window.tone === "error";
                 return (
                   <Column key={window.label} modifiers={[fillMaxWidth(), padding(0, 4, 0, 0)]}>
                     <Text

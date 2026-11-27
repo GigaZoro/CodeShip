@@ -315,8 +315,9 @@ import { NoActiveThreadState } from "./NoActiveThreadState";
 import { DraftRecentThreads } from "./chat/DraftRecentThreads";
 import { resolveEffectiveEnvMode, resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
 import {
-  getProviderStatusBannerKey,
-  shouldShowProviderStatusBanner,
+  getProviderStatusNoticeKey,
+  providerStatusNotice,
+  shouldShowProviderStatusNotice,
 } from "./chat/ProviderStatusBanner";
 import {
   getThreadErrorBannerKey,
@@ -1742,20 +1743,20 @@ export default function ChatView(props: ChatViewProps) {
     null,
     DismissedFallbackWindowSchema,
   );
-  const providerStatusBannerKey = getProviderStatusBannerKey(activeProviderStatus);
-  const [dismissedProviderStatusBannerKey, setDismissedProviderStatusBannerKey] = useState<
+  const providerStatusNoticeKey = getProviderStatusNoticeKey(activeProviderStatus);
+  const [dismissedProviderStatusNoticeKey, setDismissedProviderStatusNoticeKey] = useState<
     string | null
   >(null);
-  if (providerStatusBannerKey === null && dismissedProviderStatusBannerKey !== null) {
-    setDismissedProviderStatusBannerKey(null);
+  if (providerStatusNoticeKey === null && dismissedProviderStatusNoticeKey !== null) {
+    setDismissedProviderStatusNoticeKey(null);
   }
-  const visibleProviderStatus = shouldShowProviderStatusBanner(
+  const visibleProviderStatus = shouldShowProviderStatusNotice(
     activeProviderStatus,
-    dismissedProviderStatusBannerKey,
+    dismissedProviderStatusNoticeKey,
   )
     ? activeProviderStatus
     : null;
-  const hasTimelineTopBanner = Boolean(timelineThreadError) || visibleProviderStatus !== null;
+  const hasTimelineTopBanner = Boolean(timelineThreadError);
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
@@ -2992,6 +2993,18 @@ export default function ChatView(props: ChatViewProps) {
     setPendingServerThreadStartFromOriginByThreadId,
     scheduleComposerFocus,
   });
+  const threadNoticeItems =
+    visibleProviderStatus === null
+      ? composerBannerItems
+      : [
+          ...composerBannerItems,
+          providerStatusNotice({
+            environmentId,
+            status: visibleProviderStatus,
+            onDismiss: () => setDismissedProviderStatusNoticeKey(providerStatusNoticeKey),
+            onOpenProviderSetup: openProviderSetupStable,
+          }),
+        ];
   const { onResume, isResuming } = useComposerResume({
     environmentId,
     routeThreadKey,
@@ -3609,11 +3622,6 @@ export default function ChatView(props: ChatViewProps) {
             <ThreadFind onClose={focusComposerStable} />
             {isWorkspaceFileDragActive ? <WorkspaceFileDropOverlay /> : null}
             <ChatBannerLane
-              environmentId={activeThread.environmentId}
-              providerStatus={visibleProviderStatus}
-              providerStatusBannerKey={providerStatusBannerKey}
-              setDismissedProviderStatusBannerKey={setDismissedProviderStatusBannerKey}
-              onOpenProviderSetup={openProviderSetupStable}
               threadId={activeThread.id}
               threadError={timelineThreadError}
               threadErrorClass={
@@ -3896,9 +3904,9 @@ export default function ChatView(props: ChatViewProps) {
                               }
                               isPreparingWorktree={isPreparingWorktree && !sendQueuesBehindSetup}
                               bannerItems={
-                                composerBannerItems.length === 0
+                                threadNoticeItems.length === 0
                                   ? EMPTY_COMPOSER_BANNER_ITEMS
-                                  : composerBannerItems
+                                  : threadNoticeItems
                               }
                               detachedNoticeTarget={
                                 isDraftHeroState ? heroNoticeElement : undefined

@@ -79,7 +79,7 @@ import {
 import { terminalEnvironment } from "../../state/terminal";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { connectPairing } from "../../connection/onboarding";
-import { getProviderSummary } from "../settings/providerStatus";
+import { deriveProviderStatus } from "../settings/providerStatus";
 import { providerClients } from "../settings/providerDriverMeta";
 import { ChatGptWelcomeCoordinator } from "../settings/ChatGptWelcomeCoordinator";
 import { AddManagedCodexAccountDialog, CodexSetupSection } from "../settings/CodexSetupSection";
@@ -997,7 +997,7 @@ function AgentCard({
   const meta = providerClients.get(ProviderDriverKind.make(driver));
   const displayName =
     provider?.displayName || (driver === "claudeAgent" ? "Claude Code" : (meta?.label ?? driver));
-  const summary = getProviderSummary(provider);
+  const summary = deriveProviderStatus(provider);
   const providerState = getOnboardingProviderState(provider);
 
   return (

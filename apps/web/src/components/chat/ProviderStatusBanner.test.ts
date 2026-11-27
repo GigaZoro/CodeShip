@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import {
-  getProviderStatusBannerKey,
+  getProviderStatusNoticeKey,
   getProviderStatusMessage,
-  shouldShowProviderStatusBanner,
+  shouldShowProviderStatusNotice,
 } from "./ProviderStatusBanner";
 
-const provider: ServerProvider = {
+const healthy: ServerProvider = {
   instanceId: ProviderInstanceId.make("codex-work"),
   driver: ProviderDriverKind.make("codex"),
   enabled: true,
@@ -18,6 +18,10 @@ const provider: ServerProvider = {
   models: [],
   skills: [],
   slashCommands: [],
+};
+
+const provider: ServerProvider = {
+  ...healthy,
   compatibilityAdvisory: {
     status: "unsupported",
     message: "Unsupported version. Use 2.0.0.",
@@ -26,16 +30,16 @@ const provider: ServerProvider = {
   },
 };
 
-describe("compatibility banners", () => {
+describe("compatibility notices", () => {
   it("shows and dismisses a warning on a healthy provider, then clears it after policy relaxation", () => {
-    expect(shouldShowProviderStatusBanner(provider, null)).toBe(true);
-    expect(shouldShowProviderStatusBanner(provider, getProviderStatusBannerKey(provider))).toBe(
+    expect(shouldShowProviderStatusNotice(provider, null)).toBe(true);
+    expect(shouldShowProviderStatusNotice(provider, getProviderStatusNoticeKey(provider))).toBe(
       false,
     );
     expect(
-      shouldShowProviderStatusBanner(
+      shouldShowProviderStatusNotice(
         { ...provider, version: "1.0.1" },
-        getProviderStatusBannerKey(provider),
+        getProviderStatusNoticeKey(provider),
       ),
     ).toBe(true);
     const relaxed: ServerProvider = {
@@ -46,10 +50,10 @@ describe("compatibility banners", () => {
         message: null,
       },
     };
-    expect(getProviderStatusBannerKey(relaxed)).toBeNull();
-    expect(getProviderStatusBannerKey({ ...provider, status: "disabled" })).toBeNull();
+    expect(getProviderStatusNoticeKey(relaxed)).toBeNull();
+    expect(getProviderStatusNoticeKey({ ...provider, status: "disabled" })).toBeNull();
     expect(
-      getProviderStatusBannerKey({
+      getProviderStatusNoticeKey({
         ...provider,
         compatibilityAdvisory: { ...provider.compatibilityAdvisory!, status: "graceful" },
       }),
@@ -72,7 +76,7 @@ describe("compatibility banners", () => {
         recommendedRange: ">=1.14.19 <2.0.0",
       },
     };
-    expect(shouldShowProviderStatusBanner(broken, null)).toBe(true);
+    expect(shouldShowProviderStatusNotice(broken, null)).toBe(true);
     const timeoutOnly: ServerProvider = {
       ...broken,
       compatibilityAdvisory: {
@@ -81,17 +85,17 @@ describe("compatibility banners", () => {
         message: null,
       },
     };
-    expect(shouldShowProviderStatusBanner(broken, getProviderStatusBannerKey(timeoutOnly))).toBe(
+    expect(shouldShowProviderStatusNotice(broken, getProviderStatusNoticeKey(timeoutOnly))).toBe(
       true,
     );
-    expect(shouldShowProviderStatusBanner(broken, getProviderStatusBannerKey(broken))).toBe(false);
+    expect(shouldShowProviderStatusNotice(broken, getProviderStatusNoticeKey(broken))).toBe(false);
     expect(
-      shouldShowProviderStatusBanner(
+      shouldShowProviderStatusNotice(
         {
           ...broken,
           compatibilityAdvisory: { ...broken.compatibilityAdvisory!, message: "Use 1.14.20." },
         },
-        getProviderStatusBannerKey(broken),
+        getProviderStatusNoticeKey(broken),
       ),
     ).toBe(true);
     expect(getProviderStatusMessage(broken)).toBe(message);
@@ -108,5 +112,27 @@ describe("compatibility banners", () => {
     expect(getProviderStatusMessage({ ...broken, auth: { status: "unauthenticated" } })).toBe(
       broken.message,
     );
+  });
+});
+
+describe("provider status notices", () => {
+  const antigravity: ServerProvider = {
+    ...healthy,
+    instanceId: ProviderInstanceId.make("antigravity"),
+    driver: ProviderDriverKind.make("antigravity"),
+    status: "warning",
+    auth: { status: "unknown" },
+  };
+
+  it("reports in the thread exactly what settings reports as needing attention", () => {
+    expect(getProviderStatusNoticeKey(antigravity)).toBeNull();
+    expect(
+      getProviderStatusNoticeKey({
+        ...antigravity,
+        auth: { status: "unknown", type: "gemini-api-key" },
+      }),
+    ).not.toBeNull();
+    expect(getProviderStatusNoticeKey({ ...healthy, availability: "unavailable" })).not.toBeNull();
+    expect(getProviderStatusNoticeKey({ ...healthy, enabled: false })).toBeNull();
   });
 });

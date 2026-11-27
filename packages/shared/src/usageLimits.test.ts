@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off - scans the client sources for usage thresholds.
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -38,6 +42,7 @@ import {
   usesChatGptSharing,
   resolveNewThreadModelSelection,
   showsRelativeLimitTimes,
+  usageLimitTone,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -2914,5 +2919,54 @@ describe("hasLiveUsageWindows", () => {
     expect(hasLiveUsageWindows(fableOnly, now)).toBe(true);
     expect(hasLiveUsageWindows(fableOnly, now, "claude-fable-5-1")).toBe(true);
     expect(hasLiveUsageWindows(fableOnly, now, "claude-opus-5-5")).toBe(false);
+  });
+});
+
+describe("usageLimitTone", () => {
+  it("reads every surface's quota warning from one threshold", () => {
+    expect([100, 26, 25, 21, 20, 11, 10, 0].map(usageLimitTone)).toEqual([
+      null,
+      null,
+      "warning",
+      "warning",
+      "warning",
+      "warning",
+      "error",
+      "error",
+    ]);
+  });
+
+  it("is the only quota threshold any web or mobile renderer applies", () => {
+    const repo = NodePath.resolve(
+      NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
+      "../../..",
+    );
+    const renderers: string[] = [];
+    const ownThresholds: string[] = [];
+    for (const root of ["apps/web/src", "apps/mobile/src"]) {
+      for (const entry of NodeFS.readdirSync(NodePath.join(repo, root), { recursive: true })) {
+        const file = `${root}/${String(entry).split(NodePath.sep).join("/")}`;
+        if (!/\.tsx?$/.test(file) || /\.test\.tsx?$/.test(file)) continue;
+        const source = NodeFS.readFileSync(NodePath.join(repo, file), "utf8");
+        if (
+          !/from "(?:@t3tools\/shared\/usageLimits|\.\/subscriptionUsageSnapshot)"/.test(source)
+        ) {
+          continue;
+        }
+        if (/\busageLimitTone\(|\.tone === "error"/.test(source)) renderers.push(file);
+        // A remaining share compared with its own percentage drifts from the shared threshold.
+        if (/\b(?:remaining\w*|left)\s*[<>]=?\s*[1-9]\d?\b(?!\.)/.test(source))
+          ownThresholds.push(file);
+      }
+    }
+    expect(ownThresholds).toEqual([]);
+    expect(renderers.toSorted()).toEqual([
+      "apps/mobile/src/features/usage/UsageLimitsSection.tsx",
+      "apps/mobile/src/widgets/SubscriptionUsage.android.tsx",
+      "apps/mobile/src/widgets/SubscriptionUsage.tsx",
+      "apps/mobile/src/widgets/subscriptionUsageSnapshot.ts",
+      "apps/web/src/components/chat/ThreadDetailsUsage.tsx",
+      "apps/web/src/components/usage/UsageLimitsGlance.tsx",
+    ]);
   });
 });

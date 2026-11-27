@@ -1459,7 +1459,6 @@ const catalog: MessageCatalog = {
   "{label}: {segments}": "{label}: {segments}",
   "{label}: {summary}": "{label}: {summary}",
   "{label}: {value}": "{label}: {value}",
-  "{label}: Disabled in settings.": "{label}: вимкнено в налаштуваннях.",
   "{label}: not installed. Show details": "{label}: не встановлено. Показати подробиці",
   "{label}: Off": "{label}: вимкнено",
   "{label}: On": "{label}: увімкнено",
@@ -8371,7 +8370,6 @@ const catalog: MessageCatalog = {
   "Not on: {machines}": "Не на: {machines}",
   "Not read on this machine yet. Saving or the next run reads it.":
     "На цій машині ще не прочитано. Збереження або наступний запуск прочитає його.",
-  "Not ready": "Не готово",
   "Not ready yet. Finish the step above.": "Ще не готово. Завершіть крок вище.",
   "Not reported": "Не повідомлено",
   "Not responding to Stop": "Немає відповіді на «Зупинити»",

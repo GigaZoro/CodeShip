@@ -1,11 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off - scans the web sources for provider status renderers.
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  getProviderSummary,
-  getProviderVersionAdvisoryPresentation,
-  getProviderStatusKey,
-} from "./providerStatus";
+import { deriveProviderStatus, getProviderVersionAdvisoryPresentation } from "./providerStatus";
 
 const provider: ServerProvider = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -21,15 +21,16 @@ const provider: ServerProvider = {
   skills: [],
 };
 
-describe("getProviderSummary", () => {
+describe("deriveProviderStatus", () => {
   it("does not hide a provider error behind a previous authenticated state", () => {
     expect(
-      getProviderSummary({
+      deriveProviderStatus({
         ...provider,
         status: "error",
         message: "The provider process failed to start.",
       }),
     ).toEqual({
+      key: "error",
       headline: "Unavailable",
       detail: "The provider process failed to start.",
     });
@@ -37,16 +38,27 @@ describe("getProviderSummary", () => {
 
   it("keeps authentication failures actionable when their provider status is error", () => {
     expect(
-      getProviderSummary({
+      deriveProviderStatus({
         ...provider,
         status: "error",
         auth: { status: "unauthenticated" },
         message: "Run codex login.",
       }),
     ).toEqual({
+      key: "error",
       headline: "Not authenticated",
       detail: "Run codex login.",
     });
+  });
+
+  it("never reads ready beside a headline that reports a problem", () => {
+    for (const change of [
+      { auth: { status: "unauthenticated" } },
+      { installed: false },
+      { availability: "unavailable" },
+    ] as const) {
+      expect.soft(deriveProviderStatus({ ...provider, ...change }).key).not.toBe("ready");
+    }
   });
 });
 
@@ -63,11 +75,11 @@ describe("Antigravity with unchecked sign-in", () => {
   it("presents an unchecked Google sign-in neutrally without claiming authentication is required", () => {
     for (const auth of [unchecked.auth, { status: "unknown", type: "oauth-personal" }] as const) {
       const candidate = { ...unchecked, auth };
-      expect.soft(getProviderSummary(candidate)).toEqual({
+      expect(deriveProviderStatus(candidate)).toEqual({
+        key: "neutral",
         headline: "Installed · Sign-in not checked",
         detail: unchecked.message,
       });
-      expect(getProviderStatusKey(candidate)).toBe("neutral");
     }
   });
 
@@ -125,8 +137,9 @@ describe("Antigravity with unchecked sign-in", () => {
     ] as const;
     for (const { name, change, headline, status } of cases) {
       const candidate = { ...unchecked, ...change };
-      expect.soft(getProviderSummary(candidate).headline, name).toBe(headline);
-      expect.soft(getProviderStatusKey(candidate), name).toBe(status);
+      const derived = deriveProviderStatus(candidate);
+      expect.soft(derived.headline, name).toBe(headline);
+      expect.soft(derived.key, name).toBe(status);
     }
   });
 });
@@ -232,4 +245,32 @@ it("shows compatibility in the version popover even when the installed version i
     emphasis: "normal",
     targetVersion: null,
   });
+});
+
+it("is the only provider status reading any renderer uses", () => {
+  const webSource = NodePath.resolve(
+    NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
+    "../..",
+  );
+  const renderers: string[] = [];
+  const rawReaders: string[] = [];
+  for (const entry of NodeFS.readdirSync(webSource, { recursive: true })) {
+    const file = String(entry).split(NodePath.sep).join("/");
+    if (!/\.tsx?$/.test(file) || /\.test\.tsx?$/.test(file)) continue;
+    if (file === "components/settings/providerStatus.ts") continue;
+    const source = NodeFS.readFileSync(NodePath.join(webSource, file), "utf8");
+    if (!/\bderiveProviderStatus\(/.test(source)) continue;
+    renderers.push(file);
+    // A renderer that also reads the raw state can disagree with the derivation it imports.
+    if (/\.status [!=]== "(?:ready|warning|error)"/.test(source)) rawReaders.push(file);
+  }
+  expect(rawReaders).toEqual([]);
+  expect(renderers.toSorted()).toEqual([
+    "components/chat/ModelPickerSidebar.tsx",
+    "components/chat/ProviderStatusBanner.tsx",
+    "components/onboarding/WelcomeWizard.tsx",
+    "components/settings/CodexSetupSection.tsx",
+    "components/settings/ProviderInstanceCard.tsx",
+    "components/sidebar/sidebarNavRailCounts.ts",
+  ]);
 });

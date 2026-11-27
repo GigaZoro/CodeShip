@@ -11,6 +11,8 @@ import {
   limitsNotice,
   paceOf,
   remainingPercent,
+  type UsageLimitTone,
+  usageLimitTone,
 } from "@t3tools/shared/usageLimits";
 import type { ReactNode } from "react";
 
@@ -36,8 +38,6 @@ export interface ThreadDetailsUsageInput {
   readonly sources: UsageLimitSourceSnapshots;
   readonly contextWindow: ContextWindowSnapshot | null;
 }
-
-type UsageTone = "error" | "warning" | null;
 
 /** The selected provider's limit windows. Each row reads as room left. */
 export function ThreadDetailsUsage({
@@ -161,7 +161,7 @@ function LimitRow({
     <UsageRow
       label={window.label}
       fill={left}
-      tone={left <= 10 ? "error" : left <= 20 ? "warning" : null}
+      tone={usageLimitTone(left)}
       value={`${left}%`}
       ariaValue={t("{left}% left", { left })}
       tooltip={
@@ -198,7 +198,7 @@ function UsageRow({
   readonly label: string;
   /** Bar fill from 0 to 100. Null hides the bar. */
   readonly fill: number | null;
-  readonly tone: UsageTone;
+  readonly tone: UsageLimitTone;
   /** A marker on the bar, from 0 to 100. */
   readonly tick?: number | null;
   readonly value: string;
