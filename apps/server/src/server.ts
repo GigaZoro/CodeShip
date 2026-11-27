@@ -193,7 +193,7 @@ import * as CloudHttp from "./cloud/http.ts";
 import * as GuestHttp from "./guest/http.ts";
 import * as CloudLink from "./cloud/CloudLink.ts";
 import * as ConnectReachability from "./cloud/ConnectReachability.ts";
-import { pendingServiceUpdateExists } from "./cloud/updateHandoff.ts";
+import { layerUpdateShutdownState, pendingServiceUpdateExists } from "./cloud/updateHandoff.ts";
 import * as RelayTracing from "./cloud/relayTracing.ts";
 import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
 import {
@@ -1415,6 +1415,7 @@ const layerMakeServer = Layer.unwrap(
       Layer.provideMerge(layerRuntimeServices),
       Layer.provideMerge(layerAcpDetachedProcessSpawner),
       Layer.provideMerge(layerSessionHost),
+      Layer.provideMerge(layerUpdateShutdownState),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
           Layer.provide(layerPersistence),

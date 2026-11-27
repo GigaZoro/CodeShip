@@ -46,6 +46,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
+import { UpdateShutdownState } from "./cloud/updateHandoff.ts";
 
 it.effect.each([
   "disabled-codex",
@@ -69,6 +70,7 @@ it.effect.each([
       };
       const imports = { importedThreadCount: 0, importedMessageCount: 0 };
       const dependencies = Layer.mergeAll(
+        Layer.succeed(UpdateShutdownState, { isPlannedUpdateShutdown: Effect.succeed(false) }),
         NodeCrypto.layer,
         Path.layer,
         Layer.mock(ServerConfig.ServerConfig)({

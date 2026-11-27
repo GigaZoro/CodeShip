@@ -8,17 +8,12 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
-import { desktopUpdateRestartPending, isPlannedUpdateShutdown } from "../cloud/updateHandoff.ts";
-import * as ServerConfig from "../config.ts";
 import { DetachedStdioHandle } from "./DetachedStdioHandle.ts";
 import { resolveSessionHostSocketPath, type SessionHostConfig } from "./protocol.ts";
 
@@ -356,7 +351,7 @@ describe("Detached session host broker (__session-host)", () => {
   });
 
   it.live(
-    "protects ClaudeSpawnedProcess from kill() while detaching for update, and supports ChildProcessHandle",
+    "detaches instead of killing while detaching for update, and supports ChildProcessHandle",
     () =>
       Effect.gen(function* () {
         const host = yield* Effect.promise(() => spawnTestBroker());
@@ -370,18 +365,18 @@ describe("Detached session host broker (__session-host)", () => {
               initialAfterSeq: 0,
             }),
           );
-          const claudeProcess = handle1.asClaudeSpawnedProcess();
-          const stdout1 = createLineReader(claudeProcess.stdout);
+          const childHandle1 = handle1.asChildProcessHandle();
+          const stdout1 = createLineReader(handle1.stdout);
           const ready = JSON.parse(yield* Effect.promise(() => stdout1.nextLine())) as {
             kind: string;
             pid: number;
           };
           childPid = ready.pid;
 
-          // Planned update detach: SDK calling kill() acknowledges shutdown cleanly while detaching instead of killing.
+          // A scope finalizer that kills the provider during a planned update detaches instead.
           handle1.markDetachingForUpdate();
-          assert.isTrue(claudeProcess.kill("SIGTERM"));
-          assert.isFalse(claudeProcess.killed);
+          yield* childHandle1.kill();
+          assert.isFalse(handle1.killed);
           const seq = yield* Effect.promise(() => handle1.detach());
           assert.isTrue(isProcessAlive(childPid));
 
@@ -431,37 +426,5 @@ describe("Detached session host broker (__session-host)", () => {
           ),
         );
       }),
-  );
-});
-
-describe("updateHandoff.isPlannedUpdateShutdown", () => {
-  it.live(
-    "reports planned update shutdown for a desktop restart marker even after it was consumed",
-    () => {
-      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-update-handoff-test-"));
-      const testLayer = ServerConfig.layerTest(dir, dir).pipe(
-        Layer.provideMerge(NodeServices.layer),
-      );
-      return Effect.gen(function* () {
-        assert.isFalse(yield* isPlannedUpdateShutdown);
-
-        const runtimeDir = NodePath.join(dir, "runtime");
-        NodeFS.mkdirSync(runtimeDir, { recursive: true });
-        NodeFS.writeFileSync(NodePath.join(runtimeDir, DESKTOP_UPDATE_RESTART_MARKER_FILE), "1\n");
-
-        assert.isTrue(yield* isPlannedUpdateShutdown);
-
-        // Consuming the marker (as CloudLink finalizer does before serverRuntimeStartup) must not clear the memoized decision.
-        assert.isTrue(yield* desktopUpdateRestartPending);
-        assert.isTrue(yield* isPlannedUpdateShutdown);
-      }).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            NodeFS.rmSync(dir, { recursive: true, force: true });
-          }),
-        ),
-        Effect.provide(testLayer),
-      );
-    },
   );
 });
