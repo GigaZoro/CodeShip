@@ -1153,8 +1153,16 @@ refusesReattach(
   (host) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      // An identity from long before this broker started: its pid was reused since.
-      yield* sql`UPDATE session_hosts SET broker_identity_json = ${timeIdentity(0)} WHERE id = ${host.id}`;
+      const rows = yield* sql<{ readonly identity: string }>`
+        SELECT json_extract(broker_identity_json, '$.identity') AS identity
+        FROM session_hosts WHERE id = ${host.id}`;
+      const stored = rows[0]?.identity ?? "";
+      // An identity in this platform's format for an earlier holder of the pid.
+      const earlier = stored.startsWith("boot:")
+        ? stored.replace(/\d+$/, (ticks) => String(Number(ticks) + 1))
+        : timeIdentity(0);
+      assert.notStrictEqual(earlier, stored);
+      yield* sql`UPDATE session_hosts SET broker_identity_json = ${JSON.stringify({ identity: earlier })} WHERE id = ${host.id}`;
     }).pipe(Effect.orDie),
   /broker_pid_reused/,
 );
