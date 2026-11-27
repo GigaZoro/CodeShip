@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - verifies native task caching in isolated subprocesses.
 import { describe, expect, it, vi } from "vite-plus/test";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -21,6 +22,7 @@ import {
   matchesTestPath,
   relativeTestPath,
 } from "./cached-tests.ts";
+import { readsCheckoutGit } from "./run-cached-test-group.ts";
 
 describe("cachedTestTasks", () => {
   it.each(["darwin", "linux", "win32"] as const)(
@@ -113,9 +115,7 @@ describe("cachedTestTasks", () => {
           .filter(([key]) => key !== "test-cache")
           .map(([, task]) => task.command.match(/'\.\/src\/[0-9]+\.test\.ts'/g)!.length),
       );
-      expect(largest).toBeLessThanOrEqual(
-        groupSize === CHANGED_TEST_GROUP_SIZE ? 8 : 2 * groupSize,
-      );
+      expect(largest).toBeLessThanOrEqual(2 * groupSize);
       const second = cachedTestTasks(
         JSON.stringify({ files: [...files, "src/001.test.ts"], groupSize }),
       );
@@ -126,6 +126,8 @@ describe("cachedTestTasks", () => {
       for (const key of Object.keys(first).filter((key) => key !== "test-cache" && key in second))
         expect(second[key]).toEqual(first[key]);
     }
+    // So check:changed's groups, bounded above, hold at most 8 files.
+    expect(2 * CHANGED_TEST_GROUP_SIZE).toBeLessThanOrEqual(8);
   });
 
   it("keeps shell metacharacters in filenames out of the command", () => {
@@ -1080,4 +1082,71 @@ describe("cachedTestTasks", () => {
       expect(await run(undefined, ["b.test.ts"])).toBe(0);
       expect(await NodeFSP.readFile(NodePath.join(directory, "report.json"), "utf8")).toBe("{}");
     }));
+});
+
+// Each row is one Git process's trace2 events, with `checkout` this checkout and `other` a
+// folder outside it.
+describe("readsCheckoutGit", () => {
+  const start = (...argv: Array<unknown>) => ({ event: "start", argv });
+  const repo = (worktree: unknown) => ({ event: "def_repo", worktree });
+  const param = (value: string) => ({ event: "def_param", param: "GIT_DIR", value });
+  it.each<[string, boolean, (checkout: string, other: string) => Array<unknown>]>([
+    ["upload-pack serving the checkout", true, (checkout) => [start("git-upload-pack", checkout)]],
+    [
+      "upload-pack in a linked worktree's git dir",
+      true,
+      (checkout) => [repo(NodePath.join(checkout, ".git", "worktrees", "linked"))],
+    ],
+    [
+      "--git-dir naming the checkout's git dir",
+      true,
+      (checkout, other) => [
+        start("git", `--git-dir=${NodePath.join(checkout, ".git")}`, "log"),
+        repo(other),
+      ],
+    ],
+    [
+      "a relative GIT_DIR from another repository",
+      true,
+      (checkout, other) => [
+        start("git", "log"),
+        param(NodePath.relative(other, NodePath.join(checkout, ".git"))),
+        repo(other),
+      ],
+    ],
+    [
+      "relative arguments in another repository",
+      false,
+      (_, other) => [start("git", "add", ".", "src/a.ts"), repo(other)],
+    ],
+    ["an argv that is not a list", true, () => [start(), { event: "start", argv: "git" }]],
+    ["a repository without a folder", true, () => [repo(undefined)]],
+  ])("tells whether %s reads the checkout: %s", (_, expected, events) => {
+    const root = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "trace-")));
+    try {
+      const checkout = NodePath.join(root, "checkout");
+      const other = NodePath.join(root, "other");
+      const traces = NodePath.join(root, "traces");
+      NodeFS.mkdirSync(traces);
+      NodeFS.writeFileSync(
+        NodePath.join(traces, "process"),
+        events(checkout, other)
+          .map((event) => JSON.stringify(event))
+          .join("\n"),
+      );
+      expect(readsCheckoutGit(traces, [checkout, NodePath.join(checkout, ".git")])).toBe(expected);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts a line it cannot parse as a read", () => {
+    const traces = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "trace-"));
+    try {
+      NodeFS.writeFileSync(NodePath.join(traces, "process"), '{"event":"start","argv":[');
+      expect(readsCheckoutGit(traces, [NodePath.join(traces, "checkout")])).toBe(true);
+    } finally {
+      NodeFS.rmSync(traces, { recursive: true, force: true });
+    }
+  });
 });
