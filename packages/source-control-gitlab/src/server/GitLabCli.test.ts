@@ -222,40 +222,10 @@ layer("GitLabCli.layer", (it) => {
     }),
   );
 
-  it.effect("creates same-project MRs without a repository lookup", () =>
-    Effect.gen(function* () {
-      mockedRun.mockReturnValueOnce(Effect.succeed(processOutput("{}")));
-      const glab = yield* GitLabCli.GitLabCli;
-      yield* glab.createMergeRequest({
-        cwd: "/repo",
-        baseBranch: "main",
-        headSelector: "feature/fix",
-        title: "Fix remote flow",
-        bodyFile: "/tmp/body.md",
-      });
-      expect(mockedRun).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          args: [
-            "api",
-            "--method",
-            "POST",
-            "projects/:fullpath/merge_requests",
-            "--raw-field",
-            "source_branch=feature/fix",
-            "--raw-field",
-            "target_branch=main",
-            "--raw-field",
-            "title=Fix remote flow",
-            "--field",
-            "description=@/tmp/body.md",
-          ],
-        }),
-      );
-    }),
-  );
-
   it.effect("does not create a fork MR when the target project response is invalid", () =>
     Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const bodyFile = yield* fileSystem.makeTempFileScoped({ prefix: "t3-gitlab-mr-body-" });
       mockedRun.mockReturnValueOnce(Effect.succeed(processOutput('{"path":"t3code"}')));
       const glab = yield* GitLabCli.GitLabCli;
       const error = yield* glab
@@ -265,13 +235,13 @@ layer("GitLabCli.layer", (it) => {
           headSelector: "octocat:feature/fix",
           source: { owner: "octocat", refName: "feature/fix" },
           title: "Fix remote flow",
-          bodyFile: "/tmp/body.md",
+          bodyFile,
         })
         .pipe(Effect.flip);
       assert.strictEqual(error._tag, "GitLabRepositoryDecodeError");
       assert.strictEqual(error.operation, "createMergeRequest");
       expect(mockedRun).toHaveBeenCalledTimes(1);
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect(

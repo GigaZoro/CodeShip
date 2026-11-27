@@ -1205,7 +1205,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     listRef,
     timestampFormat,
     routeThreadKey,
-    threadRef: threadDetailRef,
+    threadRef: threadDetailRef ?? citationThreadRef,
     markdownCwd,
     resolvedTheme,
     workspaceRoot,

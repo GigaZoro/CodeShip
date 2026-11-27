@@ -310,9 +310,9 @@ describe("thread list reorder availability", () => {
         registry.set(offlineCanOperate, false);
         expect(registry.get(environments).pinReorderEnvironmentIds.has(offlineId)).toBe(false);
         expect(registry.get(environments).activeReorderEnvironmentIds.has(offlineId)).toBe(false);
-        expect(createThreadMovePlanner(plannerInput())(movedId, "down")).toBeNull();
+        expectMoveDown(false);
         registry.set(offlineCanOperate, true);
-        expect(createThreadMovePlanner(plannerInput())(movedId, "down")).toHaveLength(2);
+        expectMoveDown(true);
 
         registry.set(configs, new Map([[onlineId, config]]));
 

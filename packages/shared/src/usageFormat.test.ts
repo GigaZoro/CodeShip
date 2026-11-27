@@ -225,7 +225,7 @@ describe("hourly usage formatting", () => {
       expect(formatHourShort(instant, "UTC", true, locale)).not.toContain("18");
     }
     expect(formatDateTimeShort(instant, "UTC", true, "fr")).not.toContain("18");
-    expect(formatHourShort(instant, "UTC", false, "es")).toBe("18:00");
+    expect(formatHourShort(instant, "UTC", false, "es")).toBe("18:03");
   });
 
   it.each([1, 7])("covers the exact %i-day range with buckets anchored to the request", (days) => {

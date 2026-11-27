@@ -60,7 +60,20 @@ vi.mock("./components/ScheduledTaskPromptField", () => ({ ScheduledTaskPromptFie
 vi.mock("../layout/workspace/useSelectWorkspaceDetail", () => ({
   useSelectWorkspaceDetail: () => vi.fn(),
 }));
-vi.mock("../../state/threads", () => ({ threadFamilies: {} }));
+vi.mock("../../state/threads", () => ({
+  threadFamilies: {},
+  threadEnvironment: { savedFoldersAtom: () => Atom.make([]) },
+}));
+vi.mock("../../state/presentation", () => ({ connectedEnvironmentIdsAtom: Atom.make([]) }));
+vi.mock("../../components/ui/ListSection", () => ({ ListSection: Children }));
+vi.mock("./components/SettingsSwitchRow", () => ({ SettingsSwitchRow: () => null }));
+vi.mock("./useScheduledTaskFolderMenu", () => ({ useScheduledTaskFolderMenu: () => () => null }));
+vi.mock("./ScheduledTaskRunsRouteScreen", () => ({ useOpenScheduledTaskThread: () => vi.fn() }));
+vi.mock("../threads/ThreadFolderNamePrompt", () => ({ promptThreadFolderName: vi.fn() }));
+vi.mock("../threads/useThreadFolderActions", () => ({
+  readThreadFolderTargets: () => [],
+  useSaveThreadFolder: () => vi.fn(),
+}));
 vi.mock("../../lib/copyTextWithHaptic", () => ({ tryCopyTextWithHaptic: vi.fn() }));
 vi.mock("../voice-input/useVoiceInputController", () => ({
   useVoiceInputController: () => ({ blocksSubmission: false }),
@@ -93,15 +106,22 @@ vi.mock("../../components/ui/ThemedSwitch", () => ({
     onValueChange: (value: boolean) => void;
   }) => <button onClick={() => onValueChange(!value)}>Toggle enabled</button>,
 }));
-vi.mock("../../state/entities", () => ({
-  useProjects: () => [
-    { environmentId: "environment", id: "project", title: "Project" },
-    { environmentId: "target", id: "target-project", title: "Target project" },
-  ],
-  useServerConfigs: () => new Map(),
-  useEnvironmentServerConfig: () => null,
-  useThreadShell: () => null,
-}));
+vi.mock("../../state/entities", () => {
+  const serverConfig = {
+    environment: { capabilities: {}, platform: {} },
+    providers: [],
+    settings: {},
+  };
+  return {
+    useProjects: () => [
+      { environmentId: "environment", id: "project", title: "Project" },
+      { environmentId: "target", id: "target-project", title: "Target project" },
+    ],
+    useServerConfigs: () => new Map(),
+    useEnvironmentServerConfig: () => serverConfig,
+    useThreadShell: () => null,
+  };
+});
 vi.mock("./settings-environment-filter", () => {
   const serverConfig = { environment: { capabilities: {}, platform: {} } };
   return {
@@ -121,6 +141,7 @@ vi.mock("../../state/sharedScheduledTasks", () => ({
 }));
 vi.mock("../../state/preferences", () => ({
   mobilePreferencesAtom: {},
+  saveMobilePreferences: {},
   updateMobilePreferencesAtom: {},
 }));
 vi.mock("../../lib/modelOptions", () => ({
@@ -130,6 +151,7 @@ vi.mock("../../lib/modelOptions", () => ({
 }));
 vi.mock("../../state/session", () => ({
   readEnvironmentScope: () => true,
+  useEnvironmentsWithScope: () => new Set(),
   usePreparedConnection: () => ({ _tag: "None" }),
 }));
 vi.mock("../../state/server", () => ({

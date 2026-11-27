@@ -2680,6 +2680,8 @@ describe("PreviewManager", () => {
         screenshot.resolve({ data: "" });
         expect(yield* Queue.take(capturing)).toBe(false);
         expect(windowThrottling.mock.calls).toEqual([[false], [true]]);
+        expect(contents.setBackgroundThrottling.mock.calls).toEqual([[false]]);
+        yield* TestClock.adjust("10 seconds");
         expect(contents.setBackgroundThrottling.mock.calls).toEqual([[false], [true]]);
       }).pipe(Effect.provide(managerLayer())),
   );

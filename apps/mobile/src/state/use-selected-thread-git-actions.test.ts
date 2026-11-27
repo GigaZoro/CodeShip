@@ -422,17 +422,18 @@ describe("automatic feature branch refs", () => {
 
   it("reports lookup failure instead of returning empty refs", async () => {
     state.results = [];
+    state.resultTargets = [];
     state.readRefs.mockResolvedValue(
       AsyncResult.failure(Cause.fail(new Error("Cannot list refs"))),
     );
     expect(await useSelectedThreadGitActions().refreshSelectedThreadBranches()).toBeNull();
     expect(state.results).toEqual([
       {
-        threadRef: { environmentId: "environment", threadId: "thread" },
         type: "error",
         title: "Git action failed",
         description: "Cannot list refs",
       },
     ]);
+    expect(state.resultTargets).toEqual([{ environmentId: "environment", threadId: "thread" }]);
   });
 });

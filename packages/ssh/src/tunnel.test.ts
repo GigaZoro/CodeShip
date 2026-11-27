@@ -432,8 +432,9 @@ describe("ssh tunnel scripts", () => {
         "grep",
         "cut",
         checksum,
-        "tar",
         "mv",
+        "ln",
+        "rmdir",
       ]) {
         NodeFS.symlinkSync(
           NodeChildProcess.execFileSync("sh", ["-c", `command -v ${tool}`], {
@@ -442,6 +443,21 @@ describe("ssh tunnel scripts", () => {
           NodePath.join(bin, tool),
         );
       }
+      const realTar = NodeChildProcess.execFileSync("sh", ["-c", "command -v tar"], {
+        encoding: "utf8",
+      }).trim();
+      // macOS bsdtar gunzips in-process via libz; emulate GNU tar failing when gzip is absent.
+      NodeFS.writeFileSync(
+        NodePath.join(bin, "tar"),
+        `#!/bin/sh
+if ! command -v gzip >/dev/null 2>&1; then
+  printf 'tar (child): gzip: Cannot exec: No such file or directory\n' >&2
+  exit 2
+fi
+exec "${realTar}" "$@"
+`,
+        { mode: 0o755 },
+      );
       NodeFS.writeFileSync(
         NodePath.join(bin, "uname"),
         '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n',
@@ -473,7 +489,7 @@ describe("ssh tunnel scripts", () => {
       const home = NodePath.join(root, "home");
       NodeFS.mkdirSync(bin);
       NodeFS.mkdirSync(home);
-      for (const tool of ["sh", "mkdir", "mktemp", "cat", "rm"]) {
+      for (const tool of ["sh", "mkdir", "mktemp", "cat", "rm", "mv", "ln", "rmdir"]) {
         NodeFS.symlinkSync(
           NodeChildProcess.execFileSync("sh", ["-c", `command -v ${tool}`], {
             encoding: "utf8",
@@ -1734,7 +1750,7 @@ const canBind = (port) =>
     server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
   });
 (async () => {
-  if (args[0] === "--version") return console.log(version);
+  if (args[0] === "--version") return console.log("v" + version);
   if (args[0] === "serve") {
     const server = http.createServer((_request, response) => response.end("ok"));
     server.listen(Number(flag("--port")), "127.0.0.1", () => {

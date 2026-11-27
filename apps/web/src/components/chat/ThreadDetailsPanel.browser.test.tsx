@@ -10,7 +10,6 @@ import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
 const SCRATCH_ROOT = "/home/user/.t3/scratch";
-const CONTROLS_EXPANDED_KEY = "t3code:thread-details:controls-expanded";
 
 const state = vi.hoisted(() => ({
   workspaceRoot: "",
@@ -124,6 +123,7 @@ vi.mock(import("~/state/vcs"), async (importOriginal) => {
 });
 
 import { render } from "../../../test/render";
+import { DraftId } from "../../composerDraftStore";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { PopoverCreateHandle } from "../ui/popover";
 import { ChatCanvasContext } from "./ChatCanvasContext";
@@ -158,8 +158,6 @@ function setup(input: {
   state.folder = input.folder;
   state.pullRequests = input.pullRequests ?? [];
   useRightPanelStore.setState({ threadPanelVisibilityByThreadKey: {} });
-  // The workspace and version-control controls stay folded behind the summary until it is expanded.
-  localStorage.setItem(CONTROLS_EXPANDED_KEY, "true");
   const anchor = document.createElement("div");
   document.body.append(anchor);
   return {
@@ -167,7 +165,6 @@ function setup(input: {
     handle: PopoverCreateHandle(),
     [Symbol.dispose]: () => {
       anchor.remove();
-      localStorage.removeItem(CONTROLS_EXPANDED_KEY);
     },
   };
 }
@@ -218,6 +215,7 @@ function Panel({
         composerDraftTarget={threadRef}
         worktreePath={draftEnvMode === undefined ? state.folder : null}
         isServerThread={draftEnvMode === undefined}
+        {...(draftEnvMode !== undefined ? { draftId: DraftId.make("draft") } : {})}
         activeProjectName={state.workspaceRoot === SCRATCH_ROOT ? "No project" : "plain"}
         activeProjectScripts={withScripts ? [] : undefined}
         preferredScriptId={null}
@@ -250,6 +248,10 @@ function Panel({
   );
 }
 
+async function expandControls() {
+  await page.getByRole("button", { name: /^Workspace and Git controls/ }).click();
+}
+
 it("offers no git controls in a No project thread, but shows its linked pull request", async () => {
   using fixture = setup({
     workspaceRoot: SCRATCH_ROOT,
@@ -257,6 +259,7 @@ it("offers no git controls in a No project thread, but shows its linked pull req
     pullRequests: [linkedPullRequest],
   });
   await using _screen = await render(<Panel fixture={fixture} />);
+  await expandControls();
   await expect.element(page.getByText("#27513")).toBeVisible();
   await expect
     .element(page.getByRole("button", { name: "Initialize Git" }))
@@ -287,6 +290,7 @@ it("shows a linked pull request in a folder that is not a git repository", async
     pullRequests: [linkedPullRequest],
   });
   await using _screen = await render(<Panel fixture={fixture} />);
+  await expandControls();
   await expect.element(page.getByRole("region", { name: "Workspace" })).toBeVisible();
   await expect.element(page.getByText("#27513")).toBeVisible();
   await expect.element(page.getByRole("button", { name: "Initialize Git" })).toBeVisible();
@@ -299,6 +303,7 @@ it("offers no Initialize Git before the server config says where No project live
     configLoaded: false,
   });
   await using _screen = await render(<Panel fixture={fixture} />);
+  await expandControls();
   await expect.element(page.getByRole("region", { name: "Workspace" })).toBeVisible();
   await expect
     .element(page.getByRole("button", { name: "Initialize Git" }))
@@ -312,6 +317,7 @@ it("lists the t3.json actions on disk when the actions menu opens again after th
   t3File.disk = t3Json("Dev 4100");
   t3File.cached = t3File.disk;
   await using _screen = await render(<Panel fixture={fixture} withScripts />);
+  await expandControls();
 
   const chooser = page.getByRole("button", { name: "Choose project action" });
   await chooser.click();

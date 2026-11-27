@@ -247,11 +247,6 @@ export function composerContextEditorTokens(
       value: mention.model,
       ...mention,
     })),
-    ...citations.map((ref) => ({
-      type: "citation" as const,
-      value: assistantCitationLabel(ref.citation),
-      ...ref,
-    })),
   ].sort((a, b) => a.start - b.start);
 }
 

@@ -1409,7 +1409,15 @@ const CHAT_MARKDOWN_COMPONENTS = {
       renderContextReference,
     } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
-    const citation = href ? parseAssistantCitationHref(href) : null;
+    // An unsafe or empty destination leaves no usable href, so it is not a link.
+    if (!href) {
+      return (
+        <span id={props.id} className={props.className} dir={props.dir}>
+          {children}
+        </span>
+      );
+    }
+    const citation = parseAssistantCitationHref(href);
     const before = node?.position?.start.offset;
     const after = node?.position?.end.offset;
     const leading = before !== undefined && CITATION_LEADS_BLOCK.test(text.slice(0, before));

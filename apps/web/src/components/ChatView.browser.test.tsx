@@ -283,9 +283,11 @@ it("opens a linked Linear issue from an inactive thread's sidebar badge", async 
   expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${linked.id}`);
   await expect.element(page.getByRole("heading", { name: liveTitle })).toBeVisible();
   await act(() => useRightPanelStore.getState().close(scopeThreadRef(ENVIRONMENT_ID, linked.id)));
+  const threadDetails = page.getByRole("region", { name: "Thread details" });
+  await threadDetails.getByRole("button", { name: /^Workspace and Git controls/ }).click();
   await expect
     .element(
-      page.getByRole("region", { name: "Thread details" }).getByRole("link", {
+      threadDetails.getByRole("link", {
         name: issueName,
         exact: true,
       }),
@@ -533,25 +535,25 @@ it.each(["new", "existing"] as const)(
 
     // Enter arms the send and shows the banner plus a disabled spinner button.
     await userEvent.keyboard("check image{Enter}");
-    await expect.element(page.getByText("Sending once image is ready")).toBeVisible();
+    await expect.element(page.getByText("Sending once the image is ready")).toBeVisible();
     const waitingButton = page.getByRole("button", { name: "Sending when ready", exact: true });
     await expect.element(waitingButton).toBeDisabled();
     await expect.element(waitingButton).toHaveAttribute("aria-busy", "true");
 
     // Typing disarms the queued send and keeps the edit.
     await userEvent.keyboard(" now");
-    await expect.element(page.getByText("Sending once image is ready")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Sending once the image is ready")).not.toBeInTheDocument();
     await expect.element(editor).toHaveTextContent("check image now");
 
     // Enter arms again; Esc cancels cleanly.
     await userEvent.keyboard("{Enter}");
-    await expect.element(page.getByText("Sending once image is ready")).toBeVisible();
+    await expect.element(page.getByText("Sending once the image is ready")).toBeVisible();
     await userEvent.keyboard("{Escape}");
-    await expect.element(page.getByText("Sending once image is ready")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Sending once the image is ready")).not.toBeInTheDocument();
 
     // Enter arms again; leaving the thread still sends once the image is ready.
     await userEvent.keyboard("{Enter}");
-    await expect.element(page.getByText("Sending once image is ready")).toBeVisible();
+    await expect.element(page.getByText("Sending once the image is ready")).toBeVisible();
     await router.navigate({ to: `/${ENVIRONMENT_ID}/${other.id}` });
     await expect.element(page.getByText(`Answer 0 for upload-wait-other-${kind}.`)).toBeVisible();
 
@@ -1139,15 +1141,14 @@ it("opening Settings without a page event closes the composer model picker and p
 
   // The desktop menu's open-settings accelerator navigates with no key or pointer event in the page.
   await act(() => router.navigate({ to: "/settings" }));
-  await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expect.element(page.getByRole("region", { name: "Settings content" })).toBeVisible();
   await expect.element(search).not.toBeInTheDocument();
 
   await act(() => router.navigate({ to: "/draft/$draftId", params: { draftId } }));
   await page.getByRole("button", { name: /^Permissions: / }).click();
-  // The modal Settings dialog aria-hides everything outside it, so match text, not role.
   const permissions = page.getByText("Allow commands and edits without prompts.").last();
   await expect.element(permissions).toBeVisible();
   await act(() => router.navigate({ to: "/settings" }));
-  await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expect.element(page.getByRole("region", { name: "Settings content" })).toBeVisible();
   await expect.element(permissions).not.toBeInTheDocument();
 });

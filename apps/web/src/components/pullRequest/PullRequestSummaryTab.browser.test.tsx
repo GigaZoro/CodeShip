@@ -1,5 +1,5 @@
 import { loadMessageCatalog } from "@t3tools/client-runtime/i18n/catalogs";
-import { activateLanguage } from "@t3tools/shared/i18n";
+import { activateLanguage, getFormattingLocale } from "@t3tools/shared/i18n";
 import {
   DEFAULT_CLIENT_SETTINGS,
   SourceControlProviderKind,
@@ -279,7 +279,7 @@ it("shows a comment's exact time in the chosen 24-hour clock", async () => {
   await using screen = await render({ ...detail, comments: [comment], commentCount: 1 });
 
   await userEvent.hover(screen.container.querySelector(`time[datetime="${createdAt}"]`)!);
-  const expected = new Date(createdAt).toLocaleString(undefined, { hour12: false });
+  const expected = new Date(createdAt).toLocaleString(getFormattingLocale(), { hour12: false });
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toBe(expected),
   );

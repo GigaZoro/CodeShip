@@ -198,7 +198,7 @@ await Effect.runPromise(Command.runWith(sshHelperCommand, { version: "1.2.3" })(
         NodePath.join(version, "t3"),
         `#!/bin/sh
 set -eu
-if [ "$1" = --version ]; then printf 1.2.3; exit; fi
+if [ "$1" = --version ]; then printf v1.2.3; exit; fi
 [ "$1" = __ssh-helper ]
 case "$2" in
   update-remaining) printf 'marker %s\\n' "$(cat "$HOME/clock")" >> "$HOME/events"; exec "$TEST_REAL_NODE" --require "$HOME/clock.cjs" "$HOME/helper.ts" "$2" "$3" ;;

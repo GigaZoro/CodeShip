@@ -33,9 +33,10 @@ describe("thread composer errors", () => {
       AsyncResult.failure(Cause.fail(new Error("Run is gone"))),
       "Run is gone",
     ],
+    ["a bare string failure's message", AsyncResult.failure(Cause.fail("rejected")), "rejected"],
     [
       "the fallback for a non-error failure",
-      AsyncResult.failure(Cause.fail("rejected")),
+      AsyncResult.failure(Cause.fail({ code: 500 })),
       "Stop failed",
     ],
     ["nothing for an interrupted command", AsyncResult.failure(Cause.interrupt()), undefined],

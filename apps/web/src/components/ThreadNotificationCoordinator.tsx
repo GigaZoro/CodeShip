@@ -503,7 +503,7 @@ export function startThreadNotifications(
     applyMode();
     syncEnvironments();
   };
-  const unsubscribeWindowFocus = window.desktopBridge?.onWindowFocus(clearPending);
+  const unsubscribeWindowFocus = window.desktopBridge?.onWindowFocus?.(clearPending);
   window.addEventListener("focus", clearPending);
   const unsubscribeSettings = subscribeClientSettings(onSettings);
   const unsubscribeEnvironmentIds = registry.subscribe(

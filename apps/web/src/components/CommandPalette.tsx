@@ -1766,7 +1766,7 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  if (activeThread !== null) {
+  if (activeThread != null) {
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
     actionItems.push({
       kind: "action",
@@ -1780,7 +1780,7 @@ function OpenCommandPaletteDialog(props: {
   }
 
   if (
-    activeThread !== null &&
+    activeThread != null &&
     threadPullRequestLinkMode(activeThreadServerConfig?.environment.capabilities) !== "unsupported"
   ) {
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
@@ -1811,7 +1811,7 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push(...activeThreadLifecycleItems);
 
-  if (activeThread !== null) {
+  if (activeThread != null) {
     actionItems.push({
       kind: "action",
       value: "action:side-chat",
@@ -1845,7 +1845,7 @@ function OpenCommandPaletteDialog(props: {
     }
   }
 
-  if (activeThread !== null && canShareActiveThreadWithGuest) {
+  if (activeThread != null && canShareActiveThreadWithGuest) {
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
     actionItems.push({
       kind: "action",
@@ -1859,7 +1859,7 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  if (activeThread !== null) {
+  if (activeThread != null) {
     const thread = activeThread;
     actionItems.push({
       kind: "action",

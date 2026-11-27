@@ -1,4 +1,5 @@
 import * as NodeNet from "node:net";
+import * as NodeOS from "node:os";
 
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -110,6 +111,36 @@ export const make = () => {
       Effect.catchTags({ NetListenError: () => Effect.succeed(false) }),
     );
 
+  const localNonInternalIpv4Hosts = (): ReadonlyArray<string> => [
+    ...new Set(
+      Object.values(NodeOS.networkInterfaces())
+        .flatMap((entries) => entries ?? [])
+        .filter((entry) => entry.family === "IPv4" && !entry.internal)
+        .map((entry) => entry.address),
+    ),
+  ];
+
+  const canListenOnWildcard = Effect.fn("Net.canListenOnWildcard")(function* (
+    port: number,
+    wildcardHost: string,
+  ): Effect.fn.Return<boolean> {
+    if (!(yield* canListenOnHost(port, wildcardHost))) {
+      return false;
+    }
+    // On BSD/macOS, SO_REUSEADDR lets a wildcard bind succeed alongside a specific interface
+    // listener on the same port. Probe non-internal IPv4 interface addresses directly so an
+    // occupied LAN address rejects the port for wildcard binds.
+    for (const address of localNonInternalIpv4Hosts()) {
+      const available = yield* probeListenOnHost(port, address).pipe(
+        Effect.catchTags({ NetListenError: () => Effect.succeed(true) }),
+      );
+      if (!available) {
+        return false;
+      }
+    }
+    return true;
+  });
+
   const hasListenerOnHost = (port: number, host: string): Effect.Effect<boolean> =>
     Effect.callback<boolean>((resume) => {
       const socket = NodeNet.createConnection({ host, port });
@@ -217,7 +248,7 @@ export const make = () => {
       if (
         preferred > 0 &&
         (yield* isPortAvailableForHost(preferred, host)) &&
-        (wildcardHost === undefined || (yield* canListenOnHost(preferred, wildcardHost)))
+        (wildcardHost === undefined || (yield* canListenOnWildcard(preferred, wildcardHost)))
       ) {
         return preferred;
       }
@@ -228,7 +259,12 @@ export const make = () => {
       // A wildcard bind can succeed while another address family owns the localhost port.
       for (let attempt = 0; attempt < WILDCARD_PORT_ATTEMPTS; attempt += 1) {
         const port = yield* reserveLoopbackPort(wildcardHost);
-        if (yield* isPortAvailableOnLoopback(port)) return port;
+        if (
+          (yield* isPortAvailableOnLoopback(port)) &&
+          (yield* canListenOnWildcard(port, wildcardHost))
+        ) {
+          return port;
+        }
       }
       return yield* new NetError({ message: "Failed to find an available wildcard port" });
     }),

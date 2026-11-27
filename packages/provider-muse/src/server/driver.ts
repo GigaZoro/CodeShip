@@ -22,6 +22,7 @@ import { makeMuseSignedOut, museSignedOutMessage } from "./signedOut.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeCliVersionMemory } from "@t3tools/provider-core/server/cliVersionMemory";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
+import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import { enrichMuseSnapshot, latestMuseVersion, museMaintenance } from "./maintenance.ts";
 import { makeMuseEnvironment } from "./sdk.ts";
 import { museUsageReader } from "./usage.ts";
@@ -133,6 +134,7 @@ export const MuseDriver: ProviderDriver<
       return latestVersion !== undefined ? { ...capabilities, latestVersion } : capabilities;
     });
     const signedOut = yield* makeMuseSignedOut(museSignedOutMessage(processEnvironment));
+    let managedSnapshot: ManagedServerProvider | undefined;
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<MuseSettings>>({
       readsUsageOnRefresh: true,
       acceptUsageDuringUnknownAuth: true,
@@ -166,10 +168,32 @@ export const MuseDriver: ProviderDriver<
         ),
         Effect.map(stampIdentity),
         Effect.flatMap(signedOut.apply),
-        Effect.map((provider) => {
-          if (provider.auth.status !== "unauthenticated") return provider;
-          const { usageLimits: _staleUsage, ...signedOutProvider } = provider;
-          return signedOutProvider;
+        Effect.flatMap((provider) => {
+          if (provider.auth.status === "unauthenticated") {
+            const { usageLimits: _staleUsage, ...signedOutProvider } = provider;
+            return Effect.succeed(signedOutProvider);
+          }
+          if (
+            provider.usageLimits !== undefined ||
+            processEnvironment.META_API_KEY ||
+            managedSnapshot === undefined
+          ) {
+            return Effect.succeed(provider);
+          }
+          return managedSnapshot.getSnapshot.pipe(
+            Effect.map((current) => {
+              if (current.auth.status === "unauthenticated" || current.usageLimits === undefined) {
+                return provider;
+              }
+              return {
+                ...provider,
+                ...(current.auth.label !== undefined && provider.auth.label === undefined
+                  ? { auth: { ...provider.auth, label: current.auth.label } }
+                  : {}),
+                usageLimits: current.usageLimits,
+              };
+            }),
+          );
         }),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -200,6 +224,7 @@ export const MuseDriver: ProviderDriver<
           }),
       ),
     );
+    managedSnapshot = snapshot;
     const modelCatalog = snapshot.getSnapshot.pipe(Effect.map((current) => current.models));
     const republishIfChanged = (changed: boolean) =>
       changed

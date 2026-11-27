@@ -607,7 +607,7 @@ describe("RelayClient", () => {
         const baseDir = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-cloudflared-test-",
         });
-        const directory = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64`;
+        const directory = `${baseDir}/tools/cloudflared/install/${RelayClient.CLOUDFLARED_VERSION}/linux-x64`;
         const renamePending = yield* Deferred.make<void>();
         const allowRename = yield* Deferred.make<void>();
         const renameFinished = yield* Deferred.make<void, PlatformError.PlatformError>();
@@ -1194,7 +1194,7 @@ describe("RelayClient", () => {
       ["2025.6.1", RelayClient.CLOUDFLARED_MIN_VERSION, "legacy"],
       [RelayClient.CLOUDFLARED_MIN_VERSION, "2025.6.1", "current"],
       [RelayClient.CLOUDFLARED_MIN_VERSION, RelayClient.CLOUDFLARED_MIN_VERSION, "current"],
-      ["2025.6.1", "2025.9.0", "current"],
+      [RelayClient.CLOUDFLARED_VERSION, "2026.10.5", "current"],
     ] as const)(
       "selects the compatible fallback for current %s and legacy %s from the %s layout",
       ([currentVersion, legacyVersion, preferred]) => {

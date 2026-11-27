@@ -36,7 +36,7 @@ it.each(["edit", "dismiss", "newer import fails first"] as const)(
       />,
     );
 
-    const actions = screen.getByRole("button", { name: "Script actions" });
+    const actions = screen.getByRole("button", { name: "More project actions" });
     const dialog = page.getByRole("dialog");
     const name = dialog.getByRole("textbox", { name: "Name" });
     const failure = AsyncResult.failure<void, unknown>(
@@ -49,12 +49,14 @@ it.each(["edit", "dismiss", "newer import fails first"] as const)(
 
     switch (nextAction) {
       case "edit":
-        await page.getByRole("button", { name: "Edit Local check" }).click();
+        await page.getByRole("menuitem", { name: "Edit action" }).click();
+        await page.getByRole("menuitem", { name: "Local check" }).nth(1).click();
+        await expect.element(dialog).toBeVisible();
         await act(async () => older.resolve(failure));
         expect(name.query()).toHaveProperty("value", "Local check");
         break;
       case "dismiss":
-        await page.getByRole("menuitem", { name: "Add project script" }).click();
+        await page.getByRole("menuitem", { name: "Add action" }).click();
         await expect.element(dialog).toBeVisible();
         await userEvent.keyboard("{Escape}");
         await expect.element(dialog).not.toBeInTheDocument();

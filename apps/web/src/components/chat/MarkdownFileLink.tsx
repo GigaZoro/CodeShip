@@ -340,6 +340,19 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
     contentKey: `${iconPath}\u0000${targetPath}`,
     variant: "code",
   });
+  const handlePrimaryClick = (event: ReactMouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
+      handleOpenInEditor();
+      return;
+    }
+    if (useBrowserPrimaryAction) {
+      handleOpenInBrowser();
+      return;
+    }
+    handleOpenInFilePreview();
+  };
   const chip = hasPrimaryAction ? (
     <ContextChip
       {...nativeDrag}
@@ -348,18 +361,10 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
       render={<a href={href} />}
       className={MARKDOWN_FILE_LINK_CLASS_NAME}
       data-markdown-copy={copyMarkdown}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
-          handleOpenInEditor();
-          return;
-        }
-        if (useBrowserPrimaryAction) {
-          handleOpenInBrowser();
-          return;
-        }
-        handleOpenInFilePreview();
+      onClick={handlePrimaryClick}
+      // A middle click would open the path as a page of this app in a new tab.
+      onAuxClick={(event) => {
+        if (event.button === 1) handlePrimaryClick(event);
       }}
       onContextMenu={handleContextMenu}
       onKeyDown={openContextMenuFromKeyboard}

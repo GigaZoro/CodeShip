@@ -63,6 +63,7 @@ describe("Muse account usage", () => {
   it("reports the session and weekly windows, capped at 100, with the tier as plan", () => {
     expect(museUsageToLimits({ ...usage, window: { ...usage.window, usedPercent: 103 } })).toEqual({
       checkedAt: "2026-10-08T08:22:42.610Z",
+      complete: true,
       authLabel: "tier-1",
       windows: [
         {
@@ -72,6 +73,7 @@ describe("Muse account usage", () => {
           usedPercent: 100,
           resetsAt: "2026-10-08T13:19:17.000Z",
           windowDurationMins: 300,
+          observedAt: "2026-10-08T08:22:42.610Z",
         },
         {
           id: "weekly",
@@ -80,6 +82,7 @@ describe("Muse account usage", () => {
           usedPercent: 5,
           resetsAt: "2026-10-12T00:00:00.000Z",
           windowDurationMins: 10080,
+          observedAt: "2026-10-08T08:22:42.610Z",
         },
       ],
     });

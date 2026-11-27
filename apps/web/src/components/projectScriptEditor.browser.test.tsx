@@ -4,7 +4,8 @@ import {
   type ProjectScript,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { DEFAULT_RESOLVED_KEYBINDINGS, parseKeybindingShortcut } from "@t3tools/shared/keybindings";
+import { formatShortcutLabel } from "~/keybindings";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { StrictMode } from "react";
@@ -248,7 +249,12 @@ describe("project action editor keybinding capture", () => {
     await expect.element(field).toHaveFocus();
 
     await userEvent.keyboard("{Shift>}{Escape}{/Shift}");
-    await expect.element(field).toHaveValue("shift+esc");
+    await expect.element(field).toHaveValue("");
+    expect(onClose).not.toHaveBeenCalled();
+
+    const altEsc = formatShortcutLabel(parseKeybindingShortcut("alt+esc")!);
+    await userEvent.keyboard("{Alt>}{Escape}{/Alt}");
+    await expect.element(field).toHaveValue(altEsc);
     expect(onClose).not.toHaveBeenCalled();
 
     for (const composition of [
@@ -264,11 +270,11 @@ describe("project action editor keybinding capture", () => {
         field.element().dispatchEvent(keydown);
       });
       expect(keydown.defaultPrevented).toBe(false);
-      await expect.element(field).toHaveValue("shift+esc");
+      await expect.element(field).toHaveValue(altEsc);
     }
 
     await userEvent.keyboard("{Escape}");
-    await expect.element(field).toHaveValue("shift+esc");
+    await expect.element(field).toHaveValue(altEsc);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

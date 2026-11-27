@@ -351,11 +351,11 @@ describe("AcpRegistrySupport", () => {
       const symlinkCommand = `${cacheDir}/link/../dsh wrapper`;
       for (const command of [
         symlinkCommand,
-        `${(yield* Path.Path).relative(process.cwd(), cacheDir)}/link/../dsh wrapper`,
+        `${(yield* Path.Path).relative(workspace, cacheDir)}/link/../dsh wrapper`,
       ]) {
         const throughSymlink = yield* resolver.resolve(
           decodeAcpRegistrySettings({ source: "local", commandPath: command }),
-          "/workspace",
+          workspace,
         );
         expect((yield* Path.Path).isAbsolute(throughSymlink.spawn.command)).toBe(true);
         expect(yield* fileSystem.readFileString(throughSymlink.spawn.command)).toBe(

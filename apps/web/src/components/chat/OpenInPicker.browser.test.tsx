@@ -298,7 +298,7 @@ it("offers remote browser editors without changing the default or forgetting a s
   await fixture.renderPicker();
   await fixture.click(fixture.primaryButton());
   expect(state.openUrl).toHaveBeenLastCalledWith(
-    "vscode://vscode-remote/ssh-remote+test.local/work/project",
+    "vscode://vscode-remote/ssh-remote+test.local/work/project?windowId=_blank",
   );
   await fixture.click(fixture.byLabel("Choose editor"));
   await expect.element(page.getByRole("menuitem", { name: /^Cursor/ })).toBeVisible();

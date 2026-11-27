@@ -101,7 +101,7 @@ function nativeHost() {
 
 it.layer(layerTest)("MuseDriver usage", (it) => {
   it.effect(
-    "keeps the newest complete account report across late reports and refresh without probing for usage",
+    "keeps the newest complete account report across late reports and refresh while probing on usage refresh",
     () =>
       Effect.gen(function* () {
         const hosts: ReturnType<typeof nativeHost>[] = [];
@@ -207,7 +207,8 @@ it.layer(layerTest)("MuseDriver usage", (it) => {
         expect((yield* instance.snapshot.getSnapshot).auth.label).toBe("tier-2");
         const callsBeforeUsageRefresh = spawn.mock.calls.length;
         yield* instance.snapshot.refreshUsage!;
-        expect(spawn.mock.calls.length).toBe(callsBeforeUsageRefresh);
+        expect(spawn.mock.calls.length).toBe(callsBeforeUsageRefresh + 1);
+        expect((yield* instance.snapshot.getSnapshot).usageLimits).toEqual(latest.usageLimits);
         const refreshed = yield* instance.snapshot.refresh;
         expect(refreshed.usageLimits).toEqual(latest.usageLimits);
         expect(refreshed.auth.label).toBe("tier-2");

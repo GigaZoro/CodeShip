@@ -146,17 +146,19 @@ describe("discoverFxSkills", () => {
       );
 
       const skills = yield* discoverFxSkills({ cwd: workspace, environment: { HOME: home } });
+      const realHome = yield* fileSystem.realPath(home);
+      const realWorkspace = path.join(realHome, "app");
 
       assert.deepEqual(
         skills.map((skill) => [skill.name, skill.path]),
         [
-          ["été", path.join(home, ".fx/skills/accent-lower/SKILL.md")],
-          ["Été", path.join(home, ".fx/skills/accent-upper/SKILL.md")],
-          ["bom-folder", path.join(home, ".fx/skills/bom-folder/SKILL.md")],
-          ["plain", path.join(home, ".fx/skills/plain/SKILL.md")],
-          ["replacement", path.join(home, ".fx/skills/replacement/SKILL.md")],
-          ["review", path.join(workspace, ".fx/skills/review/SKILL.md")],
-          ["Review", path.join(home, ".claude/skills/review/SKILL.md")],
+          ["été", path.join(realHome, ".fx/skills/accent-lower/SKILL.md")],
+          ["Été", path.join(realHome, ".fx/skills/accent-upper/SKILL.md")],
+          ["bom-folder", path.join(realHome, ".fx/skills/bom-folder/SKILL.md")],
+          ["plain", path.join(realHome, ".fx/skills/plain/SKILL.md")],
+          ["replacement", path.join(realHome, ".fx/skills/replacement/SKILL.md")],
+          ["review", path.join(realWorkspace, ".fx/skills/review/SKILL.md")],
+          ["Review", path.join(realHome, ".claude/skills/review/SKILL.md")],
         ],
       );
     }).pipe(Effect.provide(NodeServices.layer)),

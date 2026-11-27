@@ -514,8 +514,6 @@ export function mergeUsage(
         outputTokens: model.tokens.outputTokens + bucket.totals.outputTokens,
         reasoningTokens: model.tokens.reasoningTokens + bucket.totals.reasoningTokens,
       };
-      model.records += bucket.records;
-      model.unpricedRecords += bucket.unpricedRecords;
       if (bucket.unpricedTokens !== undefined) {
         model.unpricedTokens += bucket.unpricedTokens;
       } else if (bucket.records > 0) {
