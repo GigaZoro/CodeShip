@@ -3294,6 +3294,57 @@ it.effect(
     }),
 );
 
+it.effect(
+  "ProviderSessionManagerV2 adopts every thread a taken-over process serves into one session",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const projectId = yield* idAllocator.allocate.project({
+          fixtureName: "provider-session-manager-adopted-shared",
+        });
+        const firstThreadId = yield* idAllocator.allocate.thread({
+          fixtureName: "provider-session-manager-adopted-shared-first",
+          projectId,
+        });
+        const secondThreadId = yield* idAllocator.allocate.thread({
+          fixtureName: "provider-session-manager-adopted-shared-second",
+          projectId,
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: firstThreadId,
+        });
+        yield* eventSink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator, threadId: firstThreadId, now }),
+            yield* makeThreadCreatedEvent({ idAllocator, threadId: secondThreadId, now }),
+          ],
+        });
+
+        for (const threadId of [firstThreadId, secondThreadId]) {
+          yield* manager.open({
+            threadId,
+            providerSessionId,
+            modelSelection,
+            runtimePolicy,
+            adoptRunningProcess: true,
+          });
+        }
+
+        const runtimeState = yield* Ref.get(state);
+        assert.equal(runtimeState.openCount, 1);
+        assert.equal(runtimeState.closeCount, 0);
+      });
+
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+    }),
+);
+
 it.effect("ProviderSessionManagerV2 marks pending runtime requests non-live on release", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);

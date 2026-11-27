@@ -339,12 +339,20 @@ export interface ProviderTurnStartServiceV2Shape {
   /**
    * Continues a running run whose provider process a session host kept alive through a planned
    * update. Fails, writing nothing, when the run or its process cannot be taken over; the caller
-   * then recovers the run as after any restart.
+   * then ends the process with `abandonAdoption` and recovers the run as after any restart.
+   * The process's output stays held until `releaseAdoptedOutput`.
    */
   readonly adopt: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
   }) => Effect.Effect<void, ProviderTurnStartError>;
+  /**
+   * Lets a taken-over process send its output, once every run it was working on is adopted.
+   * False when its session is gone or was not taken over.
+   */
+  readonly releaseAdoptedOutput: (providerSessionId: ProviderSessionId) => Effect.Effect<boolean>;
+  /** Closes a session whose takeover failed, which ends its process and fails runs it adopted. */
+  readonly abandonAdoption: (providerSessionId: ProviderSessionId) => Effect.Effect<void>;
   /** Ends a run still `starting` as failed with the cause; a no-op once it left `starting`. */
   readonly failUnstartedRun: (input: {
     readonly threadId: ThreadId;
@@ -3255,6 +3263,30 @@ export const layer: Layer.Layer<
 
     return ProviderTurnStartServiceV2.of({
       adopt,
+      releaseAdoptedOutput: Effect.fn("ProviderTurnStartService.releaseAdoptedOutput")(function* (
+        providerSessionId: ProviderSessionId,
+      ) {
+        const session = yield* providerSessions
+          .get(providerSessionId)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logError("Could not read a taken-over provider session", cause).pipe(
+                Effect.as(Option.none()),
+              ),
+            ),
+          );
+        const release = Option.getOrUndefined(session)?.releaseAdoptedOutput;
+        if (release === undefined) return false;
+        yield* release;
+        return true;
+      }),
+      abandonAdoption: (providerSessionId: ProviderSessionId) =>
+        providerSessions.close(providerSessionId).pipe(
+          Effect.ignore({
+            log: "Error",
+            message: "Could not close a provider session whose takeover failed.",
+          }),
+        ),
       failUnstartedRun,
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {

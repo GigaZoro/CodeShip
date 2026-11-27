@@ -2031,7 +2031,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
-        // A taken-over app server's buffered output waits until adoptTurn has registered the
+        // A taken-over app server's buffered output waits until adoptTurn has registered every
         // running turn: notifications for a turn this adapter does not know are dropped.
         const adoptedOutputReady =
           input.adoptRunningProcess === true ? yield* Deferred.make<void>() : undefined;
@@ -7608,7 +7608,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   startedAt: item.startedAt ?? item.updatedAt,
                 });
               }
-              yield* Deferred.succeed(adoptedOutputReady, undefined);
             },
             (effect, adoptInput) =>
               effect.pipe(
@@ -7624,6 +7623,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
               ),
           ),
+          ...(adoptedOutputReady === undefined
+            ? {}
+            : {
+                releaseAdoptedOutput: Deferred.succeed(adoptedOutputReady, undefined).pipe(
+                  Effect.asVoid,
+                ),
+              }),
           steerTurn: Effect.fn("CodexAdapterV2.steerTurn")(
             function* (turnInput) {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);

@@ -1785,6 +1785,8 @@ export const layerWithOptions = (
         readonly providerSessionId: ProviderSessionId;
         readonly threadId: ThreadId;
         readonly providerInstanceId: ProviderInstanceId;
+        /** The process already runs with the thread's credential from before the update. */
+        readonly adoptedProcess?: true;
       }) =>
         Effect.suspend(() => {
           let attachedTo: ProviderAdapter.ProviderAdapterV2SessionRuntime | undefined;
@@ -1804,7 +1806,14 @@ export const layerWithOptions = (
               Effect.uninterruptible,
             );
             if (attached !== undefined) {
-              const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
+              const prepared =
+                input.adoptedProcess === true
+                  ? yield* prepareAdoptedMcpSession({
+                      threadId: input.threadId,
+                      providerSessionId: input.providerSessionId,
+                      instanceId: input.providerInstanceId,
+                    })
+                  : yield* prepareMcpSession(input.threadId, input.providerInstanceId);
               preparedForCleanup = prepared;
               if (prepared.mcpCredentialId !== undefined) {
                 const mcpCredentialId = prepared.mcpCredentialId;
@@ -2634,7 +2643,12 @@ export const layerWithOptions = (
                 }
                 const key = sessionKey(input.providerSessionId);
                 let existing = (yield* Ref.get(sessions)).get(key);
-                if (input.adoptRunningProcess === true && existing !== undefined) {
+                // Every thread the taken-over process serves is adopted into the one session.
+                if (
+                  input.adoptRunningProcess === true &&
+                  existing !== undefined &&
+                  existing.adoptedProcess !== true
+                ) {
                   return yield* new ProviderSessionOpenError({
                     instanceId: input.modelSelection.instanceId,
                     providerSessionId: input.providerSessionId,
@@ -2642,9 +2656,13 @@ export const layerWithOptions = (
                       "This provider session is already live; there is no process left to take over.",
                   });
                 }
-                // A taken-over process only finishes the turn it was running; later turns get a process
+                // A taken-over process only finishes the turns it was running; later turns get a process
                 // started with this server's MCP credential and instructions.
-                if (existing?.adoptedProcess === true && existing.busyTurns.size === 0) {
+                if (
+                  input.adoptRunningProcess !== true &&
+                  existing?.adoptedProcess === true &&
+                  existing.busyTurns.size === 0
+                ) {
                   yield* releaseEntry({
                     providerSessionId: input.providerSessionId,
                     reason: "idle_timeout",
@@ -2666,6 +2684,9 @@ export const layerWithOptions = (
                     providerSessionId: input.providerSessionId,
                     threadId: input.threadId,
                     providerInstanceId: existing.runtime.instanceId,
+                    ...(input.adoptRunningProcess === true
+                      ? { adoptedProcess: true as const }
+                      : {}),
                   });
                   yield* touchActivity(input.providerSessionId);
                   return existing.exposedRuntime;

@@ -241,9 +241,8 @@ function rowToRecord(row: SessionHostRow): SessionHostRecord {
   let threadIds: ReadonlyArray<ThreadId> = [threadId];
   try {
     const parsed: unknown = JSON.parse(row.thread_ids_json);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      threadIds = parsed.filter((id) => typeof id === "string").map((id) => ThreadId.make(id));
-    }
+    const listed = Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : [];
+    if (listed.length > 0) threadIds = listed.map((id) => ThreadId.make(id));
   } catch {
     // An unreadable list leaves the spawning thread, whose run recovery then checks alone.
   }

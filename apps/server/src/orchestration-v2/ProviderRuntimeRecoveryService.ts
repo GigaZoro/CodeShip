@@ -10,6 +10,8 @@ import {
   isAppOwnedTaskWork,
   isOrchestrationV2WorkActive,
   orchestrationV2RunAwaitsMemory,
+  ProviderSessionId,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -406,56 +408,82 @@ export const make = Effect.gen(function* () {
   );
   const mcpRegistryOption = yield* Effect.serviceOption(McpSessionRegistry.McpSessionRegistry);
   /**
-   * Hands a host reattached after a planned update to the run its process is still working on.
-   * False means its process was stopped and the thread recovers as after any restart.
+   * Hands a host reattached after a planned update to every run its process is still working on.
+   * `preserved` are the threads the process goes on serving; any failure ends the process, and
+   * `ownedByLiveRuns` are the threads whose already adopted run now fails through its live session.
    */
   const adoptReattachedHost = Effect.fn("ProviderRuntimeRecovery.adoptReattachedHost")(function* (
     sessionHost: SessionHostService.SessionHostServiceShape,
     record: SessionHostService.SessionHostRecord,
-  ) {
+  ): Effect.fn.Return<{
+    readonly preserved: ReadonlyArray<ThreadId>;
+    readonly ownedByLiveRuns: ReadonlyArray<ThreadId>;
+  }> {
+    const providerSessionId = ProviderSessionId.make(record.providerSessionId);
+    const threadIds = record.threadIds;
+    const adoptedThreadIds: Array<ThreadId> = [];
     const giveUp = (reason: string, cause?: unknown) =>
       Effect.logError("Could not take over a provider process kept running through the update", {
         sessionHostId: record.id,
-        threadId: record.threadId,
+        threadIds,
         providerSessionId: record.providerSessionId,
         reason,
         ...(cause === undefined ? {} : { cause }),
-      }).pipe(Effect.andThen(sessionHost.terminate(record.id)), Effect.as(false));
+      }).pipe(
+        Effect.andThen(
+          Option.isSome(turnStartOption)
+            ? turnStartOption.value.abandonAdoption(providerSessionId)
+            : Effect.void,
+        ),
+        Effect.andThen(sessionHost.terminate(record.id)),
+        Effect.as({ preserved: [], ownedByLiveRuns: [...adoptedThreadIds] }),
+      );
     if (Option.isNone(turnStartOption)) {
       return yield* giveUp("This server cannot start provider turns.");
     }
-    const projection = yield* projections
-      .getRuntimeRecoveryProjection(record.threadId)
-      .pipe(Effect.result);
-    if (projection._tag === "Failure") {
-      return yield* giveUp("The thread could not be read.", projection.failure);
+    const turnStart = turnStartOption.value;
+    const runs: Array<{ readonly threadId: ThreadId; readonly runId: RunId }> = [];
+    for (const threadId of threadIds) {
+      const projection = yield* projections
+        .getRuntimeRecoveryProjection(threadId)
+        .pipe(Effect.result);
+      if (projection._tag === "Failure") {
+        return yield* giveUp(`Thread ${threadId} could not be read.`, projection.failure);
+      }
+      const providerThreadIds = new Set(
+        projection.success.providerThreads
+          .filter((providerThread) => providerThread.providerSessionId === record.providerSessionId)
+          .map((providerThread) => providerThread.id),
+      );
+      const run = projection.success.runs.find(
+        (candidate) =>
+          candidate.status === "running" &&
+          candidate.providerThreadId !== null &&
+          providerThreadIds.has(candidate.providerThreadId),
+      );
+      if (run !== undefined) runs.push({ threadId, runId: run.id });
     }
-    const providerThreadIds = new Set(
-      projection.success.providerThreads
-        .filter((providerThread) => providerThread.providerSessionId === record.providerSessionId)
-        .map((providerThread) => providerThread.id),
-    );
-    const run = projection.success.runs.find(
-      (candidate) =>
-        candidate.status === "running" &&
-        candidate.providerThreadId !== null &&
-        providerThreadIds.has(candidate.providerThreadId),
-    );
-    if (run === undefined) {
-      return yield* giveUp("The thread has no running run on this provider session.");
+    if (runs.length === 0) {
+      return yield* giveUp("No thread has a running run on this provider session.");
     }
-    const adopted = yield* turnStartOption.value
-      .adopt({ threadId: record.threadId, runId: run.id })
-      .pipe(Effect.result);
-    if (adopted._tag === "Failure") {
-      return yield* giveUp("The running turn could not be taken over.", adopted.failure);
+    for (const run of runs) {
+      const adopted = yield* threadDispatch
+        .withLock(run.threadId, turnStart.adopt(run))
+        .pipe(Effect.result);
+      if (adopted._tag === "Failure") {
+        return yield* giveUp(`Run ${run.runId} could not be taken over.`, adopted.failure);
+      }
+      adoptedThreadIds.push(run.threadId);
+    }
+    if (!(yield* turnStart.releaseAdoptedOutput(providerSessionId))) {
+      return yield* giveUp("The taken-over session could not receive its output.");
     }
     yield* Effect.logInfo("Took over a provider process kept running through the update", {
       sessionHostId: record.id,
-      threadId: record.threadId,
-      runId: run.id,
+      threadIds,
+      runIds: runs.map((run) => run.runId),
     });
-    return true;
+    return { preserved: threadIds, ownedByLiveRuns: [] };
   });
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
@@ -1042,6 +1070,7 @@ export const make = Effect.gen(function* () {
         ),
       );
     const preservedThreadIds = new Set<ThreadId>();
+    const ownedByLiveRuns = new Set<ThreadId>();
     let reattachedSessionHosts = 0;
     if (Option.isSome(sessionHostOption)) {
       const sessionHost = sessionHostOption.value;
@@ -1073,9 +1102,9 @@ export const make = Effect.gen(function* () {
         }
         for (const entry of reattached) {
           if (entry.status !== "reattached") continue;
-          if (yield* adoptReattachedHost(sessionHost, entry.record)) {
-            preservedThreadIds.add(entry.record.threadId);
-          }
+          const outcome = yield* adoptReattachedHost(sessionHost, entry.record);
+          for (const threadId of outcome.preserved) preservedThreadIds.add(threadId);
+          for (const threadId of outcome.ownedByLiveRuns) ownedByLiveRuns.add(threadId);
         }
       } else {
         for (const threadId of threadIds) {
@@ -1095,7 +1124,7 @@ export const make = Effect.gen(function* () {
     let retiredEffects = 0;
     const stoppedThisPass = new Map<string, RecoverySession>();
     for (const threadId of threadIds) {
-      if (preservedThreadIds.has(threadId)) {
+      if (preservedThreadIds.has(threadId) || ownedByLiveRuns.has(threadId)) {
         continue;
       }
       // Shutdown does not drain admitted commands, so read and commit under the lock they plan under.

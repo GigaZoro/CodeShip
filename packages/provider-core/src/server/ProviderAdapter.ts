@@ -647,11 +647,16 @@ export interface ProviderAdapterV2SessionRuntime {
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
   /**
    * Continue a turn the taken-over process was running before the update, without sending a
-   * new turn. The process's buffered and live output reaches `events` only after this succeeds.
+   * new turn. The process's output stays held until `releaseAdoptedOutput`.
    */
   readonly adoptTurn?: (
     input: ProviderAdapterV2AdoptTurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Lets a taken-over process's buffered and live output reach `events`. Called once every
+   * running turn on the process is adopted: output for a turn not yet adopted would be dropped.
+   */
+  readonly releaseAdoptedOutput?: Effect.Effect<void>;
   readonly steerTurn: (
     input: ProviderAdapterV2SteerInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
