@@ -1185,7 +1185,24 @@ export function applyToProjection(
                 activeProviderThreadId: event.payload.id,
               }
             : base.thread,
-        providerThreads: upsertById(base.providerThreads, event.payload),
+        providerThreads: upsertById(base.providerThreads, {
+          ...event.payload,
+          pinnedSystemInstructions:
+            base.providerThreads.find((providerThread) => providerThread.id === event.payload.id)
+              ?.pinnedSystemInstructions ?? null,
+        }),
+      };
+    case "provider-thread.pinned-instructions-set":
+      return {
+        ...projection,
+        providerThreads: projection.providerThreads.map((providerThread) =>
+          providerThread.id === event.payload.providerThreadId
+            ? {
+                ...providerThread,
+                pinnedSystemInstructions: { key: event.payload.key, text: event.payload.text },
+              }
+            : providerThread,
+        ),
       };
     case "provider-turn.updated":
       return {
@@ -1416,25 +1433,16 @@ const decodeProviderSessionPayload = Schema.decodeUnknownEffect(
 const decodeProviderThreadPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ProviderThreadJsonSchema),
 );
-const stripProviderThreadPinnedSystemInstructions = (payload: Record<string, unknown>): string => {
-  if (!("pinnedSystemInstructions" in payload)) return JSON.stringify(payload);
-  const { pinnedSystemInstructions: _pinned, ...rest } = payload;
-  return JSON.stringify(rest);
-};
-export const encodeProviderThreadStoredRow = (providerThread: OrchestrationV2ProviderThread) =>
-  Effect.map(encodeProviderThreadPayload(providerThread), (payloadJson) => {
-    const payload = parseEncodedPayload(payloadJson);
-    return {
-      payload,
-      payloadJson,
-      storedPayloadJson: stripProviderThreadPinnedSystemInstructions(payload),
-      pinnedSystemInstructions: providerThread.pinnedSystemInstructions ?? null,
-    };
+// The pin is written only by provider-thread.pinned-instructions-set, so payload_json never holds it.
+export const encodeStoredProviderThreadPayload = (providerThread: OrchestrationV2ProviderThread) =>
+  Effect.map(encodeProviderThreadPayload(providerThread), (encodedJson) => {
+    const { pinnedSystemInstructions: _pinned, ...payload } = parseEncodedPayload(encodedJson);
+    return { payload, payloadJson: JSON.stringify(payload) };
   });
-// Stored in its own column so shell reads never load it and payload_json never duplicates it.
+// Shell reads skip the pin columns; adapter-facing reads hydrate the pin from them.
 const providerThreadPayloadSql = (alias?: string): string => {
   const prefix = alias === undefined ? "" : `${alias}.`;
-  return `CASE WHEN ${prefix}pinned_system_instructions IS NOT NULL AND json_valid(${prefix}payload_json) THEN json_set(${prefix}payload_json, '$.pinnedSystemInstructions', ${prefix}pinned_system_instructions) ELSE ${prefix}payload_json END`;
+  return `CASE WHEN ${prefix}pinned_system_instructions IS NOT NULL AND ${prefix}pinned_system_instructions_key IS NOT NULL AND json_valid(${prefix}payload_json) THEN json_set(${prefix}payload_json, '$.pinnedSystemInstructions', json_object('key', ${prefix}pinned_system_instructions_key, 'text', ${prefix}pinned_system_instructions)) ELSE ${prefix}payload_json END`;
 };
 const decodeProviderTurnPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2ProviderTurnJsonSchema),
@@ -2281,7 +2289,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       const columns = yield* sql<{ readonly name: string }>`
         PRAGMA table_info(orchestration_v2_projection_provider_threads)
       `;
-      if (columns.some((column) => column.name === "pinned_system_instructions")) {
+      if (columns.some((column) => column.name === "pinned_system_instructions_key")) {
         hasPinnedSystemInstructionsColumnCached = true;
         return true;
       }
@@ -2727,100 +2735,52 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               break;
             }
             case "provider-thread.updated": {
-              const { payload, payloadJson, storedPayloadJson, pinnedSystemInstructions } =
-                yield* encodeProviderThreadStoredRow(event.payload);
-              if (yield* hasPinnedSystemInstructionsColumn) {
-                yield* sql`
-                INSERT INTO orchestration_v2_projection_provider_threads (
-                  provider_thread_id,
-                  thread_id,
-                  owner_node_id,
-                  provider,
-                  driver,
-                  provider_instance_id,
-                  provider_session_id,
-                  status,
-                  first_run_ordinal,
-                  last_run_ordinal,
-                  updated_at,
-                  pinned_system_instructions,
-                  payload_json
-                )
-                VALUES (
-                  ${event.payload.id},
-                  ${event.payload.appThreadId},
-                  ${event.payload.ownerNodeId},
-                  ${event.payload.providerInstanceId},
-                  ${event.payload.driver},
-                  ${event.payload.providerInstanceId},
-                  ${event.payload.providerSessionId},
-                  ${event.payload.status},
-                  ${event.payload.firstRunOrdinal},
-                  ${event.payload.lastRunOrdinal},
-                  ${stringField(payload, "updatedAt")},
-                  ${pinnedSystemInstructions},
-                  ${storedPayloadJson}
-                )
-                ON CONFLICT(provider_thread_id)
-                DO UPDATE SET
-                  thread_id = excluded.thread_id,
-                  owner_node_id = excluded.owner_node_id,
-                  provider = excluded.provider,
-                  driver = excluded.driver,
-                  provider_instance_id = excluded.provider_instance_id,
-                  provider_session_id = excluded.provider_session_id,
-                  status = excluded.status,
-                  first_run_ordinal = excluded.first_run_ordinal,
-                  last_run_ordinal = excluded.last_run_ordinal,
-                  updated_at = excluded.updated_at,
-                  pinned_system_instructions = excluded.pinned_system_instructions,
-                  payload_json = excluded.payload_json
-              `;
-              } else {
-                yield* sql`
-                INSERT INTO orchestration_v2_projection_provider_threads (
-                  provider_thread_id,
-                  thread_id,
-                  owner_node_id,
-                  provider,
-                  driver,
-                  provider_instance_id,
-                  provider_session_id,
-                  status,
-                  first_run_ordinal,
-                  last_run_ordinal,
-                  updated_at,
-                  payload_json
-                )
-                VALUES (
-                  ${event.payload.id},
-                  ${event.payload.appThreadId},
-                  ${event.payload.ownerNodeId},
-                  ${event.payload.providerInstanceId},
-                  ${event.payload.driver},
-                  ${event.payload.providerInstanceId},
-                  ${event.payload.providerSessionId},
-                  ${event.payload.status},
-                  ${event.payload.firstRunOrdinal},
-                  ${event.payload.lastRunOrdinal},
-                  ${stringField(payload, "updatedAt")},
-                  ${payloadJson}
-                )
-                ON CONFLICT(provider_thread_id)
-                DO UPDATE SET
-                  thread_id = excluded.thread_id,
-                  owner_node_id = excluded.owner_node_id,
-                  provider = excluded.provider,
-                  driver = excluded.driver,
-                  provider_instance_id = excluded.provider_instance_id,
-                  provider_session_id = excluded.provider_session_id,
-                  status = excluded.status,
-                  first_run_ordinal = excluded.first_run_ordinal,
-                  last_run_ordinal = excluded.last_run_ordinal,
-                  updated_at = excluded.updated_at,
-                  payload_json = excluded.payload_json
-              `;
-              }
+              const { payload, payloadJson } = yield* encodeStoredProviderThreadPayload(
+                event.payload,
+              );
+              yield* sql`
+              INSERT INTO orchestration_v2_projection_provider_threads (
+                provider_thread_id,
+                thread_id,
+                owner_node_id,
+                provider,
+                driver,
+                provider_instance_id,
+                provider_session_id,
+                status,
+                first_run_ordinal,
+                last_run_ordinal,
+                updated_at,
+                payload_json
+              )
+              VALUES (
+                ${event.payload.id},
+                ${event.payload.appThreadId},
+                ${event.payload.ownerNodeId},
+                ${event.payload.providerInstanceId},
+                ${event.payload.driver},
+                ${event.payload.providerInstanceId},
+                ${event.payload.providerSessionId},
+                ${event.payload.status},
+                ${event.payload.firstRunOrdinal},
+                ${event.payload.lastRunOrdinal},
+                ${stringField(payload, "updatedAt")},
+                ${payloadJson}
+              )
+              ON CONFLICT(provider_thread_id)
+              DO UPDATE SET
+                thread_id = excluded.thread_id,
+                owner_node_id = excluded.owner_node_id,
+                provider = excluded.provider,
+                driver = excluded.driver,
+                provider_instance_id = excluded.provider_instance_id,
+                provider_session_id = excluded.provider_session_id,
+                status = excluded.status,
+                first_run_ordinal = excluded.first_run_ordinal,
+                last_run_ordinal = excluded.last_run_ordinal,
+                updated_at = excluded.updated_at,
+                payload_json = excluded.payload_json
+            `;
               if (
                 event.payload.appThreadId !== null &&
                 !isQueuedProviderThreadPlaceholder(event.payload)
@@ -2849,6 +2809,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   WHERE thread_id = ${event.payload.appThreadId}
                 `;
                 }
+              }
+              break;
+            }
+            case "provider-thread.pinned-instructions-set": {
+              if (yield* hasPinnedSystemInstructionsColumn) {
+                yield* sql`
+                UPDATE orchestration_v2_projection_provider_threads
+                SET
+                  pinned_system_instructions = ${event.payload.text},
+                  pinned_system_instructions_key = ${event.payload.key}
+                WHERE provider_thread_id = ${event.payload.providerThreadId}
+              `;
               }
               break;
             }
@@ -3261,7 +3233,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             event.type !== "thread.interaction-mode-updated" &&
             event.type !== "thread.model-selection-updated" &&
             event.type !== "thread.provider-switched" &&
-            event.type !== "thread.guest-share-updated"
+            event.type !== "thread.guest-share-updated" &&
+            event.type !== "provider-thread.pinned-instructions-set"
           ) {
             const updatedAt = yield* encodeThreadUpdatedAt(event.occurredAt);
             yield* sql`

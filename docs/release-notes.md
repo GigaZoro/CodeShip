@@ -1,6 +1,6 @@
 ## 2026-11-27 — Pin thread system instructions across server updates
 
-- Resumed Claude, Codex, and Antigravity chats now reuse the static system instruction block pinned when their native session started, keeping provider prompt caches intact across CodeShip server updates while new threads pick up the updated binary's instructions.
+- Resumed Claude and Antigravity chats keep the system instructions stored when their native session started, so a release that only rewords those instructions no longer invalidates their provider prompt cache. A chat rebuilds its instructions when its MCP or device-tool availability changes, or when a release bumps the instruction epoch. Codex chats are unchanged: Codex resends its T3 context on every turn, so pinning it would not keep its cache.
 
 ## 2026-11-27 — Faster landing-turn tests and release-notes-only changes
 

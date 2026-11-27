@@ -6,8 +6,6 @@ import { describe, it } from "vite-plus/test";
 import {
   buildCodexAdditionalContext,
   CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
-  parsePinnedCodexAdditionalContext,
-  serializePinnedCodexAdditionalContext,
 } from "./CodexDeveloperInstructions.ts";
 
 describe("buildCodexAdditionalContext", () => {
@@ -88,27 +86,6 @@ describe("Codex device context", () => {
     NodeAssert.ok(tools(true).includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
     NodeAssert.ok(!tools(true).includes("ToolSearch"));
     NodeAssert.ok(!tools(false).includes("## T3.CodeShip devices"));
-  });
-});
-
-describe("pinned Codex additionalContext serialization", () => {
-  it("round-trips valid additionalContext records and rejects malformed payloads", () => {
-    const context = buildCodexAdditionalContext(
-      { model: "gpt-6.1-sol", reasoningEffort: "high" },
-      { browser: true, device: true },
-    );
-    const serialized = serializePinnedCodexAdditionalContext(context);
-    NodeAssert.deepEqual(parsePinnedCodexAdditionalContext(serialized), context);
-    NodeAssert.equal(parsePinnedCodexAdditionalContext("not-json"), undefined);
-    NodeAssert.equal(parsePinnedCodexAdditionalContext("{}"), undefined);
-    NodeAssert.equal(
-      parsePinnedCodexAdditionalContext(JSON.stringify({ a: { kind: "application", value: 123 } })),
-      undefined,
-    );
-    NodeAssert.equal(
-      parsePinnedCodexAdditionalContext(JSON.stringify({ a: { kind: "untrusted", value: "ok" } })),
-      undefined,
-    );
   });
 });
 

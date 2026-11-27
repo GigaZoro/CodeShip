@@ -1341,6 +1341,21 @@ export const OrchestrationV2ProviderGoal = Schema.Struct({
 });
 export type OrchestrationV2ProviderGoal = typeof OrchestrationV2ProviderGoal.Type;
 
+/** `key` hashes the inputs that legitimately change `text`; a different key means rebuild. */
+export const OrchestrationV2PinnedSystemInstructions = Schema.Struct({
+  key: Schema.String,
+  text: Schema.String,
+});
+export type OrchestrationV2PinnedSystemInstructions =
+  typeof OrchestrationV2PinnedSystemInstructions.Type;
+
+export const OrchestrationV2ProviderThreadPinnedInstructionsSet = Schema.Struct({
+  providerThreadId: ProviderThreadId,
+  ...OrchestrationV2PinnedSystemInstructions.fields,
+});
+export type OrchestrationV2ProviderThreadPinnedInstructionsSet =
+  typeof OrchestrationV2ProviderThreadPinnedInstructionsSet.Type;
+
 export const OrchestrationV2ProviderThread = Schema.Struct({
   id: ProviderThreadId,
   driver: ProviderDriverKind,
@@ -1373,9 +1388,10 @@ export const OrchestrationV2ProviderThread = Schema.Struct({
   goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
-  pinnedSystemInstructions: Schema.optional(Schema.NullOr(Schema.String)).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
+  // Hydrated from its own columns on server reads; provider-thread.updated events never carry it.
+  pinnedSystemInstructions: Schema.optional(
+    Schema.NullOr(OrchestrationV2PinnedSystemInstructions),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
 });
@@ -2258,6 +2274,11 @@ export const OrchestrationV2DomainEvent = Schema.Union([
     ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("provider-thread.updated"),
     payload: OrchestrationV2ProviderThread,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("provider-thread.pinned-instructions-set"),
+    payload: OrchestrationV2ProviderThreadPinnedInstructionsSet,
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
@@ -3225,6 +3246,11 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("provider-thread.updated"),
     payload: OrchestrationV2ProviderThreadJson,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("provider-thread.pinned-instructions-set"),
+    payload: OrchestrationV2ProviderThreadPinnedInstructionsSet,
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,

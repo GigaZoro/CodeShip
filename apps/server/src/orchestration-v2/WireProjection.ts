@@ -359,8 +359,8 @@ export function projectDomainEventForWire(
     ? { ...event, payload: projectTurnItemForWire(event.payload) }
     : event.type === "context-handoff.updated"
       ? { ...event, payload: projectContextHandoffForWire(event.payload) }
-      : event.type === "provider-thread.updated"
-        ? { ...event, payload: projectProviderThreadForWire(event.payload) }
+      : event.type === "provider-thread.pinned-instructions-set"
+        ? { ...event, payload: { ...event.payload, text: "" } }
         : event.type === "checkpoint.captured"
           ? { ...event, payload: capCheckpointFiles(event.payload) }
           : event;

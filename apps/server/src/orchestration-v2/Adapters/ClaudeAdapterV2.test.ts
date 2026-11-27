@@ -40,6 +40,7 @@ import {
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   type OrchestrationV2AppThread,
   type OrchestrationV2PendingBackgroundTask,
+  type OrchestrationV2PinnedSystemInstructions,
   OrchestrationV2ProviderThread,
   ProjectId,
   ProviderInstanceId,
@@ -87,7 +88,11 @@ import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.ts";
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
-import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
+import {
+  PINNED_INSTRUCTIONS_EPOCH,
+  pinnedSystemInstructionsKey,
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
 import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
@@ -1283,8 +1288,229 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
 });
 
 describe("ClaudeAdapterV2 pinned system instructions", () => {
-  it("replays pinnedSystemInstructions on resume while keeping dynamic options live", () => {
-    const pinned = "<runtime_info>Pinned Claude instructions v1</runtime_info>";
+  const MCP_AND_DEVICE = { hasMcpServers: true, deviceToolsAvailable: true };
+  const currentKey = (inputs: ClaudeAdapterV2.ClaudeSystemInstructionsInputs, epoch?: number) =>
+    pinnedSystemInstructionsKey({ harness: "Claude Code", ...inputs }, epoch);
+
+  it("keeps a resumed pin whose key matches, even when the wording changed", () => {
+    const stored = {
+      key: currentKey(MCP_AND_DEVICE),
+      text: "<runtime_info>Old wording</runtime_info>",
+    };
+    assert.deepEqual(
+      ClaudeAdapterV2.resolveClaudePinnedSystemInstructions({
+        resume: true,
+        stored,
+        inputs: MCP_AND_DEVICE,
+      }),
+      stored,
+    );
+    const fresh = ClaudeAdapterV2.resolveClaudePinnedSystemInstructions({
+      resume: false,
+      stored,
+      inputs: MCP_AND_DEVICE,
+    });
+    assert.equal(fresh.text, ClaudeAdapterV2.buildClaudeSystemInstructions(MCP_AND_DEVICE));
+  });
+
+  it("rebuilds a pin stored under another epoch", () => {
+    assert.notEqual(
+      currentKey(MCP_AND_DEVICE, PINNED_INSTRUCTIONS_EPOCH + 1),
+      currentKey(MCP_AND_DEVICE),
+    );
+    const resolved = ClaudeAdapterV2.resolveClaudePinnedSystemInstructions({
+      resume: true,
+      stored: {
+        key: currentKey(MCP_AND_DEVICE, PINNED_INSTRUCTIONS_EPOCH - 1),
+        text: "<runtime_info>Before the security fix</runtime_info>",
+      },
+      inputs: MCP_AND_DEVICE,
+    });
+    assert.deepEqual(resolved, {
+      key: currentKey(MCP_AND_DEVICE),
+      text: ClaudeAdapterV2.buildClaudeSystemInstructions(MCP_AND_DEVICE),
+    });
+  });
+
+  it.effect(
+    "rebuilds the pin when MCP or device tools change and stores one pin event per change",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pin-cwd-" });
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-pin-home-",
+          });
+          const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-pin-",
+          });
+          const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+          let allocatedCount = 0;
+          // A new adapter stands in for a restarted server: it has no in-memory pins.
+          const makeAdapter = Effect.gen(function* () {
+            return yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+              instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+              settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath },
+              environment: {},
+              attachmentsDir,
+              fileSystem,
+              path: yield* Path.Path,
+              crypto: yield* Crypto.Crypto,
+              idAllocator: yield* IdAllocator.IdAllocatorV2,
+              queryRunner: {
+                allocateSessionId: Effect.sync(() => {
+                  allocatedCount += 1;
+                  return `native-thread-claude-pin-${allocatedCount}`;
+                }),
+                open: (input) =>
+                  Effect.sync(() => {
+                    opened.push(input.options);
+                    return {
+                      messages: Stream.never,
+                      offer: () => Effect.void,
+                      setModel: () => Effect.void,
+                      applyFlagSettings: () => Effect.void,
+                      setPermissionMode: () => Effect.void,
+                      backgroundTasks: () => Effect.succeed(false),
+                      stopTask: () => Effect.void,
+                      interrupt: Effect.void,
+                      close: Effect.void,
+                    };
+                  }),
+                forkSession: () => Effect.die("unused"),
+                subagentLaunchToolUseId: () => Effect.succeed(null),
+                assertComplete: Effect.void,
+              },
+            });
+          });
+          const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd,
+          });
+          const threadId = ThreadId.make("thread-claude-pin");
+          const setMcpSession = (capabilities: ReadonlySet<string>) =>
+            mcpSessions.set({
+              environmentId: EnvironmentId.make("environment-claude-pin"),
+              threadId,
+              providerSessionId: "provider-session-claude-pin",
+              providerInstanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+              endpoint: "http://127.0.0.1:43123/mcp",
+              authorizationHeader: "Bearer claude-pin-token",
+              browserToolsAvailable: true,
+              capabilities,
+            });
+          const pinEvents: Array<OrchestrationV2PinnedSystemInstructions> = [];
+          let storedPin: OrchestrationV2PinnedSystemInstructions | null = null;
+          let turn = 0;
+          const runTurn = Effect.fnUntraced(function* (
+            adapter: Effect.Success<typeof makeAdapter>,
+            providerThread: OrchestrationV2ProviderThread | null,
+          ) {
+            turn += 1;
+            const session = yield* adapter.openSession({
+              threadId,
+              providerSessionId: ProviderSessionId.make(`provider-session-claude-pin-${turn}`),
+              modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+              runtimePolicy,
+              ...(providerThread === null
+                ? {}
+                : { initialNativeThreadId: providerThread.nativeThreadRef!.nativeId! }),
+            });
+            yield* session.events.pipe(
+              Stream.runForEach((event) =>
+                Effect.sync(() => {
+                  if (
+                    event.type === "provider_thread.updated" &&
+                    event.pinnedSystemInstructions !== undefined
+                  ) {
+                    pinEvents.push(event.pinnedSystemInstructions);
+                    storedPin = event.pinnedSystemInstructions;
+                  }
+                }),
+              ),
+              Effect.forkScoped,
+            );
+            const resolvedThread =
+              providerThread === null
+                ? yield* session.ensureThread({
+                    threadId,
+                    modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+                    runtimePolicy,
+                  })
+                : { ...providerThread, pinnedSystemInstructions: storedPin };
+            yield* session.startTurn({
+              ...makeClaudeTestTurnInput({
+                threadId,
+                providerThread: resolvedThread,
+                now: yield* DateTime.now,
+                attemptId: RunAttemptId.make(`attempt-claude-pin-${turn}`),
+                text: `turn ${turn}`,
+                attachments: [],
+                runtimePolicy,
+              }),
+              providerTurnOrdinal: turn,
+              ...(providerThread === null ? {} : { nativeThreadHasTurns: true }),
+            });
+            yield* Effect.yieldNow;
+            return {
+              providerThread: resolvedThread,
+              append: (opened.at(-1)?.systemPrompt as { readonly append?: string } | undefined)
+                ?.append,
+            };
+          });
+
+          const adapter = yield* makeAdapter;
+          // Turn 1 has no MCP session, so the pin has no T3 tool instructions.
+          const first = yield* runTurn(adapter, null);
+          assert.equal(
+            first.append,
+            ClaudeAdapterV2.buildClaudeSystemInstructions({
+              hasMcpServers: false,
+              deviceToolsAvailable: false,
+            }),
+          );
+          assert.lengthOf(pinEvents, 1);
+
+          yield* setMcpSession(new Set(["device"]));
+          const second = yield* runTurn(yield* makeAdapter, first.providerThread);
+          assert.equal(
+            second.append,
+            ClaudeAdapterV2.buildClaudeSystemInstructions(MCP_AND_DEVICE),
+          );
+          assert.include(second.append, T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH);
+          assert.lengthOf(pinEvents, 2);
+
+          yield* setMcpSession(new Set());
+          const third = yield* runTurn(yield* makeAdapter, second.providerThread);
+          assert.equal(
+            third.append,
+            ClaudeAdapterV2.buildClaudeSystemInstructions({
+              hasMcpServers: true,
+              deviceToolsAvailable: false,
+            }),
+          );
+          assert.lengthOf(pinEvents, 3);
+
+          // Same inputs after a release that only changed wording: the stored text stays.
+          storedPin = {
+            ...storedPin!,
+            text: "<runtime_info>Previous release wording</runtime_info>",
+          };
+          const fourth = yield* runTurn(yield* makeAdapter, third.providerThread);
+          assert.equal(fourth.append, "<runtime_info>Previous release wording</runtime_info>");
+          assert.lengthOf(pinEvents, 3);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it("uses the resolved instructions verbatim and keeps dynamic options live", () => {
     const resumed = ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,
       nativeThreadId: "native-thread-claude-pinned",
@@ -1294,207 +1520,16 @@ describe("ClaudeAdapterV2 pinned system instructions", () => {
       mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1/mcp" } },
       deviceToolsAvailable: true,
       appendSystemPromptFileText: "Dynamic CLI suffix",
-      pinnedSystemInstructions: pinned,
+      systemInstructions: "<runtime_info>Pinned Claude instructions v1</runtime_info>",
       environment: {},
     });
-    const resumedAppend = (resumed.systemPrompt as { readonly append?: string }).append;
-    assert.equal(resumedAppend, `${pinned}\n\nDynamic CLI suffix`);
+    assert.equal(
+      (resumed.systemPrompt as { readonly append?: string }).append,
+      "<runtime_info>Pinned Claude instructions v1</runtime_info>\n\nDynamic CLI suffix",
+    );
     assert.equal(resumed.permissionMode, "plan");
     assert.isNotEmpty(resumed.hooks?.SubagentStart ?? []);
-
-    const fresh = ClaudeAdapterV2.makeClaudeQueryOptions({
-      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-      nativeThreadId: "native-thread-claude-fresh",
-      resume: false,
-      cwd: "/workspace",
-      mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1/mcp" } },
-      deviceToolsAvailable: false,
-      pinnedSystemInstructions: pinned,
-      environment: {},
-    });
-    const freshAppend = (fresh.systemPrompt as { readonly append?: string }).append;
-    assert.equal(
-      freshAppend,
-      ClaudeAdapterV2.buildClaudeSystemInstructions({
-        hasMcpServers: true,
-        deviceToolsAvailable: false,
-      }),
-    );
-    assert.notEqual(freshAppend, pinned);
   });
-
-  it.effect(
-    "pins instructions on turn 1, replays them on resume, and refreshes on a new thread",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pin-cwd-" });
-          const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
-          let allocatedCount = 0;
-          const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
-            instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
-            settings: {
-              ...DEFAULT_CLAUDE_SETTINGS,
-              homePath: yield* fileSystem.makeTempDirectoryScoped({
-                prefix: "t3-claude-pin-home-",
-              }),
-            },
-            environment: {},
-            attachmentsDir: yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pin-" }),
-            fileSystem,
-            path: yield* Path.Path,
-            crypto: yield* Crypto.Crypto,
-            idAllocator: yield* IdAllocator.IdAllocatorV2,
-            queryRunner: {
-              allocateSessionId: Effect.sync(() => {
-                allocatedCount += 1;
-                return `native-thread-claude-pin-${allocatedCount}`;
-              }),
-              open: (input) =>
-                Effect.sync(() => {
-                  opened.push(input.options);
-                  return {
-                    messages: Stream.never,
-                    offer: () => Effect.void,
-                    setModel: () => Effect.void,
-                    applyFlagSettings: () => Effect.void,
-                    setPermissionMode: () => Effect.void,
-                    backgroundTasks: () => Effect.succeed(false),
-                    stopTask: () => Effect.void,
-                    interrupt: Effect.void,
-                    close: Effect.void,
-                  };
-                }),
-              forkSession: () => Effect.die("unused"),
-              subagentLaunchToolUseId: () => Effect.succeed(null),
-              assertComplete: Effect.void,
-            },
-          });
-          const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            cwd,
-          });
-          const threadId = ThreadId.make("thread-claude-pin");
-          const session1 = yield* adapter.openSession({
-            threadId,
-            providerSessionId: ProviderSessionId.make("provider-session-claude-pin-1"),
-            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-            runtimePolicy,
-          });
-          const pinnedEvents = yield* Ref.make<Array<string | null | undefined>>([]);
-          yield* session1.events.pipe(
-            Stream.runForEach((event) =>
-              event.type === "provider_thread.updated"
-                ? Ref.update(pinnedEvents, (list) => [
-                    ...list,
-                    event.providerThread.pinnedSystemInstructions,
-                  ])
-                : Effect.void,
-            ),
-            Effect.forkScoped,
-          );
-          const providerThread1 = yield* session1.ensureThread({
-            threadId,
-            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-            runtimePolicy,
-          });
-          yield* session1.startTurn(
-            makeClaudeTestTurnInput({
-              threadId,
-              providerThread: providerThread1,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-claude-pin-1"),
-              text: "turn 1",
-              attachments: [],
-              runtimePolicy,
-            }),
-          );
-          yield* Effect.yieldNow;
-          const firstAppend = (opened[0]?.systemPrompt as { readonly append?: string } | undefined)
-            ?.append;
-          assert.isString(firstAppend);
-          assert.include(yield* Ref.get(pinnedEvents), firstAppend);
-
-          // Simulate server upgrade: resume the same native thread with an older binary's pinned text.
-          const legacyPinned = "<runtime_info>Old binary Claude wording</runtime_info>";
-          const resumedPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            runtimeMode: "full-access",
-            interactionMode: "plan",
-            cwd,
-          });
-          const session2 = yield* adapter.openSession({
-            threadId,
-            providerSessionId: ProviderSessionId.make("provider-session-claude-pin-2"),
-            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-            runtimePolicy: resumedPolicy,
-            initialNativeThreadId: providerThread1.nativeThreadRef!.nativeId!,
-            initialPinnedSystemInstructions: legacyPinned,
-          });
-          const resumedProviderThread = yield* session2.resumeThread({
-            providerThread: {
-              ...providerThread1,
-              pinnedSystemInstructions: legacyPinned,
-            },
-            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-            runtimePolicy: resumedPolicy,
-          });
-          assert.equal(resumedProviderThread.pinnedSystemInstructions, legacyPinned);
-          yield* session2.startTurn({
-            ...makeClaudeTestTurnInput({
-              threadId,
-              providerThread: resumedProviderThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-claude-pin-2"),
-              text: "turn 2",
-              attachments: [],
-              runtimePolicy: resumedPolicy,
-            }),
-            providerTurnOrdinal: 2,
-            nativeThreadHasTurns: true,
-          });
-          const resumedAppend = (
-            opened[1]?.systemPrompt as { readonly append?: string } | undefined
-          )?.append;
-          assert.equal(resumedAppend, legacyPinned);
-          assert.equal(opened[1]?.permissionMode, "plan");
-
-          // Brand-new thread receives the current binary's instructions.
-          const freshThreadId = ThreadId.make("thread-claude-pin-fresh");
-          const session3 = yield* adapter.openSession({
-            threadId: freshThreadId,
-            providerSessionId: ProviderSessionId.make("provider-session-claude-pin-3"),
-            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-            runtimePolicy,
-          });
-          const freshProviderThread = yield* session3.ensureThread({
-            threadId: freshThreadId,
-            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-            runtimePolicy,
-          });
-          yield* session3.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: freshThreadId,
-              providerThread: freshProviderThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-claude-pin-3"),
-              text: "fresh turn",
-              attachments: [],
-              runtimePolicy,
-            }),
-          );
-          const freshAppend = (opened[2]?.systemPrompt as { readonly append?: string } | undefined)
-            ?.append;
-          assert.equal(freshAppend, firstAppend);
-          assert.notEqual(freshAppend, legacyPinned);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
-          ),
-        ),
-      ),
-  );
 });
 
 describe("ClaudeAdapterV2 approval cancellation", () => {

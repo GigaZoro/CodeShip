@@ -109,6 +109,7 @@ import {
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ProviderRetry,
   type OrchestrationV2ProviderSession,
+  type OrchestrationV2PinnedSystemInstructions,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
@@ -219,6 +220,8 @@ import {
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import {
   autoModePromptBlock,
+  pinnedSystemInstructionsChanged,
+  pinnedSystemInstructionsKey,
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -1751,19 +1754,32 @@ const subagentDeviceInstructions: HookCallback = () =>
     },
   });
 
-export function buildClaudeSystemInstructions(input: {
+export interface ClaudeSystemInstructionsInputs {
   readonly hasMcpServers: boolean;
-  readonly deviceToolsAvailable?: boolean;
-}): string {
+  readonly deviceToolsAvailable: boolean;
+}
+
+export function buildClaudeSystemInstructions(input: ClaudeSystemInstructionsInputs): string {
   return (
     buildRuntimeInstructions({ harness: "Claude Code" }) +
     (input.hasMcpServers
       ? T3_CODE_ORCHESTRATION_INSTRUCTIONS +
-        (input.deviceToolsAvailable === true
+        (input.deviceToolsAvailable
           ? `\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}\n`
           : "")
       : "")
   );
+}
+
+/** A resumed thread keeps its stored text while its inputs and the epoch match; otherwise it rebuilds. */
+export function resolveClaudePinnedSystemInstructions(input: {
+  readonly resume: boolean;
+  readonly stored: OrchestrationV2PinnedSystemInstructions | null | undefined;
+  readonly inputs: ClaudeSystemInstructionsInputs;
+}): OrchestrationV2PinnedSystemInstructions {
+  const key = pinnedSystemInstructionsKey({ harness: "Claude Code", ...input.inputs });
+  if (input.resume && input.stored?.key === key) return input.stored;
+  return { key, text: buildClaudeSystemInstructions(input.inputs) };
 }
 
 export function makeClaudeQueryOptions(input: {
@@ -1781,8 +1797,8 @@ export function makeClaudeQueryOptions(input: {
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
-  /** Pinned static T3 instruction block reused verbatim on resume so prompt caches survive server updates. */
-  readonly pinnedSystemInstructions?: string;
+  /** The thread's resolved T3 instruction block; resolveClaudePinnedSystemInstructions picks it. */
+  readonly systemInstructions?: string;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -1896,7 +1912,7 @@ export function makeClaudeQueryOptions(input: {
       type: "preset" as const,
       preset: "claude_code" as const,
       append: [
-        (input.resume ? input.pinnedSystemInstructions : undefined) ??
+        input.systemInstructions ??
           buildClaudeSystemInstructions({
             hasMcpServers: input.mcpServers !== undefined,
             deviceToolsAvailable: input.deviceToolsAvailable === true,
@@ -2384,7 +2400,6 @@ function makeProviderThread(input: {
   readonly nativeThreadId: string;
   readonly forkedFrom?: NonNullable<OrchestrationV2ProviderThread["forkedFrom"]>;
   readonly nativeMetadata?: NonNullable<OrchestrationV2ProviderThread["nativeMetadata"]>;
-  readonly pinnedSystemInstructions?: OrchestrationV2ProviderThread["pinnedSystemInstructions"];
   readonly now: DateTime.Utc;
 }): OrchestrationV2ProviderThread {
   return {
@@ -2409,9 +2424,6 @@ function makeProviderThread(input: {
     handoffIds: [],
     forkedFrom: input.forkedFrom ?? null,
     ...(input.nativeMetadata === undefined ? {} : { nativeMetadata: input.nativeMetadata }),
-    ...(input.pinnedSystemInstructions === undefined
-      ? {}
-      : { pinnedSystemInstructions: input.pinnedSystemInstructions }),
     createdAt: input.now,
     updatedAt: input.now,
   };
@@ -5516,7 +5528,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         });
         const openedNativeThreads = yield* Ref.make(new Set<string>());
         const pdfBudgets = new Map<string, ReturnType<typeof makeClaudeAttachmentBudget>>();
-        const pinnedSystemInstructionsByNativeThread = new Map<string, string>();
+        const pinnedSystemInstructionsByNativeThread = new Map<
+          string,
+          OrchestrationV2PinnedSystemInstructions
+        >();
         const latestPlanByKind = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact>());
         // Claude 5 task tools edit one list per native session, across turns.
         const taskListsByNativeThread = yield* Ref.make(
@@ -5776,27 +5791,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) => {
           if (event.type === "provider_thread.updated") {
-            const nativeThreadId = event.providerThread.nativeThreadRef?.nativeId ?? "";
-            const budget = pdfBudgets.get(nativeThreadId);
-            const pinnedSystemInstructions =
-              pinnedSystemInstructionsByNativeThread.get(nativeThreadId);
-            if (budget !== undefined || pinnedSystemInstructions !== undefined) {
+            const budget = pdfBudgets.get(event.providerThread.nativeThreadRef?.nativeId ?? "");
+            if (budget !== undefined) {
               event = {
                 ...event,
                 providerThread: {
                   ...event.providerThread,
-                  ...(budget === undefined
-                    ? {}
-                    : {
-                        nativeMetadata: {
-                          ...event.providerThread.nativeMetadata,
-                          claudeAttachmentBudget: {
-                            bytesUsed: budget.committed.bytes,
-                            pagesUsed: budget.committed.pages,
-                          },
-                        },
-                      }),
-                  ...(pinnedSystemInstructions === undefined ? {} : { pinnedSystemInstructions }),
+                  nativeMetadata: {
+                    ...event.providerThread.nativeMetadata,
+                    claudeAttachmentBudget: {
+                      bytesUsed: budget.committed.bytes,
+                      pagesUsed: budget.committed.pages,
+                    },
+                  },
                 },
               };
             }
@@ -12257,15 +12264,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const pinnedSystemInstructions =
             launch.restricted !== undefined
               ? undefined
-              : ((shouldResume
-                  ? (turnInput.providerThread.pinnedSystemInstructions ??
+              : resolveClaudePinnedSystemInstructions({
+                  resume: shouldResume,
+                  stored:
                     pinnedSystemInstructionsByNativeThread.get(nativeThreadId) ??
-                    null)
-                  : null) ??
-                buildClaudeSystemInstructions({
-                  hasMcpServers: mcpOverrides.mcpServers !== undefined,
-                  deviceToolsAvailable,
-                }));
+                    turnInput.providerThread.pinnedSystemInstructions,
+                  inputs: {
+                    hasMcpServers: mcpOverrides.mcpServers !== undefined,
+                    deviceToolsAvailable,
+                  },
+                });
           if (pinnedSystemInstructions !== undefined) {
             pinnedSystemInstructionsByNativeThread.set(nativeThreadId, pinnedSystemInstructions);
           }
@@ -12301,7 +12309,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       ? {}
                       : { mcpServers: mcpOverrides.mcpServers }),
                     deviceToolsAvailable,
-                    ...(pinnedSystemInstructions === undefined ? {} : { pinnedSystemInstructions }),
+                    ...(pinnedSystemInstructions === undefined
+                      ? {}
+                      : { systemInstructions: pinnedSystemInstructions.text }),
                     permissionMode: queryPolicy.permissionMode,
                     ...(queryPolicy.allowDangerouslySkipPermissions === undefined
                       ? {}
@@ -13011,7 +13021,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 pinnedSystemInstructionsByNativeThread.get(nativeThreadId);
               if (
                 pinnedSystemInstructions !== undefined &&
-                pinnedSystemInstructions !== turnInput.providerThread.pinnedSystemInstructions
+                pinnedSystemInstructionsChanged(
+                  pinnedSystemInstructions,
+                  turnInput.providerThread.pinnedSystemInstructions,
+                )
               ) {
                 const updatedProviderThread: OrchestrationV2ProviderThread = {
                   ...turnInput.providerThread,
@@ -13025,6 +13038,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   type: "provider_thread.updated",
                   driver: CLAUDE_PROVIDER,
                   providerThread: updatedProviderThread,
+                  pinnedSystemInstructions,
                 });
               }
             });
@@ -14003,8 +14017,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               const claudeAttachmentBudget =
                 forkInput.sourceProviderThread.nativeMetadata?.claudeAttachmentBudget;
               const inheritedPinnedSystemInstructions =
-                forkInput.sourceProviderThread.pinnedSystemInstructions ??
                 pinnedSystemInstructionsByNativeThread.get(sourceNativeThreadId) ??
+                forkInput.sourceProviderThread.pinnedSystemInstructions ??
                 null;
               if (inheritedPinnedSystemInstructions !== null) {
                 pinnedSystemInstructionsByNativeThread.set(
@@ -14035,9 +14049,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         ...(claudeAttachmentBudget === undefined ? {} : { claudeAttachmentBudget }),
                       },
                     }),
-                ...(inheritedPinnedSystemInstructions === null
-                  ? {}
-                  : { pinnedSystemInstructions: inheritedPinnedSystemInstructions }),
                 now,
               });
             },

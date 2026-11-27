@@ -16,6 +16,7 @@ import * as Scope from "effect/Scope";
 import * as EffectAcpErrors from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { pinnedSystemInstructionsKey } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import type { AntigravityAuth } from "../../provider/AntigravityAuth.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
@@ -124,6 +125,11 @@ const extractAntigravitySubagentUpdate: NonNullable<AcpAdapterV2Flavor["extractS
   };
 };
 
+export const ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS = {
+  key: pinnedSystemInstructionsKey({ harness: "Antigravity" }),
+  text: PULL_REQUEST_LINKING_INSTRUCTIONS,
+};
+
 interface AntigravityFlavorServices {
   readonly crypto: Crypto.Crypto;
   readonly fileSystem: FileSystem.FileSystem;
@@ -214,12 +220,10 @@ export function makeAntigravityAcpAdapterFlavor(
     mcpOverHttp: true,
     sessionCarriesPullRequestLinking: antigravityAppendsSystemPrompt,
     sessionSystemPrompt: {
-      resolve: (initializeResult, pinned) =>
-        antigravityAppendsSystemPrompt(initializeResult)
-          ? (pinned ?? PULL_REQUEST_LINKING_INSTRUCTIONS)
-          : null,
-      activationSessionMeta: (pinned) => (initializeResult) =>
-        antigravitySessionMeta(initializeResult, pinned ?? PULL_REQUEST_LINKING_INSTRUCTIONS),
+      current: ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+      appliesTo: antigravityAppendsSystemPrompt,
+      activationSessionMeta: (text) => (initializeResult) =>
+        antigravitySessionMeta(initializeResult, text),
     },
     makeRuntime,
     buildPrompt: ({

@@ -467,31 +467,48 @@ activation so they cannot start runs that reconciliation would then cancel.
 ## Pinning thread system instructions
 
 Resuming a native provider conversation after a server update would invalidate the
-provider's prompt cache if the newer binary sent edited runtime, orchestration, or
-PR-linking instructions as part of the system prompt prefix. Each provider thread
-therefore pins its static instruction block in `pinnedSystemInstructions` (stored in a
-dedicated `pinned_system_instructions` column on
-`orchestration_v2_projection_provider_threads` and stripped from WebSocket wire
-projections so clients never receive the payload).
+provider's prompt cache if the newer binary sent reworded runtime, orchestration, or
+PR-linking instructions in the system prompt prefix. Each provider thread therefore
+stores the instruction block it started with as `pinnedSystemInstructions: { key, text }`.
 
+- **Key.** `pinnedSystemInstructionsKey` (provider-core) hashes the inputs that
+  legitimately change the block, plus `PINNED_INSTRUCTIONS_EPOCH`. A resumed thread reuses
+  the stored text only when the stored key equals the key the running binary computes;
+  otherwise it rebuilds the text and stores the new pin. A wording-only release keeps the
+  key, so it keeps the pin and the cache.
+- **Epoch.** Bump `PINNED_INSTRUCTIONS_EPOCH` when an instruction change must reach running
+  threads (a security fix, say). Every key changes, so every thread rebuilds on its next turn.
 - **Claude** pins the static `systemPrompt.append` block (`buildRuntimeInstructions`,
-  `T3_CODE_ORCHESTRATION_INSTRUCTIONS`, and device-tool instructions when tool search is
-  enabled) when the native thread starts its first turn. Dynamic inputs—`permissionMode`,
-  CLI `--append-system-prompt`, `SubagentStart` hooks, and post-compaction state—remain
-  computed per turn.
-- **Codex** pins the serialized `t3Context` block passed in `developerInstructions` when
-  T3 MCP is attached to a native thread, while dynamic per-turn fields (`appContext`,
-  `autoModeInstructions`, `collaborationMode`, approval/sandbox policies, model, effort,
-  and service tier) are still recomputed on every turn.
+  `T3_CODE_ORCHESTRATION_INSTRUCTIONS`, and the device-tool instructions). Its key holds the
+  harness, whether T3 MCP servers are attached, and whether the MCP session has the
+  `device` capability, so a first turn without MCP, or a device toggle, rebuilds the block.
+  Browser availability does not change this text, so it is not part of the key. Dynamic
+  inputs (`permissionMode`, CLI `--append-system-prompt`, `SubagentStart` hooks,
+  post-compaction state) are computed per turn.
 - **Antigravity (ACP)** pins the session-level `_meta.antigravity.systemPrompt.append`
-  string (currently `PULL_REQUEST_LINKING_INSTRUCTIONS` on Antigravity >= 1.4.5) when the
-  session is created or first resumed after upgrading, and replays it on `session/load`,
+  string (`PULL_REQUEST_LINKING_INSTRUCTIONS` on Antigravity >= 1.4.5) under the
+  `ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS` key, and replays it on `session/load`,
   `session/resume`, and `session/fork`.
+- **Codex is not pinned.** Codex `turn/start` sends the T3 context as `additionalContext`,
+  which the app server appends as developer messages after each turn's context rather
+  than in a fixed prefix, so a pin would not keep any cache. Codex rebuilds that context,
+  with the current model, effort and tool availability, on every turn.
 
-Pinned instructions stay attached across server restarts, upgrades, native forks, and
-same-conversation account switches (`canResumeAcrossInstances`). Creating a new native
-session—new thread, provider switch, resume-failure fallback, forced replacement, or
-rollback to `thread_start`—clears the pin so the fresh conversation picks up the running
-binary's current instructions. Legacy provider threads created before pinning keep
-`pinnedSystemInstructions: null` until their next resumed turn pins the current binary's
-instructions.
+**Storage.** The pin is never part of a `provider-thread.updated` payload: `EventSink`
+strips it from every write, and adapters report a changed pin through a side field on
+their `provider_thread.updated` event. The ingestor turns that field into a dedicated
+`provider-thread.pinned-instructions-set` event `{ providerThreadId, key, text }`, emitted
+only when the key or text changed, so the text is stored once per change instead of on
+every thread update. The projection writes the `pinned_system_instructions` and
+`pinned_system_instructions_key` columns of `orchestration_v2_projection_provider_threads`
+only from that event, and adapter-facing reads hydrate the pin from those columns.
+Cold-history compaction keeps the latest pin event per provider thread. WebSocket wire
+projections drop the pin, and wire pin events carry an empty `text`. A database that has
+not run migration 117 reads every pin as `null`.
+
+Pinned instructions survive server restarts, upgrades, native forks, and same-conversation
+account switches (`canResumeAcrossInstances`). A new native session (new thread, provider
+switch, resume-failure fallback, forced replacement, or rollback to `thread_start`) builds
+the running binary's current instructions. A provider thread created before pinning reads
+`pinnedSystemInstructions: null` and stores the current binary's instructions on its next
+turn.
