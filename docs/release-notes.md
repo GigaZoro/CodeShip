@@ -1,7 +1,8 @@
-## 2026-11-27 — Detached provider session hosts survive planned server updates
+## 2026-11-27 — Codex turns keep running through planned server updates
 
-- Live Claude, Codex, and ACP provider processes now run inside detached `__session-host` brokers outside `t3-server`'s process tree so planned updates detach, buffer stdout/stderr, and reattach in order without killing running turns or re-prompting.
-- MCP session credential hashes are persisted in SQLite so surviving provider processes keep authenticating with local CodeShip MCP tools after a restart. If a detached broker exits while the server is down, startup recovery falls back to standard restart continuation, and unattached brokers auto-clean after 15 minutes.
+- A running Codex turn keeps going in its app-server process during a planned update. The new server takes that process over and finishes the same run, with no continuation prompt and no lost context. An approval Codex asked while no server was attached can be answered.
+- If the process cannot be taken over (it exited, its output was cut, or adoption failed), the old process is stopped and the thread continues as after any restart. Claude and ACP agents still restart and continue; they do not survive an update.
+- MCP credentials survive only for threads whose process was taken over and stop working if the MCP endpoint moved.
 
 ## 2026-11-27 — Capture what annoys you in the app
 

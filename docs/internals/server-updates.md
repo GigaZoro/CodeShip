@@ -399,23 +399,47 @@ increasing sequence number (`seq`) in a bounded ring buffer.
 On planned-update shutdown (detected via [`isPlannedUpdateShutdown`](../../apps/server/src/cloud/updateHandoff.ts),
 which checks both the launcher update handoff and the desktop restart marker),
 [`SessionHostService.detachAllForUpdate`](../../apps/server/src/sessionHost/SessionHostService.ts)
-sends `{ type: "detach" }` to each live broker, marks its row `detached_for_update` with
-the last acknowledged sequence number, and leaves the broker and provider child running.
-Normal shutdowns, explicit stops, thread closes, and session evictions send
-`{ type: "terminate" }`, killing the child process group and unlinking the socket.
-Durable MCP bearer credential hashes (`mcp_session_credentials`) persist in SQLite so
-surviving provider processes continue calling CodeShip's local MCP endpoint seamlessly
-after the new `t3-server` binds.
+sends `{ type: "detach" }` to each live broker, marks its row `detached_for_update` and
+leaves the broker and provider child running. The row's `last_acked_seq` is the replay
+point: the newest frame received at least `DETACH_REPLAY_OVERLAP_MS` (5 s) before the
+detach, so the frames the old server read but may not have stored yet are delivered again
+(at least once). The stream end a detach causes is not a provider failure: the session
+manager leaves that session and its run to the shutdown. Normal shutdowns, explicit stops,
+thread closes, and session evictions send `{ type: "terminate" }`. The broker signals the
+child process group, escalates to `SIGKILL` after `DEFAULT_TERMINATE_GRACE_MS`, and sends
+the exit frame before it closes the connection; `terminate` waits for that frame, so a
+replacement never starts while the old process still runs.
 
 On startup, [`ProviderRuntimeRecoveryService`](../../apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts)
 calls `reattachAllDetachedForUpdate()`. Each `detached_for_update` row is verified against
-its stored process identity before reconnecting with `{ type: "attach", afterSeq, authToken }`:
-the broker replays every buffered frame after `afterSeq` strictly in order and then streams
-live output. Threads with live reattached hosts keep their running state untouched without
-triggering `RestartContinuation`. If a broker exited or failed identity verification while
-the server was down, its row is marked `dead` and recovery falls back cleanly to
-`RestartContinuation`. Any detached broker that is never reattached self-terminates its
-child process group and removes its socket after `orphanTtlMs` (default 15 minutes).
+its stored process identity before reconnecting with `{ type: "attach", afterSeq, authToken }`.
+The broker first sends each request the child asked at or before `afterSeq` that is still
+unanswered, then every buffered frame after `afterSeq` in order, then live output. The
+reattached handle holds that output until a taker releases it. If the broker's ring buffer
+dropped frames the old server never read, the host is ended: a turn cannot be rebuilt from
+part of its output.
+
+Recovery then hands each reattached host to `ProviderTurnStartService.adopt` for the run
+still running on its thread. The adapter takes the stdio handle over
+(`SessionHostService.takeAdoptable`): Codex skips `initialize` and `thread/start` or
+`thread/resume`, uses prefixed request ids so replies to the old server's requests are
+ignored, rebuilds the turn's state from the projection, and releases the held output into
+the normal event ingestor. Replayed and live notifications finish the same run, and an
+approval Codex asked while no server was attached becomes a pending runtime request that
+can be answered. The adopted process finishes only that turn; the next turn on the thread
+starts a fresh session. If adoption fails, recovery logs the error, terminates the host
+and waits for its exit, and the thread recovers through `RestartContinuation`, as it does
+when a broker exited or failed identity verification while the server was down (its row
+is marked `dead`). Any detached broker that is never reattached self-terminates its child
+process group and removes its socket after `orphanTtlMs` (default 15 minutes).
+
+MCP credential hashes (`mcp_session_credentials`) are saved with the MCP endpoint they
+were issued for. After the reattach outcome is known, startup keeps only the credentials
+of threads whose process was taken over and deletes the rest from SQLite and memory. A
+restored credential is refused when the new server's MCP endpoint (host and port) differs
+from the saved one, and an unreadable saved credential counts as unusable. Ack sequence
+numbers are flushed in the background; the service writes the pending ones before its
+database closes.
 
 ### Which drivers run in a session host
 
