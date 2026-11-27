@@ -1204,30 +1204,22 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("skips a guest destroyed while another guest's session opens", () =>
+  effectIt.effect("a guest slow to answer its first command holds up no other guest", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         const slow = makeAttachingGuest(46);
-        let releaseSlow = () => {};
-        const slowCommand = new Promise<void>((resolve) => {
-          releaseSlow = resolve;
-        });
-        slow.sendCommand.mockImplementation(() => slowCommand);
-        const queued = makeAttachingGuest(47);
+        slow.sendCommand.mockImplementation(() => new Promise<never>(() => {}));
+        const next = makeAttachingGuest(47);
+        const destroyed = makeAttachingGuest(49);
+        destroyed.destroy();
 
-        const slowFiber = yield* manager
-          .prepareWebview(slow.wc)
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        const queuedFiber = yield* manager
-          .prepareWebview(queued.wc)
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        queued.destroy();
-        releaseSlow();
+        yield* manager.prepareWebview(slow.wc);
+        yield* manager.prepareWebview(next.wc);
+        yield* manager.prepareWebview(destroyed.wc);
 
-        expect(Exit.isSuccess(yield* Fiber.await(slowFiber))).toBe(true);
-        expect(Exit.isSuccess(yield* Fiber.await(queuedFiber))).toBe(true);
         expect(slow.attach).toHaveBeenCalledTimes(1);
-        expect(queued.attach).not.toHaveBeenCalled();
+        expect(next.attach).toHaveBeenCalledTimes(1);
+        expect(destroyed.attach).not.toHaveBeenCalled();
       }),
     ),
   );
@@ -1475,7 +1467,7 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
-          webContents: { setBackgroundThrottling },
+          webContents: { id: 901, isDestroyed: () => false, setBackgroundThrottling },
         } as never);
 
         yield* manager.startRecording("tab_capture_throttling_1");
@@ -1512,7 +1504,7 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
-          webContents: { setBackgroundThrottling },
+          webContents: { id: 902, isDestroyed: () => false, setBackgroundThrottling },
         } as never);
 
         setBackgroundThrottling.mockImplementationOnce(() => {
@@ -1562,7 +1554,7 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: (event: string, listener: () => void) => windowEvents.set(event, listener),
-          webContents: { setBackgroundThrottling: vi.fn() },
+          webContents: { id: 903, isDestroyed: () => false, setBackgroundThrottling: vi.fn() },
         } as never);
         yield* manager.startRecording("tab_shutdown");
         const pip = makeTestPictureInPictureWindow();
@@ -1588,7 +1580,7 @@ describe("PreviewManager", () => {
           .setMainWindow({
             isDestroyed: () => destroyed,
             once: vi.fn(),
-            webContents: { setBackgroundThrottling: vi.fn() },
+            webContents: { id: 904, isDestroyed: () => false, setBackgroundThrottling: vi.fn() },
           } as never)
           .pipe(Effect.forkChild({ startImmediately: true }));
         try {
@@ -1636,12 +1628,20 @@ describe("PreviewManager", () => {
           once: vi.fn((event: string, listener: () => void) => {
             if (event === "closed") closeFirstWindow = listener;
           }),
-          webContents: { setBackgroundThrottling: firstWindowThrottling },
+          webContents: {
+            id: 905,
+            isDestroyed: () => false,
+            setBackgroundThrottling: firstWindowThrottling,
+          },
         } as never);
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
-          webContents: { setBackgroundThrottling: replacementWindowThrottling },
+          webContents: {
+            id: 906,
+            isDestroyed: () => false,
+            setBackgroundThrottling: replacementWindowThrottling,
+          },
         } as never);
 
         closeFirstWindow?.();
@@ -1682,7 +1682,11 @@ describe("PreviewManager", () => {
           once: vi.fn((event: string, listener: () => void) => {
             if (event === "closed") closeMainWindow = listener;
           }),
-          webContents: { setBackgroundThrottling: firstWindowThrottling },
+          webContents: {
+            id: 907,
+            isDestroyed: () => false,
+            setBackgroundThrottling: firstWindowThrottling,
+          },
         } as never);
         yield* manager.startRecording("tab_window_close_recording");
         expect(firstWindowThrottling.mock.calls).toEqual([[false]]);
@@ -1706,7 +1710,11 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
-          webContents: { setBackgroundThrottling: replacementWindowThrottling },
+          webContents: {
+            id: 908,
+            isDestroyed: () => false,
+            setBackgroundThrottling: replacementWindowThrottling,
+          },
         } as never);
         expect(replacementWindowThrottling).not.toHaveBeenCalled();
       }),
@@ -1743,7 +1751,7 @@ describe("PreviewManager", () => {
           once: vi.fn((event: string, listener: () => void) => {
             if (event === "closed") closeMainWindow = listener;
           }),
-          webContents: { setBackgroundThrottling: vi.fn() },
+          webContents: { id: 909, isDestroyed: () => false, setBackgroundThrottling: vi.fn() },
         } as never);
 
         const start = yield* manager

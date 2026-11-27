@@ -12,8 +12,17 @@ export const DesktopBrowserEvent = Schema.Union([
   /** Its `<webview>` went away: closed, crashed, swapped, or devtools took the debugger. */
   Schema.Struct({ type: Schema.Literal("detached"), ...TabKey }),
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),
+  /** No window can show the awaited tab, so the server runs it headless. */
+  Schema.Struct({ type: Schema.Literal("declined"), ...TabKey }),
 ]);
 export type DesktopBrowserEvent = typeof DesktopBrowserEvent.Type;
+
+/**
+ * How long the server waits for a desktop tab to attach. The desktop keeps its window rendering
+ * meanwhile, and a renderer still loading after a restart needs the margin. The desktop also ends
+ * its hold after this long, so an `awaiting: false` lost with its pipe cannot keep the hold.
+ */
+export const DESKTOP_BROWSER_ATTACH_WAIT_MS = 60_000;
 
 export const DesktopBrowserCommand = Schema.Union([
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),
@@ -31,5 +40,7 @@ export const DesktopBrowserCommand = Schema.Union([
     threadId: TrimmedNonEmptyString,
     active: Schema.Boolean,
   }),
+  /** Whether the server waits for this tab to attach, so the desktop keeps its window rendering. */
+  Schema.Struct({ type: Schema.Literal("awaiting"), ...TabKey, active: Schema.Boolean }),
 ]);
 export type DesktopBrowserCommand = typeof DesktopBrowserCommand.Type;

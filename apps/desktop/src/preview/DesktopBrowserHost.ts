@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Names download files on the shared disk.
 /** The manager owns the single debugger attachment; the relay shares it. */
 import {
+  DESKTOP_BROWSER_ATTACH_WAIT_MS,
   DesktopBrowserCommand,
   DesktopBrowserEvent,
   type DesktopBrowserEvent as DesktopBrowserEventType,
@@ -8,6 +9,8 @@ import {
 import * as Context from "effect/Context";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -128,6 +131,8 @@ export class DesktopBrowserHost extends Context.Service<
     }>;
     /** Keeps a guest drawing frames while hidden, until the returned release runs. */
     readonly keepRendering: (webContents: Electron.WebContents) => () => void;
+    /** The window whose renderer shows server tabs; null once it closed. */
+    readonly setMainWindow: (webContents: Electron.WebContents | null) => void;
   }
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
@@ -149,6 +154,15 @@ export const make = Effect.gen(function* () {
   const agentTurns = new Set<string>();
   /** `keepRendering` holds, by webContents id. */
   const renderingHolds = new Map<number, number>();
+  /** Undefined until the first window opens: tabs awaited before then wait for it. */
+  let mainWindow: Electron.WebContents | null | undefined;
+  /** Tabs the server waits on to attach, by key; each wait is its own entry. */
+  const awaited = new Map<string, { readonly key: DesktopBrowserTabKey }>();
+  /** Each wait's lease timer, by key; the host's scope ends any still running. */
+  const leases = yield* FiberMap.make<string>();
+  const runLease = yield* FiberMap.runtime(leases)<never>();
+  let awaitedHold: { readonly window: Electron.WebContents; readonly release: () => void } | null =
+    null;
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
 
   const nextScreenshot = (tab: AttachedTab) => {
@@ -221,6 +235,39 @@ export const make = Effect.gen(function* () {
       if (remaining === 0) renderingHolds.delete(id);
       else renderingHolds.set(id, remaining);
     };
+  };
+
+  /**
+   * The main window's renderer mounts the webview that attaches an awaited tab; hidden and
+   * throttled, its timers can stall for minutes, long past the server's wait.
+   */
+  const syncAwaitedRendering = () => {
+    const target = awaited.size > 0 ? (mainWindow ?? null) : null;
+    if ((awaitedHold?.window ?? null) === target) return;
+    try {
+      if (awaitedHold !== null) {
+        awaitedHold.release();
+        awaitedHold = null;
+      }
+      if (target !== null) awaitedHold = { window: target, release: keepRendering(target) };
+    } catch (cause) {
+      runFork(
+        Effect.logWarning("Preview main window background throttling did not change.", { cause }),
+      );
+    }
+  };
+
+  // Each interrupts the timers running now, never one a later wait for the same tab starts.
+  const endWait = (id: string) => {
+    if (!awaited.delete(id)) return false;
+    const lease = FiberMap.getUnsafe(leases, id);
+    if (Option.isSome(lease)) runFork(Fiber.interrupt(lease.value));
+    return true;
+  };
+
+  const endAllWaits = () => {
+    awaited.clear();
+    runFork(Fiber.interruptAll([...leases].map(([, lease]) => lease)));
   };
 
   const syncRendering = (tab: AttachedTab) => {
@@ -334,16 +381,48 @@ export const make = Effect.gen(function* () {
     syncPainting(tab);
   };
 
+  /**
+   * Chrome undoes what a client set when it disconnects, but the relay shares the manager's
+   * debugger session, so a relay that ends undoes by hand what would stall the page or the
+   * person without a client: children paused on start, intercepted requests and file pickers,
+   * and its screencast.
+   */
+  const resetDebuggee = (tab: AttachedTab, method: string, params: Record<string, unknown>) => {
+    tab.debuggee.debugger.sendCommand(method, params).catch((cause: unknown) => {
+      runFork(Effect.logWarning("Preview guest debugger was not reset.", { method, cause }));
+    });
+  };
+
+  const releaseDebuggee = (tab: AttachedTab) => {
+    // Disabling auto-attach detaches child sessions and releases their debugger pauses.
+    resetDebuggee(tab, "Target.setAutoAttach", {
+      autoAttach: false,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    });
+    // Requests paused for interception continue once it ends.
+    resetDebuggee(tab, "Fetch.disable", {});
+    resetDebuggee(tab, "Page.setInterceptFileChooserDialog", { enabled: false });
+    if (tab.screencasts.size > 0) resetDebuggee(tab, "Page.stopScreencast", {});
+  };
+
   const dropRelay = (tab: AttachedTab) => {
+    if (tab.relay !== null) releaseDebuggee(tab);
     tab.relay = null;
     tab.screencasts.clear();
+    // A person's download then goes where Electron puts it, not where a departed server asked.
+    tab.downloadDirectory = null;
+    tab.pendingDownloadGuid = null;
     tab.agentUsed = false;
     dropFocusHolds(tab);
   };
 
   /** A detached session, such as a closed viewer, waits on nothing it sent. */
   const dropSessionHolds = (tab: AttachedTab, owner: string) => {
-    tab.screencasts.delete(owner);
+    // One that left without stopping its stream leaves the guest's screencast to the others.
+    if (tab.screencasts.delete(owner) && tab.screencasts.size === 0) {
+      resetDebuggee(tab, "Page.stopScreencast", {});
+    }
     for (const [pending, hold] of tab.focusPending) {
       if (hold.owner === owner) tab.focusPending.delete(pending);
     }
@@ -444,8 +523,9 @@ export const make = Effect.gen(function* () {
         url: () => webContents.getURL(),
         title: () => webContents.getTitle(),
         userAgent: () => webContents.getUserAgent(),
+        // Set once Chromium answers, which can be after the server released this relay.
         setDownloadDirectory: (directory) => {
-          tab.downloadDirectory = directory;
+          if (tab.relay === relay) tab.downloadDirectory = directory;
         },
       },
       (message) => {
@@ -457,17 +537,7 @@ export const make = Effect.gen(function* () {
       // replay the same oversized event, so the tab stays detached.
       () => {
         if (tab.relay !== relay || tabs.get(keyOf(tab.key)) !== tab) return;
-        // Disabling auto-attach detaches child sessions and releases their debugger pauses.
-        void debuggee
-          .sendCommand("Target.setAutoAttach", {
-            autoAttach: false,
-            waitForDebuggerOnStart: false,
-            flatten: true,
-          })
-          .catch(() => {});
-        if (tab.screencasts.size > 0) {
-          void debuggee.sendCommand("Page.stopScreencast").catch(() => {});
-        }
+        releaseDebuggee(tab);
         setDriven(tab, false);
         detach(tab.key);
       },
@@ -541,6 +611,43 @@ export const make = Effect.gen(function* () {
     debuggee.debugger.on("message", tab.onMessage);
     debuggee.webContents.on("did-navigate", tab.onNewDocument);
     emit({ type: "attached", ...key });
+    if (endWait(id)) syncAwaitedRendering();
+  };
+
+  const awaitTab = (key: DesktopBrowserTabKey, active: boolean) => {
+    const id = keyOf(key);
+    if (!active) endWait(id);
+    // The server then runs the tab headless rather than wait out its timeout.
+    else if (mainWindow === null) emit({ type: "declined", ...key });
+    else if (!tabs.has(id)) {
+      const wait = { key };
+      awaited.set(id, wait);
+      // The server has stopped waiting by then, so an `awaiting: false` lost on the way,
+      // whichever pipe or process failed, cannot keep the window rendering. A newer wait for
+      // the same tab replaces this timer.
+      runLease(
+        id,
+        Effect.sleep(DESKTOP_BROWSER_ATTACH_WAIT_MS).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (awaited.get(id) !== wait) return;
+              awaited.delete(id);
+              syncAwaitedRendering();
+            }),
+          ),
+        ),
+      );
+    }
+    syncAwaitedRendering();
+  };
+
+  const setMainWindow = (webContents: Electron.WebContents | null) => {
+    mainWindow = webContents;
+    if (webContents === null) {
+      for (const { key } of awaited.values()) emit({ type: "declined", ...key });
+      endAllWaits();
+    }
+    syncAwaitedRendering();
   };
 
   const handleCommandLine = (line: string) =>
@@ -550,6 +657,11 @@ export const make = Effect.gen(function* () {
       if (command.value.type === "turn") {
         if (command.value.active) agentTurns.add(command.value.threadId);
         else endAgentTurn(command.value.threadId);
+        return;
+      }
+      if (command.value.type === "awaiting") {
+        const { threadId, tabId, active } = command.value;
+        awaitTab({ threadId, tabId }, active);
         return;
       }
       const tab = tabs.get(keyOf(command.value));
@@ -572,15 +684,31 @@ export const make = Effect.gen(function* () {
     return tab !== undefined && performance.now() - tab.agentInputAt > AGENT_DOWNLOAD_WINDOW_MS;
   };
 
-  const announceAll = Effect.suspend(() => {
-    // A new backend: the old one's turns ended without telling us.
+  /** Counts backends that subscribed, so one that leaves after its successor came keeps out of its way. */
+  let backends = 0;
+  // A backend that leaves ends its turns, waits and relays without telling us. Its turns kept
+  // the guests it drove focused; with no relay they drop their holds once idle.
+  const forgetBackend = () => {
     agentTurns.clear();
+    endAllWaits();
+    syncAwaitedRendering();
+    for (const tab of tabs.values()) dropRelay(tab);
+  };
+
+  // The windows and guests can outlive the host: its end lets go of them as a backend's does,
+  // and what it kept rendering and focused throttles again.
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      forgetBackend();
+      for (const tab of tabs.values()) setDriven(tab, false);
+    }),
+  );
+
+  const announceAll = Effect.suspend(() => {
+    forgetBackend();
     return Effect.forEach(
       [...tabs.values()],
-      (tab) => {
-        dropRelay(tab);
-        return PubSub.publish(outbox, { type: "attached", ...tab.key });
-      },
+      (tab) => PubSub.publish(outbox, { type: "attached", ...tab.key }),
       { discard: true },
     );
   });
@@ -592,8 +720,15 @@ export const make = Effect.gen(function* () {
     events: Stream.unwrap(
       Effect.gen(function* () {
         const subscription = yield* PubSub.subscribe(outbox);
+        const backend = ++backends;
         yield* announceAll;
-        return Stream.fromSubscription(subscription);
+        return Stream.fromSubscription(subscription).pipe(
+          Stream.ensuring(
+            Effect.sync(() => {
+              if (backend === backends) forgetBackend();
+            }),
+          ),
+        );
       }),
     ).pipe(Stream.map((event) => lineEncoder.encode(`${encodeEvent(event)}\n`))),
     handleCommandLine,
@@ -602,6 +737,7 @@ export const make = Effect.gen(function* () {
     placeDownload,
     humanStartedDownload,
     keepRendering,
+    setMainWindow,
   });
 });
 

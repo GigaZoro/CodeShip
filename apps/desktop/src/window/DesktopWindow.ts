@@ -32,6 +32,7 @@ import {
   WINDOW_FULLSCREEN_STATE_CHANNEL,
 } from "../ipc/channels.ts";
 import { PASSKEY_BRIDGE_ARGUMENT } from "../preview/GuestProtocol.ts";
+import * as DesktopBrowserHost from "../preview/DesktopBrowserHost.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
@@ -85,6 +86,7 @@ type DesktopWindowRuntimeServices =
   | ElectronTheme.ElectronTheme
   | ElectronWindow.ElectronWindow
   | DesktopRendererHistory.DesktopRendererHistory
+  | DesktopBrowserHost.DesktopBrowserHost
   | PreviewManager.PreviewManager;
 
 export type DesktopWindowError =
@@ -317,6 +319,7 @@ export const make = Effect.gen(function* () {
   const electronTheme = yield* ElectronTheme.ElectronTheme;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const previewManager = yield* PreviewManager.PreviewManager;
+  const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
   const previewPasskeys = yield* PreviewPasskeys.PreviewPasskeys;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
@@ -421,7 +424,7 @@ export const make = Effect.gen(function* () {
       ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
       webPreferences: {
         preload: environment.preloadPath,
-        // Hidden-renderer throttling stalls first paint; re-enable it after the first reveal.
+        // Hidden-renderer throttling stalls first paint; the startup hold below ends at the first reveal.
         backgroundThrottling: false,
         contextIsolation: true,
         nodeIntegration: false,
@@ -870,6 +873,8 @@ export const make = Effect.gen(function* () {
     }
     let rendererReady = false;
     let firstRevealComplete = false;
+    // A hold, so a waiting preview tab or a recording keeps the window rendering past the reveal.
+    const releaseStartupRendering = browserHost.keepRendering(window.webContents);
     const revealWhenReady = Effect.gen(function* () {
       if (
         !rendererReady ||
@@ -880,7 +885,7 @@ export const make = Effect.gen(function* () {
         return;
       firstRevealComplete = true;
       pendingMainReveals.delete(window);
-      window.webContents.setBackgroundThrottling(true);
+      releaseStartupRendering();
       if (persistedSettings.mainWindowMaximized) window.maximize();
       yield* electronWindow.reveal(window);
       yield* dismissConnectingSplash;
@@ -897,6 +902,7 @@ export const make = Effect.gen(function* () {
     }
 
     window.on("closed", () => {
+      releaseStartupRendering();
       if (!backendHasStarted) mainClosedDuringStartup = true;
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
