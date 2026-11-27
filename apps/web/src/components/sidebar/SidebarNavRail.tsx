@@ -12,7 +12,7 @@ import {
   SettingsIcon,
   ShapesIcon,
 } from "lucide-react";
-import { collectLimitPools, tightestLimitWindow } from "@t3tools/shared/usageLimits";
+import { collectLimitPools, nearLimitWindow } from "@t3tools/shared/usageLimits";
 import { memo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
@@ -152,7 +152,7 @@ export function SidebarNavRailUsageItem({
   const shortcut = shortcutLabelForCommand(keybindings, "usage.open");
   const accounts = useLimitAccounts();
   const now = useUsageLimitNow(undefined, false);
-  const tightest = tightestLimitWindow(collectLimitPools(accounts, now), now);
+  const tightest = nearLimitWindow(collectLimitPools(accounts, now), now);
   if (!tightest) {
     return (
       <SidebarNavRailItem

@@ -1,3 +1,8 @@
+## 2026-11-27 — Quieter composer controls and meters
+
+- The model picker is now the composer's one run chip, at every width. It names the permission mode only when it differs from your default, and its popover holds model, effort and permissions together. **Full access** and a thread that runs on another machine always show on the chip, with an icon. `mod+shift+a` opens the popover on **Permissions**.
+- The context window joins the chat header only above 75%, and the sidebar's **Usage** button shows a meter only once your tightest limit has 25% or less left.
+
 ## 2026-11-27 — Thread details start closed, with the essentials in the header
 
 - The Details column now starts closed on web and desktop, and opening or closing it with **Details** holds for every thread. A new thread keeps its column open to choose its machine and branch. Needs you keeps its place at the foot of the column either way.

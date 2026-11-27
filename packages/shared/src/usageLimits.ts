@@ -1334,6 +1334,12 @@ export function usageLimitTone(remainingPercent: number): UsageLimitTone {
   return null;
 }
 
+/** The tightest window, only once it is near its limit: quota meters stay hidden until then. */
+export function nearLimitWindow(pools: readonly LimitPool[], now = -Infinity) {
+  const tightest = tightestLimitWindow(pools, now);
+  return tightest && usageLimitTone(tightest.window.remainingPercent) ? tightest : null;
+}
+
 export function limitResetTimes(presentations: LimitPresentations): number[] {
   const resets: number[] = [];
   for (const { serverConfig } of presentations.values()) {

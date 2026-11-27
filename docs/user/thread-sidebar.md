@@ -790,7 +790,7 @@ on the same page. Duet opens at claude.ai, where Anthropic hosts it.
 The Details column is closed until you open it with **Details** in the chat header; that choice
 holds for every thread. While it is closed, the header shows the thread in one line: the machine,
 the branch, how much changed and the pull request, plus failing checks and the context window once
-it passes 60%. Select that line to open the details over the chat; Esc closes them. A new thread
+it passes 75%. Select that line to open the details over the chat; Esc closes them. A new thread
 keeps its column open to choose where it runs.
 
 The thread details card shows what is going on rather than a set of buttons. At the top, once a
