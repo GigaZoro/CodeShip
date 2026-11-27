@@ -13,14 +13,21 @@ const {
     KEPT_CHECKOUTS,
     acquireCheckoutSlot,
     checkoutsFolder,
+    dirtyMarkerHost,
     isSqliteBusy,
     landingCheckout,
+    lockFile,
     machineBudgetSlots,
+    readProcessStarted,
+    release,
     resolveWarmLimit,
     runCheck,
+    stopDirtyGroup,
+    tryAcquire,
     withPrivateCheckout,
   },
 } = require("./landing-turn.cjs");
+const { endGroup } = require("./process-tree.cjs");
 const { running, setup } = require("./landing-turn.testkit.cjs");
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- a plain node test, with no Effect runtime
@@ -209,22 +216,27 @@ test("a second check reuses the kept checkout's node_modules, even under a non-E
   }
 });
 
+const EXTRA_BASENAME = /^extra-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 test("pre-turn checkouts wait in FIFO order without overflowing, while a turn holder takes bounded overflow", async () => {
   const { root, dir, second, listed, poolFolder } = fixture();
+  let holder = null;
+  let waiterBSlot = null;
+  let waiterCSlot = null;
+  const bNext = Promise.withResolvers();
+  const cFirstWake = Promise.withResolvers();
+  const cSecondWake = Promise.withResolvers();
+  let waiterB = null;
+  let waiterC = null;
   try {
-    const holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
-    let waiterBSlot = null;
-    let waiterCSlot = null;
+    holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
     const order = [];
     const bQueued = Promise.withResolvers();
-    const bNext = Promise.withResolvers();
     const cQueued = Promise.withResolvers();
-    const cFirstWake = Promise.withResolvers();
     const cSecondWait = Promise.withResolvers();
-    const cSecondWake = Promise.withResolvers();
 
     let bWaits = 0;
-    const waiterB = acquireCheckoutSlot({
+    waiterB = acquireCheckoutSlot({
       cwd: dir,
       role: "preWait",
       warmLimit: 1,
@@ -242,7 +254,7 @@ test("pre-turn checkouts wait in FIFO order without overflowing, while a turn ho
     await bQueued.promise;
 
     let cWaits = 0;
-    const waiterC = acquireCheckoutSlot({
+    waiterC = acquireCheckoutSlot({
       cwd: dir,
       role: "preWait",
       warmLimit: 1,
@@ -270,7 +282,7 @@ test("pre-turn checkouts wait in FIFO order without overflowing, while a turn ho
       { cwd: dir, commit: second, role: "underTurn", warmLimit: 1 },
       (directory) => {
         extra = directory;
-        assert.equal(path.basename(extra), "1");
+        assert.match(path.basename(extra), EXTRA_BASENAME);
       },
     );
     assert.equal(fs.existsSync(extra), false);
@@ -279,6 +291,7 @@ test("pre-turn checkouts wait in FIFO order without overflowing, while a turn ho
 
     // Release warm slot 0, then wake C BEFORE B: C must stay behind B in FIFO order!
     holder.release();
+    holder = null;
     cFirstWake.resolve();
     await cSecondWait.promise;
     assert.deepEqual(order, []);
@@ -293,17 +306,31 @@ test("pre-turn checkouts wait in FIFO order without overflowing, while a turn ho
 
     // Release B and wake C: C now takes warm slot 0.
     waiterBSlot.release();
+    waiterBSlot = null;
     cSecondWake.resolve();
     await waiterC;
     assert.equal(waiterCSlot.index, 0);
     assert.equal(waiterCSlot.waited, true);
     assert.deepEqual(order, ["B", "C"]);
     waiterCSlot.release();
+    waiterCSlot = null;
 
     // No overflow directories or leftover locks remain in the pool folder.
-    const names = fs.readdirSync(poolFolder()).filter((name) => /^\d+(?:\.lock)?$/.test(name));
+    const names = fs
+      .readdirSync(poolFolder())
+      .filter((name) => /^(?:\d+|extra-[0-9a-f-]+)(?:\.(?:lock|dirty))?$/.test(name));
     assert.deepEqual(names, ["0.lock"]);
   } finally {
+    holder?.release();
+    bNext.resolve();
+    cFirstWake.resolve();
+    cSecondWake.resolve();
+    await Promise.allSettled([
+      waiterB?.then((slot) => slot.release()),
+      waiterC?.then((slot) => slot.release()),
+    ]);
+    waiterBSlot?.release();
+    waiterCSlot?.release();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -323,6 +350,9 @@ test("a killed waiter in the local FIFO queue releases its ticket immediately so
   const exited = new Promise((resolve) =>
     deadWaiter.on("exit", (code, signal) => resolve({ code, signal })),
   );
+  const bWake = Promise.withResolvers();
+  let waiterB = null;
+  let slotB = null;
   try {
     await new Promise((resolve, reject) => {
       let out = "";
@@ -334,8 +364,7 @@ test("a killed waiter in the local FIFO queue releases its ticket immediately so
     });
 
     const bQueued = Promise.withResolvers();
-    const bWake = Promise.withResolvers();
-    const waiterB = acquireCheckoutSlot({
+    waiterB = acquireCheckoutSlot({
       cwd: dir,
       role: "preWait",
       warmLimit: 1,
@@ -352,29 +381,34 @@ test("a killed waiter in the local FIFO queue releases its ticket immediately so
     holder.release();
     bWake.resolve();
 
-    const slotB = await waiterB;
-    try {
-      assert.equal(slotB.index, 0);
-      assert.equal(slotB.waited, true);
-    } finally {
-      slotB.release();
-    }
+    slotB = await waiterB;
+    assert.equal(slotB.index, 0);
+    assert.equal(slotB.waited, true);
   } finally {
-    holder.release();
     deadWaiter.kill("SIGKILL");
     await exited;
+    holder.release();
+    bWake.resolve();
+    if (!slotB && waiterB) {
+      await waiterB.then(
+        (slot) => slot.release(),
+        () => {},
+      );
+    }
+    slotB?.release();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("waiting for a precheck slot records localSlotWait separately and rebases onto fresh main before checking", async () => {
   const { root, origin, git, clone, commit, dir } = fixture();
+  let holder = null;
   try {
     git(dir, "push", "-q", "origin", "HEAD:main");
     commit(dir, "mine.txt");
     const mover = clone("mover");
 
-    const holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
+    holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
     let elapsed = 0;
     const seenChecks = [];
     const result = await land({
@@ -389,6 +423,7 @@ test("waiting for a precheck slot records localSlotWait separately and rebases o
         commit(mover, "moved-while-waiting.txt");
         git(mover, "push", "-q", "origin", "HEAD:main");
         holder.release();
+        holder = null;
       },
       check: (turn, base, _budget, directory) => {
         elapsed += 1500;
@@ -420,18 +455,135 @@ test("waiting for a precheck slot records localSlotWait separately and rebases o
     assert.equal(record.head, result.commit);
     assert.equal(record.base, latestMain);
   } finally {
+    holder?.release();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rebase-after-wait relaunches when .github/scripts/ changed, re-checks notesMergeProblem, and records latestBase on conflict", async () => {
+  const { root, origin, git, clone, commit, dir } = fixture();
+  let holder = null;
+  let verifyFree = null;
+  try {
+    git(dir, "push", "-q", "origin", "HEAD:main");
+    commit(dir, "mine.txt");
+    const mover = clone("mover");
+
+    // Case 1: origin changes .github/scripts/ while we wait -> release slot and return status "rebased" carrying localSlotWait.
+    holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
+    let elapsed = 0;
+    let carriedState = null;
+    const rebasedResult = await land({
+      cwd: dir,
+      remote: origin,
+      warmLimit: 1,
+      now: () => Date.UTC(2026, 0, 1),
+      recordClock: () => elapsed,
+      onRebased: (state) => {
+        carriedState = JSON.parse(state);
+      },
+      waitSlot: async () => {
+        elapsed += 3000;
+        fs.mkdirSync(path.join(mover, ".github", "scripts"), { recursive: true });
+        commit(mover, ".github/scripts/updated-helper.cjs");
+        git(mover, "push", "-q", "origin", "HEAD:main");
+        holder.release();
+        holder = null;
+      },
+      check: () =>
+        assert.fail("should relaunch instead of checking in place when .github/scripts/ changed"),
+    });
+
+    const scriptBase = git(mover, "rev-parse", "HEAD");
+    assert.equal(rebasedResult.status, "rebased");
+    assert.equal(rebasedResult.base, scriptBase);
+    assert.equal(rebasedResult.head, git(dir, "rev-parse", "HEAD"));
+    assert.equal(carriedState.phases.localSlotWait, 3000);
+    assert.equal(typeof carriedState.phases.rebase, "number");
+    assert.deepEqual(recordsOf(dir), []);
+
+    // Warm slot 0 was released before returning "rebased".
+    verifyFree = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
+    verifyFree.release();
+    verifyFree = null;
+
+    // Case 2: origin breaks .gitattributes release-notes merge driver while we wait -> throws notesMergeProblem after rebase.
+    const brokenBaseMover = clone("broken-notes");
+    holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
+    await assert.rejects(
+      () =>
+        land({
+          cwd: dir,
+          remote: origin,
+          warmLimit: 1,
+          waitSlot: async () => {
+            fs.writeFileSync(
+              path.join(brokenBaseMover, ".gitattributes"),
+              "docs/release-notes.md -merge\n",
+            );
+            git(brokenBaseMover, "add", ".gitattributes");
+            git(brokenBaseMover, "commit", "-qm", "break release-notes driver");
+            git(brokenBaseMover, "push", "-q", "origin", "HEAD:main");
+            holder.release();
+            holder = null;
+          },
+          check: () => assert.fail("should fail notesMergeProblem before checking"),
+        }),
+      /release-notes: rebases and merges here/,
+    );
+    // Restore .gitattributes on origin and dir so Case 3 starts clean.
+    fs.writeFileSync(
+      path.join(brokenBaseMover, ".gitattributes"),
+      "docs/release-notes.md merge=release-notes\n",
+    );
+    git(brokenBaseMover, "add", ".gitattributes");
+    git(brokenBaseMover, "commit", "-qm", "restore release-notes driver");
+    git(brokenBaseMover, "push", "-q", "origin", "HEAD:main");
+    git(dir, "fetch", "-q", "origin", "main");
+    git(dir, "rebase", "-q", "FETCH_HEAD");
+
+    // Case 3: origin edits mine.txt while we wait -> rebase conflicts and landings.jsonl records latestBase.
+    const conflictMover = clone("conflict-mover");
+    holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
+    await assert.rejects(
+      () =>
+        land({
+          cwd: dir,
+          remote: origin,
+          warmLimit: 1,
+          waitSlot: async () => {
+            fs.writeFileSync(path.join(conflictMover, "mine.txt"), "conflict-from-main\n");
+            git(conflictMover, "add", "mine.txt");
+            git(conflictMover, "commit", "-qm", "conflict on mine.txt");
+            git(conflictMover, "push", "-q", "origin", "HEAD:main");
+            holder.release();
+            holder = null;
+          },
+          check: () => assert.fail("should conflict before checking"),
+        }),
+      /rebase/i,
+    );
+    const conflictBase = git(conflictMover, "rev-parse", "HEAD");
+    const lastRecord = recordsOf(dir).at(-1);
+    assert.equal(lastRecord.status, "conflict");
+    assert.equal(lastRecord.base, conflictBase);
+  } finally {
+    holder?.release();
+    verifyFree?.release();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("waiting for a precheck slot releases cleanly if HEAD moves or uncommitted edits appear while waiting", async () => {
   const { root, origin, git, commit, dir } = fixture();
+  let holder = null;
+  let verifyFree = null;
   try {
     git(dir, "push", "-q", "origin", "HEAD:main");
     commit(dir, "mine.txt");
 
     // Case 1: uncommitted edit appears while waiting.
-    let holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
+    holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
     const dirtyResult = await land({
       cwd: dir,
       remote: origin,
@@ -439,6 +591,7 @@ test("waiting for a precheck slot releases cleanly if HEAD moves or uncommitted 
       waitSlot: async () => {
         fs.writeFileSync(path.join(dir, "stray.txt"), "dirty\n");
         holder.release();
+        holder = null;
       },
       check: () => assert.fail("should not check dirty worktree"),
     });
@@ -454,14 +607,18 @@ test("waiting for a precheck slot releases cleanly if HEAD moves or uncommitted 
       waitSlot: async () => {
         commit(dir, "another.txt");
         holder.release();
+        holder = null;
       },
       check: () => assert.fail("should not check moved HEAD"),
     });
     assert.equal(movedResult.status, "head-moved");
 
-    const verifyFree = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
+    verifyFree = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
     verifyFree.release();
+    verifyFree = null;
   } finally {
+    holder?.release();
+    verifyFree?.release();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -517,7 +674,7 @@ test("a kept checkout left dirty by a SIGKILLed holder rebuilds cleanly instead 
 });
 
 test(
-  "dirty-slot recovery stops a lingering process group left in the slot dirty marker",
+  "dirty-slot recovery verifies boot-scoped host and process start time before killing, and still rebuilds when skipped",
   POSIX_ONLY,
   async () => {
     const { root, dir, second, poolFolder } = fixture();
@@ -528,13 +685,52 @@ test(
     const strayExited = new Promise((resolve) => stray.on("exit", resolve));
     try {
       assert.equal(running(stray.pid), true);
-      // Seed warm slot 0, then plant a dirty marker naming the lingering detached process group.
-      await withPrivateCheckout({ cwd: dir, commit: second, warmLimit: 1 }, () => {});
-      fs.writeFileSync(
-        path.join(poolFolder(), "0.dirty"),
-        JSON.stringify({ pid: stray.pid, pgid: stray.pid }),
-      );
+      const here = dirtyMarkerHost();
+      const started = readProcessStarted(stray.pid);
+      assert.equal(typeof here, "string");
+      assert.equal(typeof started, "string");
+      assert.ok(started.length > 0);
 
+      // Seed warm slot 0, then verify markers with missing host, wrong host, bare hostname, wrong started, or legacy pgid
+      // rebuild cleanly WITHOUT killing the unrelated live process group.
+      await withPrivateCheckout({ cwd: dir, commit: second, warmLimit: 1 }, () => {});
+      const dirtyPath = path.join(poolFolder(), "0.dirty");
+      const unsafeMarkers = [
+        { pid: stray.pid, childGroups: [{ group: stray.pid, started }] },
+        {
+          pid: stray.pid,
+          host: "other-host other-boot",
+          childGroups: [{ group: stray.pid, started }],
+        },
+        { pid: stray.pid, host: os.hostname(), childGroups: [{ group: stray.pid, started }] },
+        { pid: stray.pid, host: here, childGroups: [{ group: stray.pid, started: "0" }] },
+        { pid: stray.pid, host: here, childGroups: [{ group: stray.pid, started: "" }] },
+        { pid: stray.pid, host: here, pgid: stray.pid },
+      ];
+      for (const marker of unsafeMarkers) {
+        fs.writeFileSync(dirtyPath, JSON.stringify(marker));
+        await withPrivateCheckout(
+          { cwd: dir, commit: second, warmLimit: 1 },
+          (_directory, context) => {
+            assert.equal(context.reused, false);
+          },
+        );
+        assert.equal(
+          running(stray.pid),
+          true,
+          `unsafe marker must not kill: ${JSON.stringify(marker)}`,
+        );
+      }
+
+      // Matching boot-scoped host + group + exact start time DOES stop the lingering process group.
+      fs.writeFileSync(
+        dirtyPath,
+        JSON.stringify({
+          pid: stray.pid,
+          host: here,
+          childGroups: [{ group: stray.pid, started }],
+        }),
+      );
       await withPrivateCheckout(
         { cwd: dir, commit: second, warmLimit: 1 },
         (_directory, context) => {
@@ -550,6 +746,101 @@ test(
         // Already exited.
       }
       await strayExited;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "dirty marker tracks all active child groups atomically, and EPERM in stopDirtyGroup/endGroup does not hang",
+  POSIX_ONLY,
+  async (t) => {
+    const { root, dir, second, poolFolder } = fixture();
+    const childA = Promise.withResolvers();
+    const childB = Promise.withResolvers();
+    try {
+      await withPrivateCheckout(
+        { cwd: dir, commit: second, warmLimit: 1 },
+        (_directory, context) => {
+          const procA = spawn(process.execPath, ["-e", "setInterval(() => {}, 60 * 60 * 1000)"], {
+            detached: true,
+            stdio: "ignore",
+          });
+          const procB = spawn(process.execPath, ["-e", "setInterval(() => {}, 60 * 60 * 1000)"], {
+            detached: true,
+            stdio: "ignore",
+          });
+          const untrackA = context.trackChild({
+            group: procA.pid,
+            stop: () => procA.kill("SIGKILL"),
+            done: childA.promise,
+          });
+          const untrackB = context.trackChild({
+            group: procB.pid,
+            stop: () => procB.kill("SIGKILL"),
+            done: childB.promise,
+          });
+          try {
+            const dirtyPath = path.join(poolFolder(), "0.dirty");
+            assert.equal(fs.existsSync(`${dirtyPath}.tmp`), false);
+            const marker = JSON.parse(fs.readFileSync(dirtyPath, "utf8"));
+            assert.equal(marker.pid, process.pid);
+            assert.equal(marker.host, dirtyMarkerHost());
+            assert.equal("pgid" in marker, false);
+            assert.equal(Array.isArray(marker.childGroups), true);
+            assert.deepEqual(
+              marker.childGroups.map((entry) => entry.group).sort((a, b) => a - b),
+              [procA.pid, procB.pid].sort((a, b) => a - b),
+            );
+            for (const entry of marker.childGroups) {
+              assert.equal(entry.started, readProcessStarted(entry.group));
+            }
+          } finally {
+            untrackA();
+            untrackB();
+            procA.kill("SIGKILL");
+            procB.kill("SIGKILL");
+            childA.resolve();
+            childB.resolve();
+          }
+        },
+      );
+
+      // stopDirtyGroup skips EPERM groups immediately without invoking endGroup.
+      const dirtyPath = path.join(poolFolder(), "0.dirty");
+      fs.writeFileSync(
+        dirtyPath,
+        JSON.stringify({
+          pid: 999999,
+          host: "linux-boot",
+          childGroups: [{ group: 424242, started: "12345" }],
+        }),
+      );
+      let ended = false;
+      const wasDirty = await stopDirtyGroup(dirtyPath, {
+        platform: "linux",
+        currentHost: () => "linux-boot",
+        readStarted: () => "12345",
+        probe: () => "eperm",
+        getOwnPgid: () => 100,
+        end: () => {
+          ended = true;
+          throw new Error("should not call endGroup on EPERM");
+        },
+      });
+      assert.equal(wasDirty, true);
+      assert.equal(ended, false);
+
+      // endGroup rejects immediately on EPERM instead of looping 30s on groupAlive.
+      const eperm = Object.assign(new Error("Operation not permitted"), { code: "EPERM" });
+      t.mock.method(process, "kill", () => {
+        throw eperm;
+      });
+      await assert.rejects(() => endGroup(424242), { code: "EPERM" });
+    } finally {
+      childA.resolve();
+      childB.resolve();
+      t.mock.restoreAll();
       fs.rmSync(root, { recursive: true, force: true });
     }
   },
@@ -596,6 +887,50 @@ test("runCheck rebuilds and retries install once when install fails in a reused 
   }
 });
 
+test("runCheck passes abort signal into rebuild(signal) and stops without retrying install on abort", async () => {
+  const { root, dir, second } = fixture();
+  try {
+    await withPrivateCheckout({ cwd: dir, commit: second, warmLimit: 1 }, () => {});
+
+    const runsLog = path.join(root, "install-runs.log");
+    const installScript = path.join(root, "install-fail.js");
+    fs.writeFileSync(
+      installScript,
+      [
+        'const fs = require("node:fs");',
+        `fs.appendFileSync(${JSON.stringify(runsLog)}, "install\\n");`,
+        "process.exit(1);",
+      ].join("\n"),
+    );
+
+    const lost = new AbortController();
+    let seenSignal = null;
+    const passed = await withPrivateCheckout(
+      { cwd: dir, commit: second, warmLimit: 1 },
+      (directory, context) => {
+        assert.equal(context.reused, true);
+        return runCheck(directory, "turn", second, 60, lost.signal, {
+          ...context,
+          rebuild: async (signal) => {
+            seenSignal = signal;
+            lost.abort(new Error("lost turn during rebuild"));
+            await context.rebuild(signal);
+          },
+          installCommand: `"${process.execPath}" "${installScript}"`,
+          checkCommand: `"${process.execPath}" -e "process.exit(0)"`,
+          stdio: "pipe",
+        });
+      },
+    );
+
+    assert.equal(passed, false);
+    assert.equal(seenSignal, lost.signal);
+    assert.deepEqual(fs.readFileSync(runsLog, "utf8").trim().split("\n"), ["install"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test(
   "SIGTERM on an extra checkout stops its active child process before removing the checkout",
   POSIX_ONLY,
@@ -621,6 +956,7 @@ test(
           );
           let own;
           let innerPid;
+          let exit = null;
           try {
             ({ own, innerPid } = await new Promise((resolve, reject) => {
               let out = "";
@@ -634,17 +970,24 @@ test(
               });
               stopped.on("exit", () => reject(new Error(`extra holder exited early: ${out}`)));
             }));
+            assert.match(path.basename(own), EXTRA_BASENAME);
             assert.ok(fs.existsSync(own));
             assert.equal(running(innerPid), true);
-          } finally {
+
             stopped.kill("SIGTERM");
-            const exit = await exited;
-            assert.deepEqual(exit, { code: null, signal: "SIGTERM" });
+            exit = await exited;
+          } finally {
+            if (exit === null) {
+              stopped.kill("SIGKILL");
+              await exited;
+            }
           }
 
+          assert.deepEqual(exit, { code: null, signal: "SIGTERM" });
           assert.equal(running(innerPid), false);
           assert.equal(fs.existsSync(own), false);
           assert.equal(fs.existsSync(`${own}.lock`), false);
+          assert.equal(fs.existsSync(`${own}.dirty`), false);
           assert.equal(listed().includes(path.resolve(own)), false);
         },
         1,
@@ -655,8 +998,148 @@ test(
   },
 );
 
-test("a killed extra checkout is skipped by under-turn runs and swept (with its lock) by the next pre-turn landing", async () => {
-  const { root, dir, second, listed } = fixture();
+// Runs land() in a child process where origin advances before the turn so underTurnCheck uses an extra slot,
+// then waits inside a tracked child until SIGTERM arrives.
+const LAND_EXTRA_SIGTERM = `
+const { land, testing: { runCheck } } = require(process.env.LANDING_TURN);
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+(async () => {
+  let announcedWait = false;
+  await land({
+    cwd: process.env.LANDER,
+    remote: process.env.ORIGIN,
+    warmLimit: 1,
+    pollMs: 25,
+    sleep: (ms) => {
+      if (!announcedWait) {
+        announcedWait = true;
+        console.log("WAITING_TURN");
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    },
+    check: async (turn, base, budget, directory, signal, checkoutContext) => {
+      if (turn === null) {
+        // Advance origin before the turn so underTurnCheck runs in an extra slot while slot 0 is held.
+        fs.writeFileSync(path.join(process.env.MOVER, "advance.txt"), "moved\\n");
+        spawnSync("git", ["-C", process.env.MOVER, "add", "advance.txt"], { stdio: "ignore" });
+        spawnSync("git", ["-C", process.env.MOVER, "commit", "-qm", "advance"], { stdio: "ignore" });
+        spawnSync("git", ["-C", process.env.MOVER, "push", "-q", "origin", "HEAD:main"], { stdio: "ignore" });
+        return true;
+      }
+      console.log("EXTRA_DIR " + directory);
+      const command = \`"\${process.execPath}" -e "console.log('EXTRA_CHILD ' + process.pid); setInterval(() => {}, 60 * 60 * 1000)"\`;
+      return runCheck(directory, turn, base, budget, signal, {
+        ...checkoutContext,
+        command,
+        stdio: "inherit",
+      });
+    },
+  });
+})();
+`;
+
+test(
+  "SIGTERM during an under-turn extra checkout run tears down once without recording a bogus check-failed",
+  POSIX_ONLY,
+  async () => {
+    const { root, origin, git, clone, commit, dir, listed } = fixture();
+    let holder = null;
+    let parentLease = null;
+    try {
+      git(dir, "push", "-q", "origin", "HEAD:main");
+      commit(dir, "mine.txt");
+      const mover = clone("mover");
+
+      // Hold the remote lease so the child finishes preWait (releasing slot 0) and pauses waiting for the turn.
+      parentLease = tryAcquire({ cwd: mover, remote: origin, runId: "parent-gate" });
+      assert.ok(parentLease);
+
+      const child = spawn(process.execPath, ["-e", LAND_EXTRA_SIGTERM], {
+        env: {
+          ...process.env,
+          LANDING_TURN: require.resolve("./landing-turn.cjs"),
+          LANDER: dir,
+          ORIGIN: origin,
+          MOVER: mover,
+        },
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      const exited = new Promise((resolve) =>
+        child.on("exit", (code, signal) => resolve({ code, signal })),
+      );
+      let extraDir;
+      let innerPid;
+      let exit = null;
+      try {
+        await new Promise((resolve, reject) => {
+          let out = "";
+          const onData = (chunk) => {
+            out += chunk;
+            if (out.includes("WAITING_TURN")) {
+              child.stdout.off("data", onData);
+              resolve();
+            }
+          };
+          child.stdout.on("data", onData);
+          child.on("exit", () =>
+            reject(new Error(`land child exited before WAITING_TURN: ${out}`)),
+          );
+        });
+
+        // Child has released warm slot 0 and is waiting for the turn; hold slot 0, then release the turn.
+        const extraReady = new Promise((resolve, reject) => {
+          let out = "";
+          child.stdout.on("data", (chunk) => {
+            out += chunk;
+            const dirMatch = /^EXTRA_DIR (.+)$/m.exec(out);
+            const childMatch = /^EXTRA_CHILD (\d+)$/m.exec(out);
+            if (dirMatch && childMatch) {
+              resolve({ extraDir: dirMatch[1].trim(), innerPid: Number(childMatch[1]) });
+            }
+          });
+          child.on("exit", () => reject(new Error(`land child exited before EXTRA_CHILD: ${out}`)));
+        });
+        holder = await acquireCheckoutSlot({ cwd: dir, role: "preWait", warmLimit: 1 });
+        release({ cwd: mover, remote: origin }, parentLease);
+        parentLease = null;
+        ({ extraDir, innerPid } = await extraReady);
+
+        assert.match(path.basename(extraDir), EXTRA_BASENAME);
+        assert.equal(running(innerPid), true);
+
+        child.kill("SIGTERM");
+        exit = await exited;
+      } finally {
+        if (exit === null) {
+          child.kill("SIGKILL");
+          await exited;
+        }
+        if (parentLease) {
+          release({ cwd: mover, remote: origin }, parentLease);
+          parentLease = null;
+        }
+        holder?.release();
+      }
+
+      assert.deepEqual(exit, { code: null, signal: "SIGTERM" });
+      assert.equal(running(innerPid), false);
+      assert.equal(fs.existsSync(extraDir), false);
+      assert.equal(fs.existsSync(`${extraDir}.lock`), false);
+      assert.equal(fs.existsSync(`${extraDir}.dirty`), false);
+      assert.equal(listed().includes(path.resolve(extraDir)), false);
+      // Must NOT have resumed runLanding to write a bogus check-failed/error record.
+      assert.deepEqual(recordsOf(dir), []);
+    } finally {
+      holder?.release();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("a killed extra checkout is skipped by under-turn runs and swept (with its lock and legacy overflow) by the next pre-turn landing", async () => {
+  const { root, dir, second, listed, poolFolder } = fixture();
   try {
     let killed;
     await withKeptHeld(
@@ -670,10 +1153,18 @@ test("a killed extra checkout is skipped by under-turn runs and swept (with its 
           dead.child.kill("SIGKILL");
           await dead.exited;
         }
+        assert.match(path.basename(killed), EXTRA_BASENAME);
         assert.ok(fs.existsSync(killed));
       },
       1,
     );
+
+    // Also plant a legacy numeric overflow directory (>= warmLimit) and an orphan extra dirty marker.
+    const legacyDir = path.join(poolFolder(), "2");
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(`${legacyDir}.dirty`, JSON.stringify({ pid: 1, host: null, childGroups: [] }));
+    const orphanDirty = path.join(poolFolder(), `extra-${randomUUID()}.dirty`);
+    fs.writeFileSync(orphanDirty, JSON.stringify({ pid: 1, host: null, childGroups: [] }));
 
     // An under-turn checkout skips sweepCheckouts so it never stalls on sweep work under the main lease.
     await withPrivateCheckout(
@@ -681,14 +1172,20 @@ test("a killed extra checkout is skipped by under-turn runs and swept (with its 
       () => {},
     );
     assert.ok(fs.existsSync(killed));
+    assert.ok(fs.existsSync(legacyDir));
 
-    // The next pre-turn landing sweeps the abandoned extra checkout directory and its lock file.
+    // The next pre-turn landing sweeps the abandoned extra checkout, orphan extra dirty marker, and legacy numeric overflow.
     await withPrivateCheckout(
       { cwd: dir, commit: second, role: "preWait", warmLimit: 1 },
       () => {},
     );
     assert.equal(fs.existsSync(killed), false);
     assert.equal(fs.existsSync(`${killed}.lock`), false);
+    assert.equal(fs.existsSync(`${killed}.dirty`), false);
+    assert.equal(fs.existsSync(legacyDir), false);
+    assert.equal(fs.existsSync(`${legacyDir}.lock`), false);
+    assert.equal(fs.existsSync(`${legacyDir}.dirty`), false);
+    assert.equal(fs.existsSync(orphanDirty), false);
     assert.equal(listed().includes(path.resolve(killed)), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -717,7 +1214,7 @@ test("a landing removes the temp-folder checkouts older landings left, once no t
   }
 });
 
-test("extended SQLITE_BUSY codes, machine budget sizing, and landingCheckout path validation", () => {
+test("SQLITE_BUSY/win32 SQLITE_CANTOPEN, boot host & process start parsing, machine budget sizing, and landingCheckout validation", () => {
   // Primary and extended SQLite busy codes (5, SQLITE_BUSY_RECOVERY=261, SNAPSHOT=517, TIMEOUT=773).
   for (const errcode of [5, 261, 517, 773]) {
     assert.equal(isSqliteBusy({ errcode }), true, `errcode ${errcode} should be busy`);
@@ -725,6 +1222,97 @@ test("extended SQLITE_BUSY codes, machine budget sizing, and landingCheckout pat
   for (const error of [{ errcode: 1 }, { errcode: 14 }, { errcode: "5" }, {}, null, undefined]) {
     assert.equal(isSqliteBusy(error), false);
   }
+
+  // Windows transient SQLITE_CANTOPEN (14, and extended 270) when parent directory exists returns null in lockFile.
+  for (const errcode of [14, 270]) {
+    const cantOpen = Object.assign(new Error("unable to open database file"), { errcode });
+    assert.equal(
+      lockFile("/dir/0.lock", {
+        platform: "win32",
+        existsSync: () => true,
+        openDatabase: () => {
+          throw cantOpen;
+        },
+      }),
+      null,
+    );
+    let closed = false;
+    assert.equal(
+      lockFile("/dir/0.lock", {
+        platform: "win32",
+        existsSync: () => true,
+        openDatabase: () => ({
+          exec: () => {
+            throw cantOpen;
+          },
+          close: () => {
+            closed = true;
+          },
+        }),
+      }),
+      null,
+    );
+    assert.equal(closed, true);
+    assert.throws(
+      () =>
+        lockFile("/missing/0.lock", {
+          platform: "win32",
+          existsSync: () => false,
+          openDatabase: () => {
+            throw cantOpen;
+          },
+        }),
+      /unable to open database file/,
+    );
+    assert.throws(
+      () =>
+        lockFile("/dir/0.lock", {
+          platform: "linux",
+          existsSync: () => true,
+          openDatabase: () => {
+            throw cantOpen;
+          },
+        }),
+      /unable to open database file/,
+    );
+  }
+
+  // Boot-scoped host identity across platforms.
+  assert.equal(
+    dirtyMarkerHost({
+      platform: "darwin",
+      hostname: () => "mac.local",
+      spawn: () => ({
+        status: 0,
+        stdout: "{ sec = 1712345678, usec = 123456 } Fri Apr  5 12:34:38 2024\n",
+      }),
+    }),
+    "darwin:mac.local:1712345678",
+  );
+  assert.equal(
+    dirtyMarkerHost({
+      platform: "darwin",
+      hostname: () => "mac.local",
+      spawn: () => ({ status: 1, stdout: "" }),
+    }),
+    null,
+  );
+  assert.equal(dirtyMarkerHost({ platform: "freebsd" }), null);
+
+  // Process start time parsing handles Linux comm with spaces and parentheses, and macOS ps lstart.
+  const fakeStat =
+    "4242 (my (weird) proc) S 1 4242 4242 0 -1 4194304 100 0 0 0 1 2 0 0 20 0 1 0 987654321 1000 10\n";
+  assert.equal(
+    readProcessStarted(4242, { platform: "linux", readFileSync: () => fakeStat }),
+    "987654321",
+  );
+  assert.equal(
+    readProcessStarted(4242, {
+      platform: "darwin",
+      spawn: () => ({ status: 0, stdout: "  Fri Nov 27 21:00:00 2026 \n" }),
+    }),
+    "Fri Nov 27 21:00:00 2026",
+  );
 
   // Machine budget sizing matches check-changed.ts defaultConcurrency(cores, totalMemBytes).
   const GiB = 1024 ** 3;
@@ -735,9 +1323,14 @@ test("extended SQLITE_BUSY codes, machine budget sizing, and landingCheckout pat
   assert.equal(resolveWarmLimit(1), 1);
   assert.equal(resolveWarmLimit(3), 3);
 
-  // Tightened landingCheckout validation requires 16-hex clone folder and numeric slot basename.
+  // Tightened landingCheckout validation requires 16-hex clone folder and numeric or extra-<uuid> slot basename.
   assert.equal(landingCheckout("/cache/t3-landing-checkouts/0123456789abcdef/0"), true);
   assert.equal(landingCheckout("/cache/t3-landing-checkouts/0123456789abcdef/12"), true);
+  assert.equal(
+    landingCheckout(`/cache/t3-landing-checkouts/0123456789abcdef/extra-${randomUUID()}`),
+    true,
+  );
+  assert.equal(landingCheckout("/cache/t3-landing-checkouts/0123456789abcdef/extra-bad"), false);
   assert.equal(landingCheckout("/cache/t3-landing-checkouts/not-hex-folder!!/0"), false);
   assert.equal(landingCheckout("/cache/t3-landing-checkouts/0123456789abcdef/feature"), false);
   assert.equal(landingCheckout(`/tmp/t3-landing-${randomUUID()}`), true);

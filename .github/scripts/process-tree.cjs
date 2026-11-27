@@ -18,16 +18,21 @@ function signalGroup(group, name) {
   }
 }
 
-/** True while `group` has a process, also one this process may not signal. */
-function groupAlive(group) {
+/** Whether `group` has a process we can signal ("alive"), only ones we cannot ("eperm"), or none ("gone"). */
+function probeGroup(group) {
   try {
     process.kill(-group, 0);
-    return true;
+    return "alive";
   } catch (error) {
-    if (error.code === "ESRCH") return false;
-    if (error.code === "EPERM") return true;
+    if (error.code === "ESRCH") return "gone";
+    if (error.code === "EPERM") return "eperm";
     throw error;
   }
+}
+
+/** True while `group` has a process, also one this process may not signal. */
+function groupAlive(group) {
+  return probeGroup(group) !== "gone";
 }
 
 /** Every process as `pid -> { ppid, pgid }`, listed within what is left until `deadline`. */
@@ -100,7 +105,9 @@ async function endGroup(group) {
       failure ??= error;
     }
   }
-  while (groups.some(groupAlive)) {
+  // Only wait on groups we still have permission to signal; EPERM means only another user's processes remain
+  // (e.g. a recycled PGID), which will never respond to our SIGKILL.
+  while (groups.some((each) => probeGroup(each) === "alive")) {
     if (performance.now() > deadline) {
       failure ??= new Error(
         `the processes of ${group} did not end within ${STOP_TREE_MS / 1000} seconds.`,
@@ -258,4 +265,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { STOP_TREE_MS, endGroup, groupAlive, spawnChild, spawnTree };
+module.exports = { STOP_TREE_MS, endGroup, groupAlive, probeGroup, spawnChild, spawnTree };
