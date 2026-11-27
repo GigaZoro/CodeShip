@@ -11,6 +11,7 @@ import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import {
   ARGUMENT_CHARACTERS,
   cachedTestTasks,
+  CHANGED_TEST_GROUP_SIZE,
   changedTestRequestEnv,
   changedTestRuntime,
   checkoutSearchPath,
@@ -105,8 +106,16 @@ describe("cachedTestTasks", () => {
       { length: 80 },
       (_, index) => `src/${String(index * 2).padStart(3, "0")}.test.ts`,
     );
-    for (const groupSize of [1, 8]) {
+    for (const groupSize of [1, CHANGED_TEST_GROUP_SIZE, 8]) {
       const first = cachedTestTasks(JSON.stringify({ files, groupSize }));
+      const largest = Math.max(
+        ...Object.entries(first)
+          .filter(([key]) => key !== "test-cache")
+          .map(([, task]) => task.command.match(/'\.\/src\/[0-9]+\.test\.ts'/g)!.length),
+      );
+      expect(largest).toBeLessThanOrEqual(
+        groupSize === CHANGED_TEST_GROUP_SIZE ? 8 : 2 * groupSize,
+      );
       const second = cachedTestTasks(
         JSON.stringify({ files: [...files, "src/001.test.ts"], groupSize }),
       );
