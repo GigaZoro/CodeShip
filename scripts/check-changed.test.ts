@@ -3876,14 +3876,14 @@ it.each([
   project.write(
     "fixture.test.ts",
     `import { execFileSync } from "node:child_process";
-    import { mkdtempSync, rmSync } from "node:fs";
+    import { mkdtempSync, realpathSync, rmSync } from "node:fs";
     import { tmpdir } from "node:os";
     import { join, relative } from "node:path";
     import { it } from "vite-plus/test";
     const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe" });
     it("reads the checkout's Git", () => {
       const root = import.meta.dirname;
-      const other = mkdtempSync(join(tmpdir(), "reader-"));
+      const other = realpathSync(mkdtempSync(join(tmpdir(), "reader-")));
       try {
         ${read};
       } finally {
