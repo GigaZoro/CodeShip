@@ -1931,7 +1931,24 @@ export const layer: Layer.Layer<
           yield* prepared.value.notAccepted(undefined);
           return Exit.isFailure(owned) ? starting(Exit.failCause(owned.cause), true) : undefined;
         }).pipe(Effect.onInterrupt(() => Fiber.interrupt(providerEventFiber)));
+        // A takeover that fails leaves the run to recovery, which ends the taken-over process and
+        // continues the run; failing the run here would end it instead.
+        const failTakeover = (cause: unknown) =>
+          Fiber.interrupt(providerEventFiber).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new RunExecutionStartError({
+                  commandId: input.commandId,
+                  runId: input.run.id,
+                  cause,
+                }),
+              ),
+            ),
+          );
         if (start === undefined) {
+          if (adopted !== undefined) {
+            return yield* failTakeover("The run is no longer this server's to take over.");
+          }
           yield* Fiber.interrupt(providerEventFiber);
           return;
         }
@@ -1950,53 +1967,55 @@ export const layer: Layer.Layer<
             ),
           ),
           Effect.catchCause((cause) =>
-            Effect.logError("orchestration V2 provider turn start failed", {
-              runId: input.run.id,
-              providerInstanceId: input.run.providerInstanceId,
-              cause: providerFailureDiagnostic(cause),
-            }).pipe(
-              Effect.andThen(Fiber.interrupt(providerEventFiber)),
-              Effect.andThen(
-                start.ownershipFailed
-                  ? Effect.succeed(
-                      makeProviderFailure({ cause: Cause.squash(cause), class: "unknown" }),
-                    )
-                  : input.startFailure(Cause.squash(cause)),
-              ),
-              Effect.flatMap((failure) =>
-                Effect.all([
-                  Ref.get(latestProviderThread),
-                  Ref.get(latestTurnItemOrdinal),
-                  Ref.get(openRunOwnedSubagents),
-                ]).pipe(
-                  Effect.flatMap(([providerThread, latestItemOrdinal, openSubagents]) =>
-                    writeFinalRunEvents({
-                      run: input.run,
-                      rootNode: input.rootNode,
-                      checkpointScope: input.checkpointScope,
-                      providerThread,
-                      attempt: input.attempt,
-                      writeIfRunCurrent: {
-                        activeAttemptId: input.attempt.id,
-                        expectedStatus: "running",
-                      },
-                      openRunOwnedSubagents: openSubagents,
-                      terminal: makeFailedTerminalEvent(failure, latestItemOrdinal + 1),
-                      failureItemPersisted: false,
-                      refreshAfterTurn,
-                    }),
+            adopted !== undefined
+              ? failTakeover(Cause.squash(cause))
+              : Effect.logError("orchestration V2 provider turn start failed", {
+                  runId: input.run.id,
+                  providerInstanceId: input.run.providerInstanceId,
+                  cause: providerFailureDiagnostic(cause),
+                }).pipe(
+                  Effect.andThen(Fiber.interrupt(providerEventFiber)),
+                  Effect.andThen(
+                    start.ownershipFailed
+                      ? Effect.succeed(
+                          makeProviderFailure({ cause: Cause.squash(cause), class: "unknown" }),
+                        )
+                      : input.startFailure(Cause.squash(cause)),
+                  ),
+                  Effect.flatMap((failure) =>
+                    Effect.all([
+                      Ref.get(latestProviderThread),
+                      Ref.get(latestTurnItemOrdinal),
+                      Ref.get(openRunOwnedSubagents),
+                    ]).pipe(
+                      Effect.flatMap(([providerThread, latestItemOrdinal, openSubagents]) =>
+                        writeFinalRunEvents({
+                          run: input.run,
+                          rootNode: input.rootNode,
+                          checkpointScope: input.checkpointScope,
+                          providerThread,
+                          attempt: input.attempt,
+                          writeIfRunCurrent: {
+                            activeAttemptId: input.attempt.id,
+                            expectedStatus: "running",
+                          },
+                          openRunOwnedSubagents: openSubagents,
+                          terminal: makeFailedTerminalEvent(failure, latestItemOrdinal + 1),
+                          failureItemPersisted: false,
+                          refreshAfterTurn,
+                        }),
+                      ),
+                    ),
+                  ),
+                  Effect.mapError(
+                    (writeCause) =>
+                      new RunExecutionStartError({
+                        commandId: input.commandId,
+                        runId: input.run.id,
+                        cause: { start: cause, write: writeCause },
+                      }),
                   ),
                 ),
-              ),
-              Effect.mapError(
-                (writeCause) =>
-                  new RunExecutionStartError({
-                    commandId: input.commandId,
-                    runId: input.run.id,
-                    cause: { start: cause, write: writeCause },
-                  }),
-              ),
-            ),
           ),
         );
       }),

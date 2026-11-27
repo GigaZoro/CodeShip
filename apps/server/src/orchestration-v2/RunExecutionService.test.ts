@@ -923,6 +923,115 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
   ),
 );
 
+it.effect.each(["fails", "unsupported"] as const)(
+  "returns the error of a takeover that cannot proceed (%s) instead of failing the run",
+  (outcome) =>
+    Effect.gen(function* () {
+      const writes = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+      const key = `run-execution-adopt-${outcome}`;
+      const threadId = ThreadId.make(`thread:${key}`);
+      const runId = RunId.make(`run:${key}`);
+      const attemptId = RunAttemptId.make(`attempt:${key}`);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const providerThreadId = ProviderThreadId.make(`provider-thread:${key}`);
+      const layerTest = RunExecutionService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ThreadCommandExecutor.layer,
+            McpAppModelContext.layerEmpty,
+            PreviewAgentActivity.layer,
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+            layerTurnItemPositionsTest,
+            Layer.mock(EventSink.EventSinkV2)({
+              writeIfRunCurrent: (input) =>
+                Ref.update(writes, (current) => [...current, ...input.events]).pipe(
+                  Effect.as({ committed: true, storedEvents: [] }),
+                ),
+            }),
+            IdAllocator.layer,
+            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+              ingestNormalized: () => Effect.succeed([]),
+            }),
+            ServerSettings.layerTest(),
+          ),
+        ),
+      );
+
+      const error = yield* Effect.gen(function* () {
+        const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+        return yield* Effect.flip(
+          runExecution.startRootRun({
+            commandId: CommandId.make(`command:${key}`),
+            appThread: rootAppThread(threadId),
+            providerSessionId: ProviderSessionId.make(`session:${key}`),
+            session: {
+              driver,
+              events: Stream.never,
+              startTurn: () => Effect.die("A takeover must not start a new turn."),
+              ...(outcome === "fails"
+                ? {
+                    adoptTurn: () =>
+                      Effect.fail(
+                        new ProviderAdapter.ProviderAdapterTurnStartError({
+                          driver,
+                          threadId,
+                          providerThreadId,
+                          runId,
+                          cause: "The Codex turn maps to another provider turn.",
+                        }),
+                      ),
+                  }
+                : {}),
+            } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+            run: { id: runId, threadId, ordinal: 1, providerInstanceId } as OrchestrationV2Run,
+            rootNode: { id: NodeId.make(`node:${key}`) } as OrchestrationV2ExecutionNode,
+            checkpointScope: {
+              id: CheckpointScopeId.make(`checkpoint-scope:${key}`),
+            } as OrchestrationV2CheckpointScope,
+            providerThread: { id: providerThreadId, driver } as OrchestrationV2ProviderThread,
+            attempt: { id: attemptId, providerTurnId: null } as OrchestrationV2RunAttempt,
+            attemptId,
+            providerTurnOrdinal: 1,
+            startFailure: recordStartFailure,
+            shouldStartProviderTurn: () => Effect.succeed(true),
+            shouldFinalizeRun: () => Effect.succeed(true),
+            message: {
+              messageId: MessageId.make(`message:${key}`),
+              text: "Taken over after the update.",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+            },
+            modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+            runtimePolicy: {
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: process.cwd(),
+              approvalPolicy: "never",
+              sandboxPolicy: {
+                type: "readOnly",
+                access: { type: "fullAccess" },
+                networkAccess: false,
+              },
+            },
+            adoptRunningTurn: {
+              providerTurn: {
+                id: ProviderTurnId.make(`provider-turn:${key}`),
+              } as OrchestrationV2ProviderTurn,
+              turnItems: [],
+            },
+          }),
+        );
+      }).pipe(Effect.provide(layerTest));
+
+      // Recovery ends the process and continues the run itself; a failed run here would end it.
+      assert.equal(error._tag, "RunExecutionStartError");
+      assert.deepEqual(yield* Ref.get(writes), []);
+    }),
+);
+
 it.effect("fails the run when its ownership check cannot be read before calling the provider", () =>
   Effect.gen(function* () {
     const guardCalls = yield* Ref.make(0);
