@@ -177,6 +177,7 @@ import CodeShipMigration0036 from "./CodeShipMigrations/036_IncrementalEventStor
 import CodeShipMigration0037 from "./CodeShipMigrations/037_UsageStopReplay.ts";
 import CodeShipMigration0038 from "./CodeShipMigrations/038_UsageStopSteerTargets.ts";
 import CodeShipMigration0039 from "./CodeShipMigrations/039_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0040 from "./CodeShipMigrations/040_RunDemandIndex.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -341,6 +342,7 @@ const codeShipMigrationEntries = [
   [37, "UsageStopReplay", CodeShipMigration0037],
   [38, "UsageStopSteerTargets", CodeShipMigration0038],
   [39, "PayloadIndexesJsonValid", CodeShipMigration0039],
+  [40, "RunDemandIndex", CodeShipMigration0040],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

@@ -5129,6 +5129,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    options?: { readonly cascadeSideChat?: boolean },
   ) {
     const thread = yield* projectionStore.getThread(command.threadId).pipe(
       Effect.mapError(
@@ -5273,19 +5274,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (command.type === "thread.archive") {
       // Archiving detaches the provider session, which would end a live turn as failed.
-      const { runs } = yield* loadProjectionForCommand(command, ["runs"], { turnItemTypes: [] });
-      const blocker = runs.some((run) => run.status === "starting" || run.status === "running")
-        ? "is still running. Stop it before archiving."
-        : command.onlyIfNoQueuedMessage === true &&
-            (yield* partitionQueuedRuns(command, runs)).sent.length > 0
-          ? "has a queued message. Send it or remove it from the queue before archiving."
-          : null;
-      if (blocker !== null) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Thread ${command.threadId} ${blocker}`,
-        });
+      // Archiving a parent stops and archives its side chats alongside it.
+      if (options?.cascadeSideChat !== true) {
+        const { runs } = yield* loadProjectionForCommand(command, ["runs"], { turnItemTypes: [] });
+        const blocker = runs.some((run) => run.status === "starting" || run.status === "running")
+          ? "is still running. Stop it before archiving."
+          : command.onlyIfNoQueuedMessage === true &&
+              (yield* partitionQueuedRuns(command, runs)).sent.length > 0
+            ? "has a queued message. Send it or remove it from the queue before archiving."
+            : null;
+        if (blocker !== null) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} ${blocker}`,
+          });
+        }
       }
       const records = yield* projectionStore
         .getThreadRecords(command.threadId, ["subagents"])
@@ -11250,10 +11254,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // A local MCP credential can outlive a run. Without a run-bound invocation, different owners are ambiguous.
       const parentDemand = parentRun.demandId ?? null;
       const childDemand =
+        parentDemand !== null &&
         command.creationSource === "mcp" &&
-        parentProjection.runs.some(
-          (run) => run.status !== "queued" && (run.demandId ?? null) !== parentDemand,
-        )
+        (yield* projectionStore
+          .hasOtherRunDemand(command.parentThreadId, parentDemand)
+          .pipe(mapDispatchError(command)))
           ? null
           : parentDemand;
       const task: OrchestrationV2Subagent = {
@@ -11615,22 +11620,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             .pipe(mapDispatchError(command))).runs[0]
         : undefined;
     if (currentOwner?.delegatedCompletion?.disposition === "stopped") {
-      yield* emitEvent({
-        type: "run.updated",
-        threadId: parentThreadId,
-        runId: currentOwner.id,
-        nodeId: owner.rootNodeId,
-        providerInstanceId: currentOwner.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          ...currentOwner,
-          delegatedCompletion: {
+      yield* emitEvent(
+        delegatedCompletionUpdated(
+          currentOwner,
+          {
             ...currentOwner.delegatedCompletion,
             disposition: "open",
             reopenedAfterStop: true,
           },
-        },
-      });
+          now,
+        ),
+      );
     }
     yield* emitEvent({
       type: "run.updated",
@@ -18403,6 +18403,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             },
             events,
             effects,
+            { cascadeSideChat: true },
           );
         }
         break;

@@ -1603,6 +1603,33 @@ describe("ThreadSettlementServiceV2 worker", () => {
         occurredAt: DateTime.makeUnsafe(NOW),
         payload: run,
       });
+      yield* store.apply({
+        type: "subagent.updated",
+        id: EventId.make(`subagent:${child.id}`),
+        threadId: parent.id,
+        occurredAt: DateTime.makeUnsafe(NOW),
+        payload: {
+          id: NodeId.make(`node:subagent:${child.id}`),
+          threadId: parent.id,
+          runId: RunId.make(`run:${parent.id}`),
+          parentNodeId: NodeId.make(`node:${parent.id}`),
+          origin: "app_owned",
+          createdBy: "agent",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: parent.providerInstanceId,
+          providerThreadId: null,
+          childThreadId: child.id,
+          nativeTaskRef: null,
+          prompt: "Finish work",
+          title: "Finished child",
+          model: null,
+          status: "completed",
+          result: "Done",
+          startedAt: DateTime.makeUnsafe(NOW),
+          completedAt: DateTime.makeUnsafe(NOW),
+          updatedAt: DateTime.makeUnsafe(NOW),
+        },
+      });
       const fixture = yield* makeHarness({
         snapshot: makeSnapshot([]),
         projections: store,

@@ -1107,15 +1107,16 @@ it.live.each(accountSwitchModes)(
             Effect.gen(function* () {
               const held = mode === "queued-background-work" && step === "first";
               const queued = mode === "queued-background-work" && step === "second";
+              const messageId = MessageId.make(`${name}:${step}`);
               const terminal = yield* orchestrator.streamDomainEvents.pipe(
                 Stream.filter((event) =>
                   active && step === "first"
                     ? event.type === "provider-turn.updated" && event.payload.status === "running"
                     : event.type === "run.updated" &&
+                      event.payload.userMessageId === messageId &&
                       event.payload.status === (held ? "running" : "completed"),
                 ),
-                // A queued message completes after the turn it waited behind.
-                Stream.take(queued ? 2 : 1),
+                Stream.take(1),
                 Stream.runDrain,
                 Effect.forkScoped,
               );
@@ -1123,7 +1124,7 @@ it.live.each(accountSwitchModes)(
                 type: "message.dispatch",
                 commandId: CommandId.make(`${name}:${step}`),
                 threadId,
-                messageId: MessageId.make(`${name}:${step}`),
+                messageId,
                 text: step,
                 attachments: [],
                 modelSelection,

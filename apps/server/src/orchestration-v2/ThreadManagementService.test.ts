@@ -1513,6 +1513,7 @@ it.effect.each([
             Effect.succeed({
               thread: { id: threadId, projectId, deletedAt: null },
               runs: [{ id: runId, status, completedAt }],
+              turnItems: [],
             } as unknown as OrchestrationV2ThreadProjection),
           dispatch: (command) =>
             Effect.sync(() => {

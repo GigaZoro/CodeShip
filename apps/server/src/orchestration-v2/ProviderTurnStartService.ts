@@ -1110,10 +1110,6 @@ export const layer: Layer.Layer<
       ) {
         const isEmptyCompaction =
           providerMessage.text.trim().toLowerCase() === "/compact" && !projection.hasConversation;
-        // Only a person signs a provider out from chat; their RPC checks providers:manage.
-        const isUnauthorizedSignOut =
-          providerMessage.createdBy !== "user" &&
-          providerMessage.text.trim().toLowerCase() === "/logout";
         // Preparation may select a new provider; account commands still target the last native session.
         const nativeThreads = new Map(
           projection.providerThreads
@@ -1138,45 +1134,34 @@ export const layer: Layer.Layer<
             providerThread.id,
         );
         const authInstanceId = nativeThread?.providerInstanceId ?? run.providerInstanceId;
-        const authResult =
-          isEmptyCompaction || isUnauthorizedSignOut
-            ? null
-            : yield* Effect.result(
-                providerAuth.tryHandlePromptCommand({
-                  instanceId: authInstanceId,
-                  text: projectComposerContextForProvider({
-                    text: providerMessage.text,
-                    records: providerMessage.context?.records ?? [],
-                  }),
-                  hasAttachments: false,
-                  sentByPerson:
-                    providerMessage.createdBy === "user" &&
-                    providerMessage.scheduledTaskId === undefined,
+        const authResult = isEmptyCompaction
+          ? null
+          : yield* Effect.result(
+              providerAuth.tryHandlePromptCommand({
+                instanceId: authInstanceId,
+                text: projectComposerContextForProvider({
+                  text: providerMessage.text,
+                  records: providerMessage.context?.records ?? [],
                 }),
-              );
-        if (
-          isEmptyCompaction ||
-          isUnauthorizedSignOut ||
-          authResult?._tag === "Failure" ||
-          authResult?.success
-        ) {
+                hasAttachments: false,
+                sentByPerson:
+                  providerMessage.createdBy === "user" &&
+                  providerMessage.scheduledTaskId === undefined,
+              }),
+            );
+        if (isEmptyCompaction || authResult?._tag === "Failure" || authResult?.success) {
           const now = yield* DateTime.now;
           const failure = isEmptyCompaction
             ? makeProviderFailure({
                 class: "validation_error",
                 message: "Start a conversation before compacting this thread.",
               })
-            : isUnauthorizedSignOut
+            : authResult?._tag === "Failure"
               ? makeProviderFailure({
                   class: "permission_error",
-                  message: "Only you can sign out of a provider. Use Settings to sign out.",
+                  message: authResult.failure.detail,
                 })
-              : authResult?._tag === "Failure"
-                ? makeProviderFailure({
-                    class: "permission_error",
-                    message: authResult.failure.detail,
-                  })
-                : undefined;
+              : undefined;
           const status = failure === undefined ? "completed" : "failed";
           yield* settleRunBeforeStart({
             signal: isEmptyCompaction ? "empty-compaction" : "provider-sign-out",

@@ -1,0 +1,16 @@
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+
+export default Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  // Covers O(log N) checks for whether a thread has non-queued runs from another demand.
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS orchestration_v2_projection_runs_demand_idx
+    ON orchestration_v2_projection_runs(
+      thread_id,
+      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.demandId') END
+    )
+    WHERE status != 'queued'
+  `;
+});

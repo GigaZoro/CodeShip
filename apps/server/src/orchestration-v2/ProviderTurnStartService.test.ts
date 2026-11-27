@@ -460,7 +460,11 @@ effectIt.effect("restores into a leftover worktree folder that cannot itself be 
           Layer.mergeAll(
             layerNoTaskFolders,
             Layer.succeed(FileSystem.FileSystem, {
-              exists: (target: string) => Effect.succeed(!target.endsWith("/.git")),
+              exists: (target: string) =>
+                Effect.succeed(
+                  target === worktreePath ||
+                    (target.startsWith(`${worktreePath}/`) && !target.endsWith("/.git")),
+                ),
               readDirectory: () => Effect.succeed(["node_modules"]),
               stat: () => Effect.succeed({ type: "Directory" }),
               realPath: (target: string) => Effect.succeed(normalize(target)),
@@ -4492,30 +4496,6 @@ effectIt.effect("refuses a turn that would spend prepaid credits the user did no
         title: "Prepaid credits not allowed",
         // A usage limit would hold the account for the threads the user did allow.
         failure: { class: "permission_error", code: "prepaid_credits_not_allowed" },
-      },
-    ]);
-  }),
-);
-
-effectIt.effect("refuses a provider sign-out that an agent or scheduled task sent", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: " /LOGOUT ",
-      createdBy: "agent",
-      previousNativeSession: true,
-    });
-
-    yield* harness.start;
-
-    expect(harness.tryHandlePromptCommand).not.toHaveBeenCalled();
-    expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-    expect(harness.projection().turnItems).toMatchObject([
-      {
-        type: "error",
-        title: "Provider sign-out failed",
-        failure: { class: "permission_error" },
       },
     ]);
   }),

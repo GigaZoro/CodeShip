@@ -1103,7 +1103,6 @@ export const make = Effect.gen(function* () {
       yield* terminals.closeOnSettle({ threadId });
       const worktreePath = settled.worktreePath;
       if (worktreePath === null) return;
-      if (!(yield* fileSystem.exists(worktreePath))) return;
       const parentThreadId = settled.lineage.parentThreadId;
       const parentWorktreePath =
         parentThreadId === null
@@ -1112,7 +1111,8 @@ export const make = Effect.gen(function* () {
               Effect.map((parent) => parent.worktreePath),
               Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
             );
-      if (sharesParentWorktree({ ...settled, parentWorktreePath })) {
+      if (sharesParentWorktree({ ...settled, parentWorktreePath })) return;
+      if (!(yield* fileSystem.exists(worktreePath))) {
         // A settle script that tears something down would otherwise be skipped with no trace.
         const project = Option.getOrUndefined(yield* projectStore.getShell(settled.projectId));
         if (

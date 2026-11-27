@@ -21,8 +21,12 @@ export function stripNodePayloadColumns(payload: Record<string, unknown>): strin
 }
 
 // json_set with a NULL column writes JSON null, which the node schema's NullOr keys decode.
+// Fall back to splicing json_object(...) when payload_json exceeds SQLite's JSON nesting limit.
 export function nodePayloadSql(alias?: string): string {
   const prefix = alias === undefined ? "" : `${alias}.`;
   const sets = NODE_PAYLOAD_COLUMNS.map(([key, column]) => `'$.${key}', ${prefix}${column}`);
-  return `json_set(${prefix}payload_json, ${sets.join(", ")})`;
+  const cols = NODE_PAYLOAD_COLUMNS.map(([key, column]) => `'${key}', ${prefix}${column}`);
+  const trimmed = `rtrim(${prefix}payload_json)`;
+  const fallback = `CASE WHEN ${trimmed} = '{}' THEN json_object(${cols.join(", ")}) WHEN substr(${trimmed}, -1) = '}' THEN substr(${trimmed}, 1, length(${trimmed}) - 1) || ',' || substr(json_object(${cols.join(", ")}), 2) ELSE ${prefix}payload_json END`;
+  return `CASE WHEN json_valid(${prefix}payload_json) THEN json_set(${prefix}payload_json, ${sets.join(", ")}) ELSE ${fallback} END`;
 }

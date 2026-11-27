@@ -2412,6 +2412,17 @@ it.effect.each([
         );
 
         // The first run's provider never confirms the stop; the follow-up's turn ends normally.
+        const followUpCompleted = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.ordinal === followUp.runOrdinal &&
+              event.payload.status === "completed",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
         yield* Queue.offer(eventQueues.get(providerSessionId)!, {
           type: "turn.terminal",
           driver,
@@ -2422,6 +2433,7 @@ it.effect.each([
           failure: null,
           threadDisposition: "reusable",
         });
+        yield* Fiber.join(followUpCompleted);
         yield* worker.drain();
         yield* TestClock.adjust("31 minutes");
         assert.isFalse(

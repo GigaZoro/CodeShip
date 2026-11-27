@@ -582,9 +582,7 @@ it.effect(
       const statements = { nodeReads: 0, threadTouches: 0, highWaterWrites: 0 };
       const observe: Statement.Transformer = (statement) => {
         const text = statement.compile()[0];
-        if (
-          text.includes("SELECT payload_json FROM orchestration_v2_projection_nodes WHERE node_id")
-        )
+        if (text.includes("FROM orchestration_v2_projection_nodes WHERE node_id"))
           statements.nodeReads++;
         if (text.includes("UPDATE orchestration_v2_projection_threads")) statements.threadTouches++;
         if (text.includes("INSERT INTO orchestration_v2_projection_metadata"))

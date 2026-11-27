@@ -878,6 +878,11 @@ export interface ProjectionStoreV2Shape {
   readonly hasUserWrittenMessage: (
     threadId: ThreadId,
   ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  /** Whether the thread has any non-queued run whose demandId differs from the given demandId. */
+  readonly hasOtherRunDemand: (
+    threadId: ThreadId,
+    demandId: string,
+  ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly getThreadsWithPullRequests: (
     threadId?: ThreadId,
     options?: { readonly includeArchived?: boolean },
@@ -3617,7 +3622,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ${event.payload.type},
                 ${event.payload.status},
                 ${updatedAt},
-                json_remove(${payloadJson}, ${sql.literal(TURN_ITEM_PAYLOAD_REMOVE_PATHS)}),
+                CASE WHEN json_valid(${payloadJson}) THEN json_remove(${payloadJson}, ${sql.literal(TURN_ITEM_PAYLOAD_REMOVE_PATHS)}) ELSE ${payloadJson} END,
                 ${event.payload.type === "dynamic_tool" && isInlineWorkOutput(payloadJson) ? 1 : 0}
               )
               ON CONFLICT(turn_item_id)
@@ -10100,7 +10105,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               OR json_extract(parent.payload_json, '$.settledOverride') IS 'settled'
             )`;
             const parentHoldsResult = sql`(
-              task.status = 'completed' AND json_extract(task.payload_json, '$.result') IS NOT NULL
+              task.status = 'completed'
+              AND json_extract(task.payload_json, '$.result') IS NOT NULL
+              AND COALESCE(task.completion_delivery_state, '') NOT IN ('pending', 'claimed')
             )`;
             const rows = yield* sql<SettlementThreadRow>`
             SELECT t.thread_id, t.payload_json,
@@ -10192,29 +10199,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND (
                 json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
                 OR ${parentDone}
-                -- A pinned or long-lived parent may never settle, so a child also settles once
-                -- its own run has ended and its parent holds every result it produced. A
-                -- provider-native child has no run of its own; its task record carries its state.
-                OR (
-                  (
-                    r.status IN ('completed', 'interrupted', 'failed', 'cancelled', 'rolled_back')
-                    OR (
-                      r.run_id IS NULL
-                      AND EXISTS (
-                        SELECT 1 FROM orchestration_v2_projection_subagents task
-                        WHERE task.child_thread_id = t.thread_id
-                      )
-                    )
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM orchestration_v2_projection_subagents task
-                    WHERE task.child_thread_id = t.thread_id
-                      AND (
-                        task.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
-                        OR task.completion_delivery_state IN ('pending', 'claimed')
-                      )
-                  )
-                )
+                OR ${parentHoldsResult}
               )
               AND NOT EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runs active
@@ -10334,6 +10319,36 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ) AS written
       `.pipe(
         Effect.map((rows) => rows[0]?.written === 1),
+        Effect.mapError(controlReadError(threadId)),
+      );
+
+    const hasOtherRunDemand: ProjectionStoreV2Shape["hasOtherRunDemand"] = (threadId, demandId) =>
+      sql<{ readonly has_other: number }>`
+        SELECT (
+          EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${threadId}
+              AND status != 'queued'
+              AND (CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.demandId') END) IS NULL
+            LIMIT 1
+          )
+          OR EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${threadId}
+              AND status != 'queued'
+              AND (CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.demandId') END) < ${demandId}
+            LIMIT 1
+          )
+          OR EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${threadId}
+              AND status != 'queued'
+              AND (CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.demandId') END) > ${demandId}
+            LIMIT 1
+          )
+        ) AS has_other
+      `.pipe(
+        Effect.map((rows) => rows[0]?.has_other === 1),
         Effect.mapError(controlReadError(threadId)),
       );
 
@@ -11386,6 +11401,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       findThread: readOnReader(findThread),
       getSettlementCandidates: readOnReader(getSettlementCandidates),
       hasUserWrittenMessage: readOnReader(hasUserWrittenMessage),
+      hasOtherRunDemand: readOnReader(hasOtherRunDemand),
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadTitles: readOnReader(getThreadTitles),
       getThreadLinkMetadata: readOnReader(getThreadLinkMetadata),

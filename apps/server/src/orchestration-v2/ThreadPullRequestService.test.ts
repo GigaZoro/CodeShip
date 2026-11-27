@@ -1486,7 +1486,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
         const dependencies = Layer.mergeAll(
           Layer.mock(Orchestrator.OrchestratorV2)({
             streamDomainEvents: Stream.never,
-            getShellSnapshot: () =>
+            getPullRequestSnapshot: () =>
               Deferred.succeed(backfillRead, undefined).pipe(
                 Effect.as({
                   schemaVersion: 2,
