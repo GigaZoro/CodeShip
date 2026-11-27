@@ -130,8 +130,8 @@ const testEnv = [
   testInstallEnv,
   checkoutEnv,
   searchPathEnv,
-  // DEFAULT_UNTRACKED_ENV in vite-task a3c087a (Vite+ 1.4.0), less PWD and PATH: they name this
-  // checkout, so the search path is tracked through searchPathEnv instead.
+  // DEFAULT_UNTRACKED_ENV in vite-task a3c087a (Vite+ 1.4.0), less PWD, PATH, TMP and TEMP:
+  // PWD/PATH name this checkout, and TMP/TEMP/TMPDIR point to each step's ephemeral temp directory.
   "HOME",
   "USER",
   "TZ",
@@ -151,10 +151,6 @@ const testEnv = [
   "DYLD_INSERT_LIBRARIES",
   "LIBPATH",
   "DISPLAY",
-  "TMP",
-  "TEMP",
-  // Not in that list, but os.tmpdir() reads it outside Windows.
-  "TMPDIR",
   "VERCEL",
   "VERCEL_*",
   "NEXT_*",
@@ -593,9 +589,9 @@ export function cachedTestTasks(
                   : []),
               ],
               output: [],
-              // The free slots set the worker count, which schedules the same tests. The root
-              // test config reads it (scripts/lib/test-workers.ts).
-              ...(changed ? { untrackedEnv: [testWorkersEnv] } : {}),
+              // Worker count (scripts/lib/test-workers.ts) and the step's isolated temp directory
+              // reach tests without entering the cache key.
+              ...(changed ? { untrackedEnv: [testWorkersEnv, "TMP", "TEMP", "TMPDIR"] } : {}),
             },
       };
     }

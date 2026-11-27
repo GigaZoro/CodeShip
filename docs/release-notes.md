@@ -1,3 +1,7 @@
+## 2026-11-27 — Isolated temp directories and stale temp cleanup in check:changed
+
+- `vp run check:changed` now gives each test step its own scoped `TMPDIR`/`TEMP`/`TMP` directory that is removed after the child process exits, keeps temp paths out of the test cache key, and opportunistically sweeps `check:changed` temp folders older than 24 hours.
+
 ## 2026-11-27 — Capture what annoys you in the app
 
 - Press Mod+Shift+. to save a UI annoyance with an optional note. The capture records the page, the components under the pointer, the visible notices and panels, and the window size, theme and density. The desktop app can also attach a screenshot of the window. Captures stay on your device.

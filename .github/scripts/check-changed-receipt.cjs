@@ -16,6 +16,48 @@ const {
 const RECEIPT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const STALE_TEMP_PREFIXES = [
+  "t3-check-changed-index-",
+  "t3-check-changed-tests-",
+  "t3-check-changed-objects-",
+  "t3-patch-check-",
+  "t3-cct-",
+  "t3-ccs-",
+];
+
+function sweepStaleTempDirs(options = {}) {
+  const dir = options.dir ?? os.tmpdir();
+  const maxAgeMs = options.maxAgeMs ?? DAY_MS;
+  const now = options.now ?? Date.now();
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    // Best-effort sweep: skip if the temp root is missing or unreadable.
+    return 0;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!STALE_TEMP_PREFIXES.some((prefix) => entry.name.startsWith(prefix))) continue;
+    const target = path.join(dir, entry.name);
+    let stat;
+    try {
+      stat = fs.lstatSync(target);
+    } catch {
+      // Best-effort sweep: skip entries deleted concurrently or inaccessible.
+      continue;
+    }
+    if (stat.isSymbolicLink()) continue;
+    if (now - stat.mtimeMs <= maxAgeMs) continue;
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // Best-effort sweep: locked or concurrently deleted entries wait for a later run.
+    }
+  }
+  return removed;
+}
 
 const git = (cwd, args, env = process.env) =>
   execFileSync("git", args, {
@@ -123,7 +165,13 @@ function requirePass(cwd, localSha, remoteSha) {
   );
 }
 
-module.exports = { alternateObjectDirectory, recordPass, requirePass, workingTree };
+module.exports = {
+  alternateObjectDirectory,
+  recordPass,
+  requirePass,
+  sweepStaleTempDirs,
+  workingTree,
+};
 
 if (require.main === module) {
   try {

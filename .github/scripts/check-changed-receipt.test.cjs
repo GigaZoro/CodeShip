@@ -9,6 +9,7 @@ const {
   alternateObjectDirectory,
   recordPass,
   requirePass,
+  sweepStaleTempDirs,
   workingTree,
 } = require("./check-changed-receipt.cjs");
 const {
@@ -332,4 +333,85 @@ test("every git call the receipt makes is killed past the landing's limit", (t) 
     for (const limit of limits) {
       assert.deepEqual(limit, { timeout: GIT_CALL_TIMEOUT_MS, killSignal: "SIGKILL" });
     }
+  }));
+
+test("sweeps stale check-changed temp entries older than 24h while sparing fresh, unrelated, and symlink entries", () =>
+  withRoot((root) => {
+    const tmp = path.join(root, "tmp");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(tmp, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, "keep.txt"), "important\n");
+
+    const nowMs = 1_800_000_000_000;
+    const oldSec = (nowMs - 25 * 60 * 60 * 1000) / 1000;
+    const boundarySec = (nowMs - 24 * 60 * 60 * 1000) / 1000;
+    const freshSec = (nowMs - 23 * 60 * 60 * 1000) / 1000;
+
+    const staleNames = [
+      "t3-check-changed-index-old",
+      "t3-check-changed-tests-old",
+      "t3-check-changed-objects-old",
+      "t3-patch-check-old",
+      "t3-cct-old",
+      "t3-ccs-old",
+    ];
+    for (const name of staleNames) {
+      const dir = path.join(tmp, name);
+      fs.mkdirSync(path.join(dir, "nested"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "nested", "leak.bin"), "data");
+      fs.utimesSync(dir, oldSec, oldSec);
+    }
+
+    const kept = [
+      ["t3-check-changed-tests-fresh", freshSec],
+      ["t3-ccs-boundary", boundarySec],
+      ["unrelated-dir-old", oldSec],
+    ];
+    for (const [name, mtimeSec] of kept) {
+      const dir = path.join(tmp, name);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "keep.txt"), "keep");
+      fs.utimesSync(dir, mtimeSec, mtimeSec);
+    }
+
+    const link = path.join(tmp, "t3-ccs-link");
+    fs.symlinkSync(outside, link, "junction");
+    fs.utimesSync(outside, oldSec, oldSec);
+
+    const removed = sweepStaleTempDirs({ dir: tmp, now: nowMs });
+    assert.equal(removed, staleNames.length);
+    for (const name of staleNames) {
+      assert.equal(fs.existsSync(path.join(tmp, name)), false, `${name} should be removed`);
+    }
+    for (const [name] of kept) {
+      assert.equal(fs.existsSync(path.join(tmp, name, "keep.txt")), true, `${name} should remain`);
+    }
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+    assert.equal(fs.existsSync(path.join(outside, "keep.txt")), true);
+  }));
+
+test("stale temp sweep ignores missing roots and per-entry removal errors", (t) =>
+  withRoot((root) => {
+    assert.equal(sweepStaleTempDirs({ dir: path.join(root, "does-not-exist") }), 0);
+
+    const tmp = path.join(root, "tmp");
+    fs.mkdirSync(tmp, { recursive: true });
+    const nowMs = 1_800_000_000_000;
+    const oldSec = (nowMs - 48 * 60 * 60 * 1000) / 1000;
+    const locked = path.join(tmp, "t3-ccs-locked");
+    const removable = path.join(tmp, "t3-ccs-ok");
+    for (const dir of [locked, removable]) {
+      fs.mkdirSync(dir);
+      fs.utimesSync(dir, oldSec, oldSec);
+    }
+
+    const realRm = fs.rmSync;
+    t.mock.method(fs, "rmSync", (target, options) => {
+      if (target === locked) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+      return realRm(target, options);
+    });
+    assert.equal(sweepStaleTempDirs({ dir: tmp, now: nowMs }), 1);
+    assert.equal(fs.existsSync(locked), true);
+    assert.equal(fs.existsSync(removable), false);
   }));
