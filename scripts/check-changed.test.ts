@@ -2555,6 +2555,17 @@ it("runs the tests the checkout holds when the index names others", () => {
   expect(project.calls().filter(({ args }) => args.includes("--test"))).toEqual([]);
 });
 
+it("runs node:test files at most as many at once as the budget slots the step holds", () => {
+  using project = launcherFixture();
+  for (const name of ["a", "b", "c"]) {
+    project.write(`.github/scripts/${name}.test.cjs`, "module.exports = 1;\n");
+  }
+  const result = project.run("", "", project.source, ["--concurrency", "1"]);
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const nodeTest = project.calls().find(({ args }) => args.includes("--test"));
+  expect(nodeTest?.args).toContain("--test-concurrency=1");
+});
+
 it("fails a run whose files changed while its checks ran", () => {
   using project = launcherFixture();
   project.write(project.source, "export const value = 2;\n");
