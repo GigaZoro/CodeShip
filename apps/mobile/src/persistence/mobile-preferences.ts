@@ -12,6 +12,7 @@ import {
   PullRequestInvolvement,
   PullRequestListFilters,
   PullRequestListState,
+  StatusColors,
   type ProviderInstanceId,
   type PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
@@ -91,6 +92,7 @@ const isFolderExpanded = Schema.is(Schema.Record(Schema.String, Schema.Boolean))
 const isWorkspaceSelections = Schema.is(WorkspaceSelections);
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
 const isInterfaceDensity = Schema.is(InterfaceDensity);
+const isStatusColors = Schema.is(StatusColors);
 const isAccentColor = Schema.is(AccentColor);
 const ThreadProject = Schema.Struct({
   environmentId: Schema.NonEmptyString,
@@ -124,6 +126,8 @@ export interface Preferences {
   readonly mathRenderingEnabled?: boolean;
   /** Unset means comfortable. */
   readonly interfaceDensity?: InterfaceDensity;
+  /** Unset means calm: only what needs the user is coloured. */
+  readonly statusColors?: StatusColors;
   /** Unset means the theme's own primary. */
   readonly accentColor?: AccentColor;
   /** Unset means on: crash reports are sent unless the user turns them off. */
@@ -222,6 +226,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     codeWordBreak?: boolean;
     mathRenderingEnabled?: boolean;
     interfaceDensity?: InterfaceDensity;
+    statusColors?: StatusColors;
     accentColor?: AccentColor;
     crashReportsEnabled?: boolean;
     connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
@@ -329,6 +334,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (isInterfaceDensity(parsed.interfaceDensity)) {
     preferences.interfaceDensity = parsed.interfaceDensity;
   }
+  if (isStatusColors(parsed.statusColors)) preferences.statusColors = parsed.statusColors;
   if (isAccentColor(parsed.accentColor)) preferences.accentColor = parsed.accentColor;
   if (typeof parsed.crashReportsEnabled === "boolean") {
     preferences.crashReportsEnabled = parsed.crashReportsEnabled;

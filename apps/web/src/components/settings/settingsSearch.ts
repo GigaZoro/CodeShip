@@ -361,6 +361,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["compact comfortable spacing tight dense rows sidebar padding"],
   },
   {
+    id: "status-colors",
+    title: msg("Status colors"),
+    to: "/settings/appearance",
+    searchTerms: ["colour calm vivid quiet gray grey pulse animation working idle needs you"],
+  },
+  {
     id: "accent-color",
     title: msg("Accent color"),
     to: "/settings/appearance",

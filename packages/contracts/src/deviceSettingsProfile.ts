@@ -42,6 +42,7 @@ export const DEVICE_SETTINGS_PROFILE_KEYS = [
   "interfaceDensity",
   "accentColor",
   "effortDisplay",
+  "statusColors",
   "glassOpacity",
   "appearanceContrast",
   "panelAnimationDurationMs",

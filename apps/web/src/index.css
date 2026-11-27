@@ -4,6 +4,9 @@
 
 @custom-variant dark (&:is(.dark, .dark *));
 @custom-variant light (&:not(.dark, .dark *));
+/* The Calm look (Settings > Appearance > Status colors): statuses read THREAD_STATUS_TONE_SALIENCE.
+   Declared after dark so a calm class outranks a dark one of equal specificity. */
+@custom-variant calm (&:is([data-status-colors="calm"] *));
 /* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
 @custom-variant wco (&:is(.wco, .wco *));
 
@@ -234,6 +237,23 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-warning: var(--warning);
   --color-warning-surface: var(--warning-surface);
   --color-error-foreground: var(--error-foreground);
+  /* Calm status colors, solved for every sidebar row state (calmStatusVariables); the contrast
+     setting can raise them, never lower them below AA. */
+  --color-calm-quiet: color-mix(
+    in oklab,
+    var(--calm-status-quiet, var(--muted-foreground)),
+    var(--appearance-contrast-target) var(--appearance-contrast-boost)
+  );
+  --color-calm-attention: color-mix(
+    in oklab,
+    var(--calm-status-attention, var(--warning-foreground)),
+    var(--appearance-contrast-target) var(--appearance-contrast-boost)
+  );
+  --color-calm-alarm: color-mix(
+    in oklab,
+    var(--calm-status-alarm, var(--error-foreground)),
+    var(--appearance-contrast-target) var(--appearance-contrast-boost)
+  );
   --color-tool-error-icon: var(--tool-error-icon);
   --color-error: var(--error);
   --color-error-surface: var(--error-surface);
@@ -566,19 +586,25 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+/* Calm keeps the running tool's label static at full contrast; its icon marks it live. */
 @utility live-tool-shine {
+  :root[data-status-colors="calm"] & {
+    color: var(--contrast-foreground);
+  }
   @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
-    color: transparent;
-    background-image:
-      linear-gradient(to right, transparent, var(--contrast-foreground), transparent),
-      linear-gradient(var(--contrast-secondary-label), var(--contrast-secondary-label));
-    background-size:
-      4.5rem 100%,
-      100% 100%;
-    background-repeat: no-repeat;
-    background-clip: text;
-    animation: live-tool-shine 2.2s steps(30) infinite;
-    animation-play-state: var(--visible-animation-state, paused);
+    :root:not([data-status-colors="calm"]) & {
+      color: transparent;
+      background-image:
+        linear-gradient(to right, transparent, var(--contrast-foreground), transparent),
+        linear-gradient(var(--contrast-secondary-label), var(--contrast-secondary-label));
+      background-size:
+        4.5rem 100%,
+        100% 100%;
+      background-repeat: no-repeat;
+      background-clip: text;
+      animation: live-tool-shine 2.2s steps(30) infinite;
+      animation-play-state: var(--visible-animation-state, paused);
+    }
   }
 }
 
@@ -2648,4 +2674,46 @@ code {
 
 .messages-timeline-scroll:focus-visible {
   outline: none;
+}
+
+/* The Calm look (Settings > Appearance > Status colors). Surfaces and spacing separate what
+   hairlines nested inside other borders used to, prose keeps a readable measure, and
+   secondary icon buttons rest quieter until the pointer or focus reaches them. Vivid skips
+   this block and keeps the previous look. */
+:root[data-status-colors="calm"] {
+  --calm-prose-measure: 72ch;
+  /* themePalette.test.ts reads this value: icons at it still clear 3:1 on every surface. */
+  --calm-secondary-icon-opacity: 0.8;
+
+  & :is(.chat-markdown, .composer-tiptap) .chat-markdown-codeblock,
+  & .chat-markdown pre,
+  & [data-superseded-attempt-id],
+  & [data-slot="sidebar-nav-rail"],
+  & [data-slot="composer-host"]::after {
+    border-color: transparent;
+  }
+
+  & .chat-markdown :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6, dl) {
+    max-inline-size: var(--calm-prose-measure);
+  }
+
+  & [data-slot="badge"] {
+    block-size: calc(var(--spacing) * 5.5);
+    min-inline-size: calc(var(--spacing) * 5.5);
+    border-radius: var(--control-radius);
+
+    @media (width >= 40rem) {
+      block-size: calc(var(--spacing) * 4.5);
+      min-inline-size: calc(var(--spacing) * 4.5);
+    }
+  }
+
+  &
+    [data-slot="button"]:is([data-button-variant="ghost"], [data-button-variant="ghost-muted"]):is(
+      [data-button-size^="icon"]
+    ):not(:hover, :focus-visible, [data-pressed], [data-popup-open], [aria-expanded="true"]) {
+    & svg {
+      opacity: var(--calm-secondary-icon-opacity);
+    }
+  }
 }

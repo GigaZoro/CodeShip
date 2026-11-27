@@ -99,7 +99,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkingDuration } from "./SidebarThreadRow";
-import { THREAD_ROW_TONE_CLASS } from "./threadRowStatus";
+import { threadRowToneClass } from "./threadRowStatus";
 
 import { t } from "~/i18n";
 const pinnedTasksAtom = Atom.family((environmentIdsKey: string) =>
@@ -130,7 +130,7 @@ function pinnedTaskStatusDisplay(status: Exclude<PinnedTaskStatus, "idle">) {
   const display = THREAD_STATUS_DISPLAY[status];
   return {
     icon: STATUS_ICON[status],
-    className: THREAD_ROW_TONE_CLASS[display.tone],
+    className: threadRowToneClass(display.tone),
   };
 }
 

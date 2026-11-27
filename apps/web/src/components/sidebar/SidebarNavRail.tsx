@@ -222,6 +222,7 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
     <nav
       data-ui-usage-area="nav-rail"
       aria-label={t("Sections")}
+      data-slot="sidebar-nav-rail"
       className="flex shrink-0 flex-col items-center justify-between border-r border-sidebar-border pt-2 pb-1"
       style={{ width: THREAD_SIDEBAR_NAV_RAIL_WIDTH }}
     >
