@@ -783,25 +783,28 @@ describe.skipIf(isWindowsHost)("Detached session host broker startup", () => {
 });
 
 describe("Detached session host broker identity", () => {
-  it("records its own start time where no ps line is read", () => {
+  it("records an asymmetric start window where no exact OS identity is read", () => {
     const identity = readSelfProcessIdentity("win32");
     assert.isNotNull(identity);
     const startedAtMs = Math.round(performance.timeOrigin);
     assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs)), "same");
-    // ps reports whole seconds, so the reading of a later check can fall up to a second early.
-    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs - 900)), "same");
-    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs + 5_000)), "other");
+    // OS creation precedes Node init (loaded Electron starts + ps whole-second truncation).
+    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs - 1_500)), "same");
+    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs - 6_000)), "same");
+    // A much older process or a PID reused a second later must not match.
+    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs - 15_000)), "other");
+    assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAtMs + 1_000)), "other");
   });
 
-  // Linux and Windows identities come from /proc and Get-Process; macOS reads ps on both sides.
-  it.effect.skipIf(isWindowsHost || isLinuxHost)(
-    "records the start time a later server reads for it from ps",
+  // Linux and Windows identities come from /proc and GetProcessTimes; macOS reads ps on both sides.
+  it.live.skipIf(isWindowsHost || isLinuxHost)(
+    "records the exact start time a later server reads for it from ps",
     () =>
       Effect.gen(function* () {
         const identity = readSelfProcessIdentity(HOST_PLATFORM);
         const startedAt = yield* readProcessStartedAt(process.pid);
         assert.isDefined(startedAt);
-        assert.equal(compareIdentity(identity ?? "", timeIdentity(startedAt ?? 0)), "same");
+        assert.equal(identity, timeIdentity(startedAt ?? 0));
       }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer)))),
   );
 });

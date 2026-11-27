@@ -45,17 +45,18 @@ interface BufferedFrameEntry {
 }
 
 /**
- * `ps` reports whole seconds and the uptime clock drifts from Get-Process's start time, so an
- * estimated start matches a later reading only within this much.
+ * OS process creation precedes Node's uptime origin (loaded Electron starts plus `ps` whole-second
+ * truncation), so the fallback window extends further below `startedAtMs` than above it.
  */
-const START_ESTIMATE_SLACK_MS = 1_000;
+const START_ESTIMATE_LOWER_SLACK_MS = 10_000;
+const START_ESTIMATE_UPPER_SLACK_MS = 250;
 
 /** When this process started, estimated from its uptime, as the window a later reading must fall in. */
 const selfStartWindow = () => {
   const startedAtMs = Math.round(Date.now() - process.uptime() * 1_000);
   return windowIdentity(
-    startedAtMs - START_ESTIMATE_SLACK_MS,
-    startedAtMs + START_ESTIMATE_SLACK_MS,
+    startedAtMs - START_ESTIMATE_LOWER_SLACK_MS,
+    startedAtMs + START_ESTIMATE_UPPER_SLACK_MS,
   );
 };
 
