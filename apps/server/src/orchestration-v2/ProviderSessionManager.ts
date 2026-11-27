@@ -180,7 +180,7 @@ export interface ProviderSessionManagerV2Shape {
     readonly resumeFromSession?: OrchestrationV2ProviderSession;
     readonly initialNativeThreadId?: string;
     readonly initialProviderItemIdentityVersion?: 2;
-    readonly initialPinnedSystemInstructions?: string;
+    readonly initialPinnedSystemInstructions?: ProviderAdapter.ProviderAdapterV2OpenSessionInput["initialPinnedSystemInstructions"];
   }) => Effect.Effect<
     ProviderAdapter.ProviderAdapterV2SessionRuntime,
     ProviderSessionManagerV2Error

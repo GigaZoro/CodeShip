@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Pure synchronous hashing derives pin keys inside adapter option builders.
+import * as NodeCrypto from "node:crypto";
+
 import {
   PROVIDER_DISPLAY_NAMES,
   REASONING_EFFORT_OPTION_IDS,
@@ -35,6 +38,31 @@ Ordinary coding tasks need no T3 tools.
 
 Run every test suite (unit or integration), build, install, push, deploy, long script or until-loop with \`t3_command_run\`, unless you know it ends within seconds. Your first call to such a command is a \`t3_command_run\` call, never a shell call. Do not run one in your own shell, in the foreground, with a short wait or in the background, even when the shell tool offers its own background mode; a suite's length is unknown until it has run, so do not start it in your shell to find out. It keeps running through a T3.CodeShip restart, and its end wakes you once with the exit code and the last output, so end your turn instead of waiting or polling. \`task_status\` and \`task_cancel\` take its \`taskId\`. Keep native background shells for work you leave running, such as dev servers and watchers.`,
 ];
+
+// Bump when an instruction change must reach running threads (a security fix, say); it rebuilds every pin.
+export const PINNED_INSTRUCTIONS_EPOCH = 1;
+
+/** Stable key for the inputs that legitimately change a thread's pinned instructions. */
+export function pinnedSystemInstructionsKey(
+  inputs: Readonly<Record<string, string | boolean>>,
+  epoch: number = PINNED_INSTRUCTIONS_EPOCH,
+): string {
+  const canonical = JSON.stringify([
+    epoch,
+    ...Object.keys(inputs)
+      .toSorted()
+      .map((name) => [name, inputs[name]]),
+  ]);
+  return NodeCrypto.createHash("sha256").update(canonical).digest("hex");
+}
+
+/** True when `next` must be stored as the thread's new pin. */
+export function pinnedSystemInstructionsChanged(
+  next: { readonly key: string; readonly text: string },
+  stored: { readonly key: string; readonly text: string } | null | undefined,
+): boolean {
+  return next.key !== stored?.key || next.text !== stored.text;
+}
 
 export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `
 

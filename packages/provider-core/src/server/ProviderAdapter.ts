@@ -9,6 +9,7 @@ import {
   OrchestrationV2ConversationMessage,
   OrchestrationV2ExecutionNode,
   OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2PinnedSystemInstructions,
   OrchestrationV2ProviderSession,
   OrchestrationV2PlanArtifact,
   OrchestrationV2ProviderCapabilities,
@@ -108,6 +109,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     lostBackgroundTasks: Schema.optional(Schema.Array(OrchestrationV2PendingBackgroundTask)),
     /** A Stop ended that process, so the chat is told with its next prompt and is not woken. */
     lostBackgroundTasksCause: Schema.optional(Schema.Literal("stopped")),
+    /** Set only when the thread's pin or its key changed; it is stored as its own event. */
+    pinnedSystemInstructions: Schema.optionalKey(OrchestrationV2PinnedSystemInstructions),
   }),
   Schema.Struct({
     type: Schema.Literal("provider_turn.updated"),
@@ -448,7 +451,7 @@ export interface ProviderAdapterV2OpenSessionInput {
   readonly resumeFromSession?: OrchestrationV2ProviderSession;
   readonly initialNativeThreadId?: string;
   readonly initialProviderItemIdentityVersion?: 2;
-  readonly initialPinnedSystemInstructions?: string;
+  readonly initialPinnedSystemInstructions?: OrchestrationV2PinnedSystemInstructions;
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {

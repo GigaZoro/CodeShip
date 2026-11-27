@@ -37,6 +37,7 @@ import { ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE } from "../../provider/antigravity
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
+  ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
   makeAntigravityAcpAdapterFlavor,
   makeAntigravityAdapterV2,
 } from "./AntigravityAdapterV2.ts";
@@ -1306,11 +1307,16 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           modelSelection,
           runtimePolicy,
         });
-        assert.equal(providerThread1.pinnedSystemInstructions, PULL_REQUEST_LINKING_INSTRUCTIONS);
+        assert.deepEqual(
+          providerThread1.pinnedSystemInstructions,
+          ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        );
 
-        // Resuming after a simulated binary wording change replays the pinned string verbatim.
-        const legacyPinned =
-          "<pull_request_linking>Old binary Antigravity wording</pull_request_linking>";
+        // A release that only changed wording keeps the key, so the stored text is replayed verbatim.
+        const legacyPinned = {
+          key: ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS.key,
+          text: "<pull_request_linking>Old binary Antigravity wording</pull_request_linking>",
+        };
         const session2 = yield* adapter.openSession({
           threadId,
           providerSessionId: ProviderSessionId.make("provider-session-antigravity-pin-2"),
@@ -1327,7 +1333,7 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           modelSelection,
           runtimePolicy,
         });
-        assert.equal(resumedThread.pinnedSystemInstructions, legacyPinned);
+        assert.deepEqual(resumedThread.pinnedSystemInstructions, legacyPinned);
 
         // Replacing the native session clears the legacy pin and uses the current binary's prompt.
         const replacedThread = yield* session2.ensureThread({
@@ -1337,7 +1343,33 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           forceNewNativeThread: true,
           existingProviderThread: resumedThread,
         });
-        assert.equal(replacedThread.pinnedSystemInstructions, PULL_REQUEST_LINKING_INSTRUCTIONS);
+        assert.deepEqual(
+          replacedThread.pinnedSystemInstructions,
+          ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        );
+
+        // A pin stored under another key (an epoch bump, say) is rebuilt on resume.
+        const staleKeyPinned = {
+          key: "key-from-an-older-epoch",
+          text: "<pull_request_linking>Before the epoch bump</pull_request_linking>",
+        };
+        const session3 = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-pin-3"),
+          modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: replacedThread.nativeThreadRef!.nativeId!,
+          initialPinnedSystemInstructions: staleKeyPinned,
+        });
+        const rekeyedThread = yield* session3.resumeThread({
+          providerThread: { ...replacedThread, pinnedSystemInstructions: staleKeyPinned },
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.deepEqual(
+          rekeyedThread.pinnedSystemInstructions,
+          ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        );
 
         const requests = (yield* fileSystem.readFileString(requestLog))
           .trim()
@@ -1371,7 +1403,11 @@ describe("AntigravityAdapterV2 session system prompt", () => {
         assert.isNotEmpty(sessionActivations);
         assert.equal(
           sessionActivations[0]?.params?._meta?.antigravity?.systemPrompt?.append,
-          legacyPinned,
+          legacyPinned.text,
+        );
+        assert.equal(
+          sessionActivations.at(-1)?.params?._meta?.antigravity?.systemPrompt?.append,
+          PULL_REQUEST_LINKING_INSTRUCTIONS,
         );
       }).pipe(Effect.provide(layerSession), Effect.scoped),
   );

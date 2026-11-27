@@ -722,6 +722,18 @@ export const layer: Layer.Layer<
               });
               return [
                 updated,
+                ...(input.event.pinnedSystemInstructions === undefined
+                  ? []
+                  : [
+                      yield* makeDomainEvent(input, {
+                        type: "provider-thread.pinned-instructions-set",
+                        threadId,
+                        payload: {
+                          providerThreadId: input.event.providerThread.id,
+                          ...input.event.pinnedSystemInstructions,
+                        },
+                      }),
+                    ]),
                 ...(input.event.awaitedTaskNotice === undefined
                   ? []
                   : [

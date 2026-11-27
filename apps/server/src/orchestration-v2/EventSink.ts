@@ -426,13 +426,21 @@ const layerBase: Layer.Layer<
       input: ReadonlyArray<OrchestrationV2DomainEvent>,
       commandId: CommandId | undefined,
     ) {
-      // Only run.delegated-completion-updated changes a cohort, so a stale run cannot carry an old one.
+      // Dedicated events own these fields, so a stale snapshot cannot carry an old value
+      // and the large pin text is stored once per change, not on every provider-thread.updated.
       const events = input.map((event): OrchestrationV2DomainEvent => {
-        if (event.type !== "run.updated" || event.payload.delegatedCompletion === undefined) {
-          return event;
+        if (event.type === "run.updated" && event.payload.delegatedCompletion !== undefined) {
+          const { delegatedCompletion: _delegatedCompletion, ...payload } = event.payload;
+          return { ...event, payload };
         }
-        const { delegatedCompletion: _delegatedCompletion, ...payload } = event.payload;
-        return { ...event, payload };
+        if (
+          event.type === "provider-thread.updated" &&
+          event.payload.pinnedSystemInstructions !== undefined
+        ) {
+          const { pinnedSystemInstructions: _pinnedSystemInstructions, ...payload } = event.payload;
+          return { ...event, payload };
+        }
+        return event;
       });
       yield* guardRunRegressions(events, commandId);
       const runOrdinals = new Map(
@@ -661,19 +669,6 @@ const layerBase: Layer.Layer<
       );
     });
 
-    let hasPinnedSystemInstructionsColumnCached = false;
-    const hasPinnedSystemInstructionsColumn = Effect.gen(function* () {
-      if (hasPinnedSystemInstructionsColumnCached) return true;
-      const columns = yield* sql<{ readonly name: string }>`
-        PRAGMA table_info(orchestration_v2_projection_provider_threads)
-      `;
-      if (columns.some((column) => column.name === "pinned_system_instructions")) {
-        hasPinnedSystemInstructionsColumnCached = true;
-        return true;
-      }
-      return false;
-    });
-
     const writeIfProviderThreadUnchangedEffect = Effect.fn(
       "orchestrationV2.EventSink.writeIfProviderThreadUnchanged",
     )(function* (input: Parameters<EventSinkV2Shape["writeIfProviderThreadUnchanged"]>[0]) {
@@ -681,38 +676,18 @@ const layerBase: Layer.Layer<
         "orchestration_v2.event_count": input.events.length,
         "orchestration_v2.provider_thread_id": input.expected.id,
       });
-      const expectedRow = yield* ProjectionStore.encodeProviderThreadStoredRow(input.expected);
+      const { payloadJson: expectedJson } =
+        yield* ProjectionStore.encodeStoredProviderThreadPayload(input.expected);
 
       return yield* commitThenPublish(
         Effect.gen(function* () {
-          const hasPinnedColumn = yield* hasPinnedSystemInstructionsColumn;
-          const unchanged = hasPinnedColumn
-            ? yield* sql<{
-                readonly payload_json: string;
-                readonly pinned_system_instructions: string | null;
-              }>`
-                SELECT payload_json, pinned_system_instructions
-                FROM orchestration_v2_projection_provider_threads
-                WHERE provider_thread_id = ${input.expected.id}
-                LIMIT 1
-              `.pipe(
-                Effect.map((rows) => {
-                  const current = rows[0];
-                  return (
-                    current !== undefined &&
-                    current.payload_json === expectedRow.storedPayloadJson &&
-                    (current.pinned_system_instructions ?? null) ===
-                      expectedRow.pinnedSystemInstructions
-                  );
-                }),
-              )
-            : yield* sql<{ readonly payload_json: string }>`
-                SELECT payload_json
-                FROM orchestration_v2_projection_provider_threads
-                WHERE provider_thread_id = ${input.expected.id}
-                LIMIT 1
-              `.pipe(Effect.map((rows) => rows[0]?.payload_json === expectedRow.payloadJson));
-          if (!unchanged) {
+          const rows = yield* sql<{ readonly payload_json: string }>`
+            SELECT payload_json
+            FROM orchestration_v2_projection_provider_threads
+            WHERE provider_thread_id = ${input.expected.id}
+            LIMIT 1
+          `;
+          if (rows[0]?.payload_json !== expectedJson) {
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,

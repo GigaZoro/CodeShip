@@ -664,19 +664,16 @@ describe("background work kinds from older or newer servers", () => {
     });
     expect(legacy.pinnedSystemInstructions).toBeNull();
 
+    const pin = { key: "pin-key-v1", text: "<runtime_info>Pinned v1 instructions</runtime_info>" };
     const pinned = decodeOrchestrationV2ProviderThread({
       ...legacy,
-      pinnedSystemInstructions: "<runtime_info>Pinned v1 instructions</runtime_info>",
+      pinnedSystemInstructions: pin,
     });
-    expect(pinned.pinnedSystemInstructions).toBe(
-      "<runtime_info>Pinned v1 instructions</runtime_info>",
-    );
+    expect(pinned.pinnedSystemInstructions).toEqual(pin);
     const roundTripped = decodeOrchestrationV2ProviderThreadJson(
       encodeOrchestrationV2ProviderThreadJson(pinned),
     );
-    expect(roundTripped.pinnedSystemInstructions).toBe(
-      "<runtime_info>Pinned v1 instructions</runtime_info>",
-    );
+    expect(roundTripped.pinnedSystemInstructions).toEqual(pin);
   });
 });
 

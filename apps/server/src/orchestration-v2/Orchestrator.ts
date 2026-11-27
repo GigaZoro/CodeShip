@@ -2289,7 +2289,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             nativeThreadRef: activeProviderThread.nativeThreadRef,
             nativeConversationHeadRef: activeProviderThread.nativeConversationHeadRef,
             nativeMetadata: activeProviderThread.nativeMetadata,
-            pinnedSystemInstructions: activeProviderThread.pinnedSystemInstructions,
           }
         : queuedProviderThread;
       const targetCapabilities = yield* targetAdapter.getCapabilities().pipe(
