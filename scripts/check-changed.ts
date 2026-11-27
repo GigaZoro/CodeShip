@@ -168,49 +168,57 @@ const sharedBudget = (
   });
 
   // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds a marker file's
-  // transaction from its first take until `close`; other runs start no step meanwhile, so its load-sensitive
-  // tests get the machine. The OS drops the marker with its process, so a crashed landing blocks nobody.
+  // transaction from before its first slot until `close`; other runs start no step meanwhile, so its
+  // load-sensitive tests get the machine. The OS drops the marker with its process, so a crashed landing blocks nobody.
   const markerPrefix = "landing-wait-";
   const markerFile = NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`);
   const isSqliteCantOpen = (cause: unknown) =>
     cause instanceof Error && "errcode" in cause && cause.errcode === 14;
   let marker: NodeSqlite.DatabaseSync | undefined;
+  // False when Windows keeps the file: another run has it open.
+  const removeMarker = (file: string) => {
+    try {
+      NodeFS.rmSync(file, { force: true });
+      return true;
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (platform === "win32" && (code === "EBUSY" || code === "EPERM")) return false;
+      throw cause;
+    }
+  };
+  /** False while a landing run has yet to hold its marker; true for every other run. */
   const markLanding = () => {
-    if (!landing || marker) return;
+    if (!landing || marker) return true;
     let db: NodeSqlite.DatabaseSync;
     try {
       db = new NodeSqlite.DatabaseSync(markerFile);
     } catch (cause) {
-      if (isSqliteCantOpen(cause)) return;
+      if (isSqliteCantOpen(cause)) return false;
       throw cause;
     }
     try {
       db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
     } catch (cause) {
       db.close();
-      // Another run's stale-marker check holds it for a moment; the next take marks again.
-      if (isSqliteBusy(cause)) return;
+      // Another run's stale-marker check holds it for a moment.
+      if (isSqliteBusy(cause)) return false;
       throw cause;
     }
     // That check may have removed the file before this lock; a lock on a removed file holds nobody back.
     if (!NodeFS.existsSync(markerFile)) {
       db.close();
-      return;
+      return false;
     }
     marker = db;
+    return true;
   };
   const unmarkLanding = () => {
     if (!marker) return;
     marker.close();
     marker = undefined;
-    try {
-      NodeFS.rmSync(markerFile, { force: true });
-    } catch (cause) {
-      // On Windows, unlinking a marker while another run probes it fails with EPERM or EBUSY;
-      // its transaction is already closed, so a later probe removes it once the handle closes.
-      const code = cause instanceof Error && "code" in cause ? String(cause.code) : "";
-      if (code !== "EPERM" && code !== "EBUSY") throw cause;
-    }
+    // On Windows, unlinking a marker while another run probes it fails with EPERM or EBUSY;
+    // its transaction is already closed, so a later probe removes it once the handle closes.
+    removeMarker(markerFile);
   };
   const landingWaits = () =>
     NodeFS.readdirSync(directory)
@@ -234,19 +242,10 @@ const sharedBudget = (
         }
         // Nobody held it: a marker its landing left behind. Remove it while still locked, so a landing
         // reopening the name meanwhile fails its lock and retries; Windows cannot remove an open file.
-        if (platform !== "win32") NodeFS.rmSync(file, { force: true });
+        if (platform !== "win32") removeMarker(file);
         db.close();
-        if (platform === "win32") {
-          try {
-            NodeFS.rmSync(file, { force: true });
-          } catch (cause) {
-            const code = (cause as NodeJS.ErrnoException).code;
-            // A landing opened it again since the close.
-            if (code === "EBUSY" || code === "EPERM") return true;
-            throw cause;
-          }
-        }
-        return false;
+        // Kept on Windows only when a landing opened it again since the close.
+        return platform === "win32" && !removeMarker(file);
       });
 
   const lockFree = (max: number) =>
@@ -280,7 +279,11 @@ const sharedBudget = (
   /** Waits for a free slot, then holds as many free ones as it can, up to `max`, until the scope closes. */
   const take = Effect.fnUntraced(function* (max: number) {
     for (;;) {
-      yield* Effect.try({ try: markLanding, catch: String });
+      // A landing starts no step unmarked.
+      if (!(yield* Effect.try({ try: markLanding, catch: String }))) {
+        yield* Effect.sleep(SLOT_POLL_INTERVAL);
+        continue;
+      }
       const signal = freed;
       const held = yield* Effect.uninterruptible(
         lockFree(max).pipe(

@@ -767,27 +767,46 @@ describe("check:changed", () => {
     }),
   );
 
-  it.effect("runs a landing whose marker another run's stale-marker check holds for a moment", () =>
+  it.effect("starts a landing's step only once it holds its marker", () =>
     Effect.gen(function* () {
       const directory = yield* slotDirectory;
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const checker = new NodeSqlite.DatabaseSync(
-            NodePath.join(directory, `landing-wait-${process.pid}.sqlite`),
-          );
-          checker.exec("BEGIN EXCLUSIVE;");
-          return checker;
-        }),
-        (checker) => Effect.sync(() => checker.close()),
+      const file = NodePath.join(directory, `landing-wait-${process.pid}.sqlite`);
+      // Another run's stale-marker check, holding the marker as the landing first takes a slot.
+      const checker = yield* Effect.acquireRelease(
+        Effect.sync(() => new NodeSqlite.DatabaseSync(file)),
+        (db) => Effect.sync(() => db.isOpen && db.close()),
       );
-      const results = yield* runSteps(
-        [{ name: "landing", run: () => Effect.succeed({ ok: true, output: "" }) }],
+      checker.exec("BEGIN EXCLUSIVE;");
+      const marked: Array<boolean> = [];
+      const landing = yield* runSteps(
+        [
+          {
+            name: "landing",
+            run: () =>
+              Effect.sync(() => {
+                const probe = new NodeSqlite.DatabaseSync(file);
+                try {
+                  probe.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+                  marked.push(false);
+                } catch (cause) {
+                  marked.push(String(cause).includes("database is locked"));
+                } finally {
+                  probe.close();
+                }
+                return { ok: true, output: "" };
+              }),
+          },
+        ],
         { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory, landing: true },
-      );
-      assert.deepStrictEqual(
-        results.map((result) => result.outcome),
-        ["pass"],
-      );
+      ).pipe(Effect.forkChild);
+      // A slot is free all along; only the missing marker holds the step back.
+      for (let second = 0; second < 3; second++) yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(marked, []);
+
+      checker.close();
+      yield* TestClock.adjust("1 second");
+      yield* Fiber.join(landing);
+      assert.deepStrictEqual(marked, [true]);
     }),
   );
 
@@ -832,6 +851,47 @@ describe("check:changed", () => {
         const afterResults = yield* Fiber.join(after);
         assert.strictEqual(afterResults[0]?.outcome, "pass");
         assert.isFalse(NodeFS.existsSync(markerPath));
+      }),
+  );
+
+  // Windows refuses to remove a file another run has open. macOS gets the same refusal (EPERM) from
+  // its immutable flag.
+  it.effect.skipIf(!["darwin", "win32"].includes(HostProcess.Platform.defaultValue()))(
+    "passes a landing that Windows keeps from removing its marker",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* slotDirectory;
+        const file = NodePath.join(directory, `landing-wait-${process.pid}.sqlite`);
+        let refuseRemoval = () => {};
+        let allowRemoval = () => {};
+        if (HostProcess.Platform.defaultValue() === "win32") {
+          let checker: NodeSqlite.DatabaseSync | undefined;
+          refuseRemoval = () => (checker = new NodeSqlite.DatabaseSync(file));
+          allowRemoval = () => checker?.close();
+        } else {
+          const flag = (value: string) => NodeChildProcess.execFileSync("chflags", [value, file]);
+          refuseRemoval = () => flag("uchg");
+          allowRemoval = () => NodeFS.existsSync(file) && flag("nouchg");
+        }
+        yield* Effect.addFinalizer(() => Effect.sync(() => void allowRemoval()));
+        const results = yield* runSteps(
+          [
+            {
+              name: "landing",
+              run: () =>
+                Effect.sync(() => {
+                  refuseRemoval();
+                  return { ok: true, output: "" };
+                }),
+            },
+          ],
+          { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory, landing: true },
+        ).pipe(Effect.provideService(HostProcess.Platform, "win32"));
+        assert.deepStrictEqual(
+          results.map((result) => result.outcome),
+          ["pass"],
+        );
+        assert.isTrue(NodeFS.existsSync(file), "the removal was refused");
       }),
   );
 
