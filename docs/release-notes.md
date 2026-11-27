@@ -1,3 +1,9 @@
+## 2026-11-27 — Auto mode uses every Antigravity account's per-model quota
+
+- Auto mode's delegation roster honors per-model quota windows: an Antigravity account out of Claude or GPT-OSS quota still offers its Gemini models, and each model is listed once, on the first account in failover order with room for it, so Claude stays routable through a second Antigravity account. The paired Claude/Codex provider comes first, and providers share the roster evenly, with unused shares going to the rest.
+- When the paired provider cannot review, Auto mode takes the cross-provider review from the next available provider: its saved Auto model, else its default model, or, for Antigravity's placeholder default, its frontier model at xhigh (Gemini 4 Neon).
+- The brief stays under Codex's 4,000-byte limit with many accounts: trailing account sections give way to an `orchestrator_capabilities` pointer, and the review instructions are kept. The bundled model manifest includes Antigravity's current Gemini, Claude and GPT-OSS models.
+
 ## 2026-11-27 — Settings drops pages and rows that only pointed elsewhere
 
 - Old settings links such as `/settings/about`, `/settings/access`, `/settings/worktrees` and `/settings/storage` still open the page their settings moved to, now without an empty page of their own behind them. A settings link to a page that does not exist shows Page not found instead of an empty thread.

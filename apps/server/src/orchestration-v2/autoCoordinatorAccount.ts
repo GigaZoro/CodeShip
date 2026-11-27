@@ -1,15 +1,15 @@
 import type { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import {
   type ModelSelection,
-  type ProviderDriverKind,
+  ProviderDriverKind,
   type ProviderInstanceId,
   type ProjectId,
-  type ServerProvider,
 } from "@t3tools/contracts";
 import { offeredOptionSelections } from "@t3tools/shared/model";
 import {
   autoModeModelFor,
   orderProviderInstancesForFailover,
+  resolveQuotaAwareAutoProfile,
 } from "@t3tools/shared/serverSettings";
 import { exhaustedModelUsageWindow } from "@t3tools/shared/usageLimits";
 import { providerConstraints } from "../provider/providerConstraints.ts";
@@ -21,58 +21,91 @@ type AutoCoordinatorContext = AccountRoutingContext & {
   readonly orchestrationCapableInstanceIds: ReadonlySet<ProviderInstanceId>;
 };
 
-/** Accounts matching `predicate` that can run a delegated task, in failover order. */
-function delegateAccounts(
-  input: AutoCoordinatorContext,
-  predicate: (provider: ServerProvider) => boolean,
-) {
+function otherDriverOf(driver: ProviderDriverKind) {
+  return driver === "claudeAgent"
+    ? ProviderDriverKind.make("codex")
+    : driver === "codex"
+      ? ProviderDriverKind.make("claudeAgent")
+      : undefined;
+}
+
+/** Accounts that can run a delegated task, in failover order. */
+function runnableAccounts(input: AutoCoordinatorContext) {
   return orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
     input.providers,
   ).filter(
     (provider) =>
-      predicate(provider) &&
       providerConstraints(provider, input.orchestrationCapableInstanceIds.has(provider.instanceId))
         .length === 0,
   );
 }
 
+/** `driver`'s accounts that can run a delegated task, in failover order. */
+function delegateAccounts(input: AutoCoordinatorContext, driver: ProviderDriverKind) {
+  return runnableAccounts(input).filter((provider) => provider.driver === driver);
+}
+
+/** Other providers' accounts that can run a delegated task, paired provider first, then failover order. */
+function otherDelegateAccounts(input: AutoCoordinatorContext) {
+  const paired = otherDriverOf(input.driver);
+  const eligible = runnableAccounts(input).filter((provider) => provider.driver !== input.driver);
+  return paired === undefined
+    ? eligible
+    : [
+        ...eligible.filter((provider) => provider.driver === paired),
+        ...eligible.filter((provider) => provider.driver !== paired),
+      ];
+}
+
 /** Other providers' accounts a delegate can run on now, each with its current models that have room. */
 export function autoCoordinatorAccounts(input: AutoCoordinatorContext) {
-  return delegateAccounts(input, (provider) => provider.driver !== input.driver).flatMap(
-    (provider) => {
-      const models = provider.models.filter(
-        (model) =>
-          !model.isLegacy && modelWithRoom(provider, { ...input, model: model.slug }) !== null,
-      );
-      return models.length === 0 ? [] : [{ ...provider, models }];
-    },
-  );
+  return otherDelegateAccounts(input).flatMap((provider) => {
+    const models = provider.models.filter(
+      (model) =>
+        !model.isLegacy && modelWithRoom(provider, { ...input, model: model.slug }) !== null,
+    );
+    return models.length === 0 ? [] : [{ ...provider, models }];
+  });
 }
 
 /**
- * First account matching `predicate` whose driver's Settings primary has room, as a review target.
- * The primary is the user's choice, so a model its catalog marks legacy still counts.
+ * `driver`'s reviewer on its first account with room: its Settings primary, even if legacy. An
+ * unsaved default the catalog lists only as an alias (Antigravity's `antigravity-default`) stands
+ * for the session's current model, so the account's Auto profile reviews instead.
  */
-function reviewerOn(
-  input: AutoCoordinatorContext,
-  predicate: (provider: ServerProvider) => boolean,
-) {
-  for (const account of delegateAccounts(input, predicate)) {
-    const primary = autoModeModelFor(input.settings, account.driver);
-    if (primary === null) continue;
-    // The account's own id for the model: delegate_task rejects a display name it does not list.
-    const model = modelWithRoom(account, { ...input, model: primary.model });
-    if (model === null) continue;
-    return {
-      model,
-      providerInstanceId: account.instanceId,
-      options: offeredOptionSelections(
-        account.models.find((candidate) => candidate.slug === model)?.capabilities
-          ?.optionDescriptors,
-        primary.options,
-      ),
-    };
+function reviewerOn(input: AutoCoordinatorContext, driver: ProviderDriverKind) {
+  const saved = input.settings.autoModeModels[driver] !== undefined;
+  const primary = autoModeModelFor(input.settings, driver);
+  for (const account of delegateAccounts(input, driver)) {
+    if (
+      primary !== null &&
+      (saved || account.models.some((candidate) => candidate.slug === primary.model))
+    ) {
+      // The account's own id for the model: delegate_task rejects a display name it does not list.
+      const model = modelWithRoom(account, { ...input, model: primary.model });
+      if (model === null) continue;
+      return {
+        model,
+        providerInstanceId: account.instanceId,
+        options: offeredOptionSelections(
+          account.models.find((candidate) => candidate.slug === model)?.capabilities
+            ?.optionDescriptors,
+          primary.options,
+        ),
+      };
+    }
+    const profile = resolveQuotaAwareAutoProfile(
+      account,
+      (slug) => modelWithRoom(account, { ...input, model: slug }) !== null,
+    );
+    if (profile !== null) {
+      return {
+        model: profile.model,
+        providerInstanceId: account.instanceId,
+        options: profile.options ?? [],
+      };
+    }
   }
   return undefined;
 }
@@ -84,8 +117,16 @@ export function autoCoordinatorBriefInput(
   const own = input.providers.find(
     (provider) => provider.instanceId === input.selection.instanceId,
   );
-  const otherReviewer = reviewerOn(input, (provider) => provider.driver !== input.driver);
-  const ownReviewer = reviewerOn(input, (provider) => provider.driver === input.driver);
+  // The paired provider reviews first; any other enabled provider covers it when it cannot run.
+  const paired = otherDriverOf(input.driver);
+  const reviewDrivers = new Set([
+    ...(paired === undefined ? [] : [paired]),
+    ...otherDelegateAccounts(input).map((provider) => provider.driver),
+  ]);
+  const otherReviewer = [...reviewDrivers]
+    .map((driver) => reviewerOn(input, driver))
+    .find((reviewer) => reviewer !== undefined);
+  const ownReviewer = reviewerOn(input, input.driver);
   return {
     driver: input.driver,
     model: input.selection.model,

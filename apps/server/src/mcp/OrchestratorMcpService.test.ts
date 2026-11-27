@@ -2079,6 +2079,67 @@ describe("OrchestratorMcpService provider resolution", () => {
         ]);
       }),
     );
+
+    it.effect("lists the full current catalog for Antigravity without capping at 8", () =>
+      Effect.gen(function* () {
+        const antigravityInstanceId = ProviderInstanceId.make("antigravity_main");
+        const currentSlugs = [
+          "gemini-4-neon",
+          "gemini-4-hydrogen",
+          "gemini-4-carbon",
+          "gemini-4-argon",
+          "gemini-3.8-flash",
+          "claude-opus-5-5",
+          "claude-sonnet-5-5",
+          "gpt-oss-120b-medium",
+          "gemini-3.5-pro",
+        ];
+        const antigravityProvider: ServerProvider = {
+          ...providerSnapshot({
+            instanceId: antigravityInstanceId,
+            driver: ProviderDriverKind.make("antigravity"),
+          }),
+          models: [
+            ...currentSlugs.map((slug) => model(slug)),
+            model("gemini-2.5-legacy", { isLegacy: true }),
+          ],
+        };
+        const result = yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service.capabilities(scope, {});
+        }).pipe(
+          Effect.provide(
+            layerOrchestratorService.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  NodeServices.layer,
+                  Layer.mock(ThreadManagementService.ThreadManagementService)({
+                    getThreadRecords: () =>
+                      Effect.succeed(
+                        parentProjection([], { instanceId: codexInstanceId, model: "gpt-3" }),
+                      ),
+                  }),
+                  ServerSettings.layerTest({}),
+                  providerRegistryLayer([antigravityProvider]),
+                  adapterRegistryLayer([antigravityInstanceId]),
+                  Layer.mock(ProjectService.ProjectService)({}),
+                  Layer.mock(SecretRequests.SecretRequests)({}),
+                  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+                ),
+              ),
+            ),
+          ),
+        );
+        assert.deepEqual(listing(result), [
+          {
+            id: antigravityInstanceId,
+            models: currentSlugs,
+            omitted: 1,
+          },
+        ]);
+      }),
+    );
   });
 
   it.effect("capabilities refresh only stale runnable meters through the usage reader", () =>

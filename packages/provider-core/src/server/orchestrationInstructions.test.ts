@@ -205,16 +205,15 @@ describe("autoCoordinatorInstructions", () => {
       expect(brief).toContain("review the diff yourself on your Settings primary, Custom Primary");
       expect(brief).toContain(claude ? "effort xhigh" : "reasoningEffort ultra");
       expect(brief).not.toContain("fresh native subagent");
-      expect(brief).toContain("choose the best model for each task from the available providers");
+      expect(brief).toContain("choose the best model for each task from either Claude or Codex");
       expect(brief).not.toContain("incomplete");
+      // The other provider's reviewer comes first, and this provider's takes over when it cannot run.
       expect(
         [...brief.matchAll(/target `(\{[^`]+\})`/g)].map((match) => JSON.parse(match[1]!)),
       ).toEqual([...(other ? [otherReviewer] : []), ...(own ? [ownReviewer] : [])].map(asTarget));
       expect(brief.includes('`delegate_task` role "review"')).toBe(other || own);
       expect(brief.includes("Also obtain an independent review from another provider")).toBe(other);
-      expect(brief.includes("No other provider's Settings primary can run now")).toBe(
-        !other && own,
-      );
+      expect(brief.includes("No other provider can review now")).toBe(!other && own);
       expect(brief).toContain(
         other && own
           ? "if neither can run, your own review is the only one: say so in your report."
@@ -224,30 +223,6 @@ describe("autoCoordinatorInstructions", () => {
       );
     },
   );
-
-  it("labels non-Claude/Codex providers accurately and keeps shared slugs across distinct drivers", () => {
-    const brief = autoCoordinatorInstructions({
-      ...input,
-      otherProviders: [
-        {
-          providerInstanceId: "antigravity_main",
-          displayName: "Antigravity",
-          driver: ProviderDriverKind.make("antigravity"),
-          models: [{ slug: "default", name: "Gemini Pro" }],
-        },
-        {
-          providerInstanceId: "muse_main",
-          displayName: "Muse Code",
-          driver: ProviderDriverKind.make("muse"),
-          models: [{ slug: "default", name: "Muse Default" }],
-        },
-      ],
-    });
-    expect(brief).toContain("- Antigravity via `delegate_task`");
-    expect(brief).toContain("- Muse Code via `delegate_task`");
-    expect(brief).toContain("Gemini Pro (`default`)");
-    expect(brief).toContain("Muse Default (`default`)");
-  });
 });
 
 it.each([3, 8])("bounds the brief with four Claude and %s Codex models", (count) => {
@@ -384,4 +359,332 @@ it("uses native Claude catalog aliases, omits unsupported models, and keeps Code
     models: [{ slug: "gpt-6-astra", name: "Astra", aliases: ["primary"] }],
   })!;
   expect(codex).toContain("Astra (`gpt-6-astra`)");
+});
+
+it("lists paired and Antigravity targets via delegate_task, keeps Antigravity Claude models routable, and recognizes reasoning options by role", () => {
+  const select = (id: string, values: string[], role?: "reasoning") => ({
+    optionDescriptors: [
+      {
+        id,
+        label: "Effort",
+        type: "select" as const,
+        ...(role === undefined ? {} : { role }),
+        options: values.map((value) => ({ id: value, label: value })),
+      },
+    ],
+  });
+  const brief = autoCoordinatorInstructions({
+    ...input,
+    models: [
+      { slug: "claude-opus-5-5", name: "Opus", aliases: ["opus"] },
+      { slug: "claude-sonnet-5-5", name: "Sonnet", aliases: ["sonnet"] },
+      { slug: "claude-haiku-4-5", name: "Haiku", aliases: ["haiku"] },
+    ],
+    otherProviders: [
+      {
+        providerInstanceId: "codex_main",
+        displayName: "Codex",
+        driver: ProviderDriverKind.make("codex"),
+        models: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna"].map((slug) => ({
+          slug,
+          name: slug,
+          capabilities: select("reasoningEffort", ["low", "medium", "high", "xhigh"]),
+        })),
+      },
+      {
+        providerInstanceId: "antigravity",
+        displayName: "Antigravity",
+        driver: ProviderDriverKind.make("antigravity"),
+        models: [
+          {
+            slug: "gemini-4-neon",
+            name: "Gemini 4 Neon",
+            capabilities: select("thinking_level", ["low", "medium", "high", "xhigh"], "reasoning"),
+          },
+          {
+            slug: "gemini-4-hydrogen",
+            name: "Gemini 4 Hydrogen",
+            capabilities: select("thinking_level", ["low", "medium", "high", "xhigh"], "reasoning"),
+          },
+          {
+            slug: "gemini-4-carbon",
+            name: "Gemini 4 Carbon",
+            capabilities: select("thinking_level", ["low", "medium", "high", "xhigh"], "reasoning"),
+          },
+          {
+            slug: "gemini-4-argon",
+            name: "Gemini 4 Argon",
+            capabilities: select("custom_reasoning", ["low", "high"], "reasoning"),
+          },
+          {
+            slug: "gemini-3.8-flash",
+            name: "Gemini 3.8 Flash",
+            capabilities: select("thinking_level", ["low", "medium", "high", "xhigh"], "reasoning"),
+          },
+        ],
+      },
+      {
+        providerInstanceId: "antigravity_asd",
+        displayName: "Antigravity ASD",
+        driver: ProviderDriverKind.make("antigravity"),
+        models: [
+          {
+            slug: "gemini-4-neon",
+            name: "Gemini 4 Neon",
+            capabilities: select("thinking_level", ["low", "medium", "high", "xhigh"], "reasoning"),
+          },
+          {
+            slug: "claude-opus-5-5",
+            name: "Claude Opus 5.5",
+            capabilities: select("thinking_level", ["low", "high"], "reasoning"),
+          },
+          {
+            slug: "gpt-oss-120b-medium",
+            name: "GPT-OSS 120B (Medium)",
+            capabilities: select("thinking_level", ["low", "high"], "reasoning"),
+          },
+        ],
+      },
+    ],
+  })!;
+  expect(brief).toContain("from Claude, Codex, or Antigravity.");
+  expect(brief.indexOf("- Codex via `delegate_task`")).toBeLessThan(
+    brief.indexOf("- Antigravity via `delegate_task`"),
+  );
+  expect(brief).toContain(
+    '- Antigravity via `delegate_task`, target `{"providerInstanceId":"antigravity","model":"<slug>","options":{"thinking_level":"<effort>"}}`, effort low, medium, high, xhigh:',
+  );
+  expect(brief).toContain(
+    '- Antigravity via `delegate_task`, target `{"providerInstanceId":"antigravity_asd","model":"<slug>","options":{"thinking_level":"<effort>"}}`, effort low, high:\n  - Claude Opus 5.5 (`claude-opus-5-5`): hardest design, subtle bugs, reviews\n  - GPT-OSS 120B (Medium) (`gpt-oss-120b-medium`)',
+  );
+  expect(brief).toContain("Gemini 4 Neon (`gemini-4-neon`): frontier: the hardest problems");
+  expect(brief).toContain(
+    "Gemini 4 Hydrogen (`gemini-4-hydrogen`): demanding reasoning and coding",
+  );
+  expect(brief).toContain(
+    "Gemini 4 Argon (`gemini-4-argon`): straightforward work; `custom_reasoning`: low, high",
+  );
+  // Second Antigravity account adds only models not already listed on the first Antigravity account.
+  expect(brief.match(/Gemini 4 Neon \(`gemini-4-neon`\)/g)).toHaveLength(1);
+  // Antigravity is never described as a native subagent target.
+  expect(brief).not.toMatch(/native subagents[^\n]*Antigravity/i);
+  expect(brief).not.toContain("More accounts and models: call `orchestrator_capabilities`");
+  expect(Buffer.byteLength(brief, "utf8")).toBeLessThan(4000);
+});
+
+it("routes Claude models on Antigravity via delegate_task when Codex coordinates and caps oversized multi-provider rosters under 4000 bytes", () => {
+  const select = (id: string, values: string[]) => ({
+    optionDescriptors: [
+      {
+        id,
+        label: "Effort",
+        type: "select" as const,
+        options: values.map((value) => ({ id: value, label: value })),
+      },
+    ],
+  });
+  const codexWithAntigravityClaude = autoCoordinatorInstructions({
+    ...input,
+    driver: ProviderDriverKind.make("codex"),
+    model: "gpt-6-astra",
+    models: [{ slug: "gpt-6-astra", name: "Astra" }],
+    otherProviders: [
+      {
+        providerInstanceId: "antigravity_akucheri",
+        displayName: "Antigravity",
+        driver: ProviderDriverKind.make("antigravity"),
+        models: [
+          {
+            slug: "model-opaque-frontier",
+            name: "Frontier Opaque",
+            nativeModelFamily: "gemini-4-neon",
+            capabilities: select("thinking_level", ["low", "high", "xhigh"]),
+          },
+          {
+            slug: "claude-opus-5-5",
+            name: "Claude Opus 5.5",
+            capabilities: select("thinking_level", ["low", "high", "xhigh"]),
+          },
+        ],
+      },
+    ],
+  })!;
+  expect(codexWithAntigravityClaude).toContain(
+    '- Antigravity via `delegate_task`, target `{"providerInstanceId":"antigravity_akucheri","model":"<slug>","options":{"thinking_level":"<effort>"}}`, effort low, high, xhigh:',
+  );
+  expect(codexWithAntigravityClaude).toContain(
+    "Frontier Opaque (`model-opaque-frontier`): frontier: the hardest problems",
+  );
+  expect(codexWithAntigravityClaude).toContain("Claude Opus 5.5 (`claude-opus-5-5`)");
+  expect(codexWithAntigravityClaude).not.toMatch(/spawn_agent[^\n]*antigravity/i);
+
+  // Over the shared budget, providers split it evenly.
+  const makeModels = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      slug: `${prefix}-model-${index + 1}`,
+      name: `${prefix} ${index + 1}`,
+      capabilities: select("reasoningEffort", ["low", "high"]),
+    }));
+  const capped = autoCoordinatorInstructions({
+    ...input,
+    otherProviders: [
+      {
+        providerInstanceId: "codex_main",
+        displayName: "Codex",
+        driver: ProviderDriverKind.make("codex"),
+        models: makeModels("codex", 6),
+      },
+      {
+        providerInstanceId: "antigravity_main",
+        displayName: "Antigravity",
+        driver: ProviderDriverKind.make("antigravity"),
+        models: makeModels("ag", 6),
+      },
+      {
+        providerInstanceId: "grok_main",
+        displayName: "Grok",
+        driver: ProviderDriverKind.make("grok"),
+        models: makeModels("grok", 6),
+      },
+    ],
+  })!;
+  // On a tie the paired provider, Codex, takes the remainder.
+  expect(capped).toContain("codex-model-6");
+  expect(capped).toContain("ag-model-5");
+  expect(capped).not.toContain("ag-model-6");
+  expect(capped).toContain("grok-model-5");
+  expect(capped).not.toContain("grok-model-6");
+  expect(capped).toContain("More accounts and models: call `orchestrator_capabilities`");
+  expect(Buffer.byteLength(capped, "utf8")).toBeLessThan(4000);
+});
+
+it("lists a model on the second account of a provider when the first has no room for it", () => {
+  const thinking = {
+    optionDescriptors: [
+      {
+        id: "thinking_level",
+        label: "Thinking",
+        type: "select" as const,
+        role: "reasoning" as const,
+        options: ["low", "high", "xhigh"].map((id) => ({ id, label: id })),
+      },
+    ],
+  };
+  const gemini = [
+    "gemini-4-neon",
+    "gemini-4-argon",
+    "gemini-4-carbon",
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
+    "gemini-3.8-flash-lite",
+    "gemini-3.5-pro",
+    "gemini-3.5-flash",
+  ].map((slug) => ({ slug, name: slug, capabilities: thinking }));
+  const thirdParty = ["claude-opus-5-5", "claude-sonnet-5-5", "gpt-oss-120b-medium"].map(
+    (slug) => ({ slug, name: slug, capabilities: thinking }),
+  );
+  const antigravity = ProviderDriverKind.make("antigravity");
+  const brief = autoCoordinatorInstructions({
+    ...input,
+    driver: ProviderDriverKind.make("codex"),
+    model: "gpt-6-astra",
+    models: [{ slug: "gpt-6-astra", name: "Astra" }],
+    otherProviders: [
+      // The first account is out of its Claude and GPT-OSS quota, so it lists only Gemini.
+      { providerInstanceId: "ag_first", displayName: "AG 1", driver: antigravity, models: gemini },
+      {
+        providerInstanceId: "ag_second",
+        displayName: "AG 2",
+        driver: antigravity,
+        models: [...thirdParty, ...gemini],
+      },
+    ],
+  })!;
+  const sections = brief.split("\n- ");
+  const second = sections.find((section) => section.includes('"providerInstanceId":"ag_second"'));
+  expect(second).toContain("(`claude-opus-5-5`)");
+  // Each listed model appears once, on the first account that has room for it.
+  expect(second).not.toContain("(`gemini-4-neon`)");
+  expect(brief.match(/\(`gemini-4-neon`\)/g)).toHaveLength(1);
+  expect(brief).toContain("More accounts and models: call `orchestrator_capabilities`");
+});
+
+it("hands a small provider's unused share to the rest and drops trailing accounts past the byte limit", () => {
+  const select = {
+    optionDescriptors: [
+      {
+        id: "thinking_level",
+        label: "Thinking",
+        type: "select" as const,
+        options: ["low", "high", "xhigh"].map((id) => ({ id, label: id })),
+      },
+    ],
+  };
+  const models = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      slug: `${prefix}-model-${index + 1}`,
+      name: `${prefix} ${index + 1}`,
+      capabilities: select,
+    }));
+  const provider = (id: string, driver: string, list: ReturnType<typeof models>) => ({
+    providerInstanceId: id,
+    displayName: id,
+    driver: ProviderDriverKind.make(driver),
+    models: list,
+  });
+  // 2 + 11 + 4 = 17 models: Codex and Grok leave Antigravity room for its full 8.
+  const filled = autoCoordinatorInstructions({
+    ...input,
+    otherProviders: [
+      provider("codex_main", "codex", models("codex", 2)),
+      provider("antigravity_main", "antigravity", models("ag", 11)),
+      provider("grok_main", "grok", models("grok", 4)),
+    ],
+  })!;
+  expect(filled).toContain("ag-model-8");
+  expect(filled).not.toContain("ag-model-9");
+  expect(filled).toContain("grok-model-4");
+  expect(filled).toContain("More accounts and models: call `orchestrator_capabilities`");
+
+  // Many accounts, each with its own quota, would pass the limit: trailing ones go, the review stays.
+  const longId = (index: number) =>
+    `antigravity_account_with_a_long_instance_identifier_for_a_work_profile_signed_in_on_this_machine_${index}`;
+  const ag = models("gemini-long-model-name-for-the-byte-budget", 8);
+  const crowded = autoCoordinatorInstructions({
+    ...input,
+    otherReviewer: { providerInstanceId: "codex_main", model: "gpt-6-astra" },
+    otherProviders: [
+      provider("codex_main", "codex", models("codex", 8)),
+      ...ag.map((model, index) => provider(longId(index), "antigravity", [model])),
+    ],
+  })!;
+  expect(new TextEncoder().encode(autoModePromptBlock(crowded)).length).toBeLessThanOrEqual(4000);
+  expect(crowded).toContain('role "review", target `{"model":"gpt-6-astra"');
+  expect(crowded).toContain("More accounts and models: call `orchestrator_capabilities`");
+  expect(crowded).toContain(longId(0));
+  expect(crowded).not.toContain(longId(7));
+});
+
+it("labels non-Claude/Codex providers accurately and keeps shared slugs across distinct drivers", () => {
+  const brief = autoCoordinatorInstructions({
+    ...input,
+    otherProviders: [
+      {
+        providerInstanceId: "antigravity_main",
+        displayName: "Antigravity",
+        driver: ProviderDriverKind.make("antigravity"),
+        models: [{ slug: "default", name: "Gemini Pro" }],
+      },
+      {
+        providerInstanceId: "muse_main",
+        displayName: "Muse Code",
+        driver: ProviderDriverKind.make("muse"),
+        models: [{ slug: "default", name: "Muse Default" }],
+      },
+    ],
+  });
+  expect(brief).toContain("- Antigravity via `delegate_task`");
+  expect(brief).toContain("- Muse Code via `delegate_task`");
+  expect(brief).toContain("Gemini Pro (`default`)");
+  expect(brief).toContain("Muse Default (`default`)");
 });
