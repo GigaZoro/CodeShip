@@ -1,7 +1,7 @@
 ## 2026-11-28 — `check:changed` runs server tests in parallel chains with RAM-backed temp dirs
 
 - Maintainers: `vp run check:changed` now splits `apps/server` test groups across up to four independent serial chains when the machine's concurrency budget allows, without invalidating cached test passes when the chain count changes.
-- On Linux, `check:changed` places its test step temp directory on `/dev/shm` when writable with at least 2 GiB free (falling back to the system temp directory elsewhere), and isolates each running test group in its own short `g-*` `TMPDIR` subdirectory outside Git's trace2 temp folder.
+- On Linux, `check:changed` places its test step temp directory on `/dev/shm` when writable, executable, and with at least 2 GiB free (using `/tmp` on POSIX when `os.tmpdir()` is long, and falling back to the system temp directory elsewhere), and isolates each running test group in its own short `g-*` `TMPDIR` subdirectory outside Git's trace2 temp folder.
 
 ## 2026-11-28 — Run loop guard and thrash circuit breaker
 

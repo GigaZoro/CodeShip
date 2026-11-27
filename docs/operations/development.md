@@ -246,8 +246,9 @@ more. A run whose checkout changed while it ran fails and lists the
 changed paths. One nobody edited was written inside the checkout by a check or a tool, which should
 write under the system temp folder or a gitignored folder instead. Test groups run concurrently within the test step's worker
 budget. Server groups run in up to four independent serial chains alongside other packages, with each
-running group isolated in its own short temp folder (under `/dev/shm` on Linux when writable with at
-least 2 GiB free, otherwise the system temp folder) that is removed when the group ends. If Vite+ interrupts an in-flight
+running group isolated in its own short temp folder (under `/dev/shm` on Linux when writable,
+executable, and with at least 2 GiB free, under `/tmp` on POSIX when the system temp path is long,
+otherwise the system temp folder) that is removed when the group ends. If Vite+ interrupts an in-flight
 group after another group fails, the test step runs it again and reports failures across the full
 selection. A run under the landing turn stops at its first failure instead, since it can no longer pass: the first step to end
 `FAIL` or `TIMEOUT` stops the others, which report `STOPPED`, and the first failing test group ends the test step. Each run uses a private copy of a cache that every commit with the same install shares;

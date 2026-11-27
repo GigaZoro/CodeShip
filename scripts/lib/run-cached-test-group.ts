@@ -435,7 +435,7 @@ async function runCachedTestGroup(args: string[]) {
   }
   if (filters.some((filter) => filter.includes(":"))) options.includeTaskLocation ??= true;
   if (typeof options.typecheck?.only === "boolean") options.typecheck.enabled ??= true;
-  const baseTmp = allowExcluded ? process.env.TMPDIR || NodeOS.tmpdir() : undefined;
+  const baseTmp = allowExcluded ? NodeOS.tmpdir() : undefined;
   // Only check:changed passes the commit; test:cached groups don't key on HEAD.
   // Keep Git trace2 files in baseTmp so tests inspecting os.tmpdir() never see or disturb them.
   const checkGitTrace = baseTmp !== undefined ? traceCheckoutGit(baseTmp) : undefined;

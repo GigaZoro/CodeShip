@@ -437,12 +437,137 @@ export const nameKey = (name: string) =>
  * builds or tests the files in them. */
 export const isReferenceRepoPath = (file: string) => nameKey(file).startsWith(".repos/");
 
+function packageArgument(root: string, directory: string, file: string): string {
+  return quoteArgument("./" + relativeTestPath(directory, NodePath.join(root, file)));
+}
+
+function resolveTestPackages(
+  root: string,
+  files: ReadonlyArray<string>,
+  uncached: ReadonlyArray<string>,
+  platform: NodeJS.Platform,
+) {
+  // The group runner takes only the files Vitest reports, which it spells as the disk does, so each
+  // test, and each uncached test, goes by that spelling. A deleted test keeps its own.
+  const resolve = testPathResolver(root);
+  const onDisk = (file: string) => resolve(file) ?? file;
+  const hostUncached = platform === "darwin" ? darwinNativeProcessTests : [];
+  const uncachedFiles = new Set([...hostUncached, ...uncached].map(onDisk));
+  const sorted = [...new Set(files.map(onDisk))].sort();
+  const testScripts = new Map<string, string | undefined>();
+  const testScript = (directory: string) => {
+    if (!testScripts.has(directory)) {
+      const file = NodePath.join(directory, "package.json");
+      const manifest: unknown = NodeFS.existsSync(file)
+        ? JSON.parse(NodeFS.readFileSync(file, "utf8"))
+        : undefined;
+      testScripts.set(
+        directory,
+        typeof manifest === "object" &&
+          manifest !== null &&
+          "scripts" in manifest &&
+          typeof manifest.scripts === "object" &&
+          manifest.scripts !== null &&
+          "test" in manifest.scripts &&
+          typeof manifest.scripts.test === "string"
+          ? manifest.scripts.test
+          : undefined,
+      );
+    }
+    return testScripts.get(directory);
+  };
+  const packages = new Map<string, Array<string>>();
+  for (const file of sorted) {
+    // A package without a test script runs its tests in the enclosing package's suite.
+    let directory = NodePath.dirname(NodePath.join(root, file));
+    while (directory !== root && testScript(directory) === undefined) {
+      const parent = NodePath.dirname(directory);
+      if (parent === directory) {
+        directory = root;
+        break;
+      }
+      directory = parent;
+    }
+    const entries = packages.get(directory) ?? [];
+    entries.push(file);
+    packages.set(directory, entries);
+  }
+  return { packages, testScript, uncachedFiles };
+}
+
+function groupPackageTestFiles(
+  root: string,
+  directory: string,
+  entries: ReadonlyArray<string>,
+  groupSize: number,
+  uncachedFiles: ReadonlySet<string>,
+): Array<Array<string>> {
+  const cacheable = entries.filter((file) => !uncachedFiles.has(file));
+  const groups: Array<Array<string>> = [];
+  let group: Array<string> = [];
+  let length = 0;
+  const close = () => {
+    groups.push(group);
+    group = [];
+    length = 0;
+  };
+  for (const file of cacheable) {
+    const characters = packageArgument(root, directory, file).length + 1;
+    if (group.length > 0 && length + characters > ARGUMENT_CHARACTERS) close();
+    group.push(file);
+    length += characters;
+    const hash = NodeCrypto.createHash("sha256").update(file).digest().readUInt32BE();
+    if (hash % groupSize === 0 || group.length === 2 * groupSize) close();
+  }
+  if (group.length > 0) groups.push(group);
+  groups.push(...entries.filter((file) => uncachedFiles.has(file)).map((file) => [file]));
+  return groups;
+}
+
+/**
+ * Count how many `apps/server` test groups `cachedTestTasks` will produce for `request`.
+ * Shares the exact package resolution and grouping logic so slot budgets match runnable groups.
+ */
+export function countServerTestGroups(
+  request: {
+    readonly files: ReadonlyArray<string>;
+    readonly groupSize: number;
+    readonly uncached?: ReadonlyArray<string>;
+  },
+  root = workspaceRoot,
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Vite loads this before dependency installation; tests supply the platform directly.
+  platform: NodeJS.Platform = process.platform,
+): number {
+  if (!Number.isSafeInteger(request.groupSize) || request.groupSize < 1) {
+    throw new Error("Invalid cached test request");
+  }
+  if (request.files.length === 0) return 0;
+  const normalizedRoot = NodePath.resolve(root);
+  const { packages, uncachedFiles } = resolveTestPackages(
+    normalizedRoot,
+    request.files,
+    request.uncached ?? [],
+    platform,
+  );
+  const serverDirectory = NodePath.join(normalizedRoot, "apps", "server");
+  const serverEntries = packages.get(serverDirectory);
+  if (!serverEntries || serverEntries.length === 0) return 0;
+  return groupPackageTestFiles(
+    normalizedRoot,
+    serverDirectory,
+    serverEntries,
+    request.groupSize,
+    uncachedFiles,
+  ).length;
+}
+
 export function cachedTestTasks(
   raw: string | undefined,
   root = workspaceRoot,
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Vite loads this before dependency installation; tests supply the platform directly.
   platform: NodeJS.Platform = process.platform,
 ): Record<string, CachedTestTask> {
+  const normalizedRoot = NodePath.resolve(root);
   const file = process.env[requestFile];
   const changed = !raw && !!file;
   if (changed) raw = NodeFS.readFileSync(file, "utf8");
@@ -489,53 +614,19 @@ export function cachedTestTasks(
     files.push(file);
   }
   refuseBackslashNames(files);
-  // The group runner takes only the files Vitest reports, which it spells as the disk does, so each
-  // test, and each uncached test, goes by that spelling. A deleted test keeps its own.
-  const resolve = testPathResolver(root);
-  const onDisk = (file: string) => resolve(file) ?? file;
-  const hostUncached = platform === "darwin" ? darwinNativeProcessTests : [];
-  const uncachedFiles = new Set([...hostUncached, ...uncached].map(onDisk));
+  const { packages, testScript, uncachedFiles } = resolveTestPackages(
+    normalizedRoot,
+    files,
+    uncached,
+    platform,
+  );
   const tasks: Record<string, CachedTestTask> = {};
   const nodeCommand = [
     ...missingVitePlusTestEnv().map(([name, value]) => `${name}=${quoteArgument(value)}`),
     "node",
   ].join(" ");
-  const sorted = [...new Set(files.map(onDisk))].sort();
-  const testScripts = new Map<string, string | undefined>();
-  const testScript = (directory: string) => {
-    if (!testScripts.has(directory)) {
-      const file = NodePath.join(directory, "package.json");
-      const manifest: unknown = NodeFS.existsSync(file)
-        ? JSON.parse(NodeFS.readFileSync(file, "utf8"))
-        : undefined;
-      testScripts.set(
-        directory,
-        typeof manifest === "object" &&
-          manifest !== null &&
-          "scripts" in manifest &&
-          typeof manifest.scripts === "object" &&
-          manifest.scripts !== null &&
-          "test" in manifest.scripts &&
-          typeof manifest.scripts.test === "string"
-          ? manifest.scripts.test
-          : undefined,
-      );
-    }
-    return testScripts.get(directory);
-  };
-  const packages = new Map<string, Array<string>>();
-  for (const file of sorted) {
-    // A package without a test script runs its tests in the enclosing package's suite.
-    let directory = NodePath.dirname(NodePath.join(root, file));
-    while (directory !== root && testScript(directory) === undefined) {
-      directory = NodePath.dirname(directory);
-    }
-    const entries = packages.get(directory) ?? [];
-    entries.push(file);
-    packages.set(directory, entries);
-  }
   for (const [directory, entries] of packages) {
-    const command = directory === root ? "vp test run" : testScript(directory)!;
+    const command = directory === normalizedRoot ? "vp test run" : testScript(directory)!;
     if (
       (changed && !isChangedTestScript(command)) ||
       (command !== "vp test run" && !command.startsWith("vp test run "))
@@ -544,7 +635,7 @@ export function cachedTestTasks(
     }
     const runner = relativeTestPath(
       directory,
-      NodePath.join(root, "scripts/lib/run-cached-test-group.ts"),
+      NodePath.join(normalizedRoot, "scripts/lib/run-cached-test-group.ts"),
     );
     // check:changed runs the tests beside a change as `vp test run --passWithNoTests` would, so a
     // test the package's config leaves out passes there, while test:cached refuses one.
@@ -554,35 +645,21 @@ export function cachedTestTasks(
     const moduleCache = relativeTestPath(
       directory,
       NodePath.join(
-        root,
+        normalizedRoot,
         "node_modules/.vitest-cache/check-changed",
         process.env[testInstallEnv] ?? "",
       ),
     );
     const options = `${command.slice("vp test run".length)}${allowEmpty ? " --passWithNoTests" : ""}${changed ? ` --fsModuleCachePath ${quoteArgument(moduleCache)}` : ""}`;
-    const argument = (file: string) =>
-      quoteArgument("./" + relativeTestPath(directory, NodePath.join(root, file)));
-    const cacheable = entries.filter((file) => !uncachedFiles.has(file));
-    const groups: Array<Array<string>> = [];
-    const groupSize = request.groupSize;
-    let group: Array<string> = [];
-    let length = 0;
-    const close = () => {
-      groups.push(group);
-      group = [];
-      length = 0;
-    };
-    for (const file of cacheable) {
-      const characters = argument(file).length + 1;
-      if (group.length > 0 && length + characters > ARGUMENT_CHARACTERS) close();
-      group.push(file);
-      length += characters;
-      const hash = NodeCrypto.createHash("sha256").update(file).digest().readUInt32BE();
-      if (hash % groupSize === 0 || group.length === 2 * groupSize) close();
-    }
-    if (group.length > 0) groups.push(group);
-    groups.push(...entries.filter((file) => uncachedFiles.has(file)).map((file) => [file]));
-    const server = changed && directory === NodePath.join(root, "apps", "server");
+    const argument = (file: string) => packageArgument(normalizedRoot, directory, file);
+    const groups = groupPackageTestFiles(
+      normalizedRoot,
+      directory,
+      entries,
+      request.groupSize,
+      uncachedFiles,
+    );
+    const server = changed && directory === NodePath.join(normalizedRoot, "apps", "server");
     const serverChainLast: Array<string | undefined> = Array.from(
       { length: serverChains },
       () => undefined,

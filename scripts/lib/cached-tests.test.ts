@@ -16,6 +16,7 @@ import {
   changedTestRequestEnv,
   changedTestRuntime,
   checkoutSearchPath,
+  countServerTestGroups,
   gitEnvironment,
   gitPaths,
   installFingerprint,
@@ -24,7 +25,6 @@ import {
   relativeTestPath,
   serverTestChainCount,
 } from "./cached-tests.ts";
-import { selectTestTempBase } from "../check-changed.ts";
 import { readsCheckoutGit } from "./run-cached-test-group.ts";
 
 describe("cachedTestTasks", () => {
@@ -527,30 +527,99 @@ describe("cachedTestTasks", () => {
     }
   });
 
-  it("selects /dev/shm on Linux only when writable with at least 2 GiB free", () => {
-    const GiB = 1024 ** 3;
-    const fallback = "/fallback/tmp";
-    const statOf = (bytes: number) => () => ({ bsize: 4096, bavail: bytes / 4096 });
+  it("balances uneven apps/server groups and uncached server files across chains and matches countServerTestGroups", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-test-balance-"));
+    try {
+      const request = NodePath.join(directory, "request.json");
+      const serverFiles = Array.from({ length: 24 }, (_, index) => `apps/server/b${index}.test.ts`);
+      const uncachedFile = serverFiles[5]!;
+      const files = [...serverFiles, "apps/web/w1.test.ts", "apps/web/w2.test.ts"];
+      const groupSize = 4;
 
-    expect(selectTestTempBase("linux", statOf(2 * GiB), fallback)).toBe("/dev/shm");
-    expect(selectTestTempBase("linux", statOf(4 * GiB), fallback)).toBe("/dev/shm");
-    expect(selectTestTempBase("linux", () => ({ bsize: 1, bavail: 2 * GiB - 1 }), fallback)).toBe(
-      fallback,
-    );
-    expect(
-      selectTestTempBase(
+      const expectedCount = countServerTestGroups(
+        { files, groupSize, uncached: [uncachedFile] },
+        undefined,
         "linux",
-        () => {
-          throw new Error("EACCES");
-        },
-        fallback,
-      ),
-    ).toBe(fallback);
+      );
+      expect(expectedCount).toBeGreaterThanOrEqual(4);
+      const repoRootWithTrailingSlash =
+        NodePath.resolve(import.meta.dirname, "../..") + NodePath.sep;
+      expect(
+        countServerTestGroups(
+          { files, groupSize, uncached: [uncachedFile] },
+          repoRootWithTrailingSlash,
+          "linux",
+        ),
+      ).toBe(expectedCount);
+      expect(
+        countServerTestGroups(
+          { files: ["apps/web/w1.test.ts"], groupSize, uncached: [] },
+          repoRootWithTrailingSlash,
+          "linux",
+        ),
+      ).toBe(0);
+      expect(
+        countServerTestGroups({ files: [], groupSize, uncached: [] }, undefined, "linux"),
+      ).toBe(0);
 
-    const probe = vi.fn(statOf(16 * GiB));
-    expect(selectTestTempBase("darwin", probe, fallback)).toBe(fallback);
-    expect(selectTestTempBase("win32", probe, fallback)).toBe(fallback);
-    expect(probe).not.toHaveBeenCalled();
+      await NodeFSP.writeFile(
+        request,
+        JSON.stringify({
+          files,
+          groupSize,
+          uncached: [uncachedFile],
+          serverChains: 3,
+        }),
+      );
+      vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", request);
+      const tasks = cachedTestTasks(undefined, undefined, "linux");
+      const allKeys = tasks["test-cache"]!.dependsOn!;
+      const serverKeys = allKeys.filter((key) => tasks[key]!.cwd === "apps/server");
+      const webKeys = allKeys.filter((key) => tasks[key]!.cwd === "apps/web");
+
+      expect(serverKeys.length).toBe(
+        countServerTestGroups({ files, groupSize, uncached: [uncachedFile] }, undefined, "linux"),
+      );
+      expect(webKeys.length).toBeGreaterThanOrEqual(1);
+      for (const key of webKeys) expect(tasks[key]!.dependsOn).toBeUndefined();
+
+      // Verify groups actually have uneven file counts and include the uncached singleton group.
+      const filesInTask = (key: string) =>
+        (tasks[key]!.command.match(/'\.\/[^']+\.test\.ts'/g) ?? []).length;
+      const groupSizes = serverKeys.map(filesInTask);
+      expect(new Set(groupSizes).size).toBeGreaterThan(1);
+      const uncachedKey = serverKeys.find((key) => tasks[key]!.cache === false);
+      expect(uncachedKey).toBeDefined();
+      expect(filesInTask(uncachedKey!)).toBe(1);
+      expect(tasks[uncachedKey!]!.command).toContain("./b5.test.ts");
+
+      // Trace the 3 serial chains and verify load balancing by file count.
+      const roots = serverKeys.filter((key) => tasks[key]!.dependsOn === undefined);
+      expect(roots).toHaveLength(3);
+      const chainFileTotals: Array<number> = [];
+      const visited = new Set<string>();
+      for (const root of roots) {
+        let current: string | undefined = root;
+        let totalFiles = 0;
+        while (current !== undefined) {
+          expect(visited.has(current)).toBe(false);
+          visited.add(current);
+          totalFiles += filesInTask(current);
+          const next = serverKeys.filter((key) => tasks[key]!.dependsOn?.[0] === current);
+          expect(next.length).toBeLessThanOrEqual(1);
+          current = next[0];
+        }
+        chainFileTotals.push(totalFiles);
+      }
+      expect(visited.size).toBe(serverKeys.length);
+      expect(chainFileTotals.reduce((a, b) => a + b, 0)).toBe(serverFiles.length);
+      expect(Math.max(...chainFileTotals) - Math.min(...chainFileTotals)).toBeLessThanOrEqual(
+        Math.max(...groupSizes),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
   });
 
   // Each `vp run` boots Vitest per task, so every behaviour is its own test with its own time budget.

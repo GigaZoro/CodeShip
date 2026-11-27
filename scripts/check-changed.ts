@@ -82,6 +82,7 @@ import {
   CHANGED_TEST_GROUP_SIZE,
   changedTestRequestEnv,
   changedTestRuntime,
+  countServerTestGroups,
   gitEnvironment,
   gitPaths,
   installFingerprint,
@@ -95,7 +96,7 @@ import {
 import { isSqliteBusy, stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 
 const GiB = 1024 ** 3;
-// The test step's limit grows by this much per selected file: server tests run one at a time.
+// The test step's limit grows by this much per selected file: each server chain runs its test files one at a time.
 const TEST_FILE_SECONDS = 120;
 // Without an explicit timeout, a test step stops growing here, so a run selecting thousands of files ends.
 // A landing raises it to what its lease has left (CHECK_CHANGED_TEST_STEP_MAX).
@@ -1174,39 +1175,115 @@ const removeTempDirectory = (directory: string, platform: NodeJS.Platform): Effe
   );
 
 const SHM_TEMP_BASE = "/dev/shm";
+const POSIX_SHORT_TEMP_BASE = "/tmp";
 const MIN_SHM_AVAILABLE_BYTES = 2 * GiB;
+// Keep `${base}/t3-cct-XXXXXX/g-YYYYYY` (25 bytes beyond `base`) well below Unix socket `sun_path`
+// limits (103 bytes on macOS, 107 on Linux) by falling back to `/tmp` when `os.tmpdir()` is long.
+const MAX_POSIX_TEMP_BASE_BYTES = 32;
 
-const defaultShmStatFs = (): { readonly bavail: number; readonly bsize: number } => {
-  NodeFS.accessSync(
-    SHM_TEMP_BASE,
-    NodeFS.constants.R_OK | NodeFS.constants.W_OK | NodeFS.constants.X_OK,
-  );
-  return NodeFS.statfsSync(SHM_TEMP_BASE);
+const isWritableDirectory = (directory: string): boolean => {
+  try {
+    if (!NodeFS.statSync(directory).isDirectory()) return false;
+    NodeFS.accessSync(
+      directory,
+      NodeFS.constants.R_OK | NodeFS.constants.W_OK | NodeFS.constants.X_OK,
+    );
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 /**
- * Pick a RAM-backed base directory for test temporary files on Linux when `/dev/shm` is writable
- * and has at least 2 GiB free; fall back to `os.tmpdir()` otherwise.
+ * Check Linux `/proc/self/mountinfo` to determine whether the deepest mount covering `targetPath`
+ * allows execution (neither its VFS mount options nor its superblock options contain `noexec`).
+ * Returns `false` when no mount matches.
+ */
+export const isMountExecutable = (mountinfo: string, targetPath: string): boolean => {
+  const normalizedTarget = targetPath.length > 1 ? targetPath.replace(/\/+$/, "") : targetPath;
+  if (!normalizedTarget.startsWith("/")) return false;
+  let matchedLength = -1;
+  let matchedExecutable = false;
+  for (const line of mountinfo.split(/\r?\n/)) {
+    if (!line) continue;
+    const fields = line.split(" ");
+    if (fields.length < 10) continue;
+    const separatorIndex = fields.indexOf("-", 6);
+    if (separatorIndex < 6 || separatorIndex + 3 >= fields.length) continue;
+    const unescaped = fields[4]!.replace(/\\([0-7]{3})/g, (_, octal: string) =>
+      String.fromCharCode(Number.parseInt(octal, 8)),
+    );
+    const mountPoint = unescaped.length > 1 ? unescaped.replace(/\/+$/, "") : unescaped;
+    if (!mountPoint.startsWith("/")) continue;
+    const covers =
+      mountPoint === "/"
+        ? true
+        : normalizedTarget === mountPoint || normalizedTarget.startsWith(`${mountPoint}/`);
+    if (!covers || mountPoint.length < matchedLength) continue;
+    const vfsOptions = fields[5]!.split(",");
+    const superOptions = fields[separatorIndex + 3]!.split(",");
+    matchedLength = mountPoint.length;
+    matchedExecutable = !vfsOptions.includes("noexec") && !superOptions.includes("noexec");
+  }
+  return matchedLength >= 0 && matchedExecutable;
+};
+
+interface TestTempBaseProbes {
+  readonly shmStatFs?: () => { readonly bavail: number; readonly bsize: number };
+  readonly isShmDir?: () => boolean;
+  readonly shmRealpath?: () => string;
+  readonly readMountInfo?: () => string;
+  readonly isShortTmpWritable?: () => boolean;
+}
+
+const defaultShmStatFs = (): { readonly bavail: number; readonly bsize: number } =>
+  NodeFS.statfsSync(SHM_TEMP_BASE);
+
+/**
+ * Pick `/dev/shm` on Linux when writable, executable, and >= 2 GiB free; otherwise `/tmp` on POSIX
+ * when `fallback` would crowd Unix socket `sun_path` limits; otherwise `fallback` (`os.tmpdir()`).
  */
 export const selectTestTempBase = (
   platform: NodeJS.Platform,
-  shmStatFs: () => { readonly bavail: number; readonly bsize: number } = defaultShmStatFs,
+  probes: TestTempBaseProbes = {},
   fallback: string = NodeOS.tmpdir(),
 ): string => {
-  if (platform !== "linux") return fallback;
-  try {
-    const { bavail, bsize } = shmStatFs();
-    if (
-      Number.isFinite(bavail) &&
-      Number.isFinite(bsize) &&
-      bavail >= 0 &&
-      bsize > 0 &&
-      bavail * bsize >= MIN_SHM_AVAILABLE_BYTES
-    ) {
-      return SHM_TEMP_BASE;
+  if (platform === "linux") {
+    try {
+      const shmDirOk = probes.isShmDir ? probes.isShmDir() : isWritableDirectory(SHM_TEMP_BASE);
+      if (shmDirOk) {
+        const realShmPath = probes.shmRealpath
+          ? probes.shmRealpath()
+          : NodeFS.realpathSync(SHM_TEMP_BASE);
+        const mountinfo = probes.readMountInfo
+          ? probes.readMountInfo()
+          : NodeFS.readFileSync("/proc/self/mountinfo", "utf8");
+        if (isMountExecutable(mountinfo, realShmPath)) {
+          const { bavail, bsize } = (probes.shmStatFs ?? defaultShmStatFs)();
+          if (
+            Number.isFinite(bavail) &&
+            Number.isFinite(bsize) &&
+            bavail >= 0 &&
+            bsize > 0 &&
+            bavail * bsize >= MIN_SHM_AVAILABLE_BYTES
+          ) {
+            return SHM_TEMP_BASE;
+          }
+        }
+      }
+    } catch {
+      // Fall back when /dev/shm or /proc/self/mountinfo is absent, unwritable, or unreadable.
     }
-  } catch {
-    // Fall back to the system temp directory when /dev/shm is absent, unwritable or unreadable.
+  }
+  if (platform !== "win32" && Buffer.byteLength(fallback) > MAX_POSIX_TEMP_BASE_BYTES) {
+    try {
+      const shortTmpOk = probes.isShortTmpWritable
+        ? probes.isShortTmpWritable()
+        : isWritableDirectory(POSIX_SHORT_TEMP_BASE);
+      if (shortTmpOk) return POSIX_SHORT_TEMP_BASE;
+    } catch {
+      // Fall back to `fallback` when /tmp is absent or unwritable.
+    }
   }
   return fallback;
 };
@@ -1604,10 +1681,15 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // macOS counts its file cache as used, so available memory there would
   // starve a large Mac. Elsewhere availableMemory() honors a cgroup limit.
   const platform = yield* HostProcess.Platform;
-  const testTempBase = selectTestTempBase(platform);
   yield* Effect.sync(() => {
+    const systemTmp = NodeOS.tmpdir();
     sweepStaleTempDirs();
-    if (testTempBase !== NodeOS.tmpdir()) sweepStaleTempDirs({ dir: testTempBase });
+    if (platform === "linux" && SHM_TEMP_BASE !== systemTmp) {
+      sweepStaleTempDirs({ dir: SHM_TEMP_BASE });
+    }
+    if (platform !== "win32" && POSIX_SHORT_TEMP_BASE !== systemTmp) {
+      sweepStaleTempDirs({ dir: POSIX_SHORT_TEMP_BASE });
+    }
   });
   // The landing command (.github/scripts/landing-turn.cjs) gives its checks the turn it holds.
   const landing = Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN")));
@@ -2093,11 +2175,25 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     );
   };
 
+  const requestUncached = keepProviderEnv ? vitestTests : uncachedTests;
   // Each apps/server Vitest runs one file at a time (fileParallelism in apps/server/vite.config.ts),
   // so check:changed runs up to MAX_SERVER_CHAINS independent chains concurrently when slots allow.
-  const serverTests = vitestTests.filter((file) => file.startsWith("apps/server/")).length;
-  const serverSlots = serverTests <= 1 ? serverTests : Math.min(serverTests, MAX_SERVER_CHAINS) * 2;
-  const testWorkers = vitestTests.length - serverTests + serverSlots;
+  const serverGroups = countServerTestGroups(
+    {
+      files: vitestTests,
+      groupSize: CHANGED_TEST_GROUP_SIZE,
+      uncached: requestUncached,
+    },
+    root,
+    platform,
+  );
+  const nonServerTests =
+    serverGroups === 0
+      ? vitestTests.length
+      : vitestTests.length - vitestTests.filter((file) => file.startsWith("apps/server/")).length;
+  const serverSlots =
+    serverGroups <= 1 ? serverGroups : Math.min(serverGroups, MAX_SERVER_CHAINS) * 2;
+  const testWorkers = nonServerTests + serverSlots;
 
   const slotDirectory = yield* budgetDirectory(root);
   const testStep: Step<never> = {
@@ -2106,8 +2202,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       Effect.scoped(
         Effect.gen(function* () {
           const temp = yield* makeScopedTempDir(fs, "t3-check-changed-tests-", platform);
-          // Keep the step TMPDIR a short sibling (in /dev/shm on Linux when room allows) so Unix
-          // socket paths stay within sun_path and concurrent groups stay off disk.
+          // Keep the step TMPDIR a short sibling (in /dev/shm on Linux when room allows, or /tmp
+          // on POSIX when os.tmpdir() is long) so Unix socket paths stay within sun_path.
           const stepTmp = yield* makeScopedTempDir(
             fs,
             "t3-cct-",
@@ -2135,7 +2231,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           const concurrencyLimit = Math.max(
             1,
             Math.floor(slots / 3),
-            Math.min(serverTests, serverChains),
+            Math.min(serverGroups, serverChains),
           );
           const workers = Math.max(1, Math.floor(slots / concurrencyLimit));
           const env = {
@@ -2150,7 +2246,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             {
               files: vitestTests,
               groupSize: CHANGED_TEST_GROUP_SIZE,
-              uncached: keepProviderEnv ? vitestTests : uncachedTests,
+              uncached: requestUncached,
               serverChains,
             },
             concurrencyLimit,

@@ -43,6 +43,7 @@ import {
   GIT_TIMEOUT,
   gitLines,
   ignoredInputs,
+  isMountExecutable,
   isTestInput,
   keepModuleCache,
   makeScopedTempDir,
@@ -2929,7 +2930,8 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
   expect(matched, first.stdout).not.toBeNull();
   const groupTmp = matched![1]!.trim();
   const stepTmp = NodePath.dirname(groupTmp);
-  const expectedBase = selectTestTempBase(isLinuxHost ? "linux" : "darwin", undefined, outerTmp1);
+  const hostPlatform: NodeJS.Platform = isLinuxHost ? "linux" : isWindowsHost ? "win32" : "darwin";
+  const expectedBase = selectTestTempBase(hostPlatform, undefined, outerTmp1);
   expect(NodePath.dirname(stepTmp)).toBe(expectedBase);
   expect(NodeFS.existsSync(groupTmp)).toBe(false);
   expect(NodeFS.existsSync(stepTmp)).toBe(false);
@@ -2972,6 +2974,181 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
   expect(NodeFS.existsSync(failGroupTmp)).toBe(false);
   expect(NodeFS.existsSync(NodePath.dirname(failGroupTmp))).toBe(false);
   expect(NodeFS.readdirSync(outerTmp2)).toEqual([]);
+});
+
+it("isMountExecutable parses /proc/self/mountinfo longest-prefix mounts, octal escapes, and noexec options", () => {
+  const baseMountInfo = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "26 29 0:5 / /dev rw,nosuid,noexec,relatime shared:2 - devtmpfs udev rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,inode64",
+    "32 26 0:27 / /dev/shm2 rw,nosuid,nodev,noexec shared:5 - tmpfs tmpfs rw",
+    "33 29 0:28 / /mnt/my\\040shm rw,nosuid,nodev - tmpfs tmpfs rw",
+  ].join("\n");
+
+  // Deepest mount (/dev/shm) overrides /dev's noexec; sibling /dev/shm2 does not match /dev/shm.
+  expect(isMountExecutable(baseMountInfo, "/dev/shm")).toBe(true);
+  expect(isMountExecutable(baseMountInfo, "/dev/shm/")).toBe(true);
+  expect(isMountExecutable(baseMountInfo, "/dev/shm/sub")).toBe(true);
+  expect(isMountExecutable(baseMountInfo, "/dev/other")).toBe(false);
+  expect(isMountExecutable(baseMountInfo, "/dev/shm2")).toBe(false);
+  expect(isMountExecutable(baseMountInfo, "/mnt/my shm")).toBe(true);
+
+  // noexec in VFS mount options (field 6, index 5) rejects the mount.
+  const vfsNoexec = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev,noexec shared:4 - tmpfs tmpfs rw",
+  ].join("\n");
+  expect(isMountExecutable(vfsNoexec, "/dev/shm")).toBe(false);
+
+  // noexec in superblock options (after ` - <fstype> <source> `) rejects the mount.
+  const superNoexec = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,noexec,inode64",
+  ].join("\n");
+  expect(isMountExecutable(superNoexec, "/dev/shm")).toBe(false);
+
+  // Later mount at the same mount point (overmount) wins.
+  const overmounted = [
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw",
+    "40 31 0:29 / /dev/shm rw,nosuid,nodev,noexec shared:9 - tmpfs tmpfs rw",
+  ].join("\n");
+  expect(isMountExecutable(overmounted, "/dev/shm")).toBe(false);
+
+  // Empty or non-matching mountinfo fails closed.
+  expect(isMountExecutable("", "/dev/shm")).toBe(false);
+  expect(isMountExecutable("26 29 0:5 / /run rw,nosuid - tmpfs tmpfs rw", "/dev/shm")).toBe(false);
+});
+
+it("selectTestTempBase checks /dev/shm directory, mountinfo noexec, free space, and POSIX /tmp headroom", () => {
+  const shortFallback = "/fallback/tmp";
+  const longMacFallback = "/private/var/folders/ab/cdefghijklmnopqrstuvwxyz123456/T";
+  const execMountInfo = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,inode64",
+  ].join("\n");
+  const vfsNoexecMountInfo = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev,noexec shared:4 - tmpfs tmpfs rw",
+  ].join("\n");
+  const superNoexecMountInfo = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,noexec",
+  ].join("\n");
+  const statOf = (bytes: number) => () => ({ bsize: 4096, bavail: bytes / 4096 });
+  const linuxProbes = (
+    overrides: Parameters<typeof selectTestTempBase>[1] = {},
+  ): Parameters<typeof selectTestTempBase>[1] => ({
+    isShmDir: () => true,
+    shmRealpath: () => "/dev/shm",
+    readMountInfo: () => execMountInfo,
+    shmStatFs: statOf(4 * GiB),
+    isShortTmpWritable: () => false,
+    ...overrides,
+  });
+
+  // Linux accepts /dev/shm at >= 2 GiB free when writable directory and executable mount.
+  expect(
+    selectTestTempBase("linux", linuxProbes({ shmStatFs: statOf(2 * GiB) }), shortFallback),
+  ).toBe("/dev/shm");
+  expect(
+    selectTestTempBase("linux", linuxProbes({ shmStatFs: statOf(4 * GiB) }), shortFallback),
+  ).toBe("/dev/shm");
+  // Rejects < 2 GiB free, non-directory/unwritable, statfs errors, noexec mounts, or unreadable mountinfo.
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({ shmStatFs: () => ({ bsize: 1, bavail: 2 * GiB - 1 }) }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+  expect(selectTestTempBase("linux", linuxProbes({ isShmDir: () => false }), shortFallback)).toBe(
+    shortFallback,
+  );
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({ readMountInfo: () => vfsNoexecMountInfo }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({ readMountInfo: () => superNoexecMountInfo }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({
+        readMountInfo: () => {
+          throw new Error("ENOENT");
+        },
+      }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({
+        shmStatFs: () => {
+          throw new Error("EACCES");
+        },
+      }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+
+  // macOS prefers /tmp when os.tmpdir() is long to preserve Unix socket sun_path headroom,
+  // and falls back to os.tmpdir() when /tmp is unavailable or fallback is already short.
+  const shmProbe = vi.fn(statOf(16 * GiB));
+  expect(
+    selectTestTempBase(
+      "darwin",
+      { shmStatFs: shmProbe, isShortTmpWritable: () => true },
+      longMacFallback,
+    ),
+  ).toBe("/tmp");
+  expect(
+    selectTestTempBase(
+      "darwin",
+      { shmStatFs: shmProbe, isShortTmpWritable: () => false },
+      longMacFallback,
+    ),
+  ).toBe(longMacFallback);
+  expect(
+    selectTestTempBase(
+      "darwin",
+      { shmStatFs: shmProbe, isShortTmpWritable: () => true },
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+
+  // Linux also uses /tmp when /dev/shm is rejected and fallback is long.
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({
+        readMountInfo: () => vfsNoexecMountInfo,
+        isShortTmpWritable: () => true,
+      }),
+      longMacFallback,
+    ),
+  ).toBe("/tmp");
+
+  // Windows never probes /dev/shm or /tmp even for long paths.
+  const shortTmpProbe = vi.fn(() => true);
+  expect(
+    selectTestTempBase(
+      "win32",
+      { shmStatFs: shmProbe, isShortTmpWritable: shortTmpProbe },
+      "C:\\Users\\developer\\AppData\\Local\\Temp\\long-subdir",
+    ),
+  ).toBe("C:\\Users\\developer\\AppData\\Local\\Temp\\long-subdir");
+  expect(shmProbe).not.toHaveBeenCalled();
+  expect(shortTmpProbe).not.toHaveBeenCalled();
 });
 
 it("runs apps/server groups in parallel chains with distinct group TMPDIRs and replays cache across chain counts", () => {
@@ -3027,7 +3204,8 @@ it("runs apps/server groups in parallel chains with distinct group TMPDIRs and r
   const stepTmps = new Set(groupTmps.map((dir) => NodePath.dirname(dir)));
   expect(stepTmps.size).toBe(1);
   const [stepTmp] = [...stepTmps];
-  expect(NodePath.dirname(stepTmp!)).toBe(selectTestTempBase(isLinuxHost ? "linux" : "darwin"));
+  const hostPlatform: NodeJS.Platform = isLinuxHost ? "linux" : isWindowsHost ? "win32" : "darwin";
+  expect(NodePath.dirname(stepTmp!)).toBe(selectTestTempBase(hostPlatform));
   for (const dir of groupTmps) expect(NodeFS.existsSync(dir)).toBe(false);
   expect(NodeFS.existsSync(stepTmp!)).toBe(false);
 
@@ -3036,6 +3214,41 @@ it("runs apps/server groups in parallel chains with distinct group TMPDIRs and r
   expect(serial.status, serial.stdout + serial.stderr).toBe(1);
   expect(serial.stdout).toContain("pass  test (3 files)");
   expect(serial.stdout.match(/cache hit, replaying/g)).toHaveLength(3);
+});
+
+it("sizes serverGroups slots and concurrency-limit by actual apps/server group count rather than file count", () => {
+  using project = launcherFixture();
+  project.write("pnpm-workspace.yaml", "packages:\n  - packages/*\n  - apps/*\n");
+  project.write(
+    "apps/server/package.json",
+    JSON.stringify({ name: "@t3tools/server", scripts: { test: "vp test run" } }) + "\n",
+  );
+  project.commit("add server package");
+
+  // These four names all hash to non-zero mod CHANGED_TEST_GROUP_SIZE (4), so they form 1 group.
+  for (const file of [
+    "apps/server/g0.test.ts",
+    "apps/server/g1.test.ts",
+    "apps/server/g2.test.ts",
+    "apps/server/g3.test.ts",
+  ]) {
+    project.write(
+      file,
+      `import { expect, it } from "vite-plus/test";
+      it("passes", () => expect(1).toBe(1));\n`,
+    );
+  }
+
+  const result = project.run("lint", "", project.source, ["--concurrency", "14"]);
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("pass  test (4 files)");
+
+  const testCacheCalls = project
+    .calls()
+    .filter(({ args }) => args.includes("test-cache") && args.includes("--concurrency-limit"));
+  expect(testCacheCalls.length).toBeGreaterThanOrEqual(1);
+  const limitIndex = testCacheCalls[0]!.args.indexOf("--concurrency-limit");
+  expect(Number(testCacheCalls[0]!.args[limitIndex + 1])).toBe(1);
 });
 
 it("reuses passes in another worktree with the same inputs and tracked environment, at another worker count", () => {
