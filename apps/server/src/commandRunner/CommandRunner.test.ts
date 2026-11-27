@@ -494,6 +494,46 @@ describe("stripAnsi and decodeTail", () => {
     assert.include(tail, "PASS test-59");
   });
 
+  it("strips 8-bit CSI and line-bounded OSC and DCS/SOS/PM/APC without swallowing diagnostic lines", () => {
+    assert.equal(CommandRunner.stripAnsi("\u009b31mred"), "red");
+    assert.equal(CommandRunner.stripAnsi("a\u001bPq#0;2;0;0;0\u001b\\b"), "ab");
+    assert.equal(CommandRunner.stripAnsi("a\u001bPq#0;2;0;0;0\u009cb"), "ab");
+    assert.equal(CommandRunner.stripAnsi("a\u001b_apc\u001b\\b"), "ab");
+
+    const unterminatedOsc = CommandRunner.stripAnsi(
+      "\u001b]0;t\nERROR line 1\nERROR line 2\n\u0007end",
+    );
+    assert.include(unterminatedOsc, "ERROR line 1");
+    assert.include(unterminatedOsc, "ERROR line 2");
+
+    const st8BitOsc = CommandRunner.stripAnsi("\u001b]0;t\u009cvisible\nnext\u0007z");
+    assert.include(st8BitOsc, "visible\nnext");
+    assert.isTrue(st8BitOsc.startsWith("visible\nnext"));
+
+    const unterminatedDcs = CommandRunner.stripAnsi("a\u001bPunterminated\nERROR line\n\u001b\\b");
+    assert.include(unterminatedDcs, "ERROR line");
+  });
+
+  it("keeps a truncated first line prefixed with an ellipsis when dropping it would discard over half of maxChars", () => {
+    const encoder = new TextEncoder();
+    const longError = encoder.encode(`${"E".repeat(5000)}\nlast`);
+    const tail = CommandRunner.decodeTail(
+      longError,
+      false,
+      CommandRunner.RESULT_FAILURE_TAIL_CHARS,
+    );
+    assert.equal(tail.length, CommandRunner.RESULT_FAILURE_TAIL_CHARS);
+    assert.isTrue(tail.startsWith("…E"));
+    assert.isTrue(tail.endsWith("EEE\nlast"));
+
+    // A short partial first line (<= 50% of budget) still drops cleanly at the next line boundary.
+    const lines = Array.from({ length: 10 }, (_, i) => `line-${i}-${"x".repeat(20)}`).join("\n");
+    const shortPartial = CommandRunner.decodeTail(encoder.encode(lines), false, 120);
+    assert.isFalse(shortPartial.startsWith("…"));
+    assert.isAtMost(shortPartial.length, 120);
+    assert.isTrue(shortPartial.startsWith("line-"));
+  });
+
   it("avoids broken UTF-8 sequences and lone UTF-16 surrogates when slicing", () => {
     const encoder = new TextEncoder();
     for (const sample of ["é", "✓", "🚀"]) {

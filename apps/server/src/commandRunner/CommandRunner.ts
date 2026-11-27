@@ -504,9 +504,12 @@ const runInGitBash = (scriptPath: string) => [
   "exit $t3Bash.ExitCode",
 ];
 
-// Matches OSC, CSI, and ECMA-48 ESC sequences without overlapping character classes.
+// Matches line-bounded OSC and DCS/SOS/PM/APC, 7/8-bit CSI, and ECMA-48 ESC sequences.
 const ANSI_ESCAPE_PATTERN =
-  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-Z\\^-~]/g;
+  /\x1b\][^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)|\x1b[PX^_][^\x1b\x9c\n]*(?:\x1b\\|\x9c)|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-Z\\^-~]/g;
+
+const isCleanExit = (row: Pick<CommandRunRow, "status" | "exit_code">) =>
+  row.status === "exited" && row.exit_code === 0;
 
 /** Removes ANSI escape codes and keeps the final in-place carriage-return segment per line. */
 export const stripAnsi = (text: string): string => {
@@ -521,6 +524,13 @@ export const stripAnsi = (text: string): string => {
       return cr < 0 ? trimmed : trimmed.slice(cr + 1);
     })
     .join("\n");
+};
+
+const sliceStartFromEnd = (text: string, limit: number): number => {
+  let start = text.length - limit;
+  const code = text.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff) start += 1;
+  return start;
 };
 
 /** Decodes a log tail cleanly across UTF-8, UTF-16, and line boundaries, capped to `maxChars`. */
@@ -544,14 +554,15 @@ export const decodeTail = (
         return newline < 0 ? stripped : stripped.slice(newline + 1);
       })()
     : stripped;
+  if (maxChars <= 0) return "";
   if (whole.length <= maxChars) return whole;
-  let start = whole.length - maxChars;
-  const code = whole.charCodeAt(start);
-  if (code >= 0xdc00 && code <= 0xdfff) start += 1;
+  const start = sliceStartFromEnd(whole, maxChars);
   const sliced = whole.slice(start);
   if (whole.charCodeAt(start - 1) === 10) return sliced;
   const newline = sliced.indexOf("\n");
-  return newline < 0 ? sliced : sliced.slice(newline + 1);
+  if (newline >= 0 && newline + 1 <= maxChars / 2) return sliced.slice(newline + 1);
+  if (maxChars <= 1) return sliced;
+  return `…${whole.slice(sliceStartFromEnd(whole, maxChars - 1))}`;
 };
 
 const make = Effect.gen(function* () {
@@ -798,10 +809,7 @@ const make = Effect.gen(function* () {
             ? `Ended after ${elapsed} with an unreadable exit status.`
             : `Exited with code ${row.exit_code} after ${elapsed}.`;
     const logPath = logPathOf(row);
-    const maxChars =
-      row.status === "exited" && row.exit_code === 0
-        ? RESULT_SUCCESS_TAIL_CHARS
-        : RESULT_FAILURE_TAIL_CHARS;
+    const maxChars = isCleanExit(row) ? RESULT_SUCCESS_TAIL_CHARS : RESULT_FAILURE_TAIL_CHARS;
     const output = yield* readTail(row, maxChars);
     return [
       ending,
@@ -851,7 +859,7 @@ const make = Effect.gen(function* () {
   });
 
   const deliver = Effect.fn("CommandRunner.deliver")(function* (row: CommandRunRow) {
-    const status = row.status === "exited" && row.exit_code === 0 ? "completed" : "failed";
+    const status = isCleanExit(row) ? "completed" : "failed";
     if (yield* completeTask(row, status, yield* resultText(row))) {
       yield* settle({ ...row, delivered_at: yield* nowIso });
     }
