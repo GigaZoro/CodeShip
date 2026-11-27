@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { Hct, SchemeTonalSpot, argbFromHex, hexFromArgb } from "@material/material-color-utilities";
 
 import { MOBILE_THEME_IDS } from "../../lib/mobileTheme";
 import { getMobileThemeRuntimeVariables } from "../../lib/mobileThemeVariables";
-import { materialYouPaletteToMobileThemeVariables } from "../../lib/materialYouTheme.android";
-import type { MaterialYouPalette } from "../../lib/materialYouPalette";
+import { materialYouSystemThemeVariables } from "../../lib/mobileTheme.test-support";
 import { androidWorkspaceNavigationColors } from "./android-workspace-navigation-colors";
 
 function luminance(hex: string) {
@@ -53,44 +51,7 @@ describe("Android workspace navigation colors", () => {
     "keeps Material You selection visible for system seed %s",
     (seed) => {
       for (const appearance of ["light", "dark"] as const) {
-        const scheme = new SchemeTonalSpot(
-          Hct.fromInt(argbFromHex(seed)),
-          appearance === "dark",
-          0,
-        );
-        const roles = [
-          "primary",
-          "onPrimary",
-          "primaryContainer",
-          "onPrimaryContainer",
-          "inversePrimary",
-          "secondaryContainer",
-          "onSecondaryContainer",
-          "tertiary",
-          "tertiaryContainer",
-          "onTertiaryContainer",
-          "surface",
-          "onSurface",
-          "onSurfaceVariant",
-          "surfaceContainer",
-          "surfaceContainerHigh",
-          "surfaceContainerHighest",
-          "surfaceContainerLow",
-          "surfaceContainerLowest",
-          "errorContainer",
-          "onErrorContainer",
-          "outline",
-          "outlineVariant",
-          "scrim",
-        ] as const satisfies ReadonlyArray<keyof MaterialYouPalette>;
-        const palette = Object.fromEntries(
-          roles.map((role) => [role, `${hexFromArgb(scheme[role])}ff`]),
-        ) as Record<(typeof roles)[number], string>;
-        const variables = materialYouPaletteToMobileThemeVariables(
-          palette,
-          appearance,
-          getMobileThemeRuntimeVariables("material-you", appearance, "android"),
-        );
+        const variables = materialYouSystemThemeVariables(seed, appearance);
         for (const [rail, floating] of [
           [false, false],
           [true, false],

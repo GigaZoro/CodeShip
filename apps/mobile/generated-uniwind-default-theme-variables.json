@@ -142,7 +142,7 @@
     "--color-danger": "#301214",
     "--color-danger-border": "rgba(251, 65, 74, 0.32)",
     "--color-danger-foreground": "#ff6467",
-    "--color-calm-status-quiet": "#818181",
+    "--color-calm-status-quiet": "#838383",
     "--color-calm-status-attention": "#ffb900",
     "--color-calm-status-alarm": "#ff6467",
     "--color-update": "#121b34",

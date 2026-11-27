@@ -30,6 +30,7 @@ import {
   type ScheduledTask,
   type ScopedProjectRef,
 } from "@t3tools/contracts";
+import type { StatusColors } from "@t3tools/contracts/settings";
 import { useNavigation } from "@react-navigation/native";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { memo } from "react";
@@ -114,13 +115,19 @@ function SkippedLine(props: {
   );
 }
 
-function IntervalWaitBar(props: { readonly task: ScheduledTask }) {
+function IntervalWaitBar(props: {
+  readonly task: ScheduledTask;
+  readonly statusColors: StatusColors;
+}) {
   const progress = intervalWaitProgress(props.task, useVisibleSecondClock(true));
   if (progress === null) return null;
   return (
     <View className="mt-2 h-0.5 overflow-hidden rounded-full bg-border-subtle">
       <View
-        className="h-full bg-adaptive-sky-600-400"
+        className={cn(
+          "h-full",
+          props.statusColors === "vivid" ? "bg-adaptive-sky-600-400" : "bg-calm-status-quiet/60",
+        )}
         style={{ width: `${Math.round(progress * 1000) / 10}%` }}
       />
     </View>
@@ -303,7 +310,9 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
       {rowStatus.skipped !== null ? (
         <SkippedLine skipped={rowStatus.skipped} className={appearance.mutedForegroundClassName} />
       ) : null}
-      {status === "idle" || status === "failed" ? <IntervalWaitBar task={task} /> : null}
+      {status === "idle" || status === "failed" ? (
+        <IntervalWaitBar task={task} statusColors={statusColors} />
+      ) : null}
     </>
   );
 

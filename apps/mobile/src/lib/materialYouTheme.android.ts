@@ -37,6 +37,7 @@ export function materialYouPaletteToMobileThemeVariables(
   const statusSurfaces = [
     palette.surface,
     palette.surfaceContainerLow,
+    palette.surfaceContainer,
     palette.surfaceContainerHigh,
   ];
   return {

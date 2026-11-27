@@ -345,8 +345,14 @@ export function createMobileThemeVariables(
     c.secondary,
     groupedCard,
   ];
-  // Calm paints thread statuses with only these, on lists, the drawer and their pressed rows.
-  const statusSurfaces = [c.canvas, c.sidebar, c.sidebarRowHover, c.toolbarControlHover];
+  // Calm paints thread statuses with only these, on lists, the drawer and their pressed and selected rows.
+  const statusSurfaces = [
+    c.canvas,
+    c.sidebar,
+    c.sidebarRowHover,
+    c.sidebarRowActive,
+    c.toolbarControlHover,
+  ];
   return {
     "--color-screen": c.canvas,
     "--color-sheet": withAlpha(c.chrome, 0.98),
