@@ -12,6 +12,7 @@ import {
   ProviderDriverKind,
   type OrchestrationV2Command,
   type RunId,
+  type RuntimeRequestId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -76,14 +77,9 @@ const readTranscriptLines = (): ReadonlyArray<string> =>
     .split("\n")
     .filter((line) => line.trim().length > 0);
 
-/**
- * The recorded turn on two threads of one app server: both turns reach the approval, then each
- * finishes in order. The second thread's native ids and JSON-RPC ids differ from the first's.
- */
-const twoThreadTranscript = () => {
+/** The recorded turn, and the same turn on a second thread whose native and JSON-RPC ids differ. */
+const twoThreadLines = () => {
   const lines = readTranscriptLines();
-  const threadStart = lines.findIndex((line) => line.includes('"method":"thread/start"'));
-  const approval = lines.findIndex((line) => line.includes(`"method":"${APPROVAL_METHOD}"`));
   const second = lines.map((line) =>
     line
       .replaceAll(/01a0d604|02c3fc6e|0cdfbd98/g, "0b0b0b0b")
@@ -92,11 +88,40 @@ const twoThreadTranscript = () => {
         (_match, key: string, id: string) => `"${key}":${Number(id) + SECOND_THREAD_ID_OFFSET}`,
       ),
   );
+  return {
+    lines,
+    second,
+    threadStart: lines.findIndex((line) => line.includes('"method":"thread/start"')),
+    approval: lines.findIndex((line) => line.includes(`"method":"${APPROVAL_METHOD}"`)),
+  };
+};
+
+/** Both turns reach the approval, then each finishes in order. */
+const twoThreadTranscript = () => {
+  const { lines, second, threadStart, approval } = twoThreadLines();
   return [
     ...lines.slice(0, approval),
     ...second.slice(threadStart, approval),
     ...lines.slice(approval),
     ...second.slice(approval),
+  ];
+};
+
+/**
+ * Both turns ask for approval. Once the first is answered Codex pauses, so the update finds both
+ * running and the second still waiting; after "continue" the first finishes, then the second.
+ */
+const answeredBeforeUpdateTranscript = () => {
+  const { lines, second, threadStart, approval } = twoThreadLines();
+  return [
+    ...lines.slice(0, approval),
+    ...second.slice(threadStart, approval),
+    lines[approval]!,
+    second[approval]!,
+    lines[approval + 1]!,
+    JSON.stringify({ type: "pause" }),
+    ...lines.slice(approval + 2),
+    ...second.slice(approval + 1),
   ];
 };
 
@@ -266,10 +291,9 @@ const shutDownForUpdate = Effect.fn("DetachedCodexAdoptionTest.shutDownForUpdate
   );
 });
 
-/** Answers the approval the taken-over run asks for, waits for the run to end, and checks it. */
-const approveAndFinish = Effect.fn("DetachedCodexAdoptionTest.approveAndFinish")(function* (
+/** The first approval the thread's run asked for that is still pending. */
+const awaitPendingApproval = Effect.fn("DetachedCodexAdoptionTest.awaitPendingApproval")(function* (
   thread: ApprovalThread,
-  runId: RunId,
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const pending = yield* orchestrator
@@ -283,9 +307,31 @@ const approveAndFinish = Effect.fn("DetachedCodexAdoptionTest.approveAndFinish")
     );
   const request = Option.getOrUndefined(pending)?.event;
   if (request?.type !== "runtime-request.updated") {
-    return yield* Effect.die("the new server found no pending approval");
+    return yield* Effect.die("no pending approval was found");
   }
-  yield* orchestrator.dispatch({ ...thread.approve, requestId: request.payload.id });
+  return request.payload.id;
+});
+
+/** Answers the approval the taken-over run asks for, waits for the run to end, and checks it. */
+const approveAndFinish = Effect.fn("DetachedCodexAdoptionTest.approveAndFinish")(function* (
+  thread: ApprovalThread,
+  runId: RunId,
+  requestId?: RuntimeRequestId,
+) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  yield* orchestrator.dispatch({
+    ...thread.approve,
+    requestId: requestId ?? (yield* awaitPendingApproval(thread)),
+  });
+  yield* awaitFinished(thread, runId);
+});
+
+/** Waits for the run to end and checks it completed without a continuation prompt. */
+const awaitFinished = Effect.fn("DetachedCodexAdoptionTest.awaitFinished")(function* (
+  thread: ApprovalThread,
+  runId: RunId,
+) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
   yield* orchestrator
     .streamStoredEventsFrom({ threadId: thread.threadId, eventType: "run.updated" })
     .pipe(
@@ -334,30 +380,37 @@ const takeOverAndFinish = (input: {
         { discard: true },
       ).pipe(Effect.provide(input.serverLayer({ recoverOnStartup: true }))),
     );
-
-    const log = readPeerLog(input.peerLog);
-    assert.deepEqual(
-      log.filter((record) => record.kind === "unexpected"),
-      [],
-    );
-    const methods = log.flatMap((record) =>
-      record.kind === "received" && record.method !== null ? [record.method] : [],
-    );
-    const count = (method: string) => methods.filter((candidate) => candidate === method).length;
-    assert.equal(count("initialize"), 1);
-    assert.equal(count("thread/start"), input.threads.length);
-    assert.equal(count("turn/start"), input.threads.length);
-    assert.notInclude(methods, "thread/resume");
-    assert.deepEqual(
-      log.flatMap((record) =>
-        record.kind === "received" && record.method === null ? [record.id] : [],
-      ),
-      input.threads.map((_thread, index) => RECORDED_APPROVAL_ID + index * SECOND_THREAD_ID_OFFSET),
-      "Each approval Codex asked while the server was down was answered",
-    );
+    assertPeerSawOneServerAnswerEach(input.peerLog, input.threads.length);
     // The adopted process finishes its turns, then ends with the server that took it over.
     assert.isFalse(isProcessAlive(started!.pid!));
   });
+
+/** One initialize, a start per thread, no resume, and every approval answered exactly once. */
+const assertPeerSawOneServerAnswerEach = (peerLog: string, threadCount: number) => {
+  const log = readPeerLog(peerLog);
+  assert.deepEqual(
+    log.filter((record) => record.kind === "unexpected"),
+    [],
+  );
+  const methods = log.flatMap((record) =>
+    record.kind === "received" && record.method !== null ? [record.method] : [],
+  );
+  const count = (method: string) => methods.filter((candidate) => candidate === method).length;
+  assert.equal(count("initialize"), 1);
+  assert.equal(count("thread/start"), threadCount);
+  assert.equal(count("turn/start"), threadCount);
+  assert.notInclude(methods, "thread/resume");
+  assert.deepEqual(
+    log.flatMap((record) =>
+      record.kind === "received" && record.method === null ? [record.id] : [],
+    ),
+    Array.from(
+      { length: threadCount },
+      (_unused, index) => RECORDED_APPROVAL_ID + index * SECOND_THREAD_ID_OFFSET,
+    ),
+    "Each approval Codex asked was answered once",
+  );
+};
 
 describe.skipIf(isWindowsHost)("a Codex turn running across a planned update", () => {
   it.live(
@@ -396,6 +449,57 @@ describe.skipIf(isWindowsHost)("a Codex turn running across a planned update", (
         }).pipe(Effect.provide(serverLayer({ recoverOnStartup: false }))),
       );
       yield* takeOverAndFinish({ peerLog, serverLayer, threads, runIds });
+    }).pipe(
+      Effect.ensuring(removeTempDir),
+      Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+    );
+  });
+
+  it.live("delivers an answer given just before the update, and both shared runs finish", () => {
+    const { peerLog, serverLayer, removeTempDir } = setUpAdoption(answeredBeforeUpdateTranscript());
+    return Effect.gen(function* () {
+      const [answered, waiting] = [
+        yield* materializeApprovalThread(`${SCENARIO}_answered`),
+        yield* materializeApprovalThread(`${SCENARIO}_waiting`),
+      ];
+      const { runIds, waitingRequestId } = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          for (const thread of [answered, waiting]) yield* startApprovalTurn(thread);
+          const controlPort = readPeerLog(peerLog).find(
+            (record) => record.kind === "started",
+          )?.controlPort;
+          assert.isDefined(controlPort);
+          yield* continuePeer(controlPort!);
+          const answeredRequestId = yield* awaitPendingApproval(answered);
+          const waitingRequestId = yield* awaitPendingApproval(waiting);
+          // The update starts while the answer is still queued for delivery.
+          yield* orchestrator.dispatch({ ...answered.approve, requestId: answeredRequestId });
+          const runIds = yield* shutDownForUpdate([answered, waiting]);
+          return { runIds, waitingRequestId };
+        }).pipe(Effect.provide(serverLayer({ recoverOnStartup: false }))),
+      );
+      const peer = readPeerLog(peerLog).find((record) => record.kind === "started");
+      assert.isTrue(
+        readPeerLog(peerLog).some(
+          (record) =>
+            record.kind === "received" &&
+            record.method === null &&
+            record.id === RECORDED_APPROVAL_ID,
+        ),
+        "The answer reached Codex before the old server let go of it",
+      );
+      // The answered turn finishes while no server is attached.
+      yield* continuePeer(peer!.controlPort!);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* awaitFinished(answered, runIds[0]!);
+          // Codex asks the waiting approval again; the id stored before the update still answers it.
+          yield* approveAndFinish(waiting, runIds[1]!, waitingRequestId);
+        }).pipe(Effect.provide(serverLayer({ recoverOnStartup: true }))),
+      );
+      assertPeerSawOneServerAnswerEach(peerLog, 2);
+      assert.isFalse(isProcessAlive(peer!.pid!));
     }).pipe(
       Effect.ensuring(removeTempDir),
       Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),

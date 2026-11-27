@@ -1021,6 +1021,7 @@ it.effect.each(["fails", "unsupported"] as const)(
                 id: ProviderTurnId.make(`provider-turn:${key}`),
               } as OrchestrationV2ProviderTurn,
               turnItems: [],
+              runtimeRequests: [],
             },
           }),
         );

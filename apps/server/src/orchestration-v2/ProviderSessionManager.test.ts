@@ -1648,6 +1648,7 @@ it.effect.each(["compactThread", "adoptTurn"] as const)(
               completedAt: null,
             },
             turnItems: [],
+            runtimeRequests: [],
           });
         }
 

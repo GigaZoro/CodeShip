@@ -35,6 +35,7 @@ import {
   type ProviderUsageLimitsUpdate,
   RunAttemptId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -10186,6 +10187,66 @@ describe("CodexAdapterV2 item ordinals after a takeover", () => {
         ordinalOf("command-2"),
       ],
       [101, 102, 103, 104],
+    );
+  });
+
+  const storedRequest = (
+    id: string,
+    nativeRequestId: string,
+    status: "pending" | "resolved",
+    providerTurnId = ProviderTurnId.make("provider-turn-adopted"),
+  ) => ({
+    id: RuntimeRequestId.make(id),
+    providerTurnId,
+    nativeRequestRef: {
+      driver: ProviderDriverKind.make("codex"),
+      nativeId: nativeRequestId,
+      strength: "strong" as const,
+    },
+    status,
+  });
+
+  it("keeps a pending approval's position when the taken-over process asks it again", () => {
+    const positions: CodexAdapterV2.CodexItemPositions = {
+      itemPositions: new Map(),
+      nextItemOrdinal: CodexAdapterV2.firstCodexItemOrdinal(1),
+    };
+    const request = storedRequest("request-stored", "0", "pending");
+    CodexAdapterV2.seedAdoptedCodexItemPositions(positions, {
+      nativeTurnId,
+      turnItemIdFor,
+      items: [
+        stored("command-1", "command-1", "command_execution", 101),
+        {
+          ...stored("approval", "command-1", "command_execution", 102),
+          id: TurnItemId.make("turn-item-approval-stored"),
+          type: "approval_request",
+          requestId: request.id,
+        },
+      ],
+      requests: [request],
+    });
+    assert.equal(
+      CodexAdapterV2.allocateCodexItemPosition(
+        positions,
+        CodexAdapterV2.codexApprovalItemKey("command-1", "0"),
+        startedAt,
+      ).ordinal,
+      102,
+    );
+  });
+
+  it("maps only a taken-over turn's pending Codex requests to their stored ids", () => {
+    const pending = storedRequest("request-pending", "0", "pending");
+    assert.deepEqual(
+      [
+        ...CodexAdapterV2.adoptedCodexRequestIds([
+          pending,
+          storedRequest("request-resolved", "1", "resolved"),
+          { ...storedRequest("request-other-driver", "2", "pending"), nativeRequestRef: null },
+        ]),
+      ],
+      [["0", pending]],
     );
   });
 });

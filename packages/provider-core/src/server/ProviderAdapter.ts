@@ -457,6 +457,8 @@ export interface ProviderAdapterV2AdoptTurnInput {
   readonly turnInput: ProviderAdapterV2TurnInput;
   readonly providerTurn: OrchestrationV2ProviderTurn;
   readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+  /** The turn's stored requests: one the process asks again keeps its id. */
+  readonly runtimeRequests: ReadonlyArray<OrchestrationV2RuntimeRequest>;
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {

@@ -14,6 +14,7 @@ import {
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2StoredEvent,
@@ -645,6 +646,7 @@ export interface RunExecutionServiceV2StartRootRunInput {
   readonly adoptRunningTurn?: {
     readonly providerTurn: OrchestrationV2ProviderTurn;
     readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    readonly runtimeRequests: ReadonlyArray<OrchestrationV2RuntimeRequest>;
   };
 }
 
@@ -1861,6 +1863,7 @@ export const layer: Layer.Layer<
                     turnInput,
                     providerTurn: adopted.providerTurn,
                     turnItems: adopted.turnItems,
+                    runtimeRequests: adopted.runtimeRequests,
                   });
         // Ingestion can settle the run while the context read or the preparation awaits, so ownership
         // is checked after each. A failed ownership read fails the start below like a failed preparation.

@@ -1,7 +1,7 @@
-// A fake Codex app server: it plays a recorded transcript over stdio, checks each message it
-// receives against it, and logs every received message so a test can prove what a server sent.
+// A fake Codex app server that plays a transcript and logs each message it receives.
 // Usage: node codexTranscriptPeer.mjs <transcript.ndjson> <log.ndjson> [pauseBeforeMethod]
-// pauseBeforeMethod holds output from that method until the control port receives "continue".
+// Output from pauseBeforeMethod, or after a {"type":"pause"} entry, waits for "continue" on
+// the control port.
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
 import * as NodeReadline from "node:readline";
@@ -11,7 +11,7 @@ const entries = NodeFS.readFileSync(transcriptPath, "utf8")
   .split("\n")
   .filter((line) => line.trim().length > 0)
   .map((line) => JSON.parse(line))
-  .filter((entry) => entry.type === "expect_outbound" || entry.type === "emit_inbound");
+  .filter((entry) => ["expect_outbound", "emit_inbound", "pause"].includes(entry.type));
 
 const log = (record) => NodeFS.appendFileSync(logPath, `${JSON.stringify(record)}\n`);
 const write = (frame, done) => process.stdout.write(`${JSON.stringify(frame)}\n`, done);
@@ -50,6 +50,7 @@ const control = NodeNet.createServer((socket) => {
   NodeReadline.createInterface({ input: socket }).on("line", (line) => {
     if (line !== "continue") return;
     paused = false;
+    if (entries[cursor]?.type === "pause") cursor += 1;
     pump(() => socket.end("done\n"));
   });
 });

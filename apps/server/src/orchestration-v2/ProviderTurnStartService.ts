@@ -3204,6 +3204,10 @@ export const layer: Layer.Layer<
         const routableSubagents = projection.subagents.filter((subagent) =>
           RunExecutionService.canRouteRelatedSubagent(subagent.status),
         );
+        const pendingRequests = yield* projectionStore.getPendingProviderTurnRequests(
+          input.threadId,
+          providerTurn.id,
+        );
         yield* runExecution
           .startRootRun({
             commandId: CommandId.make(`command:effect:provider-turn.adopt:${run.id}`),
@@ -3250,6 +3254,7 @@ export const layer: Layer.Layer<
               turnItems: projection.turnItems.filter(
                 (item) => item.providerTurnId === providerTurn.id,
               ),
+              runtimeRequests: pendingRequests,
             },
           })
           .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId: run.id, cause })));

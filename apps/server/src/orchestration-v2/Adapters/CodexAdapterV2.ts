@@ -629,6 +629,29 @@ export function allocateCodexItemPosition(
   return position;
 }
 
+export const codexApprovalItemKey = (nativeItemId: string, nativeRequestId: string) =>
+  `${nativeItemId}:approval:${nativeRequestId}`;
+
+type AdoptedCodexRequest = Pick<
+  OrchestrationV2RuntimeRequest,
+  "id" | "providerTurnId" | "nativeRequestRef" | "status"
+>;
+
+/** A taken-over turn's pending requests by Codex request id; the broker asks them again. */
+export function adoptedCodexRequestIds(
+  requests: ReadonlyArray<AdoptedCodexRequest>,
+): Map<string, AdoptedCodexRequest> {
+  return new Map(
+    requests.flatMap((request) =>
+      request.status === "pending" &&
+      request.nativeRequestRef?.driver === CODEX_PROVIDER &&
+      request.nativeRequestRef.nativeId !== null
+        ? [[request.nativeRequestRef.nativeId, request] as const]
+        : [],
+    ),
+  );
+}
+
 /**
  * Gives a taken-over turn's stored items back the keys its output uses for them, so continued
  * items keep their ordinals; new items are numbered after every stored one.
@@ -641,11 +664,19 @@ export function seedAdoptedCodexItemPositions(
       Pick<
         OrchestrationV2TurnItem,
         "id" | "type" | "ordinal" | "nativeItemRef" | "startedAt" | "updatedAt"
-      >
+      > & { readonly requestId?: OrchestrationV2RuntimeRequest["id"] }
     >;
+    readonly requests?: ReadonlyArray<AdoptedCodexRequest>;
     readonly turnItemIdFor: (key: string) => string;
   },
 ): void {
+  const nativeRequestIds = new Map(
+    (input.requests ?? []).flatMap((request) =>
+      request.nativeRequestRef?.nativeId == null
+        ? []
+        : [[request.id, request.nativeRequestRef.nativeId] as const],
+    ),
+  );
   const sharingNativeId = new Map<string, number>();
   for (const item of input.items) {
     const nativeItemId = item.nativeItemRef?.nativeId;
@@ -655,18 +686,26 @@ export function seedAdoptedCodexItemPositions(
   }
   for (const item of input.items) {
     const nativeItemId = item.nativeItemRef?.nativeId;
+    const nativeRequestId =
+      item.requestId === undefined ? undefined : nativeRequestIds.get(item.requestId);
     const candidates =
       nativeItemId == null
         ? []
-        : item.type === "reasoning"
-          ? (["summary", "content"] as const).flatMap((stream) =>
-              Array.from({ length: sharingNativeId.get(nativeItemId) ?? 0 }, (_unused, index) =>
-                codexReasoningPartKey(input.nativeTurnId, nativeItemId, stream, index),
-              ),
-            )
-          : [nativeItemId];
+        : item.type === "approval_request"
+          ? nativeRequestId === undefined
+            ? []
+            : [codexApprovalItemKey(nativeItemId, nativeRequestId)]
+          : item.type === "reasoning"
+            ? (["summary", "content"] as const).flatMap((stream) =>
+                Array.from({ length: sharingNativeId.get(nativeItemId) ?? 0 }, (_unused, index) =>
+                  codexReasoningPartKey(input.nativeTurnId, nativeItemId, stream, index),
+                ),
+              )
+            : [nativeItemId];
     const key =
-      candidates.find((candidate) => input.turnItemIdFor(candidate) === item.id) ??
+      (item.type === "approval_request"
+        ? candidates[0]
+        : candidates.find((candidate) => input.turnItemIdFor(candidate) === item.id)) ??
       `t3-adopted:${item.id}`;
     if (!positions.itemPositions.has(key)) {
       positions.itemPositions.set(key, {
@@ -2150,6 +2189,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 replayComplete: yield* Deferred.make<boolean>(),
               }
             : undefined;
+        const adoptedRequests = new Map<string, AdoptedCodexRequest>();
+        const takeAdoptedRequestId = (providerTurnId: ProviderTurnId, nativeRequestId: string) => {
+          const adopted = adoptedRequests.get(nativeRequestId);
+          if (adopted === undefined || adopted.providerTurnId !== providerTurnId) return undefined;
+          adoptedRequests.delete(nativeRequestId);
+          return adopted.id;
+        };
         const client = yield* clientFactory.open({
           ...(adoptedOutput === undefined
             ? {}
@@ -4643,11 +4689,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             owner,
             `${input.nativeItemId}:approval:${input.nativeRequestId}`,
           );
-          const requestId = yield* idAllocator.allocate.runtimeRequest({
-            driver: CODEX_PROVIDER,
-            providerTurnId: owner.providerTurnId,
-            nativeRequestId: input.nativeRequestId,
-          });
+          const requestId =
+            takeAdoptedRequestId(owner.providerTurnId, input.nativeRequestId) ??
+            (yield* idAllocator.allocate.runtimeRequest({
+              driver: CODEX_PROVIDER,
+              providerTurnId: owner.providerTurnId,
+              nativeRequestId: input.nativeRequestId,
+            }));
           const nodeId = idAllocator.derive.approvalNode({ requestId });
           const providerSessionId = owner.input.providerThread.providerSessionId;
           if (providerSessionId === null) {
@@ -4727,11 +4775,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly responseMode?: "message";
         }) {
           const createdAt = yield* DateTime.now;
-          const requestId = yield* idAllocator.allocate.runtimeRequest({
-            driver: CODEX_PROVIDER,
-            providerTurnId: input.context.providerTurnId,
-            nativeRequestId: input.nativeRequestId,
-          });
+          const requestId =
+            takeAdoptedRequestId(input.context.providerTurnId, input.nativeRequestId) ??
+            (yield* idAllocator.allocate.runtimeRequest({
+              driver: CODEX_PROVIDER,
+              providerTurnId: input.context.providerTurnId,
+              nativeRequestId: input.nativeRequestId,
+            }));
           const providerSessionId = input.context.input.providerThread.providerSessionId;
           if (providerSessionId === null) {
             return yield* toProtocolError(
@@ -7810,9 +7860,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const items = adoptInput.turnItems
                 .filter((item) => item.providerTurnId === adoptInput.providerTurn.id)
                 .toSorted((left, right) => left.ordinal - right.ordinal);
+              const requests = adoptInput.runtimeRequests.filter(
+                (request) => request.providerTurnId === adoptInput.providerTurn.id,
+              );
+              for (const [nativeRequestId, request] of adoptedCodexRequestIds(requests)) {
+                adoptedRequests.set(nativeRequestId, request);
+              }
               seedAdoptedCodexItemPositions(context, {
                 nativeTurnId,
                 items,
+                requests,
                 turnItemIdFor: (key) =>
                   idAllocator.derive.turnItemFromProviderItem({
                     driver: CODEX_PROVIDER,
