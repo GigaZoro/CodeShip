@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -7,6 +8,7 @@ import * as FiberMap from "effect/FiberMap";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
@@ -23,6 +25,18 @@ const MAX_INCOMING_MESSAGE_BYTES = 128 * 1024 * 1024;
 const EXIT_STATUS_GRACE = "250 millis";
 // One reader serves every thread on an app-server, so a handler that holds it stalls them all.
 const SLOW_NOTIFICATION_HANDLER = Duration.seconds(1);
+
+interface RequestHandlerState {
+  parked: boolean;
+  answered: boolean;
+  ended: boolean;
+}
+
+/** The server request whose handler the current fiber runs; see `requestHandlerWaitpoint`. */
+const CurrentRequestHandler = Context.Reference<RequestHandlerState | undefined>(
+  "effect-codex-app-server/protocol/CurrentRequestHandler",
+  { defaultValue: () => undefined },
+);
 
 export interface CodexAppServerProtocolLogEvent {
   readonly direction: "incoming" | "outgoing";
@@ -48,6 +62,11 @@ export interface CodexAppServerPatchedProtocolOptions {
   readonly logOutgoing?: boolean;
   // Test override; production uses MAX_INCOMING_MESSAGE_BYTES.
   readonly maxIncomingMessageBytes?: number;
+  /**
+   * Sends string request ids `<prefix><n>` instead of numbers. A client that takes over a running
+   * app server sets it, so replies to requests its predecessor sent cannot resolve its own.
+   */
+  readonly requestIdPrefix?: string;
   readonly logger?: (event: CodexAppServerProtocolLogEvent) => Effect.Effect<void, never>;
   readonly onNotification?: (
     notification: CodexAppServerIncomingNotification,
@@ -77,7 +96,26 @@ export interface CodexAppServerPatchedProtocol {
     requestId: string | number,
     error: CodexError.CodexAppServerRequestError,
   ) => Effect.Effect<void, CodexError.CodexAppServerError>;
+  /**
+   * The waitpoint of the server request the current handler serves. The handler parks once it
+   * has emitted all it will; the answering side marks it answered before it answers, so the
+   * handler counts as busy again until its response is queued.
+   */
+  readonly requestHandlerWaitpoint: Effect.Effect<CodexRequestHandlerWaitpoint>;
+  /** Waits until every dispatched server-request handler is parked or has queued its response. */
+  readonly awaitRequestHandlersParked: Effect.Effect<void>;
+  /** Waits until everything queued so far is written to the app server's stdin. */
+  readonly flushOutgoing: Effect.Effect<void>;
 }
+
+export interface CodexRequestHandlerWaitpoint {
+  /** Parks the handler unless it was already answered. */
+  readonly park: Effect.Effect<void>;
+  /** Marks the handler answered, so it counts as busy until it ends. */
+  readonly answer: Effect.Effect<void>;
+}
+
+const IDLE_WAITPOINT: CodexRequestHandlerWaitpoint = { park: Effect.void, answer: Effect.void };
 
 interface CodexAppServerPendingRequest {
   readonly deferred: Deferred.Deferred<unknown, CodexError.CodexAppServerError>;
@@ -166,7 +204,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
   ): Effect.fn.Return<CodexAppServerPatchedProtocol, never, Scope.Scope> {
     const protocolScope = yield* Scope.Scope;
     const requestHandlerScope = yield* Scope.fork(protocolScope, "parallel");
-    const outgoing = yield* Queue.unbounded<string, Cause.Done<void>>();
+    const outgoing = yield* Queue.unbounded<string | Deferred.Deferred<void>, Cause.Done<void>>();
     const incomingNotifications =
       yield* Queue.sliding<CodexAppServerIncomingNotification>(MAX_BUFFERED_RAW_MESSAGES);
     const incomingRequests =
@@ -180,6 +218,16 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     const terminationFailure = yield* Ref.make(Option.none<CodexError.CodexAppServerError>());
     const terminationSignal = yield* Deferred.make<void>();
     const activeRequestHandlers = yield* Ref.make(0);
+    // Dispatched handlers neither parked nor ended; counted from the reader, so a later line's
+    // effects cannot run before a handler dispatched ahead of it is counted.
+    let unparkedRequestHandlers = 0;
+    const handlersParkedWaiters = new Set<Deferred.Deferred<void>>();
+    const changeUnparkedRequestHandlers = (delta: number) => {
+      unparkedRequestHandlers += delta;
+      if (unparkedRequestHandlers > 0) return;
+      for (const waiter of handlersParkedWaiters) Deferred.doneUnsafe(waiter, Effect.void);
+      handlersParkedWaiters.clear();
+    };
     const requestHandlers = yield* FiberMap.make<string | number>().pipe(
       Scope.provide(requestHandlerScope),
     );
@@ -329,7 +377,10 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
                 );
               }
 
+              const state: RequestHandlerState = { parked: false, answered: false, ended: false };
+              changeUnparkedRequestHandlers(1);
               return handler(request).pipe(
+                Effect.provideService(CurrentRequestHandler, state),
                 Effect.matchEffect({
                   onFailure: (error) =>
                     respondError(
@@ -351,6 +402,16 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
                   ),
                 ),
                 FiberMap.run(requestHandlers, request.id),
+                // Observers run even for a fiber interrupted before it started.
+                Effect.tap((fiber) =>
+                  Effect.sync(() =>
+                    fiber.addObserver(() => {
+                      if (state.ended) return;
+                      state.ended = true;
+                      if (!state.parked) changeUnparkedRequestHandlers(-1);
+                    }),
+                  ),
+                ),
                 Effect.asVoid,
               );
             }),
@@ -498,7 +559,14 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       Effect.forkScoped,
     );
 
+    // One item per pull, so a flush marker is taken only after every line before it is written.
     yield* Stream.fromQueue(outgoing).pipe(
+      Stream.rechunk(1),
+      Stream.filterMapEffect((item) =>
+        typeof item === "string"
+          ? Effect.succeed(Result.succeed(item))
+          : Deferred.succeed(item, undefined).pipe(Effect.as(Result.fail(item))),
+      ),
       Stream.run(options.stdio.stdout()),
       Effect.catch((cause) =>
         handleTermination(() =>
@@ -517,10 +585,12 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       method: string,
       payload?: unknown,
     ) {
-      const requestId = yield* Ref.modify(
+      const sequence = yield* Ref.modify(
         nextRequestId,
         (current) => [current, current + 1] as const,
       );
+      const requestId =
+        options.requestIdPrefix === undefined ? sequence : `${options.requestIdPrefix}${sequence}`;
       const attributes = {
         "rpc.system": "jsonrpc",
         "rpc.method": method,
@@ -554,6 +624,39 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
         ...(payload !== undefined ? { params: payload } : {}),
       });
 
+    const requestHandlerWaitpoint = Effect.gen(function* () {
+      const state = yield* CurrentRequestHandler;
+      if (state === undefined) return IDLE_WAITPOINT;
+      const waitpoint: CodexRequestHandlerWaitpoint = {
+        park: Effect.sync(() => {
+          if (state.parked || state.answered || state.ended) return;
+          state.parked = true;
+          changeUnparkedRequestHandlers(-1);
+        }),
+        answer: Effect.sync(() => {
+          state.answered = true;
+          if (!state.parked || state.ended) return;
+          state.parked = false;
+          changeUnparkedRequestHandlers(1);
+        }),
+      };
+      return waitpoint;
+    });
+
+    const awaitRequestHandlersParked = Effect.suspend(() => {
+      if (unparkedRequestHandlers <= 0) return Effect.void;
+      const parked = Deferred.makeUnsafe<void>();
+      handlersParkedWaiters.add(parked);
+      return Deferred.await(parked).pipe(Effect.raceFirst(Deferred.await(terminationSignal)));
+    });
+
+    const flushOutgoing = Effect.gen(function* () {
+      const flushed = yield* Deferred.make<void>();
+      const accepted = yield* Queue.offer(outgoing, flushed);
+      if (!accepted) return;
+      yield* Deferred.await(flushed).pipe(Effect.raceFirst(Deferred.await(terminationSignal)));
+    });
+
     return {
       incomingNotifications: Stream.fromQueue(incomingNotifications),
       incomingRequests: Stream.fromQueue(incomingRequests),
@@ -561,6 +664,9 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       notify,
       respond,
       respondError,
+      requestHandlerWaitpoint,
+      awaitRequestHandlersParked,
+      flushOutgoing,
     } satisfies CodexAppServerPatchedProtocol;
   },
 );

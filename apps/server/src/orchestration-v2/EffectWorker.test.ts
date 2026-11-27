@@ -122,11 +122,15 @@ function layerExecutorFor(input: {
         otherWorkingThreads: () => Effect.succeed([]),
         releaseUnlessBusy: () => Effect.succeed(true),
         releaseIfSilent: () => Effect.die("unused releaseIfSilent"),
+        prepareDetachForUpdate: () => Effect.die("unused prepareDetachForUpdate"),
       }),
     ),
     Layer.succeed(
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
+        adopt: (request) => record(`adopt:${request.runId}`),
+        releaseAdoptedOutput: () => Effect.die("unused releaseAdoptedOutput"),
+        abandonAdoption: () => Effect.die("unused abandonAdoption"),
         failUnstartedRun: (request) => record(`fail-unstarted:${request.runId}`),
         start:
           input.start ??

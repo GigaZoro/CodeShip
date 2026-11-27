@@ -22,8 +22,10 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -3369,6 +3371,69 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           yield* outbox.succeed({ effectId: reclaimed.value.id, workerId: "recovery-worker" });
         }
       }),
+  );
+
+  // A claim restriction lasts for the outbox's lifetime, so this test uses its own outbox.
+  it.effect("lists a process's undelivered answers and claims only those once restricted", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const kept = ThreadId.make("thread:foundation-detach-kept");
+      const other = ThreadId.make("thread:foundation-detach-other");
+      const commandId = CommandId.make("command:foundation-detach-delivery");
+      const turn = {
+        providerSessionId: ProviderSessionId.make("provider-session:foundation-detach"),
+        providerThreadId: ProviderThreadId.make("provider-thread:foundation-detach"),
+        providerTurnId: ProviderTurnId.make("provider-turn:foundation-detach"),
+      };
+      yield* outbox.enqueue([
+        {
+          id: "effect:detach-kept-respond",
+          commandId,
+          threadId: kept,
+          request: {
+            type: "runtime-request.respond",
+            providerSessionId: turn.providerSessionId,
+            requestId: RuntimeRequestId.make("request:detach-kept"),
+            decision: "accept",
+          },
+        },
+        {
+          id: "effect:detach-other-title",
+          commandId,
+          threadId: other,
+          request: { type: "thread-title.generate", kind: { type: "regenerate" } },
+        },
+        {
+          id: "effect:detach-other-interrupt",
+          commandId,
+          threadId: other,
+          request: { type: "provider-turn.interrupt", ...turn },
+        },
+      ]);
+      const deliveries = ["runtime-request.respond", "provider-turn.interrupt"] as const;
+
+      assert.deepEqual(
+        yield* outbox.listUnsettled({ threadIds: [kept], effectTypes: deliveries }),
+        ["effect:detach-kept-respond"],
+      );
+      yield* outbox.restrictClaimsTo(deliveries);
+      const claimed: Array<string> = [];
+      for (;;) {
+        const next = yield* outbox.claimNext({ workerId: "detach-worker" });
+        if (Option.isNone(next)) break;
+        claimed.push(next.value.id);
+        yield* outbox.succeed({ effectId: next.value.id, workerId: "detach-worker" });
+      }
+      assert.deepEqual(claimed.toSorted(), [
+        "effect:detach-kept-respond",
+        "effect:detach-other-interrupt",
+      ]);
+      assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt()));
+      assert.deepEqual(
+        yield* outbox.listUnsettled({ threadIds: [kept, other], effectTypes: deliveries }),
+        [],
+      );
+    }).pipe(Effect.provide(layerIsolatedOutbox)),
   );
 
   it.effect("atomically cancels stale runs and their process-bound effects", () =>

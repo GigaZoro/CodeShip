@@ -68,9 +68,21 @@ export function splitBufferedAssistantText(text: string): { ready: string; rest:
   return { ready: text.slice(0, boundary), rest: text.slice(boundary) };
 }
 
-export function makeAssistantStreamingFilter(mode: ResponseStreamingMode) {
+export interface AssistantStreamingFilter {
+  (
+    event: ProviderAdapter.ProviderAdapterV2Event,
+    now: number,
+  ): ProviderAdapter.ProviderAdapterV2Event | null;
+  /** The latest streaming event of each message whose text the filter held back, in full. */
+  readonly flushHeld: (now: number) => ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>;
+}
+
+export function makeAssistantStreamingFilter(
+  mode: ResponseStreamingMode,
+): AssistantStreamingFilter {
   const delivered = new Map<string, { text: string; at: number }>();
-  return (
+  const held = new Map<string, ProviderAdapter.ProviderAdapterV2Event>();
+  const filter = (
     event: ProviderAdapter.ProviderAdapterV2Event,
     now: number,
   ): ProviderAdapter.ProviderAdapterV2Event | null => {
@@ -91,12 +103,21 @@ export function makeAssistantStreamingFilter(mode: ResponseStreamingMode) {
     const key = `${event.type}:${message.id}`;
     if (!message.streaming) {
       delivered.delete(key);
+      held.delete(key);
       return event;
     }
-    if (mode === "turn") return null;
+    if (mode === "turn") {
+      held.set(key, event);
+      return null;
+    }
     const previous = delivered.get(key);
-    if (previous && now - previous.at < 400) return null;
+    if (previous && now - previous.at < 400) {
+      held.set(key, event);
+      return null;
+    }
     const { ready } = splitBufferedAssistantText(message.text);
+    if (ready === message.text) held.delete(key);
+    else held.set(key, event);
     if (!ready || ready === previous?.text) return null;
     delivered.set(key, { text: ready, at: now });
     if (event.type === "message.updated")
@@ -108,4 +129,19 @@ export function makeAssistantStreamingFilter(mode: ResponseStreamingMode) {
       return { ...event, turnItem: { ...event.turnItem, text: ready } };
     return event;
   };
+  const flushHeld = (now: number) => {
+    const events = [...held.entries()];
+    held.clear();
+    return events.map(([key, event]) => {
+      const text =
+        event.type === "message.updated"
+          ? event.message.text
+          : event.type === "turn_item.updated" && "text" in event.turnItem
+            ? event.turnItem.text
+            : "";
+      delivered.set(key, { text, at: now });
+      return event;
+    });
+  };
+  return Object.assign(filter, { flushHeld });
 }

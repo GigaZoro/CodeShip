@@ -14,6 +14,11 @@ async function main() {
     await runPosixLogWriter(process.argv.slice(3));
     return;
   }
+  if (command === "__session-host") {
+    const { runSessionHostBroker } = await import("./sessionHost/broker.ts");
+    await runSessionHostBroker(process.argv.slice(3));
+    return;
+  }
   // Guard sockets before either dispatch path can load outbound-capable modules.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();

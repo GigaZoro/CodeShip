@@ -21,16 +21,20 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 
 import * as ServerConfig from "./config.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
+import { UpdateShutdownState } from "./cloud/updateHandoff.ts";
 import { flushCompileCache } from "./compileCache.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import * as SessionHostService from "./sessionHost/SessionHostService.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -384,18 +388,36 @@ interface StartupOptions {
   readonly abort?: (error: ServerRuntimeStartupError) => Effect.Effect<void>;
 }
 
+/**
+ * Adds the shutdown finalizer and returns the scope to fork the effect worker into, which closes
+ * only after that finalizer. Teardown of the server's scope would otherwise stop the worker before
+ * a planned update's detach, which needs it to deliver what is queued for the kept processes.
+ */
+export const addShutdownFinalizerBeforeWorkerStops = Effect.fn(
+  "ServerRuntimeStartup.addShutdownFinalizerBeforeWorkerStops",
+)(function* (shutdown: Effect.Effect<void>) {
+  const workerScope = yield* Scope.make();
+  yield* Effect.addFinalizer((exit) => Scope.close(workerScope, exit));
+  yield* Effect.addFinalizer(() => shutdown);
+  return workerScope;
+});
+
 export const startEffectWorkerWithRelay = Effect.fn(
   "ServerRuntimeStartup.startEffectWorkerWithRelay",
 )(function* <WorkerContext, RelayContext>(input: {
   readonly runWorker: Effect.Effect<void, never, WorkerContext>;
   readonly startRelay: Effect.Effect<void, never, RelayContext>;
   readonly workerFiberRef: Ref.Ref<Fiber.Fiber<void, never> | null>;
+  readonly workerScope: Scope.Scope;
 }) {
-  const workerFiber = yield* forkParkedFiber(input.runWorker);
+  const workerFiber = yield* forkParkedFiber(input.runWorker).pipe(
+    Scope.provide(input.workerScope),
+  );
   yield* Ref.set(input.workerFiberRef, workerFiber);
   yield* input.startRelay.pipe(
     Effect.onExit((exit) => {
-      if (Exit.isSuccess(exit)) {
+      // An interrupted startup is a shutdown: its finalizer stops the worker after a detach.
+      if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) {
         return Effect.void;
       }
       return Ref.getAndSet(input.workerFiberRef, null).pipe(
@@ -407,6 +429,30 @@ export const startEffectWorkerWithRelay = Effect.fn(
       );
     }),
   );
+});
+
+/** The worker still runs while kept processes detach: each gets the answers queued for it first. */
+export const detachForUpdateThenStopWorker = Effect.fn(
+  "ServerRuntimeStartup.detachForUpdateThenStopWorker",
+)(function* (input: {
+  readonly detachForUpdate:
+    | Effect.Effect<ReadonlyArray<SessionHostService.DetachedHostSummary>>
+    | undefined;
+  readonly workerFiberRef: Ref.Ref<Fiber.Fiber<void, never> | null>;
+}) {
+  if (input.detachForUpdate !== undefined) {
+    const detached = yield* input.detachForUpdate;
+    if (detached.length > 0) {
+      yield* Effect.logInfo("Detached live provider session hosts for planned update", {
+        count: detached.length,
+        threadIds: detached.flatMap((entry) => entry.threadIds),
+      });
+    }
+  }
+  const workerFiber = yield* Ref.getAndSet(input.workerFiberRef, null);
+  if (workerFiber !== null) {
+    yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
+  }
 });
 
 const runOrderedV2StartupPhases = Effect.fn("serverRuntimeStartup.runOrderedV2StartupPhases")(
@@ -455,12 +501,14 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const crypto = yield* Crypto.Crypto;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+  const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+  const updateShutdownState = yield* UpdateShutdownState;
 
   const commandGate = yield* makeCommandGate;
   const httpListening = yield* Deferred.make<void>();
   const effectWorkerFiber = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
 
-  yield* Effect.addFinalizer(() =>
+  const effectWorkerScope = yield* addShutdownFinalizerBeforeWorkerStops(
     Effect.gen(function* () {
       yield* commandGate.failCommandReady(
         new ServerRuntimeStartupError({
@@ -470,10 +518,13 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           cause: "Server runtime is shutting down.",
         }),
       );
-      const workerFiber = yield* Ref.getAndSet(effectWorkerFiber, null);
-      if (workerFiber !== null) {
-        yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
-      }
+      yield* detachForUpdateThenStopWorker({
+        detachForUpdate:
+          Option.isSome(sessionHostOption) && (yield* updateShutdownState.isPlannedUpdateShutdown)
+            ? providerRuntimeRecovery.detachForUpdate(providerSessions.prepareDetachForUpdate)
+            : undefined,
+        workerFiberRef: effectWorkerFiber,
+      });
       yield* providerRuntimeRecovery.prepareForShutdown.pipe(
         Effect.ensuring(providerSessions.shutdown),
       );
@@ -563,6 +614,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           runWorker: EffectWorker.runDaemon,
           startRelay: agentAwarenessRelay.start(),
           workerFiberRef: effectWorkerFiber,
+          workerScope: effectWorkerScope,
         }),
       ),
       autoBootstrap: (serverConfig.autoBootstrapProjectFromCwd

@@ -96,6 +96,7 @@ import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as ReviewAssignmentRegistry from "./mcp/ReviewAssignmentRegistry.ts";
+import * as SessionHostService from "./sessionHost/SessionHostService.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as VisualStudioDebugger from "./visualStudio/VisualStudioDebugger.ts";
@@ -192,7 +193,7 @@ import * as MachineRestartHold from "./cloud/machineRestartHold.ts";
 import * as GuestHttp from "./guest/http.ts";
 import * as CloudLink from "./cloud/CloudLink.ts";
 import * as ConnectReachability from "./cloud/ConnectReachability.ts";
-import { pendingServiceUpdateExists } from "./cloud/updateHandoff.ts";
+import { layerUpdateShutdownState, pendingServiceUpdateExists } from "./cloud/updateHandoff.ts";
 import * as RelayTracing from "./cloud/relayTracing.ts";
 import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
 import {
@@ -486,6 +487,12 @@ export const layerPlatformServices = DocumentText.layer.pipe(
 );
 
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
+
+const layerSessionHost = SessionHostService.layer.pipe(
+  Layer.provide(layerPersistence),
+  Layer.provide(ServerSecretStore.layer),
+  Layer.provide(ProcessRunner.layer),
+);
 
 const layerAccountRouting = AccountRouting.layer.pipe(Layer.provide(ProjectionStoreV2.layer));
 
@@ -1376,8 +1383,11 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
+      Layer.provideMerge(layerSessionHost),
+      Layer.provideMerge(layerUpdateShutdownState),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
+          Layer.provide(layerPersistence),
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
         ),
       ),
