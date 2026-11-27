@@ -570,6 +570,19 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "project-defaults",
   },
   {
+    id: "stalled-threads",
+    title: msg("Mark stalled threads"),
+    to: "/settings/threads",
+    searchTerms: ["stuck hung frozen quiet silent no events no progress working needs you"],
+  },
+  {
+    id: "minutes-before-stalled",
+    title: msg("Minutes without events before Stalled"),
+    to: "/settings/threads",
+    targetId: "stalled-threads",
+    searchTerms: ["stuck hung frozen quiet silent timeout threshold"],
+  },
+  {
     id: "compact-idle-threads",
     title: msg("Compact idle threads"),
     to: "/settings/threads",

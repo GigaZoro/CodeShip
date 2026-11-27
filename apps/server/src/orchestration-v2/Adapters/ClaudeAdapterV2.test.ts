@@ -6165,6 +6165,74 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("re-announces a running tool every half minute while Claude reports its progress", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("tool-progress"),
+          text: "Run the long build",
+          attachments: [],
+        }),
+      );
+      const id = "long-build";
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "assistant",
+          uuid: "long-build-assistant",
+          session_id: WAKE_NATIVE_SESSION,
+          parent_tool_use_id: null,
+          message: {
+            id: "long-build-message",
+            type: "message",
+            role: "assistant",
+            model: "claude-sonnet-4-6",
+            content: [{ type: "tool_use", id, name: "Bash", input: { command: "make all" } }],
+          },
+        }),
+      );
+      const progress = (seconds: number) =>
+        harness.offerAndWait(
+          claudeSdkFrame({
+            type: "tool_progress",
+            uuid: `long-build-progress-${seconds}`,
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            tool_use_id: id,
+            tool_name: "Bash",
+            elapsed_time_seconds: seconds,
+          }),
+        );
+      yield* TestClock.adjust("30 seconds");
+      yield* progress(30);
+      yield* TestClock.adjust("31 seconds");
+      yield* progress(61);
+      yield* TestClock.adjust("29 seconds");
+      yield* progress(90);
+      const updates = harness.events.flatMap((event) =>
+        event.type === "turn_item.updated" && event.turnItem.type === "command_execution"
+          ? [event.turnItem]
+          : [],
+      );
+      assert.deepEqual(
+        updates.map((item) => [item.status, DateTime.toEpochMillis(item.updatedAt)]),
+        [
+          ["running", 0],
+          ["running", 30_000],
+          ["running", 61_000],
+        ],
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect.each([
     {
       content: { type: "advisor_tool_result_error", error_code: "overloaded" },

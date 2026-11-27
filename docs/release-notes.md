@@ -1,3 +1,9 @@
+## 2026-11-27 — Stalled threads stand out
+
+- A working thread whose agent has sent nothing for 10 minutes reads **Stalled** in the thread list, its activity line and its Details status, with the time since its last event. The next event clears it, and Claude tools that report progress, such as a long build, keep it from stalling.
+- A stalled thread you started waits in **Needs you** and counts on the Threads badge; stalled agent-started and scheduled threads stay with their agents. The Needs you filter lists every stalled thread. Web, desktop, and mobile show the same state.
+- **Settings → Threads → Mark stalled threads** (under Recovery on mobile) changes the limit (2 to 240 minutes) or turns it off.
+
 ## 2026-11-27 — Auto mode matches model and reasoning effort to request complexity
 
 - New **Auto** threads start on a faster model (such as Sonnet or GPT-6.2 Sol) at low effort for short lookups, utility slash commands, and tiny mechanical edits, then upgrade monotonically to the configured coordinator model when a deeper request arrives.

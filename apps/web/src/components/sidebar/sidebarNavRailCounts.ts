@@ -8,7 +8,7 @@ import { getProviderStatusKey } from "../settings/providerStatus";
 export type NeedsYouBreakdown = Readonly<Record<NeedsYouReason, number>>;
 
 export function countNeedsYouReasons(reasons: ReadonlyArray<NeedsYouReason>): NeedsYouBreakdown {
-  const counts = { approval: 0, input: 0, request: 0, failed: 0, limited: 0 };
+  const counts = { approval: 0, input: 0, request: 0, failed: 0, limited: 0, stalled: 0 };
   for (const reason of reasons) counts[reason] += 1;
   return counts;
 }

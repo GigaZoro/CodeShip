@@ -34,8 +34,16 @@ const provider = (fields: Record<string, unknown>) =>
 describe("sidebar rail counts", () => {
   it("countNeedsYouReasons tallies each reason", () => {
     expect(
-      countNeedsYouReasons(["failed", "failed", "limited", "approval", "input", "request"]),
-    ).toEqual({ approval: 1, input: 1, request: 1, failed: 2, limited: 1 });
+      countNeedsYouReasons([
+        "failed",
+        "failed",
+        "limited",
+        "approval",
+        "input",
+        "request",
+        "stalled",
+      ]),
+    ).toEqual({ approval: 1, input: 1, request: 1, failed: 2, limited: 1, stalled: 1 });
   });
 
   it.each([

@@ -65,6 +65,7 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: threadEnvironment.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
+  stalledAfterMsAtom: serverEnvironment.stalledAfterMsAtom,
 });
 export const threadFilterTagsAtom = Atom.make((get) => {
   const environmentIdsKey = JSON.stringify([...get(environmentServerConfigsAtom).keys()]);

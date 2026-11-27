@@ -499,6 +499,10 @@
       "types": "./src/Array.ts",
       "import": "./src/Array.ts"
     },
+    "./threadQuiet": {
+      "types": "./src/threadQuiet.ts",
+      "import": "./src/threadQuiet.ts"
+    },
     "./orchestrationV2PendingBackgroundWork": {
       "types": "./src/orchestrationV2PendingBackgroundWork.ts",
       "import": "./src/orchestrationV2PendingBackgroundWork.ts"

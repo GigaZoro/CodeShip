@@ -50,6 +50,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
+import { quietPastLimit } from "@t3tools/shared/threadQuiet";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -599,8 +600,12 @@ export const stalledWork = Effect.fnUntraced(function* (
       open.push(...openTasks(child));
     }
   }
-  const quietMs = DateTime.toEpochMillis(now) - DateTime.toEpochMillis(lastActivity);
-  return quietMs >= limitMs ? { quietMs, since: lastActivity, stoppable } : undefined;
+  const quietMs = quietPastLimit({
+    lastEventAt: DateTime.toEpochMillis(lastActivity),
+    now: DateTime.toEpochMillis(now),
+    limitMs,
+  });
+  return quietMs === null ? undefined : { quietMs, since: lastActivity, stoppable };
 });
 
 function latestRestartContinuation(

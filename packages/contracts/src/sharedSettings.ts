@@ -28,6 +28,7 @@ export const MACHINE_SHARED_SETTING_KEYS = [
   "autoResumeLimitedThreads",
   "failoverLimitedThreads",
   "sidebarAutoSettleAfterDays",
+  "stalledThreadAfterMinutes",
   "sidebarAutoSettleScheduledThreads",
   "sidebarAutoSettleOnMerge",
   "sidebarAutoSettleKeepPullRequests",

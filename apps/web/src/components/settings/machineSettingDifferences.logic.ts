@@ -84,6 +84,7 @@ const SHARED_SETTING_PRESENTATION: Record<
   autoResumeLimitedThreads: "grouped",
   failoverLimitedThreads: "grouped",
   sidebarAutoSettleAfterDays: { id: "days-before-auto-settle" },
+  stalledThreadAfterMinutes: { id: "minutes-before-stalled" },
   sidebarAutoSettleScheduledThreads: { id: "auto-settle-scheduled-threads" },
   sidebarAutoSettleOnMerge: { id: "auto-settle-merged-threads" },
   sidebarAutoSettleKeepPullRequests: { id: "keep-threads-with-pull-requests" },

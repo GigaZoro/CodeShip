@@ -4,7 +4,12 @@ import * as DateTime from "effect/DateTime";
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 import { effectiveSnoozed, type ThreadSnoozeShell } from "./threadSettled.ts";
-import { resolveThreadStatus, type ThreadStatusInput } from "./threadStatus.ts";
+import {
+  isThreadStalled,
+  resolveThreadStall,
+  resolveThreadStatus,
+  type ThreadStatusInput,
+} from "./threadStatus.ts";
 
 type WorkingThreadInput = Pick<
   EnvironmentThreadShell,
@@ -52,28 +57,29 @@ export function threadAwaitsUser(
 }
 
 /** Why a thread cannot go on without the user. */
-export type NeedsYouReason = "approval" | "input" | "request" | "failed" | "limited";
+export type NeedsYouReason = "approval" | "input" | "request" | "failed" | "limited" | "stalled";
 
 export type NeedsYouInput = ThreadStatusInput &
   ThreadSnoozeShell &
   Pick<
     EnvironmentThreadShell,
-    "createdBy" | "settledOverride" | "updatedAt" | "laterAt" | "latestRun"
+    "createdBy" | "settledOverride" | "updatedAt" | "stalledAfterMs" | "laterAt" | "latestRun"
   > &
   Partial<Pick<EnvironmentThreadShell, "limitRecovery">>;
 
 /**
- * A failure is the user's to act on only in a thread they started. Agents recover the threads
- * they started, scheduled task runs included, so those stay out of Needs you and only show
- * Failed in the thread list.
+ * A failure or a stall is the user's to act on only in a thread they started. Agents and Chat
+ * Doctor recover the threads agents started, scheduled task runs included, so those stay out of
+ * Needs you and only show Failed or Stalled in the thread list.
  */
-function failureWaitsOnUser(thread: Pick<NeedsYouInput, "createdBy" | "settledOverride">) {
+function outcomeWaitsOnUser(thread: Pick<NeedsYouInput, "createdBy" | "settledOverride">) {
   return thread.createdBy === "user" && thread.settledOverride !== "settled";
 }
 
 /**
- * Requests always need the user, settled or not. A failure in a thread the user started does
- * until they settle, snooze, or retry it, or a usage-limited run is set to resume by itself.
+ * Requests always need the user, settled or not. A failure or a stall in a thread the user
+ * started does until they settle, snooze, or retry it, a stalled thread's next event clears it,
+ * or a usage-limited run is set to resume by itself.
  */
 export function threadNeedsYouReason(
   thread: NeedsYouInput,
@@ -81,8 +87,11 @@ export function threadNeedsYouReason(
 ): NeedsYouReason | null {
   const status = resolveThreadStatus(thread);
   if (status === "approval" || status === "input" || status === "request") return status;
-  if ((status !== "failed" && status !== "limited") || !failureWaitsOnUser(thread)) return null;
-  if (effectiveSnoozed(thread, options)) return null;
+  if (!outcomeWaitsOnUser(thread) || effectiveSnoozed(thread, options)) return null;
+  if (status === "working") {
+    return isThreadStalled(thread, Date.parse(options.now)) ? "stalled" : null;
+  }
+  if (status !== "failed" && status !== "limited") return null;
   const recovery = thread.limitRecovery;
   if (
     status === "limited" &&
@@ -102,7 +111,9 @@ function threadNeedsYouSince(thread: NeedsYouInput, reason: NeedsYouReason): num
       ? DateTime.toEpochMillis(request.createdAt)
       : reason === "failed" || reason === "limited"
         ? toSortableTimestamp(thread.latestRun?.completedAt ?? undefined)
-        : undefined;
+        : reason === "stalled"
+          ? resolveThreadStall(thread)?.lastEventAt
+          : undefined;
   // Subagent and guest requests carry no time of their own; the thread's last change stands in.
   return exact ?? toSortableTimestamp(thread.updatedAt) ?? 0;
 }
@@ -114,7 +125,7 @@ export interface NeedsYouThreads<T> {
   readonly later: readonly T[];
   /** When the thread started waiting on the user, in epoch milliseconds. */
   readonly sinceOf: (thread: T) => number;
-  /** When a failed thread's snooze ends and it rejoins, so a caller can recompute then. */
+  /** When a snooze ends or a working thread stalls, so a caller can recompute then. */
   readonly nextChangeAt: number | null;
 }
 
@@ -129,13 +140,20 @@ export function collectNeedsYouThreads<
       sinceByThread.set(thread, threadNeedsYouSince(thread, reason));
       continue;
     }
-    if (thread.snoozedUntil != null && failureWaitsOnUser(thread)) {
-      const status = resolveThreadStatus(thread);
-      if (status !== "failed" && status !== "limited") continue;
-      const wakeAt = Date.parse(thread.snoozedUntil);
-      if (wakeAt > Date.parse(options.now) && (nextChangeAt === null || wakeAt < nextChangeAt)) {
-        nextChangeAt = wakeAt;
-      }
+    if (!outcomeWaitsOnUser(thread)) continue;
+    const stalledAt = resolveThreadStall(thread)?.stalledAt;
+    const status = resolveThreadStatus(thread);
+    const changeAt =
+      thread.snoozedUntil != null &&
+      (status === "failed" || status === "limited" || stalledAt !== undefined)
+        ? Math.max(Date.parse(thread.snoozedUntil), stalledAt ?? 0)
+        : stalledAt;
+    if (
+      changeAt !== undefined &&
+      changeAt > Date.parse(options.now) &&
+      (nextChangeAt === null || changeAt < nextChangeAt)
+    ) {
+      nextChangeAt = changeAt;
     }
   }
   const sorted = [...sinceByThread.keys()].sort(

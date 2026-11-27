@@ -8,7 +8,7 @@ import {
 } from "../features/threads/threadOrder";
 import {
   getThreadListV2OrderedSection,
-  nextSnoozeWakeAfter,
+  nextThreadListDeadlineAfter,
 } from "../features/threads/threadListV2";
 import { appAtomRegistry } from "./atom-registry";
 import { environmentServerConfigsAtom } from "./server";
@@ -40,7 +40,7 @@ export function getPendingThreadOrder(): PendingThreadOrder | null {
 export function beginPendingThreadOrder(pending: PendingThreadOrder) {
   const unsubscribers: (() => void)[] = [];
   // A timed wake can change section membership without a shell event, so the
-  // hold also re-checks on each minute and at the next snooze expiry.
+  // hold also re-checks on each minute and at the next snooze expiry or stall.
   let wake: { readonly atMs: number | null; readonly unsubscribe: () => void } | null = null;
   const armWake = (atMs: number | null) => {
     if (wake?.atMs === atMs) return;
@@ -80,7 +80,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
       return;
     }
     if (next !== current) appAtomRegistry.set(pendingThreadOrderAtom, next);
-    armWake(nextSnoozeWakeAfter(threads, nowMs));
+    armWake(nextThreadListDeadlineAfter(threads, nowMs));
   };
   teardownPendingOrder?.();
   refreshPendingOrder = refresh;
@@ -93,7 +93,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
     minuteTick.subscribe(refresh),
   );
   armWake(
-    nextSnoozeWakeAfter(
+    nextThreadListDeadlineAfter(
       appAtomRegistry.get(environmentThreadShells.navigationThreadShellsAtom),
       Date.now(),
     ),

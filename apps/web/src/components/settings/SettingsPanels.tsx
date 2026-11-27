@@ -26,6 +26,8 @@ import {
   DEFAULT_UNIFIED_SETTINGS,
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
+  MAX_STALLED_THREAD_AFTER_MINUTES,
+  MIN_STALLED_THREAD_AFTER_MINUTES,
   type ResponseStreamingMode,
   type QuitConfirmationMode,
   offersSidebarMachineGrouping,
@@ -644,12 +646,20 @@ export function useSettingsRestore(page: string | null, onRestored?: () => void)
 
 const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
 
-function AutoSettleDaysInput({
+const STALLED_THREAD_DEFAULT_MINUTES = DEFAULT_UNIFIED_SETTINGS.stalledThreadAfterMinutes ?? 10;
+
+function WholeNumberInput({
   value,
+  min,
+  max,
+  label,
   onCommit,
 }: {
   value: number;
-  onCommit: (days: number) => void;
+  min: number;
+  max: number;
+  label: string;
+  onCommit: (value: number) => void;
 }) {
   const [draft, setDraft] = useState(String(value));
   const [draftSource, setDraftSource] = useState(value);
@@ -662,23 +672,19 @@ function AutoSettleDaysInput({
     <Input
       size="sm"
       type="number"
-      min={MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS}
-      max={MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS}
+      min={min}
+      max={max}
       className="w-full sm:w-24"
       value={draft}
       onChange={(event) => {
         setDraft(event.target.value);
         const parsed = Number(event.target.value);
-        if (
-          Number.isInteger(parsed) &&
-          parsed >= MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS &&
-          parsed <= MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS
-        ) {
+        if (Number.isInteger(parsed) && parsed >= min && parsed <= max) {
           onCommit(parsed);
         }
       }}
       onBlur={() => setDraft(String(value))}
-      aria-label={t("Days of inactivity before auto-settle")}
+      aria-label={label}
     />
   );
 }
@@ -1878,8 +1884,11 @@ export function ThreadsSettingsPanel() {
               title={searchableSetting("days-before-auto-settle").title}
               description={t("Any new activity un-settles a thread automatically.")}
               control={
-                <AutoSettleDaysInput
+                <WholeNumberInput
                   value={settings.sidebarAutoSettleAfterDays}
+                  min={MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS}
+                  max={MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS}
+                  label={t("Days of inactivity before auto-settle")}
                   onCommit={(days) => updateSettings({ sidebarAutoSettleAfterDays: days })}
                 />
               }
@@ -1933,6 +1942,56 @@ export function ThreadsSettingsPanel() {
 
       <SettingsSection id="thread-behavior" title={t("Behavior")}>
         <CompactIdleThreadsRow />
+        <SettingsRow
+          serverScoped
+          settingKeys={["stalledThreadAfterMinutes"]}
+          {...searchableSetting("stalled-threads")}
+          description={t(
+            "Mark a working thread Stalled when its agent sends nothing for this long. Stalled threads you started appear in Needs you.",
+          )}
+          resetAction={
+            settings.stalledThreadAfterMinutes !==
+            DEFAULT_UNIFIED_SETTINGS.stalledThreadAfterMinutes ? (
+              <SettingResetButton
+                label={t("stalled threads")}
+                onClick={() =>
+                  updateSettings({
+                    stalledThreadAfterMinutes: DEFAULT_UNIFIED_SETTINGS.stalledThreadAfterMinutes,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["stalledThreadAfterMinutes"]}
+              checked={settings.stalledThreadAfterMinutes !== null}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  stalledThreadAfterMinutes: checked ? STALLED_THREAD_DEFAULT_MINUTES : null,
+                })
+              }
+              aria-label={t("Mark stalled threads")}
+            />
+          }
+        />
+        {settings.stalledThreadAfterMinutes !== null ? (
+          <SettingsRow
+            serverScoped
+            settingKeys={["stalledThreadAfterMinutes"]}
+            title={searchableSetting("minutes-before-stalled").title}
+            description={t("The next event from the agent clears the Stalled state.")}
+            control={
+              <WholeNumberInput
+                value={settings.stalledThreadAfterMinutes}
+                min={MIN_STALLED_THREAD_AFTER_MINUTES}
+                max={MAX_STALLED_THREAD_AFTER_MINUTES}
+                label={t("Minutes without events before Stalled")}
+                onCommit={(minutes) => updateSettings({ stalledThreadAfterMinutes: minutes })}
+              />
+            }
+          />
+        ) : null}
         <SettingsRow
           serverScoped
           settingKeys={["responseStreamingMode"]}

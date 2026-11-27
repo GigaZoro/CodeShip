@@ -31,6 +31,7 @@ function makeHarness(
   const snapshotAtom = Atom.family((_environmentId: EnvironmentId) =>
     Atom.make<OrchestrationV2ShellSnapshot | null>(v2ShellSnapshot),
   );
+  const stalledAfterMsAtom = Atom.make<number | null>(null);
   const catalogValueAtom = Atom.make({
     isReady: true,
     entries: new Map(
@@ -53,10 +54,12 @@ function makeHarness(
     registry,
     snapshotAtom,
     catalogValueAtom,
+    stalledAfterMsAtom,
     threads: createEnvironmentThreadShellAtoms({
       catalogValueAtom,
       snapshotAtom,
       hiddenThreadTagsAtom: () => Atom.make(null),
+      stalledAfterMsAtom: () => stalledAfterMsAtom,
     }),
   };
 }
@@ -297,6 +300,7 @@ describe("v2 thread shell lists", () => {
       catalogValueAtom,
       snapshotAtom: () => snapshot,
       hiddenThreadTagsAtom: () => Atom.make(null),
+      stalledAfterMsAtom: () => Atom.make(null),
     });
     const inputs = threads.childThreadInputsAtom({ environmentId, threadId: v2ThreadShell.id });
     const other = threads.childThreadInputsAtom({
@@ -1092,6 +1096,28 @@ describe("v2 thread shell lists", () => {
     } finally {
       disposeOrder();
       disposeListed();
+      dispose();
+      harness.registry.dispose();
+    }
+  });
+
+  it("gives streaming threads a changed stall limit at once", () => {
+    const harness = makeHarness();
+    const runId = RunId.make("stall-limit-run");
+    harness.registry.set(harness.snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [{ ...v2ThreadShell, latestRunId: runId, activeRunId: runId, status: "running" }],
+    });
+    const listAtom = harness.threads.quietThreadShellsAtom;
+    const dispose = harness.registry.mount(listAtom);
+    const limit = () => harness.registry.get(listAtom)[0]?.stalledAfterMs;
+    try {
+      expect(limit()).toBeUndefined();
+      harness.registry.set(harness.stalledAfterMsAtom, 600_000);
+      expect(limit()).toBe(600_000);
+      harness.registry.set(harness.stalledAfterMsAtom, null);
+      expect(limit()).toBeUndefined();
+    } finally {
       dispose();
       harness.registry.dispose();
     }

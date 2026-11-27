@@ -31,7 +31,7 @@ export function formatSettingValue(key: keyof ServerSettings, value: unknown): s
   if (value === null || value === undefined) {
     return key === "pullRequestMergeMethod"
       ? t("Last selected")
-      : key === "sidebarAutoSettleAfterDays"
+      : key === "sidebarAutoSettleAfterDays" || key === "stalledThreadAfterMinutes"
         ? t("Never")
         : key === "defaultModelSelection"
           ? t("Automatic")
@@ -47,7 +47,9 @@ export function formatSettingValue(key: keyof ServerSettings, value: unknown): s
   if (typeof value === "number") {
     return key === "sidebarAutoSettleAfterDays"
       ? tn(value, "{count} day", "{count} days")
-      : String(value);
+      : key === "stalledThreadAfterMinutes"
+        ? tn(value, "{count} minute", "{count} minutes")
+        : String(value);
   }
   if (typeof value === "string") {
     if (key === "defaultThreadEnvMode" && (value === "local" || value === "worktree")) {
