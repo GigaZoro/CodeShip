@@ -13,7 +13,7 @@ import {
   type WindowsProcessTreeRoot,
 } from "@t3tools/shared/windowsProcessTreeScript";
 
-import { linuxIdentity, recordedIdentity, timeIdentity } from "../commandRunner/processIdentity.ts";
+import { linuxIdentity, timeIdentity, windowIdentity } from "../commandRunner/processIdentity.ts";
 import {
   DEFAULT_MAX_BUFFER_BYTES,
   DEFAULT_MAX_BUFFER_FRAMES,
@@ -44,8 +44,20 @@ interface BufferedFrameEntry {
   readonly bytes: number;
 }
 
-/** When this process started: what `ps` and Get-Process report, unlike the time it got here. */
-const selfStartedAtMs = () => Math.round(Date.now() - process.uptime() * 1_000);
+/**
+ * `ps` reports whole seconds and the uptime clock drifts from Get-Process's start time, so an
+ * estimated start matches a later reading only within this much.
+ */
+const START_ESTIMATE_SLACK_MS = 1_000;
+
+/** When this process started, estimated from its uptime, as the window a later reading must fall in. */
+const selfStartWindow = () => {
+  const startedAtMs = Math.round(Date.now() - process.uptime() * 1_000);
+  return windowIdentity(
+    startedAtMs - START_ESTIMATE_SLACK_MS,
+    startedAtMs + START_ESTIMATE_SLACK_MS,
+  );
+};
 
 export function readSelfProcessIdentity(platform: NodeJS.Platform): string | null {
   if (platform === "linux") {
@@ -69,12 +81,14 @@ export function readSelfProcessIdentity(platform: NodeJS.Platform): string | nul
           stdio: ["ignore", "pipe", "ignore"],
         },
       );
-      return recordedIdentity(platform, out) ?? timeIdentity(selfStartedAtMs());
+      // Parsed as readProcessStartedAt parses it, so the check after an update reads the same time.
+      const startedAt = Date.parse(`${out.trim()} UTC`);
+      return Number.isFinite(startedAt) ? timeIdentity(startedAt) : selfStartWindow();
     } catch {
-      return timeIdentity(selfStartedAtMs());
+      return selfStartWindow();
     }
   }
-  return timeIdentity(selfStartedAtMs());
+  return selfStartWindow();
 }
 
 function tokensEqual(expected: string, actual: string): boolean {
