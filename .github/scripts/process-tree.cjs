@@ -155,7 +155,7 @@ function spawnWindowsTree(command, args, options) {
     const stopped = stopping !== null;
     (stopping ?? Promise.resolve()).then(() => resolve({ code, signal, stopped }), reject);
   });
-  return { child, stop, done };
+  return { child, stop, done, group: null };
 }
 
 /**
@@ -208,7 +208,7 @@ function spawnTree(command, args, { stdio, shell = false, ...options } = {}) {
     stopRequested = true;
     void end();
   };
-  return { child, stop, done };
+  return { child, stop, done, group: child.pid ?? null };
 }
 
 /** A child nothing stops, in the shape spawnTree returns: `done` settles once its output closed. */
@@ -218,7 +218,7 @@ function spawnChild(command, args, options) {
     child.on("error", reject);
     child.on("close", (code, signal) => resolve({ code, signal, stopped: false }));
   });
-  return { child, stop: () => {}, done };
+  return { child, stop: () => {}, done, group: null };
 }
 
 /** The anchor: runs the command in its group, reports how it ended, and lives on until the tree ends. */
@@ -258,4 +258,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { STOP_TREE_MS, spawnChild, spawnTree };
+module.exports = { STOP_TREE_MS, endGroup, groupAlive, spawnChild, spawnTree };

@@ -11,7 +11,7 @@ const { TIMED_OUT_STATUS } = require("./bounded-git.cjs");
 const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 const { startLandingRecord } = require("./landing-record.cjs");
 const { QUEUE_STALE_MS, createQueueWaiter, machineTag } = require("./lease-queue.cjs");
-const { STOP_TREE_MS, spawnChild, spawnTree } = require("./process-tree.cjs");
+const { STOP_TREE_MS, endGroup, groupAlive, spawnChild, spawnTree } = require("./process-tree.cjs");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
@@ -107,11 +107,16 @@ function runAfter(ms, run) {
 async function gitAsync(
   cwd,
   args,
-  { allowFailure = false, timeoutMs, after = runAfter, ...options } = {},
+  { allowFailure = false, timeoutMs, after = runAfter, trackChild, ...options } = {},
 ) {
   const [argv, spawnOptions] = gitCommand(cwd, args, options);
   const limited = timeoutMs !== undefined;
-  const { child, stop, done } = (limited ? spawnTree : spawnChild)("git", argv, spawnOptions);
+  const { child, stop, done, group } = (limited || trackChild ? spawnTree : spawnChild)(
+    "git",
+    argv,
+    spawnOptions,
+  );
+  const untrack = trackChild ? trackChild({ stop, done, group }) : () => {};
   const output = { stdout: [], stderr: [] };
   let bytes = 0;
   const collect = (chunks) => (chunk) => {
@@ -134,6 +139,7 @@ async function gitAsync(
     return gitResult(args, { status: code, stdout, stderr, timeoutMs: ranOut, allowFailure });
   } finally {
     cancel();
+    untrack();
   }
 }
 
@@ -1067,32 +1073,104 @@ function formatOverlaps(overlaps) {
   return lines.join("\n");
 }
 
-// How many checkouts a clone keeps between landings, so their node_modules, and with them Vite+'s task cache and
-// Vitest's module cache, outlive a check. More checks at once get a checkout each that is removed after the check.
+const GiB = 1024 ** 3;
+// Maximum warm checkouts a clone keeps between landings, so their node_modules, Vite+ task cache and Vitest module
+// cache outlive a check; bounded further by the machine's check budget so low-memory/core hosts do not thrash.
 const KEPT_CHECKOUTS = 2;
+const WARM_CHECKOUTS_ENV = "T3_LANDING_WARM_CHECKOUTS";
+const LOCAL_SLOT_POLL_MS = 250;
+const CLEANUP_GIT_TIMEOUT_MS = 15 * 1000;
+const RM_OPTIONS = { recursive: true, force: true, maxRetries: 3, retryDelay: 100 };
 const CHECKOUTS_FOLDER = "t3-landing-checkouts";
+const QUEUE_FOLDER = "queue";
+const QUEUE_TICKET = /^wait-(\d+)-[0-9a-f-]+\.lock$/;
 // A temp-folder checkout of a landing from before the pool; a killed one stayed on disk and in `git worktree list`.
 const OLD_CHECKOUT = /^t3-landing-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SQLITE_BUSY = 5;
 // Node exits on these without running `finally`.
 const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
 
+function warnLanding(what, error) {
+  const [reason] = String(error?.message ?? error).split("\n");
+  process.stderr.write(`landing: could not ${what}: ${reason}\n`);
+}
+
+function isSqliteBusy(error) {
+  return typeof error?.errcode === "number" && (error.errcode & 0xff) === SQLITE_BUSY;
+}
+
+/** Matches scripts/check-changed.ts's defaultConcurrency(cores, totalMemBytes). */
+function machineBudgetSlots(cores = os.availableParallelism(), totalMemBytes = os.totalmem()) {
+  return Math.max(1, Math.min(Math.floor(cores / 2), Math.floor(totalMemBytes / (6 * GiB))));
+}
+
+function resolveWarmLimit(warmLimit) {
+  if (Number.isInteger(warmLimit) && warmLimit >= 1) return warmLimit;
+  const fromEnv = Number(process.env[WARM_CHECKOUTS_ENV]);
+  if (Number.isInteger(fromEnv) && fromEnv >= 1) return fromEnv;
+  return Math.max(1, Math.min(KEPT_CHECKOUTS, machineBudgetSlots()));
+}
+
 /**
- * Takes checkout `index` when no other process holds it, and returns the connection that holds it, else null. A
- * holder is an open exclusive transaction on the slot's file, which the OS releases when its process exits, killed or
- * not. Open the file only through SQLite: closing any other handle to it drops this process's lock.
+ * Takes an exclusive SQLite transaction on `file` when no other process holds it, returning the open connection or
+ * null when busy. The OS releases the lock when its process exits, killed or not. Open the file only through SQLite:
+ * closing any other handle to it drops this process's lock.
  */
-function lockCheckout(folder, index) {
+function lockFile(file) {
   const { DatabaseSync } = require("node:sqlite");
-  const db = new DatabaseSync(path.join(folder, `${index}.lock`));
+  const db = new DatabaseSync(file);
   try {
     db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
     return db;
   } catch (error) {
     db.close();
-    if (error.errcode === SQLITE_BUSY) return null;
+    if (isSqliteBusy(error)) return null;
     throw error;
   }
+}
+
+/**
+ * Removes a SQLite lock file whose exclusive transaction `db` holds, safely on POSIX and Windows (same pattern as
+ * scripts/check-changed.ts). Returns false on Windows when another process opened the file between close and unlink.
+ */
+function removeLockFile(file, db) {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
+  const win32 = process.platform === "win32";
+  let removed = true;
+  if (!win32) {
+    try {
+      fs.rmSync(file, { force: true });
+    } finally {
+      db.close();
+    }
+  } else {
+    db.close();
+    try {
+      fs.rmSync(file, { force: true });
+    } catch (error) {
+      if (error?.code === "EBUSY" || error?.code === "EPERM") return false;
+      throw error;
+    }
+  }
+  try {
+    fs.rmSync(`${file}-journal`, { force: true });
+  } catch {
+    // Best-effort cleanup of any leftover SQLite journal beside the removed lock.
+  }
+  return removed;
+}
+
+/** Takes checkout `index` when no other process holds it, returning the connection that holds it, else null. */
+function lockCheckout(folder, index) {
+  const file = path.join(folder, `${index}.lock`);
+  const db = lockFile(file);
+  if (!db) return null;
+  // An extra slot lock may have been unlinked by a concurrent sweeper right before BEGIN EXCLUSIVE.
+  if (!fs.existsSync(file)) {
+    db.close();
+    return null;
+  }
+  return db;
 }
 
 /**
@@ -1117,13 +1195,158 @@ function checkoutsFolder(common) {
 
 /** Whether `worktree` is a checkout a landing checks a commit in, not one holding work. */
 function landingCheckout(worktree) {
-  const pooled = path.basename(path.dirname(path.dirname(worktree))) === CHECKOUTS_FOLDER;
+  const cloneDir = path.dirname(worktree);
+  const pooled =
+    path.basename(path.dirname(cloneDir)) === CHECKOUTS_FOLDER &&
+    /^[0-9a-f]{16}$/.test(path.basename(cloneDir)) &&
+    /^\d+$/.test(path.basename(worktree));
   return pooled || OLD_CHECKOUT.test(path.basename(worktree));
 }
 
-async function removeCheckout(cwd, directory) {
-  await fs.promises.rm(directory, { recursive: true, force: true });
-  await gitAsync(cwd, ["worktree", "prune"], { allowFailure: true });
+function listQueueTickets(queueDir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(queueDir);
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  return entries.filter((name) => QUEUE_TICKET.test(name)).sort();
+}
+
+/** True when `name` is still held by a live waiter; removes a dead/abandoned ticket and returns false otherwise. */
+function probeQueueTicket(queueDir, name) {
+  const file = path.join(queueDir, name);
+  if (!fs.existsSync(file)) return false;
+  const db = lockFile(file);
+  if (!db) return true;
+  return !removeLockFile(file, db);
+}
+
+function hasLiveWaiter(queueDir) {
+  for (const name of listQueueTickets(queueDir)) {
+    if (probeQueueTicket(queueDir, name)) return true;
+  }
+  return false;
+}
+
+function joinLocalQueue(queueDir) {
+  fs.mkdirSync(queueDir, { recursive: true });
+  for (;;) {
+    let maxSeq = 0;
+    for (const name of listQueueTickets(queueDir)) {
+      const seq = Number(QUEUE_TICKET.exec(name)[1]);
+      if (seq > maxSeq) maxSeq = seq;
+    }
+    const name = `wait-${String(maxSeq + 1).padStart(12, "0")}-${randomUUID()}.lock`;
+    const file = path.join(queueDir, name);
+    const db = lockFile(file);
+    if (!db) continue;
+    if (!fs.existsSync(file)) {
+      db.close();
+      continue;
+    }
+    let left = false;
+    return {
+      name,
+      file,
+      leave() {
+        if (left) return;
+        left = true;
+        try {
+          removeLockFile(file, db);
+        } catch (error) {
+          warnLanding(`remove local slot queue ticket ${name}`, error);
+          try {
+            db.close();
+          } catch {
+            // Already closed.
+          }
+        }
+      },
+    };
+  }
+}
+
+function isFirstWaiter(queueDir, myName) {
+  for (const name of listQueueTickets(queueDir)) {
+    if (name >= myName) break;
+    if (probeQueueTicket(queueDir, name)) return false;
+  }
+  return true;
+}
+
+function defaultWaitSlot(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function ownPgid() {
+  const listing = spawnSync("ps", ["-o", "pgid=", "-p", String(process.pid)], {
+    encoding: "utf8",
+    timeout: 5000,
+    windowsHide: true,
+  });
+  const pgid = Number(listing.stdout?.trim());
+  return listing.status === 0 && Number.isInteger(pgid) && pgid > 0 ? pgid : null;
+}
+
+function readDirtyMarker(dirtyPath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(dirtyPath, "utf8"));
+    return parsed !== null && typeof parsed === "object" ? parsed : { corrupt: true };
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    return { corrupt: true };
+  }
+}
+
+function writeDirtyMarker(dirtyPath, data) {
+  fs.writeFileSync(dirtyPath, JSON.stringify(data));
+}
+
+function removeDirtyMarker(dirtyPath) {
+  try {
+    fs.rmSync(dirtyPath, { force: true });
+  } catch (error) {
+    warnLanding(`remove dirty marker ${dirtyPath}`, error);
+  }
+}
+
+/**
+ * Checks whether `dirtyPath` was left behind by a crashed/killed holder. On POSIX, stops any lingering process group
+ * recorded in it (when on the same host/boot and not our own process group) and waits until it exits. Returns true
+ * when a dirty marker was present, telling the caller to rebuild the checkout cleanly.
+ */
+async function stopDirtyGroup(dirtyPath) {
+  const marker = readDirtyMarker(dirtyPath);
+  if (marker === null) return false;
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
+  if (process.platform !== "win32") {
+    const here = processHost() ?? os.hostname();
+    const sameHost = typeof marker.host !== "string" || marker.host === here;
+    if (sameHost) {
+      const candidates = new Set(
+        [marker.childGroup, marker.pgid].filter((group) => Number.isInteger(group) && group > 1),
+      );
+      let selfGroup;
+      for (const group of candidates) {
+        if (!groupAlive(group)) continue;
+        if (selfGroup === undefined) selfGroup = ownPgid();
+        if (group === selfGroup) continue;
+        try {
+          await endGroup(group);
+        } catch (error) {
+          warnLanding(`stop lingering process group ${group}`, error);
+        }
+      }
+    }
+  }
+  return true;
+}
+
+async function removeCheckout(cwd, directory, { timeoutMs } = {}) {
+  await fs.promises.rm(directory, RM_OPTIONS);
+  await gitAsync(cwd, ["worktree", "prune"], { allowFailure: true, timeoutMs });
 }
 
 /** Whether `directory` is a working checkout of the clone whose Git folder is `common`. */
@@ -1140,98 +1363,362 @@ async function checkoutOf(directory, common) {
  * Moves a kept checkout to `commit` and deletes every file the commit lacks but each package's node_modules. A holder
  * killed in a git call leaves git's lock files; holding the slot, this landing is the only one using them.
  */
-async function resetCheckout(directory, commit) {
+async function resetCheckout(directory, commit, { trackChild } = {}) {
   const lockFiles = ["--git-path", "index.lock", "--git-path", "HEAD.lock"];
-  const locks = await gitAsync(directory, ["rev-parse", "--path-format=absolute", ...lockFiles]);
+  const locks = await gitAsync(directory, ["rev-parse", "--path-format=absolute", ...lockFiles], {
+    trackChild,
+  });
   for (const file of locks.stdout.split("\n")) await fs.promises.rm(file, { force: true });
-  await gitAsync(directory, ["checkout", "--quiet", "--detach", "--force", commit]);
+  await gitAsync(directory, ["checkout", "--quiet", "--detach", "--force", commit], { trackChild });
   // A package the commit removed leaves its node_modules alone in its folder; that goes too.
-  const listed = await gitAsync(directory, ["-c", "core.quotePath=false", "clean", "-ffdxn"]);
+  // Force C locale so git's "Would remove " prefix is never translated.
+  const listed = await gitAsync(directory, ["-c", "core.quotePath=false", "clean", "-ffdxn"], {
+    env: { LC_ALL: "C", LANG: "C", LANGUAGE: "" },
+    trackChild,
+  });
   const kept = listed.stdout
     .split("\n")
-    .map((line) => line.replace(/^Would remove /, "").replace(/\/$/, ""))
+    .filter((line) => line.startsWith("Would remove "))
+    .map((line) => line.slice("Would remove ".length).replace(/\/$/, ""))
     .filter(
       (entry) =>
         path.posix.basename(entry) === "node_modules" &&
         fs.existsSync(path.join(directory, path.posix.dirname(entry), "package.json")),
     );
-  await gitAsync(directory, ["clean", "-ffdxq", ...kept.flatMap((entry) => ["-e", `/${entry}/`])]);
+  await gitAsync(directory, ["clean", "-ffdxq", ...kept.flatMap((entry) => ["-e", `/${entry}/`])], {
+    trackChild,
+  });
 }
 
-async function prepareCheckout(cwd, directory, commit, common) {
-  if (await checkoutOf(directory, common)) {
+async function rebuildCheckout(cwd, directory, commit, { trackChild } = {}) {
+  await removeCheckout(cwd, directory);
+  await gitAsync(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit], {
+    trackChild,
+  });
+}
+
+async function prepareCheckout(
+  cwd,
+  directory,
+  commit,
+  common,
+  { forceRebuild = false, trackChild } = {},
+) {
+  if (!forceRebuild && (await checkoutOf(directory, common))) {
     try {
-      return await resetCheckout(directory, commit);
+      await resetCheckout(directory, commit, { trackChild });
+      return { reused: true };
     } catch (error) {
       console.error(`landing: rebuilding ${directory}, which did not reset: ${error.message}`);
     }
   }
-  await removeCheckout(cwd, directory);
-  await gitAsync(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit]);
+  await rebuildCheckout(cwd, directory, commit, { trackChild });
+  return { reused: false };
 }
 
-/** Removes the extra checkouts whose landing is gone, and old temp-folder ones older than any turn. */
-async function sweepCheckouts(cwd, folder, now) {
-  for (const name of fs.readdirSync(folder)) {
-    if (!/^\d+$/.test(name) || Number(name) < KEPT_CHECKOUTS) continue;
-    const slot = lockCheckout(folder, name);
-    if (!slot) continue;
+/**
+ * Best-effort sweep of extra checkouts whose landing is gone, dead local-queue tickets, and old temp-folder checkouts
+ * older than any turn. Never throws so a sweep failure cannot abort a new landing.
+ */
+async function sweepCheckouts(cwd, folder, now, warmLimit = resolveWarmLimit()) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(folder);
+  } catch (error) {
+    if (error?.code !== "ENOENT") warnLanding(`list landing checkouts in ${folder}`, error);
+    entries = [];
+  }
+  const extraIndices = new Set();
+  for (const name of entries) {
+    const match = /^(\d+)(?:\.(?:lock|dirty))?$/.exec(name);
+    if (match && Number(match[1]) >= warmLimit) extraIndices.add(Number(match[1]));
+  }
+  for (const index of extraIndices) {
     try {
-      await removeCheckout(cwd, path.join(folder, name));
-    } finally {
-      slot.close();
+      const lockPath = path.join(folder, `${index}.lock`);
+      const slot = lockCheckout(folder, index);
+      if (!slot) continue;
+      let cleaned = false;
+      try {
+        const dirtyPath = path.join(folder, `${index}.dirty`);
+        await stopDirtyGroup(dirtyPath);
+        await removeCheckout(cwd, path.join(folder, String(index)));
+        removeDirtyMarker(dirtyPath);
+        cleaned = true;
+      } finally {
+        if (cleaned) removeLockFile(lockPath, slot);
+        else slot.close();
+      }
+    } catch (error) {
+      warnLanding(`sweep extra landing checkout ${index}`, error);
     }
   }
-  const listed = await gitAsync(cwd, ["worktree", "list", "--porcelain"]);
+  const queueDir = path.join(folder, QUEUE_FOLDER);
+  try {
+    for (const name of listQueueTickets(queueDir)) {
+      try {
+        probeQueueTicket(queueDir, name);
+      } catch (error) {
+        warnLanding(`sweep local slot queue ticket ${name}`, error);
+      }
+    }
+  } catch (error) {
+    warnLanding(`list local slot queue in ${queueDir}`, error);
+  }
+  let listed;
+  try {
+    listed = await gitAsync(cwd, ["worktree", "list", "--porcelain"], { allowFailure: true });
+  } catch (error) {
+    warnLanding("list git worktrees for sweep", error);
+    return;
+  }
+  if (!listed.ok) return;
   for (const block of listed.stdout.split("\n\n")) {
     const worktree = block.match(/^worktree (.+)$/m)?.[1];
     if (!worktree || !OLD_CHECKOUT.test(path.basename(worktree))) continue;
-    const added = fs.statSync(path.join(worktree, ".git"), { throwIfNoEntry: false });
-    if (!added || added.mtimeMs < now() - TURN_MAX_MS) await removeCheckout(cwd, worktree);
+    try {
+      const added = fs.statSync(path.join(worktree, ".git"), { throwIfNoEntry: false });
+      if (!added || added.mtimeMs < now() - TURN_MAX_MS) {
+        await removeCheckout(cwd, worktree);
+      }
+    } catch (error) {
+      warnLanding(`sweep old temp checkout ${worktree}`, error);
+    }
   }
 }
 
 /**
- * Runs `run(directory)` in a private detached checkout of `commit`, so the checks read exactly the commit while editors
- * and agents go on writing to the lander's worktree: a kept one, reset to the commit but for its node_modules, or while
- * all are busy one of its own, removed after the check or when its process is stopped. Its git calls leave the event
- * loop free, so the lease's renewals go on meanwhile.
+ * Acquires a checkout slot: `preWait` sweeps and waits FIFO for `0..warmLimit - 1` (no overflow); `underTurn` skips
+ * sweeping and falls back to a transient overflow slot so the turn holder never stalls behind pre-turn landers.
  */
-async function withPrivateCheckout({ cwd, commit, now = Date.now }, run) {
-  const common = fs.realpathSync.native(
-    git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout,
-  );
+async function acquireCheckoutSlot({
+  cwd,
+  role = "preWait",
+  warmLimit,
+  now = Date.now,
+  waitSlot = defaultWaitSlot,
+  localSlotPollMs = LOCAL_SLOT_POLL_MS,
+  onWaitStart = () => {},
+}) {
+  if (role !== "preWait" && role !== "underTurn") {
+    throw new Error(`landing: unknown checkout slot role "${role}"`);
+  }
+  const common = fs.realpathSync.native(commonGitDir(cwd));
   const folder = checkoutsFolder(common);
   fs.mkdirSync(folder, { recursive: true });
-  await sweepCheckouts(cwd, folder, now);
-  let index = 0;
-  let slot;
-  while (!(slot = lockCheckout(folder, index))) index += 1;
-  const directory = path.join(folder, String(index));
-  const extra = index >= KEPT_CHECKOUTS;
+  const limit = resolveWarmLimit(warmLimit);
+
+  const tryLockWarm = () => {
+    for (let index = 0; index < limit; index += 1) {
+      const db = lockCheckout(folder, index);
+      if (db) return { index, db };
+    }
+    return null;
+  };
+
+  const makeSlot = (index, db, waited) => {
+    const directory = path.join(folder, String(index));
+    const extra = index >= limit;
+    const lockPath = path.join(folder, `${index}.lock`);
+    let released = false;
+    let stopOwned = false;
+    let removed = false;
+    return {
+      cwd,
+      common,
+      folder,
+      index,
+      directory,
+      extra,
+      waited,
+      lockPath,
+      claimStop() {
+        stopOwned = true;
+      },
+      markRemoved() {
+        removed = true;
+      },
+      release({ force = false } = {}) {
+        if (released || (stopOwned && !force)) return;
+        released = true;
+        if (extra && removed) {
+          try {
+            removeLockFile(lockPath, db);
+          } catch (error) {
+            warnLanding(`remove extra checkout lock ${lockPath}`, error);
+            try {
+              db.close();
+            } catch {
+              // Already closed.
+            }
+          }
+          return;
+        }
+        db.close();
+      },
+    };
+  };
+
+  if (role === "underTurn") {
+    const warm = tryLockWarm();
+    if (warm) return makeSlot(warm.index, warm.db, false);
+    let index = limit;
+    let db;
+    while (!(db = lockCheckout(folder, index))) index += 1;
+    return makeSlot(index, db, false);
+  }
+
+  await sweepCheckouts(cwd, folder, now, limit);
+  const queueDir = path.join(folder, QUEUE_FOLDER);
+  if (!hasLiveWaiter(queueDir)) {
+    const warm = tryLockWarm();
+    if (warm) return makeSlot(warm.index, warm.db, false);
+  }
+
+  onWaitStart();
+  const ticket = joinLocalQueue(queueDir);
+  try {
+    for (;;) {
+      if (isFirstWaiter(queueDir, ticket.name)) {
+        const warm = tryLockWarm();
+        if (warm) return makeSlot(warm.index, warm.db, true);
+      }
+      await waitSlot(localSlotPollMs);
+    }
+  } finally {
+    ticket.leave();
+  }
+}
+
+/**
+ * Prepares `slot` at `commit`, tracks its dirty marker and active child processes, and runs `run(directory, context)`.
+ * Caller owns calling `slot.release()` in a `finally` block.
+ */
+async function runInCheckoutSlot(slot, commit, run) {
+  const { cwd, common, folder, index, directory, extra } = slot;
+  const dirtyPath = path.join(folder, `${index}.dirty`);
+  const host = processHost() ?? os.hostname();
+  const activeChildren = new Set();
+  let stopping = false;
+
+  const currentChildGroup = () => {
+    for (const child of activeChildren) {
+      if (Number.isInteger(child.group) && child.group > 1) return child.group;
+    }
+    return null;
+  };
+  const writeDirty = () => {
+    try {
+      writeDirtyMarker(dirtyPath, { pid: process.pid, host, childGroup: currentChildGroup() });
+    } catch (error) {
+      warnLanding(`write dirty marker ${dirtyPath}`, error);
+    }
+  };
+  const trackChild = (entry) => {
+    activeChildren.add(entry);
+    if (!stopping) writeDirty();
+    let untracked = false;
+    return () => {
+      if (untracked) return;
+      untracked = true;
+      activeChildren.delete(entry);
+      if (!stopping) writeDirty();
+    };
+  };
+  const stopActiveChildren = async () => {
+    const tracked = [...activeChildren];
+    for (const child of tracked) {
+      try {
+        child.stop();
+      } catch (error) {
+        warnLanding(`stop active child in ${directory}`, error);
+      }
+    }
+    await Promise.allSettled(tracked.map((child) => child.done));
+  };
   const stopListening = () => {
     for (const signal of STOP_SIGNALS) process.removeListener(signal, onStop);
   };
   function onStop(signal) {
+    if (stopping) return;
+    stopping = true;
+    slot.claimStop();
     stopListening();
-    try {
-      fs.rmSync(directory, { recursive: true, force: true });
-      git(cwd, ["worktree", "prune"], { allowFailure: true });
-    } catch (error) {
-      console.error(`landing: cannot remove ${directory}: ${error.message}`);
-    }
-    process.kill(process.pid, signal);
+    void (async () => {
+      try {
+        await stopActiveChildren();
+        await removeCheckout(cwd, directory, { timeoutMs: CLEANUP_GIT_TIMEOUT_MS });
+        removeDirtyMarker(dirtyPath);
+        slot.markRemoved();
+      } catch (error) {
+        warnLanding(`remove extra landing checkout ${directory}`, error);
+      } finally {
+        slot.release({ force: true });
+      }
+      process.kill(process.pid, signal);
+    })();
   }
   if (extra) for (const signal of STOP_SIGNALS) process.on(signal, onStop);
   try {
-    await prepareCheckout(cwd, directory, commit, common);
-    return await run(directory);
+    const wasDirty = await stopDirtyGroup(dirtyPath);
+    writeDirty();
+    const { reused } = await prepareCheckout(cwd, directory, commit, common, {
+      forceRebuild: wasDirty,
+      trackChild,
+    });
+    const rebuild = () => rebuildCheckout(cwd, directory, commit, { trackChild });
+    const result = await run(directory, { reused, rebuild, trackChild });
+    if (!stopping && !extra) removeDirtyMarker(dirtyPath);
+    return result;
   } finally {
-    if (extra) {
-      await removeCheckout(cwd, directory);
+    try {
+      if (extra && !stopping) {
+        try {
+          await removeCheckout(cwd, directory, { timeoutMs: CLEANUP_GIT_TIMEOUT_MS });
+          removeDirtyMarker(dirtyPath);
+          slot.markRemoved();
+        } catch (error) {
+          warnLanding(`remove extra landing checkout ${directory}`, error);
+        }
+      }
+    } finally {
       stopListening();
     }
-    slot.close();
+  }
+}
+
+/**
+ * Runs `run(directory, context)` in a private detached checkout of `commit`, so the checks read exactly the commit
+ * while editors and agents go on writing to the lander's worktree. Pre-turn runs (`role: "preWait"`) share the bounded
+ * warm pool in FIFO order; under-turn runs (`role: "underTurn"`) may use a transient overflow checkout removed after
+ * the run or on stop. Its git calls leave the event loop free, so the lease's renewals go on meanwhile.
+ */
+async function withPrivateCheckout(
+  {
+    cwd,
+    commit,
+    role = "preWait",
+    warmLimit,
+    now = Date.now,
+    waitSlot,
+    localSlotPollMs,
+    onWaitStart,
+  },
+  run,
+) {
+  const slot = await acquireCheckoutSlot({
+    cwd,
+    role,
+    warmLimit,
+    now,
+    waitSlot,
+    localSlotPollMs,
+    onWaitStart,
+  });
+  try {
+    return await runInCheckoutSlot(slot, commit, run);
+  } finally {
+    slot.release();
   }
 }
 
@@ -1276,6 +1763,9 @@ async function runLanding(
     now,
     awakeClock = awakeNow,
     report = (text) => console.error(text),
+    warmLimit,
+    waitSlot,
+    localSlotPollMs,
     ...rest
   },
   record,
@@ -1299,7 +1789,7 @@ async function runLanding(
   if (problem) throw new Error(problem);
   // Before the wait, so a conflict stops the landing with no turn held. The CLI then lands the rebased commit again
   // from its tree, so the wait runs that tree's copy of this script, checking against the base it rebased onto.
-  const checked = rebased?.base ?? (await fetchMain(cwd, remote, branch, randomUUID(), mainCall));
+  let checked = rebased?.base ?? (await fetchMain(cwd, remote, branch, randomUUID(), mainCall));
   record.note({ base: checked });
   // Before the rebase, so a conflict still shows it; the relaunch after a rebase listed it already.
   if (!rebased) {
@@ -1314,13 +1804,59 @@ async function runLanding(
     return { status: "rebased", base: checked, head: git(cwd, ["rev-parse", "HEAD"]).stdout };
   }
   // Before the wait too, so a failure holds no turn and the turn lasts for the push alone while main stays still.
-  const checkTip = (turn, base, budgetSeconds, signal) =>
-    withPrivateCheckout({ cwd, commit: tip }, (directory) =>
-      check(turn, base, budgetSeconds, directory, signal),
-    );
-  if (!(await record.time("preWaitCheck", () => checkTip(null, checked)))) {
-    return { status: "check-failed" };
+  let endSlotWait = null;
+  let preSlot;
+  try {
+    preSlot = await acquireCheckoutSlot({
+      cwd,
+      role: "preWait",
+      warmLimit,
+      now,
+      waitSlot,
+      localSlotPollMs,
+      onWaitStart: () => {
+        endSlotWait = record.begin("localSlotWait");
+      },
+    });
+  } finally {
+    endSlotWait?.();
   }
+  try {
+    if (preSlot.waited) {
+      if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+      if (stoppedRebase(cwd)) return { status: "rebase-in-progress" };
+      const uncommittedAfterWait = git(cwd, ["status", "--porcelain"]).stdout;
+      if (uncommittedAfterWait) {
+        return { status: "uncommitted", files: uncommittedAfterWait.split("\n") };
+      }
+      const markedAfterWait = markedFiles(cwd);
+      if (markedAfterWait.length > 0) return { status: "marked-files", files: markedAfterWait };
+      const latestBase = await fetchMain(cwd, remote, branch, randomUUID(), mainCall);
+      if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+      if (latestBase !== checked) {
+        if (!holds(cwd, latestBase)) {
+          await record.time("rebase", () => rebaseOnto(cwd, latestBase));
+          tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+        }
+        checked = latestBase;
+        record.note({ base: checked, head: tip });
+      }
+    }
+    const preWaitPassed = await record.time("preWaitCheck", () =>
+      runInCheckoutSlot(preSlot, tip, (directory, checkoutContext) =>
+        check(null, checked, undefined, directory, undefined, checkoutContext),
+      ),
+    );
+    if (!preWaitPassed) return { status: "check-failed" };
+  } finally {
+    preSlot.release();
+  }
+  const checkUnderTurn = (turn, base, budgetSeconds, signal) =>
+    withPrivateCheckout(
+      { cwd, commit: tip, role: "underTurn", warmLimit, now },
+      (directory, checkoutContext) =>
+        check(turn, base, budgetSeconds, directory, signal, checkoutContext),
+    );
   record.note({ stage: "waiting" });
   const waited = record.begin("waitForTurn");
   const { result, releaseConfirmed } = await runWithTurn(
@@ -1362,16 +1898,19 @@ async function runLanding(
         const finalizedBase = base;
         const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
         const approved = await record.time("finalize", () =>
-          withPrivateCheckout({ cwd, commit: finalizedTip }, (directory) =>
-            finalize({
-              turn,
-              commit: finalizedTip,
-              base: finalizedBase,
-              rebased: rebasedUnderTurn,
-              budgetSeconds: budget,
-              directory,
-              signal,
-            }),
+          withPrivateCheckout(
+            { cwd, commit: finalizedTip, role: "underTurn", warmLimit, now },
+            (directory, checkoutContext) =>
+              finalize({
+                turn,
+                commit: finalizedTip,
+                base: finalizedBase,
+                rebased: rebasedUnderTurn,
+                budgetSeconds: budget,
+                directory,
+                signal,
+                trackChild: checkoutContext.trackChild,
+              }),
           ),
         );
         if (signal.aborted) return lostTurn();
@@ -1384,7 +1923,7 @@ async function runLanding(
       if (rebasedUnderTurn) {
         const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
         const passed = await record.time("underTurnCheck", () =>
-          checkTip(turn, base, budget, signal),
+          checkUnderTurn(turn, base, budget, signal),
         );
         if (signal.aborted) return lostTurn();
         if (!passed) return { status: "check-failed" };
@@ -1402,12 +1941,33 @@ async function runLanding(
 const FINAL_COMMIT_ENV = "T3_LANDING_FINAL_COMMIT";
 const FINAL_BASE_ENV = "T3_LANDING_FINAL_BASE";
 const FINAL_REBASED_ENV = "T3_LANDING_REBASED";
+const INSTALL_COMMAND = "vp i --frozen-lockfile --prefer-offline";
+
+async function runTreeCommand(command, { cwd, stdio, env, signal, onSpawn, trackChild }) {
+  const { child, stop, done, group } = spawnTree(command, [], {
+    cwd,
+    shell: true,
+    stdio,
+    env,
+  });
+  const untrack = trackChild ? trackChild({ stop, done, group }) : () => {};
+  onSpawn(child);
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
+  try {
+    const { code, stopped } = await done;
+    return { ok: !stopped && code === 0, stopped };
+  } finally {
+    signal?.removeEventListener("abort", stop);
+    untrack();
+  }
+}
 
 /**
  * Installs and runs `vp run check:changed` against `base` in the private checkout `directory`, under the turn when
- * `turn` is one. A lost turn stops them and every process they started, since their pass could no longer be pushed,
- * and resolves to false once those are gone; a lander that dies ends them too. `command`, `stdio` and `onSpawn` are
- * for tests.
+ * `turn` is one. If install fails in a reused warm checkout, rebuilds cleanly once and retries install so a poisoned
+ * `node_modules` auto-recovers. A lost turn stops them and every process they started, since their pass could no
+ * longer be pushed, and resolves to false once those are gone; a lander that dies ends them too.
  */
 async function runCheck(
   directory,
@@ -1416,33 +1976,38 @@ async function runCheck(
   budgetSeconds,
   signal,
   {
+    command,
     // A kept checkout's node_modules needs only what the commit changed, and the store's hardlinks make a new one
     // cheap. A package the store lacks, as after a rebase across a lockfile change, is fetched.
-    command = `vp i --frozen-lockfile --prefer-offline && vp run check:changed ${base}`,
+    installCommand = INSTALL_COMMAND,
+    checkCommand = `vp run check:changed ${base}`,
     stdio = "inherit",
     onSpawn = () => {},
+    reused = false,
+    rebuild,
+    trackChild,
   } = {},
 ) {
-  const { child, stop, done } = spawnTree(command, [], {
-    cwd: directory,
-    shell: true,
-    stdio,
-    env: {
-      ...process.env,
-      // Unset before the wait: only the holder's checks take slots ahead of other runs.
-      [TURN_ENV]: turn ?? undefined,
-      [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
-    },
-  });
-  onSpawn(child);
-  signal?.addEventListener("abort", stop, { once: true });
-  if (signal?.aborted) stop();
-  try {
-    const { code, stopped } = await done;
-    return !stopped && code === 0;
-  } finally {
-    signal?.removeEventListener("abort", stop);
+  const env = {
+    ...process.env,
+    // Unset before the wait: only the holder's checks take slots ahead of other runs.
+    [TURN_ENV]: turn ?? undefined,
+    [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
+  };
+  const runStep = (step) =>
+    runTreeCommand(step, { cwd: directory, stdio, env, signal, onSpawn, trackChild });
+  if (command !== undefined) return (await runStep(command)).ok;
+  let installed = await runStep(installCommand);
+  if (!installed.ok && !installed.stopped && !signal?.aborted && reused && rebuild) {
+    process.stderr.write(
+      `landing: install failed in reused checkout ${directory}; rebuilding cleanly and retrying.\n`,
+    );
+    await rebuild();
+    if (signal?.aborted) return false;
+    installed = await runStep(installCommand);
   }
+  if (!installed.ok || signal?.aborted) return false;
+  return (await runStep(checkCommand)).ok;
 }
 
 /**
@@ -1452,30 +2017,19 @@ async function runCheck(
 async function runFinalize(
   directory,
   { turn, commit, base, rebased, budgetSeconds, signal },
-  { command, stdio = "inherit", onSpawn = () => {} },
+  { command, stdio = "inherit", onSpawn = () => {}, trackChild },
 ) {
-  const { child, stop, done } = spawnTree(command, [], {
-    cwd: directory,
-    shell: true,
-    stdio,
-    env: {
-      ...process.env,
-      [TURN_ENV]: turn,
-      [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
-      [FINAL_COMMIT_ENV]: commit,
-      [FINAL_BASE_ENV]: base,
-      [FINAL_REBASED_ENV]: rebased ? "1" : "0",
-    },
-  });
-  onSpawn(child);
-  signal?.addEventListener("abort", stop, { once: true });
-  if (signal?.aborted) stop();
-  try {
-    const { code, stopped } = await done;
-    return !stopped && code === 0;
-  } finally {
-    signal?.removeEventListener("abort", stop);
-  }
+  const env = {
+    ...process.env,
+    [TURN_ENV]: turn,
+    [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
+    [FINAL_COMMIT_ENV]: commit,
+    [FINAL_BASE_ENV]: base,
+    [FINAL_REBASED_ENV]: rebased ? "1" : "0",
+  };
+  return (
+    await runTreeCommand(command, { cwd: directory, stdio, env, signal, onSpawn, trackChild })
+  ).ok;
 }
 
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
@@ -1536,12 +2090,16 @@ async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = 
       finalize:
         finalize ??
         (finalizeCommand
-          ? (details) => runFinalize(details.directory, details, { command: finalizeCommand })
+          ? (details) =>
+              runFinalize(details.directory, details, {
+                command: finalizeCommand,
+                trackChild: details.trackChild,
+              })
           : undefined),
       check:
         check ??
-        ((turn, base, budgetSeconds, directory, signal) =>
-          runCheck(directory, turn, base, budgetSeconds, signal)),
+        ((turn, base, budgetSeconds, directory, signal, checkoutContext) =>
+          runCheck(directory, turn, base, budgetSeconds, signal, checkoutContext)),
     });
     if (result.status === "rebased") {
       return (
@@ -1661,6 +2219,14 @@ module.exports = {
     runCheck,
     runFinalize,
     withPrivateCheckout,
+    acquireCheckoutSlot,
+    sweepCheckouts,
+    checkoutsFolder,
+    landingCheckout,
+    isSqliteBusy,
+    machineBudgetSlots,
+    resolveWarmLimit,
     KEPT_CHECKOUTS,
+    WARM_CHECKOUTS_ENV,
   },
 };

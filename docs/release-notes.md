@@ -1,3 +1,8 @@
+## 2026-11-27 — Landings reuse warm checkouts without piling up on one machine
+
+- Maintainers: `landing-turn.cjs` now reuses a bounded pool of warm detached checkouts in the user's cache folder (capped by the machine's check budget, at most two) and installs with `vp i --frozen-lockfile --prefer-offline`, so packages missing from the offline store are fetched and `node_modules` and Vite+ caches stay warm across landings.
+- Maintainers: concurrent pre-turn landings now wait in a local FIFO queue for a warm checkout instead of spawning unbounded overflow checkouts, rebase in place onto fresh `origin/main` if main moved while waiting, and record `localSlotWait` separately in `landings.jsonl`. Only the turn holder overflows to a transient checkout (stopping active child processes before cleanup), and slots left dirty by a killed holder or a failed install rebuild cleanly.
+
 ## 2026-11-27 — `check:changed` reuses test passes across commits in smaller groups
 
 - Maintainers: `vp run check:changed` now shares its staged test cache across commits with the same install instead of starting cold on every commit or rebase. Groups whose Git commands read this checkout's repository, tracked through `GIT_TRACE2_PERF`, still key on `HEAD` and rerun on every commit; all other groups replay whenever their read files and tree state still match.

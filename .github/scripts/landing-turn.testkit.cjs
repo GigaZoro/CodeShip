@@ -12,7 +12,13 @@ const { LEASE_REF } = require("./landing-turn.cjs");
 for (const name of Object.keys(process.env)) if (/^GIT_/i.test(name)) delete process.env[name];
 // A landing keeps its checkouts in the user's cache folder; the tests' go to one of their own, gone with the process.
 const cache = fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-cache-"));
-process.on("exit", () => fs.rmSync(cache, { recursive: true, force: true }));
+process.on("exit", () => {
+  try {
+    fs.rmSync(cache, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch {
+    // Best-effort temp cache cleanup at process exit.
+  }
+});
 Object.assign(process.env, {
   XDG_CACHE_HOME: cache,
   GIT_CONFIG_GLOBAL: "/dev/null",
