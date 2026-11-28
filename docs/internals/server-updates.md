@@ -440,3 +440,57 @@ listener ignores reconciliation's cancellations. A cancelled child whose restart
 continuation is still pending in the outbox is not a result yet; the continuation's run
 settles it, or the handler settles it when it declines to continue. Schedulers wait for
 activation so they cannot start runs that reconciliation would then cancel.
+
+## Pinning thread system instructions
+
+Resuming a native provider conversation after a server update would invalidate the
+provider's prompt cache if the newer binary sent reworded runtime, orchestration, or
+PR-linking instructions in the system prompt prefix. Each provider thread therefore
+stores the instruction block it started with as `pinnedSystemInstructions: { key, text }`.
+
+- **Key.** `pinnedSystemInstructionsKey` (provider-core) hashes the inputs that
+  legitimately change the block, plus `PINNED_INSTRUCTIONS_EPOCH`. A resumed thread reuses
+  the stored text only when the stored key equals the key the running binary computes;
+  otherwise it rebuilds the text and stores the new pin. A wording-only release keeps the
+  key, so it keeps the pin and the cache.
+- **Epoch.** Bump `PINNED_INSTRUCTIONS_EPOCH` when an instruction change must reach running
+  threads (a security fix, say). Every key changes, so every thread rebuilds on its next turn.
+- **Claude** pins the static `systemPrompt.append` block (`buildRuntimeInstructions`,
+  `T3_CODE_ORCHESTRATION_INSTRUCTIONS`, and the device-tool instructions). Its key holds the
+  harness, whether T3 MCP servers are attached, and whether the MCP session has the
+  `device` capability, so a first turn without MCP, or a device toggle, rebuilds the block.
+  Browser availability does not change this text, so it is not part of the key. Dynamic
+  inputs (`permissionMode`, CLI `--append-system-prompt`, `SubagentStart` hooks,
+  post-compaction state) are computed per turn.
+- **Antigravity (ACP)** pins the session-level `_meta.antigravity.systemPrompt.append`
+  string (`PULL_REQUEST_LINKING_INSTRUCTIONS` on Antigravity >= 1.4.5) under the
+  `ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS` key, and replays it on `session/load`,
+  `session/resume`, and `session/fork`.
+- **Codex is not pinned.** T3 sends its context as `additionalContext` on every Codex
+  `turn/start`, rebuilt with the current model, effort and tool availability. Codex appends
+  it as a developer message after the existing history, and only when it changed, so the
+  cached prefix survives an update without a pin.
+
+**Storage.** The pin is never part of a `provider-thread.updated` payload: `EventSink`
+strips it from every write, and adapters report a changed pin through a side field on
+their `provider_thread.updated` event. An adapter keeps the pin a native session runs with
+apart from the stored one: the provider threads it returns from ensure (a forced replacement
+too), resume, snapshot, rollback and fork carry the stored pin unchanged (none for a new
+provider thread), and `startTurn` reports the session's pin when it differs. A returned
+thread that carried the session's pin would make `startTurn` compare the pin with itself and
+never store it. The ingestor turns that field into a dedicated
+`provider-thread.pinned-instructions-set` event `{ providerThreadId, key, text }`, emitted
+only when the key or text changed, so the text is stored once per change instead of on
+every thread update. The projection writes the `pinned_system_instructions` and
+`pinned_system_instructions_key` columns of `orchestration_v2_projection_provider_threads`
+only from that event, and adapter-facing reads hydrate the pin from those columns.
+Cold-history compaction keeps the latest pin event per provider thread. WebSocket wire
+projections drop the pin, and wire pin events carry an empty `text`. A database that has
+not run migration 124 reads every pin as `null`.
+
+Pinned instructions survive server restarts, upgrades, native forks, and same-conversation
+account switches (`canResumeAcrossInstances`). A new native session (new thread, provider
+switch, resume-failure fallback, forced replacement, or rollback to `thread_start`) builds
+the running binary's current instructions. A provider thread created before pinning reads
+`pinnedSystemInstructions: null` and stores the current binary's instructions on its next
+turn.

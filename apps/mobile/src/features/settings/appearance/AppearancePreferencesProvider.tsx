@@ -32,7 +32,12 @@ import { applyLanguagePreference } from "../../../lib/language";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../../state/preferences";
 import { useAtomCommand } from "../../../state/use-atom-command";
-import type { Preferences } from "../../../persistence/mobile-preferences";
+import {
+  planMobileCalmPreset,
+  type MobileCalmPresetChange,
+  type MobileCalmPresetPlan,
+  type Preferences,
+} from "../../../persistence/mobile-preferences";
 import {
   isSystemColorsAvailable,
   readSystemColorPalettes,
@@ -57,6 +62,11 @@ import {
   getMobileUniwindThemeName,
   type MobileThemeRuntimeState,
 } from "../../../lib/mobileThemeRuntime";
+
+export interface AppliedMobileCalmPreset {
+  readonly changes: ReadonlyArray<MobileCalmPresetChange>;
+  readonly undoPatch: MobileCalmPresetPlan["undoPatch"];
+}
 
 interface AppearancePreferencesContextValue {
   readonly appearance: ResolvedAppearance;
@@ -96,6 +106,9 @@ interface AppearancePreferencesContextValue {
   readonly setStatusColors: (value: StatusColors) => void;
   readonly accentColor: AccentColor;
   readonly setAccentColor: (value: AccentColor) => void;
+  readonly lastAppliedCalmPreset: AppliedMobileCalmPreset | null;
+  readonly applyCalmPreset: () => AppliedMobileCalmPreset | null;
+  readonly undoCalmPreset: () => void;
 }
 
 const AppearancePreferencesContext = createContext<AppearancePreferencesContextValue | null>(null);
@@ -263,6 +276,8 @@ export function AppearancePreferencesProvider(props: {
   const languagePreference = normalizeLanguagePreference(storedPreferences?.language);
   const [languageVersion, setLanguageVersion] = useState(0);
   const [languageReady, setLanguageReady] = useState(false);
+  const [lastAppliedCalmPreset, setLastAppliedCalmPreset] =
+    useState<AppliedMobileCalmPreset | null>(null);
   const appliedLanguage = useRef<LanguagePreference | null>(null);
   const languageReadyRef = useRef(false);
   const { onBeforeLanguageRemount } = props;
@@ -366,6 +381,25 @@ export function AppearancePreferencesProvider(props: {
   const setStatusColors = (value: StatusColors) => updatePreferences({ statusColors: value });
   const setAccentColor = (value: AccentColor) => updateThemePreferences({ accentColor: value });
 
+  const applyCalmPreset = (): AppliedMobileCalmPreset | null => {
+    const current = storedPreferencesOf(appAtomRegistry.get(mobilePreferencesAtom)) ?? {};
+    const plan = planMobileCalmPreset(current);
+    if (plan.isActive) return null;
+    updatePreferences(plan.patch);
+    const applied: AppliedMobileCalmPreset = {
+      changes: plan.changes,
+      undoPatch: plan.undoPatch,
+    };
+    setLastAppliedCalmPreset(applied);
+    return applied;
+  };
+
+  const undoCalmPreset = () => {
+    if (lastAppliedCalmPreset === null) return;
+    updatePreferences(lastAppliedCalmPreset.undoPatch);
+    setLastAppliedCalmPreset(null);
+  };
+
   const value = useMemo(
     (): AppearancePreferencesContextValue => ({
       appearance,
@@ -399,6 +433,9 @@ export function AppearancePreferencesProvider(props: {
       setStatusColors,
       accentColor,
       setAccentColor,
+      lastAppliedCalmPreset,
+      applyCalmPreset,
+      undoCalmPreset,
     }),
     [
       appearance,
@@ -431,6 +468,9 @@ export function AppearancePreferencesProvider(props: {
       setStatusColors,
       accentColor,
       setAccentColor,
+      lastAppliedCalmPreset,
+      applyCalmPreset,
+      undoCalmPreset,
     ],
   );
 

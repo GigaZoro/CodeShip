@@ -678,7 +678,8 @@ function OpenCommandPaletteDialog(props: {
   );
   const activeThreadLifecycleItems = useActiveThreadPaletteItems(activeThread);
   const providersByEnvironment = useEnvironmentProviders();
-  const { changeThemeItem, changeAppearanceItem, themeEditorItem } = useCommandPaletteThemeItems();
+  const { changeThemeItem, changeAppearanceItem, calmPresetItem, themeEditorItem } =
+    useCommandPaletteThemeItems();
   const portForwardItem = useCommandPalettePortForwardItem({
     activeThread: activeThread ?? null,
     query: deferredQuery,
@@ -1986,6 +1987,7 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push(changeThemeItem);
   actionItems.push(changeAppearanceItem);
+  actionItems.push(calmPresetItem);
 
   actionItems.push(themeEditorItem);
 

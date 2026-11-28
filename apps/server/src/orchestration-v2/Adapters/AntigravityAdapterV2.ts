@@ -16,6 +16,7 @@ import * as Scope from "effect/Scope";
 import * as EffectAcpErrors from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { pinnedSystemInstructionsKey } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import type { AntigravityAuth } from "../../provider/AntigravityAuth.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
@@ -24,6 +25,7 @@ import {
   antigravityPermissionDisposition,
   antigravityPermissionMode,
   antigravityRuntimeModeForSessionMode,
+  antigravitySessionMeta,
   antigravitySteersWithPrompt,
   applyAntigravityAcpModelSelection,
   buildAntigravityPrompt,
@@ -142,6 +144,11 @@ const extractAntigravitySubagentUpdate: NonNullable<AcpAdapterV2Flavor["extractS
   };
 };
 
+export const ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS = {
+  key: pinnedSystemInstructionsKey({ harness: "Antigravity" }),
+  text: PULL_REQUEST_LINKING_INSTRUCTIONS,
+};
+
 interface AntigravityFlavorServices {
   readonly random: SecureRandom.SecureRandom["Service"];
   readonly fileSystem: FileSystem.FileSystem;
@@ -164,7 +171,8 @@ export function makeAntigravityAcpAdapterFlavor(
           options.makeRuntime({
             ...input,
             clientFileReads: true,
-            sessionSystemPromptAppend: PULL_REQUEST_LINKING_INSTRUCTIONS,
+            sessionSystemPromptAppend:
+              input.pinnedSystemInstructions ?? PULL_REQUEST_LINKING_INSTRUCTIONS,
           }),
         )
         .pipe(Effect.provideService(Scope.Scope, scope));
@@ -235,6 +243,12 @@ export function makeAntigravityAcpAdapterFlavor(
     // Agents that advertise HTTP MCP skip the stdio bridge process; others keep stdio.
     mcpOverHttp: true,
     sessionCarriesPullRequestLinking: antigravityAppendsSystemPrompt,
+    sessionSystemPrompt: {
+      current: ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+      appliesTo: antigravityAppendsSystemPrompt,
+      activationSessionMeta: (text) => (initializeResult) =>
+        antigravitySessionMeta(initializeResult, text),
+    },
     makeRuntime,
     buildAttachmentPrompt: ({ text, attachments, resolveAttachmentPath, promptCapabilities }) =>
       buildAntigravityPrompt({
@@ -316,8 +330,19 @@ export function makeAntigravityAcpAdapterFlavor(
     ...(profileDirectory === undefined
       ? {}
       : {
-          watchPromptOutcome: (sessionId: string) =>
-            watchAntigravityPromptOutcome(profileDirectory, sessionId),
+          watchPromptOutcome: Effect.fn("AntigravityAdapterV2.watchPromptOutcome")(function* (
+            sessionId: string,
+            model: string,
+          ) {
+            // The refused quota follows the model the default resolves to.
+            const resolved =
+              model === ANTIGRAVITY_DEFAULT_MODEL ? yield* options.defaultModel : undefined;
+            return yield* watchAntigravityPromptOutcome(
+              profileDirectory,
+              sessionId,
+              resolved ?? model,
+            );
+          }),
           subagentsOutlivingPrompt: ({ sessionId, nativeTaskIds }) =>
             readAntigravityChildrenAtWork({
               profileDirectory,

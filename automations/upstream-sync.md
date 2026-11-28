@@ -2,7 +2,7 @@ Sync the T3.CodeShip fork with the original project it was forked from, bring th
 
 ## Context
 
-- This is a CodeShip shared task that runs on one machine per run (Zoro-VPS first, the MacBook as its backup). Every step below works on both.
+- This is a CodeShip shared task that runs on one machine per run (Zoro-VPS first, then Zoro-PC, then the MacBook as backup), gated by `node scripts/upstream-drift-radar.mjs --needs-run` so clean upstream merges without conflicts or security advisories skip without starting a chat. Every step below works on all three hosts.
 - Local checkout: `~/Projects/CodeShip`, the CodeShip project's folder on this machine. Do not switch branches, commit, stash, pull, or edit files in this checkout: on the Mac, the user's T3.CodeShip (Dev) app runs from it. Do all work in separate git worktrees next to it.
 - Remotes in that checkout:
   - `origin` = https://github.com/GigaZoro/CodeShip.git, the fork's home on GitHub. Every push to `origin/main` publishes a signed release, and that release fails unless the push adds an entry to docs/release-notes.md.

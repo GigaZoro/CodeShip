@@ -153,11 +153,22 @@ function splitAlternateObjectDirectories(
   return entries;
 }
 
-function removeTraces(traces: string) {
+const TEMP_ENV_KEYS = new Set(["TMPDIR", "TEMP", "TMP"]);
+
+function removeTempDir(directory: string) {
   try {
-    NodeFS.rmSync(traces, { recursive: true, force: true });
+    NodeFS.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   } catch {
-    // On Windows a detached `git maintenance` process may still hold its trace file open.
+    // On Windows a detached child (such as `git maintenance`) may still hold a temp file open.
+  }
+}
+
+function setProcessTempDir(directory: string) {
+  process.env.TMPDIR = directory;
+  process.env.TEMP = directory;
+  process.env.TMP = directory;
+  for (const key of Object.keys(process.env)) {
+    if (TEMP_ENV_KEYS.has(key.toUpperCase())) process.env[key] = directory;
   }
 }
 
@@ -325,7 +336,7 @@ export function readsCheckoutGit(
  * checkout's repository keys on HEAD through Vite+'s runner client. When Git cannot show that it
  * traces this checkout, every group counts as a reader. The check runs after teardown, or at exit.
  */
-function traceCheckoutGit() {
+function traceCheckoutGit(baseTmp: string) {
   // Outside `vp run` no cache records the group.
   const client = process.env.VP_RUN_NODE_CLIENT_PATH;
   if (!client) return undefined;
@@ -333,7 +344,7 @@ function traceCheckoutGit() {
   if (runner.getEnv(CHECKOUT_HEAD_ENV, { tracked: false }) === undefined) {
     throw new Error(`Vite+ did not pass ${CHECKOUT_HEAD_ENV} to the cached test group`);
   }
-  const traces = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-git-trace-"));
+  const traces = NodeFS.mkdtempSync(NodePath.join(baseTmp, "t3-git-trace-"));
   const traceEnv = {
     GIT_TRACE2_ENV_VARS: tracedEnv.join(","),
     GIT_TRACE2_MAX_FILES: "0",
@@ -362,7 +373,7 @@ function traceCheckoutGit() {
     targets = [checkout, NodePath.join(checkout, ".git"), ...gitDirs];
     traced = gitDirs.length === 2 && readsCheckoutGit(probe, targets);
   } catch (error) {
-    removeTraces(traces);
+    removeTempDir(traces);
     throw error;
   }
   // GIT_TRACE2_PERF is independent of GIT_TRACE2_EVENT, which GitVcsDriverCore sets for progress.
@@ -382,7 +393,7 @@ function traceCheckoutGit() {
     try {
       if (reads) runner.getEnv(CHECKOUT_HEAD_ENV);
     } finally {
-      removeTraces(traces);
+      removeTempDir(traces);
     }
   };
   process.on("exit", check);
@@ -424,8 +435,29 @@ async function runCachedTestGroup(args: string[]) {
   }
   if (filters.some((filter) => filter.includes(":"))) options.includeTaskLocation ??= true;
   if (typeof options.typecheck?.only === "boolean") options.typecheck.enabled ??= true;
+  const baseTmp = allowExcluded ? NodeOS.tmpdir() : undefined;
   // Only check:changed passes the commit; test:cached groups don't key on HEAD.
-  const checkGitTrace = allowExcluded ? traceCheckoutGit() : undefined;
+  // Keep Git trace2 files in baseTmp so tests inspecting os.tmpdir() never see or disturb them.
+  const checkGitTrace = baseTmp !== undefined ? traceCheckoutGit(baseTmp) : undefined;
+  let cleanupGroupTmp: (() => void) | undefined;
+  if (baseTmp !== undefined) {
+    try {
+      const groupTmp = NodeFS.mkdtempSync(NodePath.join(baseTmp, "g-"));
+      setProcessTempDir(groupTmp);
+      let removed = false;
+      const cleanup = () => {
+        if (removed) return;
+        removed = true;
+        process.off("exit", cleanup);
+        removeTempDir(groupTmp);
+      };
+      cleanupGroupTmp = cleanup;
+      process.on("exit", cleanup);
+    } catch (error) {
+      checkGitTrace?.();
+      throw error;
+    }
+  }
 
   const identity = (spec: TestSpecification) =>
     JSON.stringify([spec.project.name, spec.moduleId, spec.pool]);
@@ -484,25 +516,26 @@ async function runCachedTestGroup(args: string[]) {
         scheduled.every((key) => finished.has(key));
     },
   };
-  const context = await startVitest(
-    [...filters],
-    { ...options, run: true, watch: false },
-    {
-      plugins: [
-        {
-          name: "codeship-cached-test-group",
-          configureServer(server) {
-            // The root server has resolved configured, default and CLI-selected reporters.
-            const reporters = server.config.test?.reporters;
-            if (!Array.isArray(reporters))
-              throw new Error("Vitest has not initialized its reporters");
-            if (!reporters.includes(observer)) reporters.push(observer);
-          },
-        },
-      ],
-    },
-  );
+  let context: Awaited<ReturnType<typeof startVitest>> | undefined;
   try {
+    context = await startVitest(
+      [...filters],
+      { ...options, run: true, watch: false },
+      {
+        plugins: [
+          {
+            name: "codeship-cached-test-group",
+            configureServer(server) {
+              // The root server has resolved configured, default and CLI-selected reporters.
+              const reporters = server.config.test?.reporters;
+              if (!Array.isArray(reporters))
+                throw new Error("Vitest has not initialized its reporters");
+              if (!reporters.includes(observer)) reporters.push(observer);
+            },
+          },
+        ],
+      },
+    );
     if (!process.exitCode && !completed) {
       if (ambiguousModule !== undefined) {
         throw new Error(
@@ -513,9 +546,13 @@ async function runCachedTestGroup(args: string[]) {
     }
   } finally {
     try {
-      await context.exit();
+      await context?.exit();
     } finally {
-      checkGitTrace?.();
+      try {
+        checkGitTrace?.();
+      } finally {
+        cleanupGroupTmp?.();
+      }
     }
   }
 }

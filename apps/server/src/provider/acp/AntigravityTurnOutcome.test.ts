@@ -2,6 +2,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -32,6 +33,14 @@ const RATE_LIMIT_ERROR = errorPayload(
 );
 const RETIRED_QUOTA_ERROR = errorPayload(
   "Error 429, Message: Quota exhausted for test model., Status: RESOURCE_EXHAUSTED, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:googleapis.com metadata:map[quotaResetDelay:3600s quotaResetTimeStamp:2026-11-09T01:05:00Z] reason:QUOTA_EXHAUSTED]]",
+);
+// Claude models draw on the third-party meter, apart from Gemini's, so the refusal names it.
+const THIRD_PARTY_QUOTA_ERROR = errorPayload(
+  "Error 429, Message: Third-party quota reached., Status: RESOURCE_EXHAUSTED, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com metadata:map[model:claude-opus-5-5-high quotaResetDelay:4h7m28.886792931s quotaResetTimeStamp:2026-11-27T05:07:05Z uiMessage:true] reason:QUOTA_EXHAUSTED]]",
+);
+// A model of no known family leaves the quota to the turn's model.
+const UNKNOWN_MODEL_QUOTA_ERROR = errorPayload(
+  "Error 429, Message: Quota reached., Status: RESOURCE_EXHAUSTED, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com metadata:map[model:tab-flash-lite quotaResetTimeStamp:2026-11-27T05:07:05Z] reason:QUOTA_EXHAUSTED]]",
 );
 const INVALID_ARGUMENT_ERROR = errorPayload(
   "Error 400, Message: Request contains an invalid argument., Status: INVALID_ARGUMENT, Details: []",
@@ -125,10 +134,14 @@ describe("watchAntigravityPromptOutcome", () => {
       const turn = (
         steps: ReadonlyArray<readonly [number, Uint8Array]>,
         result: EffectAcpSchema.PromptResponse = { stopReason: "end_turn" },
-        options?: { readonly retired?: boolean },
+        options?: { readonly retired?: boolean; readonly model?: string },
       ) =>
         Effect.gen(function* () {
-          const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
+          const check = yield* watchAntigravityPromptOutcome(
+            profileDirectory,
+            sessionId,
+            options?.model ?? "gemini-4-neon",
+          );
           appendSteps(steps);
           return yield* check(result, options);
         });
@@ -153,6 +166,7 @@ describe("watchAntigravityPromptOutcome", () => {
           code: "RESOURCE_EXHAUSTED",
           retryable: true,
           resetAt: "1970-01-01T01:00:00.000Z",
+          modelScope: "gemini-default",
         }),
       );
       assert.deepInclude(
@@ -160,7 +174,39 @@ describe("watchAntigravityPromptOutcome", () => {
           [USER_INPUT, input],
           [ERROR_MESSAGE, STATUS_QUOTA_ERROR],
         ]))?.failure,
-        { class: "usage_limit", resetAt: "1970-01-01T00:04:42.000Z" },
+        { class: "usage_limit", resetAt: "1970-01-01T00:04:42.000Z", modelScope: "gemini-default" },
+      );
+      assert.deepEqual(
+        yield* turn([
+          [USER_INPUT, input],
+          [ERROR_MESSAGE, THIRD_PARTY_QUOTA_ERROR],
+        ]),
+        reusable({
+          class: "usage_limit",
+          message: "You have reached your Antigravity quota for this period.",
+          code: "RESOURCE_EXHAUSTED",
+          retryable: true,
+          resetAt: "2026-11-27T05:07:05.000Z",
+          modelScope: "third-party",
+        }),
+      );
+      assert.equal(
+        (yield* turn([
+          [USER_INPUT, input],
+          [ERROR_MESSAGE, UNKNOWN_MODEL_QUOTA_ERROR],
+        ]))?.failure.modelScope,
+        "gemini-default",
+      );
+      // An unresolved default could run on any quota, so its refusal holds the whole account.
+      assert.isUndefined(
+        (yield* turn(
+          [
+            [USER_INPUT, input],
+            [ERROR_MESSAGE, QUOTA_ERROR],
+          ],
+          undefined,
+          { model: ANTIGRAVITY_DEFAULT_MODEL },
+        ))?.failure.modelScope,
       );
       // The earlier error step is outside this turn.
       assert.isUndefined(
@@ -186,6 +232,7 @@ describe("watchAntigravityPromptOutcome", () => {
           code: "RESOURCE_EXHAUSTED",
           retryable: true,
           resetAt: "1970-01-01T00:00:42.000Z",
+          modelScope: "gemini-default",
         }),
       );
       assert.deepEqual(
@@ -329,6 +376,7 @@ describe("watchAntigravityPromptOutcome", () => {
           message: "You have reached your Antigravity quota for this period.",
           code: "QUOTA_EXHAUSTED",
           retryable: true,
+          modelScope: "gemini-default",
         }),
       );
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -363,15 +411,20 @@ describe("watchAntigravityPromptOutcome", () => {
         path.join(conversations, `${peer}.db`),
         path.join(conversations, `${own}.db`),
       );
-      const linked = yield* watchAntigravityPromptOutcome(profileDirectory, own);
+      const linked = yield* watchAntigravityPromptOutcome(profileDirectory, own, "claude-opus-5-5");
       append(peer, ERROR_MESSAGE, QUOTA_ERROR);
       assert.isUndefined(yield* linked({ stopReason: "end_turn" }));
       assert.equal((yield* linked({ stopReason: "refusal" }))?.failure.class, "usage_limit");
 
-      // An unreadable log gives no evidence, but the agent's typed refusal still fails the turn.
+      // An unreadable log gives no evidence, but the agent's typed refusal still fails the turn,
+      // holding the meter of the turn's model.
       yield* fs.remove(path.join(conversations, `${own}.db`));
       yield* fs.writeFileString(path.join(conversations, `${own}.db`), "not a database");
-      const corrupt = yield* watchAntigravityPromptOutcome(profileDirectory, own);
+      const corrupt = yield* watchAntigravityPromptOutcome(
+        profileDirectory,
+        own,
+        "claude-opus-5-5",
+      );
       assert.isUndefined(yield* corrupt({ stopReason: "end_turn" }));
       assert.deepEqual(
         yield* corrupt({ stopReason: "refusal" }),
@@ -380,6 +433,7 @@ describe("watchAntigravityPromptOutcome", () => {
           message: "You have reached your Antigravity quota for this period.",
           code: "QUOTA_EXHAUSTED",
           retryable: true,
+          modelScope: "third-party",
         }),
       );
     }).pipe(Effect.provide(NodeServices.layer)),

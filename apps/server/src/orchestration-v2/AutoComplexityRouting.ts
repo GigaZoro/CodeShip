@@ -1,6 +1,9 @@
 import {
   REASONING_EFFORT_OPTION_IDS,
+  type AutoCapabilityTier,
   type AutoModeModel,
+  type AutoRoutingConstraints,
+  type AutoRoutingDegradationReason,
   type ModelCapabilities,
   type ModelSelection,
   type ProviderDriverKind,
@@ -16,6 +19,8 @@ import {
   withModelSelectionOptions,
   type SelectableModelOption,
 } from "@t3tools/shared/model";
+
+export { type AutoCapabilityTier, type AutoRoutingConstraints, type AutoRoutingDegradationReason };
 
 export type AutoRequestComplexity = "lite" | "standard" | "deep";
 
@@ -415,6 +420,417 @@ export function applyAutoComplexityToSelection(input: {
     );
     const targetEffort = preferredEffortOrder(input.complexity, configuredEffort).find((choice) =>
       allowedChoices.has(choice),
+    );
+    if (targetEffort !== undefined) {
+      const existing = nextOptions ?? [];
+      let replaced = false;
+      const updated = existing.map((option) => {
+        if (option.id !== effortDescriptor.id) return option;
+        replaced = true;
+        return { id: effortDescriptor.id, value: targetEffort };
+      });
+      nextOptions = replaced
+        ? updated
+        : [...updated, { id: effortDescriptor.id, value: targetEffort }];
+    }
+  }
+
+  const candidate = withModelSelectionOptions(
+    { ...input.selection, model: chosenModel, autoAccount: true },
+    nextOptions,
+  );
+  return modelSelectionsEqual(candidate, input.selection) ? input.selection : candidate;
+}
+
+const CAPABILITY_TIER_RANK: Readonly<Record<AutoCapabilityTier, number>> = {
+  fast: 0,
+  standard: 1,
+  deep: 2,
+  frontier: 3,
+};
+
+function maxCapabilityTier(
+  left: AutoCapabilityTier,
+  right: AutoCapabilityTier,
+): AutoCapabilityTier {
+  return CAPABILITY_TIER_RANK[left] >= CAPABILITY_TIER_RANK[right] ? left : right;
+}
+
+function capabilityTierForComplexity(complexity: AutoRequestComplexity): AutoCapabilityTier {
+  switch (complexity) {
+    case "lite":
+      return "fast";
+    case "standard":
+      return "standard";
+    case "deep":
+      return "deep";
+  }
+}
+
+export function resolveEffectiveCapabilityTier(input: {
+  readonly complexity?: AutoRequestComplexity | undefined;
+  readonly constraints?: AutoRoutingConstraints | undefined;
+}): AutoCapabilityTier {
+  const requested =
+    input.constraints?.capabilityTier ??
+    (input.complexity !== undefined ? capabilityTierForComplexity(input.complexity) : "standard");
+  return input.constraints?.minTier !== undefined
+    ? maxCapabilityTier(requested, input.constraints.minTier)
+    : requested;
+}
+
+function normalizeVendorFamily(raw: string): string {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized.length === 0) return "";
+  switch (normalized) {
+    case "anthropic":
+    case "claude":
+    case "claudeagent":
+    case "claude-agent":
+    case "claude_agent":
+    case "claude-code":
+    case "claudecode":
+      return "anthropic";
+    case "openai":
+    case "codex":
+    case "gpt":
+    case "chatgpt":
+      return "openai";
+    case "google":
+    case "gemini":
+    case "antigravity":
+      return "google";
+    case "xai":
+    case "x-ai":
+    case "x.ai":
+    case "grok":
+      return "xai";
+    case "muse":
+    case "musecode":
+    case "muse-code":
+      return "muse";
+    default:
+      return normalized;
+  }
+}
+
+const KNOWN_SLICE_VENDORS = new Set(["anthropic", "openai", "google", "xai"]);
+
+export function vendorFamilyOfDriver(
+  driver: ProviderDriverKind | string,
+  modelSlug?: string | null | undefined,
+): string {
+  const trimmedModel = modelSlug?.trim();
+  if (trimmedModel !== undefined && trimmedModel.length > 0) {
+    const slashIndex = trimmedModel.indexOf("/");
+    if (slashIndex > 0) {
+      const prefixVendor = normalizeVendorFamily(trimmedModel.slice(0, slashIndex));
+      if (KNOWN_SLICE_VENDORS.has(prefixVendor)) {
+        return prefixVendor;
+      }
+    }
+    if (
+      matchesToken(trimmedModel, "claude") ||
+      matchesToken(trimmedModel, "opus") ||
+      matchesToken(trimmedModel, "sonnet") ||
+      matchesToken(trimmedModel, "haiku")
+    ) {
+      return "anthropic";
+    }
+    if (
+      matchesToken(trimmedModel, "gpt") ||
+      matchesToken(trimmedModel, "codex") ||
+      matchesToken(trimmedModel, "astra") ||
+      matchesToken(trimmedModel, "sol") ||
+      matchesToken(trimmedModel, "terra") ||
+      matchesToken(trimmedModel, "luna") ||
+      /^(?:openai\.)?(?:o1|o3|o4)(?:$|[-_.])/i.test(trimmedModel)
+    ) {
+      return "openai";
+    }
+    if (
+      matchesToken(trimmedModel, "gemini") ||
+      matchesToken(trimmedModel, "neon") ||
+      matchesToken(trimmedModel, "argon")
+    ) {
+      return "google";
+    }
+    if (matchesToken(trimmedModel, "grok")) {
+      return "xai";
+    }
+  }
+  return normalizeVendorFamily(String(driver));
+}
+
+export function excludedVendorFamilies(
+  constraints: AutoRoutingConstraints | undefined,
+): ReadonlySet<string> {
+  if (constraints?.excludeVendorFamily === undefined) return new Set();
+  const values =
+    typeof constraints.excludeVendorFamily === "string"
+      ? [constraints.excludeVendorFamily]
+      : constraints.excludeVendorFamily;
+  const result = new Set<string>();
+  for (const value of values) {
+    const normalized = normalizeVendorFamily(value);
+    if (normalized.length > 0) {
+      result.add(normalized);
+    }
+  }
+  return result;
+}
+
+export interface AutoProviderCandidate {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind | string;
+  readonly model?: string | null | undefined;
+  readonly hasQuota?: boolean | undefined;
+}
+
+export interface FilteredAutoProvidersResult<T extends AutoProviderCandidate> {
+  readonly providers: ReadonlyArray<T>;
+  readonly degradedReason?: AutoRoutingDegradationReason | undefined;
+}
+
+export function filterEligibleAutoProviders<T extends AutoProviderCandidate>(
+  providers: ReadonlyArray<T>,
+  constraints: AutoRoutingConstraints | undefined,
+): FilteredAutoProvidersResult<T> {
+  const excluded = excludedVendorFamilies(constraints);
+  const withQuota = providers.filter((provider) => provider.hasQuota !== false);
+  if (excluded.size === 0) {
+    return { providers: withQuota.length > 0 ? withQuota : providers };
+  }
+  const dissimilarWithQuota = withQuota.filter(
+    (provider) => !excluded.has(vendorFamilyOfDriver(provider.driver, provider.model)),
+  );
+  if (dissimilarWithQuota.length > 0) {
+    return { providers: dissimilarWithQuota };
+  }
+  const fallback = withQuota.length > 0 ? withQuota : providers;
+  return {
+    providers: fallback,
+    degradedReason: "no-dissimilar-provider-available",
+  };
+}
+
+function isFlagshipFamily(driver: ProviderDriverKind, model: AutoComplexityModelOption): boolean {
+  if (model.aliases?.some((alias) => alias.toLowerCase() === "primary") === true) {
+    return true;
+  }
+  if (driver === "claudeAgent") {
+    return (
+      matchesToken(model.slug, "opus") ||
+      model.aliases?.some((alias) => alias.toLowerCase() === "opus") === true
+    );
+  }
+  if (driver === "codex") {
+    return matchesToken(model.slug, "astra");
+  }
+  if (driver === "antigravity") {
+    return matchesToken(model.slug, "neon");
+  }
+  return false;
+}
+
+function maxEffortRankForModel(model: AutoComplexityModelOption): number {
+  const descriptor = findEffortDescriptor(model.capabilities);
+  if (descriptor === undefined) return 0;
+  const rankMap: Readonly<Record<string, number>> = {
+    minimal: 1,
+    low: 2,
+    medium: 3,
+    high: 4,
+    xhigh: 5,
+    max: 6,
+    ultra: 7,
+  };
+  let best = 0;
+  for (const choice of descriptor.options) {
+    if (descriptor.promptInjectedValues?.includes(choice.id) === true) continue;
+    best = Math.max(best, rankMap[choice.id] ?? 0);
+  }
+  return best;
+}
+
+function selectFlagshipModel(input: {
+  readonly driver: ProviderDriverKind;
+  readonly currentModel: string;
+  readonly models: ReadonlyArray<AutoComplexityModelOption>;
+  readonly configuredAuto: AutoModeModel | null;
+  readonly modelHasRoom: (slug: string) => boolean;
+}): string {
+  const candidates = input.models.filter(
+    (model) => model.isLegacy !== true && model.isCustom !== true && input.modelHasRoom(model.slug),
+  );
+  if (candidates.length === 0) return input.currentModel;
+  const sorted = candidates.toSorted((left, right) => {
+    const nonLiteDiff =
+      Number(!isAlreadyLiteModel(input.driver, right.slug)) -
+      Number(!isAlreadyLiteModel(input.driver, left.slug));
+    if (nonLiteDiff !== 0) return nonLiteDiff;
+    const flagshipDiff =
+      Number(isFlagshipFamily(input.driver, right)) - Number(isFlagshipFamily(input.driver, left));
+    if (flagshipDiff !== 0) return flagshipDiff;
+    const versionDiff = extractModelVersion(right.slug).localeCompare(
+      extractModelVersion(left.slug),
+      "en",
+      { numeric: true },
+    );
+    if (versionDiff !== 0) return versionDiff;
+    const effortDiff = maxEffortRankForModel(right) - maxEffortRankForModel(left);
+    if (effortDiff !== 0) return effortDiff;
+    const configuredMatchDiff =
+      Number(right.slug === input.configuredAuto?.model) -
+      Number(left.slug === input.configuredAuto?.model);
+    if (configuredMatchDiff !== 0) return configuredMatchDiff;
+    return Number(right.isDefault === true) - Number(left.isDefault === true);
+  });
+  return sorted[0]?.slug ?? input.currentModel;
+}
+
+function preferredEffortOrderForTier(
+  tier: AutoCapabilityTier,
+  configuredEffort: string | undefined,
+): ReadonlyArray<string> {
+  switch (tier) {
+    case "fast":
+      return preferredEffortOrder("lite", configuredEffort);
+    case "standard":
+      return ["medium", "high", "low"];
+    case "deep":
+      return preferredEffortOrder("deep", configuredEffort);
+    case "frontier":
+      return ["ultra", "max", "xhigh", "high", "medium"];
+  }
+}
+
+/**
+ * Applies optional declarative capability tier and minimum tier floor constraints to an Auto
+ * selection. Preserves `applyAutoComplexityToSelection` behavior when no tier constraints are set
+ * and leaves concrete (non-Auto) selections untouched.
+ */
+export function applyAutoRoutingConstraints(input: {
+  readonly selection: ModelSelection;
+  readonly constraints?: AutoRoutingConstraints | undefined;
+  readonly complexity?: AutoRequestComplexity | undefined;
+  readonly account: {
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+    readonly models: ReadonlyArray<AutoComplexityModelOption>;
+  };
+  readonly started: boolean;
+  readonly previousModel?: string | undefined;
+  readonly configuredAuto: AutoModeModel | null;
+  readonly modelHasRoom?: ((slug: string) => boolean) | undefined;
+}): ModelSelection {
+  if (input.selection.autoAccount !== true || input.selection.quotaAwareAuto === true) {
+    return input.selection;
+  }
+  const hasTierConstraint =
+    input.constraints?.capabilityTier !== undefined || input.constraints?.minTier !== undefined;
+  if (!hasTierConstraint) {
+    if (input.complexity === undefined) return input.selection;
+    return applyAutoComplexityToSelection({
+      selection: input.selection,
+      complexity: input.complexity,
+      account: input.account,
+      started: input.started,
+      previousModel: input.previousModel,
+      configuredAuto: input.configuredAuto,
+      modelHasRoom: input.modelHasRoom,
+    });
+  }
+
+  const hasRoom = input.modelHasRoom ?? (() => true);
+  const effectiveTier = resolveEffectiveCapabilityTier({
+    complexity: input.complexity,
+    constraints: input.constraints,
+  });
+
+  let chosenModel = input.selection.model;
+  if (effectiveTier === "fast") {
+    if (!input.started) {
+      chosenModel = selectLiteModel({
+        driver: input.account.driver,
+        currentModel: input.selection.model,
+        models: input.account.models,
+        modelHasRoom: hasRoom,
+      });
+    } else if (input.previousModel !== undefined && input.previousModel !== input.selection.model) {
+      const resolvedPrevious = resolveSelectableModel(
+        input.account.driver,
+        input.previousModel,
+        input.account.models,
+      );
+      if (
+        resolvedPrevious !== null &&
+        resolvedPrevious !== input.selection.model &&
+        isAlreadyLiteModel(input.account.driver, resolvedPrevious) &&
+        hasRoom(resolvedPrevious)
+      ) {
+        chosenModel = resolvedPrevious;
+      }
+    }
+  } else if (effectiveTier === "frontier") {
+    chosenModel = selectFlagshipModel({
+      driver: input.account.driver,
+      currentModel: input.selection.model,
+      models: input.account.models,
+      configuredAuto: input.configuredAuto,
+      modelHasRoom: hasRoom,
+    });
+  } else if (isAlreadyLiteModel(input.account.driver, chosenModel)) {
+    const resolvedConfigured =
+      input.configuredAuto?.model !== undefined
+        ? resolveSelectableModel(
+            input.account.driver,
+            input.configuredAuto.model,
+            input.account.models,
+          )
+        : null;
+    if (
+      resolvedConfigured !== null &&
+      !isAlreadyLiteModel(input.account.driver, resolvedConfigured) &&
+      hasRoom(resolvedConfigured)
+    ) {
+      chosenModel = resolvedConfigured;
+    } else {
+      chosenModel = selectFlagshipModel({
+        driver: input.account.driver,
+        currentModel: chosenModel,
+        models: input.account.models,
+        configuredAuto: input.configuredAuto,
+        modelHasRoom: hasRoom,
+      });
+    }
+  }
+
+  const modelChanged = chosenModel !== input.selection.model;
+  const resolvedSlug =
+    resolveSelectableModel(input.account.driver, chosenModel, input.account.models) ?? chosenModel;
+  const modelEntry = input.account.models.find((model) => model.slug === resolvedSlug);
+  const descriptors = modelEntry?.capabilities?.optionDescriptors;
+  const effortDescriptor = findEffortDescriptor(modelEntry?.capabilities);
+
+  let nextOptions: ReadonlyArray<ProviderOptionSelection> | undefined = input.selection.options;
+  if (modelChanged && descriptors !== undefined) {
+    nextOptions = acceptedOptionSelections(descriptors, nextOptions);
+  }
+
+  if (effortDescriptor !== undefined) {
+    const allowedChoices = new Set(
+      effortDescriptor.options
+        .map((choice) => choice.id)
+        .filter((id) => !effortDescriptor.promptInjectedValues?.includes(id)),
+    );
+    const configuredEffort = configuredEffortValue(
+      input.configuredAuto,
+      effortDescriptor,
+      descriptors ?? [effortDescriptor],
+    );
+    const targetEffort = preferredEffortOrderForTier(effectiveTier, configuredEffort).find(
+      (choice) => allowedChoices.has(choice),
     );
     if (targetEffort !== undefined) {
       const existing = nextOptions ?? [];

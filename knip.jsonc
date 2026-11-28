@@ -47,6 +47,8 @@
         "electron-after-extract.cjs",
         "prepare-server-compile-cache.cjs",
         "smoke-desktop-app.ts",
+        "i18n-diff-gate.mjs",
+        "upstream-drift-radar.mjs",
         "upstream-sync.ts",
         "verify-windows-desktop-artifact.ts",
       ],

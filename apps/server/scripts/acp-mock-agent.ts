@@ -18,6 +18,7 @@ import { beginAcpMockPrompt } from "./acpMockCancellationState.ts";
 
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
 const antigravityProfile = process.env.T3_ACP_ANTIGRAVITY === "1";
+const antigravitySystemPromptAppend = process.env.T3_ACP_ANTIGRAVITY_SYSTEM_PROMPT_APPEND === "1";
 const antigravityThoughtLevel = process.env.T3_ACP_ANTIGRAVITY_THOUGHT_LEVEL === "1";
 const antigravityResumeThoughtLevel = process.env.T3_ACP_RESUME_THOUGHT_LEVEL;
 // GitHub Copilot CLI advertises URL-shaped session mode ids.
@@ -608,6 +609,9 @@ const program = Effect.gen(function* () {
               : {}),
           },
           ...(supportsV2Management ? { providers: {} } : {}),
+          ...(antigravitySystemPromptAppend
+            ? { _meta: { antigravity: { systemPrompt: { append: true } } } }
+            : {}),
         },
         ...(initializeAuthMethodId
           ? {

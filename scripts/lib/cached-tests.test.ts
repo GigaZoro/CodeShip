@@ -7,7 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 
 import {
   ARGUMENT_CHARACTERS,
@@ -16,14 +16,31 @@ import {
   changedTestRequestEnv,
   changedTestRuntime,
   checkoutSearchPath,
+  countServerTestGroups,
   gitEnvironment,
   gitPaths,
   installFingerprint,
   matchesTestPath,
+  MAX_SERVER_CHAINS,
   readRunSummary,
   relativeTestPath,
+  serverTestChainCount,
 } from "./cached-tests.ts";
 import { readsCheckoutGit } from "./run-cached-test-group.ts";
+
+// Vite+'s fspy skips tracking paths under /dev (such as Linux /dev/shm), so nested `vp run --cache`
+// fixture workspaces must live outside /dev even when the outer test runner sets TMPDIR to /dev/shm.
+const tracedTempDir = (): string => {
+  const dir = NodeOS.tmpdir();
+  if (!isLinuxHost) return dir;
+  let resolved = dir;
+  try {
+    resolved = NodeFS.realpathSync(dir);
+  } catch {
+    // Keep dir as-is if realpath fails.
+  }
+  return resolved === "/dev" || resolved.startsWith("/dev/") ? "/tmp" : dir;
+};
 
 describe("cachedTestTasks", () => {
   it.each(["darwin", "linux", "win32"] as const)(
@@ -468,6 +485,211 @@ describe("cachedTestTasks", () => {
     }
   });
 
+  it("caps server test chains between 1 and MAX_SERVER_CHAINS by slot budget", () => {
+    expect(MAX_SERVER_CHAINS).toBe(4);
+    expect([0, 1, 2, 3, 4, 5, 6, 7, 8, 12].map(serverTestChainCount)).toEqual([
+      1, 1, 1, 1, 2, 2, 3, 3, 4, 4,
+    ]);
+  });
+
+  it("splits apps/server groups across K independent serial chains without changing commands", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-test-chains-"));
+    try {
+      const request = NodePath.join(directory, "request.json");
+      const files = Array.from({ length: 8 }, (_, index) => `apps/server/s${index}.test.ts`);
+      const loadFor = async (serverChains: unknown, completed?: Array<string>) => {
+        await NodeFSP.writeFile(
+          request,
+          JSON.stringify({
+            files,
+            groupSize: 1,
+            ...(serverChains !== undefined ? { serverChains } : {}),
+            ...(completed ? { completed } : {}),
+          }),
+        );
+        vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", request);
+        return cachedTestTasks(undefined);
+      };
+
+      const single = await loadFor(1);
+      const keys = single["test-cache"]!.dependsOn!;
+      expect(keys).toHaveLength(8);
+
+      for (const chains of [1, 2, 3, 4]) {
+        const tasks = await loadFor(chains);
+        const taskKeys = tasks["test-cache"]!.dependsOn!;
+        expect(taskKeys).toEqual(keys);
+
+        // Commands and cache definitions stay identical across chain counts so Vite+ cache keys do not shift.
+        for (const key of taskKeys) {
+          expect(tasks[key]!.command).toBe(single[key]!.command);
+          expect(tasks[key]!.cache).toEqual(single[key]!.cache);
+        }
+
+        // Partition into independent strictly serial chains: `chains` roots, every predecessor used at most once.
+        const roots = taskKeys.filter((key) => tasks[key]!.dependsOn === undefined);
+        expect(roots).toHaveLength(chains);
+        const seenPredecessors = new Set<string>();
+        for (const key of taskKeys) {
+          const deps = tasks[key]!.dependsOn;
+          if (!deps) continue;
+          expect(deps).toHaveLength(1);
+          expect(seenPredecessors.has(deps[0]!)).toBe(false);
+          seenPredecessors.add(deps[0]!);
+        }
+        // Trace each root forward to confirm every task belongs to one serial chain of balanced length.
+        const visited = new Set<string>();
+        const lengths: Array<number> = [];
+        for (const root of roots) {
+          let current: string | undefined = root;
+          let count = 0;
+          while (current !== undefined) {
+            expect(visited.has(current)).toBe(false);
+            visited.add(current);
+            count += 1;
+            const next = taskKeys.filter((key) => tasks[key]!.dependsOn?.[0] === current);
+            expect(next.length).toBeLessThanOrEqual(1);
+            current = next[0];
+          }
+          lengths.push(count);
+        }
+        expect(visited.size).toBe(keys.length);
+        expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(1);
+      }
+
+      // Completed tasks are omitted before chaining so remaining tasks never depend on a skipped task.
+      const resumed = await loadFor(2, [keys[0]!, keys[3]!]);
+      const resumedKeys = resumed["test-cache"]!.dependsOn!;
+      expect(resumedKeys).toHaveLength(6);
+      for (const key of resumedKeys) {
+        const dep = resumed[key]!.dependsOn?.[0];
+        if (dep !== undefined) expect(resumedKeys).toContain(dep);
+      }
+
+      for (const invalid of [0, -1, 1.5, "2"]) {
+        await expect(loadFor(invalid)).rejects.toThrow("Invalid server test chain count");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("balances uneven apps/server groups and uncached server files across chains and matches countServerTestGroups", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-test-balance-"));
+    try {
+      const request = NodePath.join(directory, "request.json");
+      const serverFiles = Array.from({ length: 24 }, (_, index) => `apps/server/b${index}.test.ts`);
+      const uncachedFile = serverFiles[5]!;
+      const files = [...serverFiles, "apps/web/w1.test.ts", "apps/web/w2.test.ts"];
+      const groupSize = 4;
+
+      const expectedCount = countServerTestGroups(
+        { files, groupSize, uncached: [uncachedFile] },
+        undefined,
+        "linux",
+      );
+      expect(expectedCount).toBeGreaterThanOrEqual(4);
+      const repoRootWithTrailingSlash =
+        NodePath.resolve(import.meta.dirname, "../..") + NodePath.sep;
+      expect(
+        countServerTestGroups(
+          { files, groupSize, uncached: [uncachedFile] },
+          repoRootWithTrailingSlash,
+          "linux",
+        ),
+      ).toBe(expectedCount);
+      expect(
+        countServerTestGroups(
+          { files: ["apps/web/w1.test.ts"], groupSize, uncached: [] },
+          repoRootWithTrailingSlash,
+          "linux",
+        ),
+      ).toBe(0);
+      expect(
+        countServerTestGroups({ files: [], groupSize, uncached: [] }, undefined, "linux"),
+      ).toBe(0);
+
+      await NodeFSP.writeFile(
+        request,
+        JSON.stringify({
+          files,
+          groupSize,
+          uncached: [uncachedFile],
+          serverChains: 3,
+        }),
+      );
+      vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", request);
+      const tasks = cachedTestTasks(undefined, undefined, "linux");
+      const allKeys = tasks["test-cache"]!.dependsOn!;
+      const serverKeys = allKeys.filter((key) => tasks[key]!.cwd === "apps/server");
+      const webKeys = allKeys.filter((key) => tasks[key]!.cwd === "apps/web");
+
+      expect(serverKeys.length).toBe(
+        countServerTestGroups({ files, groupSize, uncached: [uncachedFile] }, undefined, "linux"),
+      );
+      expect(webKeys.length).toBeGreaterThanOrEqual(1);
+      for (const key of webKeys) expect(tasks[key]!.dependsOn).toBeUndefined();
+
+      // Verify groups actually have uneven file counts and include the uncached singleton group.
+      const filesInTask = (key: string) =>
+        (tasks[key]!.command.match(/'\.\/[^']+\.test\.ts'/g) ?? []).length;
+      const groupSizes = serverKeys.map(filesInTask);
+      expect(new Set(groupSizes).size).toBeGreaterThan(1);
+      const uncachedKey = serverKeys.find((key) => tasks[key]!.cache === false);
+      expect(uncachedKey).toBeDefined();
+      expect(filesInTask(uncachedKey!)).toBe(1);
+      expect(tasks[uncachedKey!]!.command).toContain("./b5.test.ts");
+
+      // Trace the 3 serial chains and verify load balancing by file count.
+      const roots = serverKeys.filter((key) => tasks[key]!.dependsOn === undefined);
+      expect(roots).toHaveLength(3);
+      const chainFileTotals: Array<number> = [];
+      const visited = new Set<string>();
+      for (const root of roots) {
+        let current: string | undefined = root;
+        let totalFiles = 0;
+        while (current !== undefined) {
+          expect(visited.has(current)).toBe(false);
+          visited.add(current);
+          totalFiles += filesInTask(current);
+          const next = serverKeys.filter((key) => tasks[key]!.dependsOn?.[0] === current);
+          expect(next.length).toBeLessThanOrEqual(1);
+          current = next[0];
+        }
+        chainFileTotals.push(totalFiles);
+      }
+      expect(visited.size).toBe(serverKeys.length);
+      expect(chainFileTotals.reduce((a, b) => a + b, 0)).toBe(serverFiles.length);
+
+      // Trailing-slash root must omit cwd for root-level tests (never emit cwd: "").
+      await NodeFSP.writeFile(
+        request,
+        JSON.stringify({
+          files: ["root.test.ts", "apps/server/b0.test.ts"],
+          groupSize,
+        }),
+      );
+      const trailingRootTasks = cachedTestTasks(undefined, repoRootWithTrailingSlash, "linux");
+      const trailingKeys = trailingRootTasks["test-cache"]!.dependsOn!;
+      const rootTask = trailingKeys
+        .map((key) => trailingRootTasks[key]!)
+        .find((task) => task.command.includes("./root.test.ts"));
+      expect(rootTask).toBeDefined();
+      expect("cwd" in rootTask!).toBe(false);
+      const serverTask = trailingKeys
+        .map((key) => trailingRootTasks[key]!)
+        .find((task) => task.command.includes("./b0.test.ts"));
+      expect(serverTask?.cwd).toBe("apps/server");
+      expect(Math.max(...chainFileTotals) - Math.min(...chainFileTotals)).toBeLessThanOrEqual(
+        Math.max(...groupSizes),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   // Each `vp run` boots Vitest per task, so every behaviour is its own test with its own time budget.
   const withFixture = async (
     body: (fixture: {
@@ -487,7 +709,7 @@ describe("cachedTestTasks", () => {
     }) => Promise<void>,
   ) => {
     const directory = await NodeFSP.realpath(
-      await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-tests-")),
+      await NodeFSP.mkdtemp(NodePath.join(tracedTempDir(), "cached-tests-")),
     );
     const root = NodePath.resolve(import.meta.dirname, "../..");
     const write = (file: string, content: string) =>

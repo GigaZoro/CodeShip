@@ -5,6 +5,7 @@ import {
   ChatFileAttachment,
   MessageId,
   NodeId,
+  type OrchestrationV2ProviderThread,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -38,6 +39,7 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 import * as EffectAcpErrors from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
@@ -50,6 +52,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import { makeTurnInput } from "./AcpAdapterV2.testkit.ts";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
+  ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
   type AntigravityAdapterV2Options,
   type AntigravityAdapterV2RuntimeInput,
   makeAntigravityAcpAdapterFlavor,
@@ -3498,5 +3501,243 @@ describe("AntigravityAdapterV2 update_steps checklist", () => {
         ["Create b.txt", "running"],
       ]);
     }).pipe(Effect.provide(layerSession)),
+  );
+
+  it.effect(
+    "reports a session's pin once when it differs from the stored one: new, rekeyed and replaced sessions, not reworded ones",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const crypto = yield* SecureRandom.SecureRandom;
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const logs = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-antigravity-pin-" });
+        const requestLog = path.join(logs, "requests.ndjson");
+        const instanceId = ProviderInstanceId.make("antigravity-pin-test");
+        const adapter = yield* makeAntigravityAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          makeRuntime: (input) =>
+            makeAntigravityAcpRuntime({
+              ...input,
+              childProcessSpawner,
+              spawn: {
+                command: process.execPath,
+                args: [mockAgentPath],
+                cwd: input.cwd,
+                env: {
+                  T3_ACP_ANTIGRAVITY: "1",
+                  T3_ACP_ANTIGRAVITY_SYSTEM_PROMPT_APPEND: "1",
+                  T3_ACP_AGENT_VERSION: "1.4.5",
+                  T3_ACP_REQUEST_LOG_PATH: requestLog,
+                },
+              },
+            }).pipe(Effect.provideService(SecureRandom.SecureRandom, crypto)),
+          withProcess: (_stop, task) => task,
+          defaultModel: Effect.undefined,
+        });
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-ag-pin-ws-" });
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: workspace,
+        });
+        const threadId = ThreadId.make("thread-antigravity-pin");
+        const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+        let turnOrdinal = 0;
+        // Runs one turn and returns the pins it reported, as the ingestor would store them.
+        const runTurn = Effect.fnUntraced(function* (
+          session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+          providerThread: OrchestrationV2ProviderThread,
+        ) {
+          turnOrdinal += 1;
+          const now = yield* DateTime.now;
+          yield* session.startTurn({
+            appThread: {
+              createdBy: "user",
+              creationSource: "web",
+              id: threadId,
+              projectId: ProjectId.make("project-antigravity-pin"),
+              title: "Antigravity pin",
+              providerInstanceId: instanceId,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: providerThread.id,
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+            threadId,
+            runId: RunId.make(`run-antigravity-pin-${turnOrdinal}`),
+            runOrdinal: turnOrdinal,
+            providerTurnOrdinal: turnOrdinal,
+            attemptId: RunAttemptId.make(`attempt-antigravity-pin-${turnOrdinal}`),
+            rootNodeId: NodeId.make(`node-antigravity-pin-${turnOrdinal}`),
+            providerThread,
+            message: {
+              createdBy: "user",
+              creationSource: "web",
+              messageId: MessageId.make(`message-antigravity-pin-${turnOrdinal}`),
+              text: `turn ${turnOrdinal}`,
+              attachments: [],
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+          const events = yield* session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          );
+          return Array.from(events).flatMap((event) =>
+            event.type === "provider_thread.updated" && event.pinnedSystemInstructions !== undefined
+              ? [event.pinnedSystemInstructions]
+              : [],
+          );
+        });
+
+        // A new thread has no stored pin, so its first turn stores the current binary's pin.
+        const session1 = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-pin-1"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread1 = yield* session1.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.deepEqual(yield* runTurn(session1, providerThread1), [
+          ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        ]);
+        assert.isNull(providerThread1.pinnedSystemInstructions ?? null);
+        const storedThread1 = {
+          ...providerThread1,
+          pinnedSystemInstructions: ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        };
+        assert.deepEqual(yield* runTurn(session1, storedThread1), []);
+
+        // A release that only changed wording keeps the key: the stored text is replayed verbatim
+        // and nothing is stored again.
+        const legacyPinned = {
+          key: ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS.key,
+          text: "<pull_request_linking>Old binary Antigravity wording</pull_request_linking>",
+        };
+        const session2 = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-pin-2"),
+          modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: providerThread1.nativeThreadRef!.nativeId!,
+          initialPinnedSystemInstructions: legacyPinned,
+        });
+        const resumedThread = yield* session2.resumeThread({
+          providerThread: { ...storedThread1, pinnedSystemInstructions: legacyPinned },
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.deepEqual(resumedThread.pinnedSystemInstructions, legacyPinned);
+        assert.deepEqual(yield* runTurn(session2, resumedThread), []);
+
+        // A pin stored under another key (an epoch bump, say) is rebuilt on resume and stored.
+        const staleKeyPinned = {
+          key: "key-from-an-older-epoch",
+          text: "<pull_request_linking>Before the epoch bump</pull_request_linking>",
+        };
+        const session3 = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-pin-3"),
+          modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: providerThread1.nativeThreadRef!.nativeId!,
+          initialPinnedSystemInstructions: staleKeyPinned,
+        });
+        const rekeyedThread = yield* session3.resumeThread({
+          providerThread: { ...storedThread1, pinnedSystemInstructions: staleKeyPinned },
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.deepEqual(rekeyedThread.pinnedSystemInstructions, staleKeyPinned);
+        assert.deepEqual(yield* runTurn(session3, rekeyedThread), [
+          ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        ]);
+
+        // A replacement native session starts with the current prompt. It keeps the row's stored
+        // pin, so an unchanged pin is not stored again and a stale one is.
+        const replacedThread = yield* session3.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          forceNewNativeThread: true,
+          existingProviderThread: { ...storedThread1, nativeThreadRef: null },
+        });
+        assert.deepEqual(
+          replacedThread.pinnedSystemInstructions,
+          ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        );
+        assert.deepEqual(yield* runTurn(session3, replacedThread), []);
+        const replacedStaleThread = yield* session3.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          forceNewNativeThread: true,
+          existingProviderThread: {
+            ...storedThread1,
+            nativeThreadRef: null,
+            pinnedSystemInstructions: staleKeyPinned,
+          },
+        });
+        assert.deepEqual(replacedStaleThread.pinnedSystemInstructions, staleKeyPinned);
+        assert.deepEqual(yield* runTurn(session3, replacedStaleThread), [
+          ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+        ]);
+
+        const requests = (yield* fileSystem.readFileString(requestLog))
+          .trim()
+          .split("\n")
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                readonly method?: string;
+                readonly params?: {
+                  readonly _meta?: {
+                    readonly antigravity?: {
+                      readonly systemPrompt?: { readonly append?: string };
+                    };
+                  };
+                };
+              },
+          );
+        const appendOf = (request: (typeof requests)[number] | undefined) =>
+          request?.params?._meta?.antigravity?.systemPrompt?.append;
+        assert.deepEqual(
+          requests.filter((request) => request.method === "session/new").map(appendOf),
+          [
+            PULL_REQUEST_LINKING_INSTRUCTIONS,
+            PULL_REQUEST_LINKING_INSTRUCTIONS,
+            PULL_REQUEST_LINKING_INSTRUCTIONS,
+          ],
+        );
+        assert.deepEqual(
+          requests
+            .filter(
+              (request) => request.method === "session/load" || request.method === "session/resume",
+            )
+            .map(appendOf),
+          [legacyPinned.text, PULL_REQUEST_LINKING_INSTRUCTIONS],
+        );
+      }).pipe(Effect.provide(layerSession), Effect.scoped),
   );
 });

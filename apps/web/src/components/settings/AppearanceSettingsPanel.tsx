@@ -42,6 +42,7 @@ import { searchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
 import { AccentColorPicker } from "./AccentColorPicker";
+import { CalmPresetRow } from "./CalmPresetRow";
 import { TypographySection } from "./TypographySettings";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, Message> = {
@@ -239,6 +240,7 @@ export function AppearanceSettingsPanel() {
 
       <SettingsSection id="appearance-interface" title={t("Interface")}>
         <DeviceSettingsProfileRow />
+        <CalmPresetRow />
         <SettingsRow
           {...searchableSetting("setting-appearance-contrast")}
           description={t("Adjust the contrast of colors and borders across the interface.")}

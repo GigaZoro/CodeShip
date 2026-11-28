@@ -1183,6 +1183,222 @@ describe("CodexAdapterV2 process exit", () => {
   });
 });
 
+describe("CodexAdapterV2 per-turn T3 context", () => {
+  it.effect("rebuilds additionalContext on a resumed turn when device tools or effort change", () =>
+    Effect.gen(function* () {
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      const turnStartParams: Array<{ readonly additionalContext?: unknown }> = [];
+      let nextNativeTurn = 0;
+      const makeInMemoryClient = Effect.fnUntraced(function* () {
+        const input = yield* Queue.unbounded<Uint8Array, Cause.Done>();
+        const emit = (frame: unknown) =>
+          Queue.offer(input, new TextEncoder().encode(JSON.stringify(frame) + "\n"));
+        const threadResult = (nativeId: string) => ({
+          thread: {
+            id: nativeId,
+            sessionId: nativeId,
+            projectId: null,
+            forkedFromId: null,
+            preview: "",
+            ephemeral: false,
+            modelProvider: "openai",
+            createdAt: 1_776_643_200,
+            updatedAt: 1_776_643_200,
+            status: { type: "idle" },
+            path: `/tmp/${nativeId}.jsonl`,
+            cwd: "/workspace",
+            cliVersion: "0.170.0",
+            source: "vscode",
+            threadSource: null,
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
+            name: null,
+            turns: [],
+          },
+          model: "gpt-5.4",
+          modelProvider: "openai",
+          serviceTier: null,
+          cwd: "/workspace",
+          instructionSources: [],
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandbox: { type: "dangerFullAccess" },
+          reasoningEffort: null,
+        });
+        return yield* CodexClient.make(
+          Stdio.make({
+            args: Effect.succeed([]),
+            stdin: Stream.fromQueue(input),
+            stdout: () =>
+              Sink.forEach((chunk: string | Uint8Array) =>
+                Effect.gen(function* () {
+                  const frame = JSON.parse(
+                    typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
+                  ) as {
+                    readonly id?: number;
+                    readonly method: string;
+                    readonly params?: Record<string, unknown>;
+                  };
+                  if (frame.id === undefined) return;
+                  if (frame.method === "initialize") {
+                    yield* emit({
+                      id: frame.id,
+                      result: {
+                        userAgent: "codex-test/0.170.0",
+                        codexHome: "/tmp/codex-home",
+                        platformFamily: "unix",
+                        platformOs: "macos",
+                      },
+                    });
+                  } else if (frame.method === "config/read") {
+                    yield* emit({ id: frame.id, result: { config: {}, origins: {} } });
+                  } else if (frame.method === "thread/name/set") {
+                    yield* emit({ id: frame.id, result: {} });
+                  } else if (frame.method === "thread/start") {
+                    yield* emit({ id: frame.id, result: threadResult("native-codex-context") });
+                  } else if (frame.method === "thread/resume") {
+                    yield* emit({
+                      id: frame.id,
+                      result: threadResult(String(frame.params?.threadId)),
+                    });
+                  } else if (frame.method === "turn/start") {
+                    nextNativeTurn += 1;
+                    turnStartParams.push(frame.params as (typeof turnStartParams)[number]);
+                    yield* emit({
+                      id: frame.id,
+                      result: {
+                        turn: makeCodexReplayTurn({
+                          id: `turn-codex-context-${nextNativeTurn}`,
+                          status: "inProgress",
+                        }),
+                      },
+                    });
+                  }
+                }),
+              ),
+            stderr: () => Sink.drain,
+          }),
+          {},
+        );
+      });
+      const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
+        instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+        settings: DEFAULT_CODEX_SETTINGS,
+        environment: {},
+        clientFactory: { open: () => makeInMemoryClient() },
+        digest: yield* Digest.Digest,
+        fileSystem: yield* FileSystem.FileSystem,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig(
+          "codex-per-turn-context",
+        ).pipe(Effect.orDie),
+      });
+      const threadId = ThreadId.make("thread-codex-context");
+      const setMcpSession = (
+        providerSessionId: ProviderSessionId,
+        capabilities: ReadonlySet<string>,
+      ) =>
+        mcpSessions.set({
+          environmentId: EnvironmentId.make("environment-codex-context"),
+          threadId,
+          providerSessionId,
+          providerInstanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer test-token",
+          browserToolsAvailable: true,
+          capabilities,
+        });
+
+      const session1Id = ProviderSessionId.make("provider-session-codex-context-1");
+      yield* setMcpSession(session1Id, new Set());
+      const runtime1 = yield* adapter.openSession({
+        threadId,
+        providerSessionId: session1Id,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+      });
+      const providerThread = yield* runtime1.ensureThread({
+        threadId,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+      });
+      yield* runtime1.startTurn(
+        makeCodexTestTurnInput({
+          threadId,
+          providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-codex-context-1"),
+          text: "turn 1",
+        }),
+      );
+
+      const highEffort = {
+        ...CODEX_TEST_MODEL_SELECTION,
+        options: [{ id: "reasoningEffort", value: "high" }],
+      } satisfies ModelSelection;
+      const session2Id = ProviderSessionId.make("provider-session-codex-context-2");
+      yield* setMcpSession(session2Id, new Set(["device"]));
+      const runtime2 = yield* adapter.openSession({
+        threadId,
+        providerSessionId: session2Id,
+        modelSelection: highEffort,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        initialNativeThreadId: providerThread.nativeThreadRef!.nativeId!,
+      });
+      const resumed = yield* runtime2.resumeThread({
+        providerThread,
+        modelSelection: highEffort,
+        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+      });
+      yield* runtime2.startTurn({
+        ...makeCodexTestTurnInput({
+          threadId,
+          providerThread: resumed,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-codex-context-2"),
+          text: "turn 2",
+        }),
+        modelSelection: highEffort,
+      });
+
+      const expected = (modelSelection: ModelSelection, deviceToolsAvailable: boolean) =>
+        Effect.map(
+          CodexAdapterV2.buildCodexTurnStartParams({
+            nativeThreadId: "native-codex-context",
+            codexInput: [],
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+            modelSelection,
+            hasT3Mcp: true,
+            browserToolsAvailable: true,
+            deviceToolsAvailable,
+          }),
+          (params) => params.additionalContext,
+        );
+      assert.lengthOf(turnStartParams, 2);
+      assert.deepEqual(
+        turnStartParams[0]?.additionalContext,
+        yield* expected(CODEX_TEST_MODEL_SELECTION, false),
+      );
+      assert.deepEqual(turnStartParams[1]?.additionalContext, yield* expected(highEffort, true));
+      assert.notDeepEqual(
+        turnStartParams[1]?.additionalContext,
+        turnStartParams[0]?.additionalContext,
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+});
+
 describe("CodexAdapterV2 session initialize", () => {
   const openReplaySession = (
     transcript: CodexReplay.CodexAppServerReplayTranscript,

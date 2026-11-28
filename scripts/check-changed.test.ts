@@ -43,6 +43,7 @@ import {
   GIT_TIMEOUT,
   gitLines,
   ignoredInputs,
+  isMountExecutable,
   isTestInput,
   keepModuleCache,
   makeScopedTempDir,
@@ -50,6 +51,7 @@ import {
   runSteps,
   noticingSleep,
   runTestGroups,
+  selectTestTempBase,
   spawnVp,
   spawnVpIsolated,
   splitTests,
@@ -702,7 +704,13 @@ describe("check:changed", () => {
               return { ok: true, output: "" };
             }),
         });
-        const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: yield* slotDirectory };
+        const directory = yield* slotDirectory;
+        // A marker's journal with no database before it in the listing: no run may open it.
+        NodeFS.writeFileSync(
+          NodePath.join(directory, "landing-wait-0.sqlite-journal"),
+          Buffer.alloc(512, 0xff),
+        );
+        const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory };
         const holder = yield* runSteps([step("holder", 3)], options).pipe(Effect.forkChild);
         yield* TestClock.adjust("100 millis");
         const earlier = yield* runSteps([step("earlier", 1)], options).pipe(Effect.forkChild);
@@ -759,27 +767,46 @@ describe("check:changed", () => {
     }),
   );
 
-  it.effect("runs a landing whose marker another run's stale-marker check holds for a moment", () =>
+  it.effect("starts a landing's step only once it holds its marker", () =>
     Effect.gen(function* () {
       const directory = yield* slotDirectory;
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const checker = new NodeSqlite.DatabaseSync(
-            NodePath.join(directory, `landing-wait-${process.pid}.sqlite`),
-          );
-          checker.exec("BEGIN EXCLUSIVE;");
-          return checker;
-        }),
-        (checker) => Effect.sync(() => checker.close()),
+      const file = NodePath.join(directory, `landing-wait-${process.pid}.sqlite`);
+      // Another run's stale-marker check, holding the marker as the landing first takes a slot.
+      const checker = yield* Effect.acquireRelease(
+        Effect.sync(() => new NodeSqlite.DatabaseSync(file)),
+        (db) => Effect.sync(() => db.isOpen && db.close()),
       );
-      const results = yield* runSteps(
-        [{ name: "landing", run: () => Effect.succeed({ ok: true, output: "" }) }],
+      checker.exec("BEGIN EXCLUSIVE;");
+      const marked: Array<boolean> = [];
+      const landing = yield* runSteps(
+        [
+          {
+            name: "landing",
+            run: () =>
+              Effect.sync(() => {
+                const probe = new NodeSqlite.DatabaseSync(file);
+                try {
+                  probe.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+                  marked.push(false);
+                } catch (cause) {
+                  marked.push(String(cause).includes("database is locked"));
+                } finally {
+                  probe.close();
+                }
+                return { ok: true, output: "" };
+              }),
+          },
+        ],
         { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory, landing: true },
-      );
-      assert.deepStrictEqual(
-        results.map((result) => result.outcome),
-        ["pass"],
-      );
+      ).pipe(Effect.forkChild);
+      // A slot is free all along; only the missing marker holds the step back.
+      for (let second = 0; second < 3; second++) yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(marked, []);
+
+      checker.close();
+      yield* TestClock.adjust("1 second");
+      yield* Fiber.join(landing);
+      assert.deepStrictEqual(marked, [true]);
     }),
   );
 
@@ -824,6 +851,47 @@ describe("check:changed", () => {
         const afterResults = yield* Fiber.join(after);
         assert.strictEqual(afterResults[0]?.outcome, "pass");
         assert.isFalse(NodeFS.existsSync(markerPath));
+      }),
+  );
+
+  // Windows refuses to remove a file another run has open. macOS gets the same refusal (EPERM) from
+  // its immutable flag.
+  it.effect.skipIf(!["darwin", "win32"].includes(HostProcess.Platform.defaultValue()))(
+    "passes a landing that Windows keeps from removing its marker",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* slotDirectory;
+        const file = NodePath.join(directory, `landing-wait-${process.pid}.sqlite`);
+        let refuseRemoval = () => {};
+        let allowRemoval = () => {};
+        if (HostProcess.Platform.defaultValue() === "win32") {
+          let checker: NodeSqlite.DatabaseSync | undefined;
+          refuseRemoval = () => (checker = new NodeSqlite.DatabaseSync(file));
+          allowRemoval = () => checker?.close();
+        } else {
+          const flag = (value: string) => NodeChildProcess.execFileSync("chflags", [value, file]);
+          refuseRemoval = () => flag("uchg");
+          allowRemoval = () => NodeFS.existsSync(file) && flag("nouchg");
+        }
+        yield* Effect.addFinalizer(() => Effect.sync(() => void allowRemoval()));
+        const results = yield* runSteps(
+          [
+            {
+              name: "landing",
+              run: () =>
+                Effect.sync(() => {
+                  refuseRemoval();
+                  return { ok: true, output: "" };
+                }),
+            },
+          ],
+          { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory, landing: true },
+        ).pipe(Effect.provideService(HostProcess.Platform, "win32"));
+        assert.deepStrictEqual(
+          results.map((result) => result.outcome),
+          ["pass"],
+        );
+        assert.isTrue(NodeFS.existsSync(file), "the removal was refused");
       }),
   );
 
@@ -2371,9 +2439,23 @@ const providerEnv = NodePath.join(
 
 const summaryOf = (stdout: string) => stdout.slice(stdout.lastIndexOf("check:changed summary"));
 
+// Vite+'s fspy skips tracking paths under /dev (such as Linux /dev/shm), so nested `vp run --cache`
+// fixture workspaces must live outside /dev even when the outer test runner sets TMPDIR to /dev/shm.
+const tracedTempDir = (): string => {
+  const dir = NodeOS.tmpdir();
+  if (!isLinuxHost) return dir;
+  let resolved = dir;
+  try {
+    resolved = NodeFS.realpathSync(dir);
+  } catch {
+    // Keep dir as-is if realpath fails.
+  }
+  return resolved === "/dev" || resolved.startsWith("/dev/") ? "/tmp" : dir;
+};
+
 function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
   const root = NodeFS.realpathSync(
-    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
+    NodeFS.mkdtempSync(NodePath.join(tracedTempDir(), "t3 checks & (fixture) ")),
   );
   const write = (file: string, content: string) => writeUnder(root, file, content);
   for (const file of [
@@ -2581,7 +2663,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     // A linked worktree with its own install, as two checkouts each run `vp i`.
     checkout(files: Array<string>) {
       const checkout = NodeFS.realpathSync(
-        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks retry ")),
+        NodeFS.mkdtempSync(NodePath.join(tracedTempDir(), "t3 checks retry ")),
       );
       worktrees.push(checkout);
       git("worktree", "add", "--detach", checkout, "HEAD");
@@ -2994,19 +3076,21 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
 
   project.write(
     "fixture.test.ts",
-    `import { writeFileSync } from "node:fs";
+    `import { readdirSync, writeFileSync } from "node:fs";
     import os from "node:os";
     import path from "node:path";
     import { it, expect } from "vite-plus/test";
-    it("runs inside an isolated step temp dir", () => {
+    it("runs inside an isolated per-group temp dir", () => {
       const dir = process.env.TMPDIR ?? "";
       expect(dir).toBeTruthy();
       expect(process.env.TEMP).toBe(dir);
       expect(process.env.TMP).toBe(dir);
       expect(os.tmpdir()).toBe(dir);
-      expect(path.basename(dir)).toMatch(/^t3-cct-/);
+      expect(path.basename(dir)).toMatch(/^g-/);
+      expect(path.basename(path.dirname(dir))).toMatch(/^t3-cct-/);
+      expect(readdirSync(dir).filter((entry) => entry.startsWith("t3-git-trace-"))).toEqual([]);
       writeFileSync(path.join(dir, "leaked.txt"), "left behind");
-      console.log("STEP_TMP=" + dir);
+      console.log("GROUP_TMP=" + dir);
     });`,
   );
 
@@ -3017,10 +3101,14 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
   });
   expect(first.status, first.stdout + first.stderr).toBe(1);
   expect(first.stdout).toContain("pass  test (1 files)");
-  const matched = /STEP_TMP=(.+)/.exec(first.stdout);
+  const matched = /GROUP_TMP=(.+)/.exec(first.stdout);
   expect(matched, first.stdout).not.toBeNull();
-  const stepTmp = matched![1]!.trim();
-  expect(NodePath.dirname(stepTmp)).toBe(outerTmp1);
+  const groupTmp = matched![1]!.trim();
+  const stepTmp = NodePath.dirname(groupTmp);
+  const hostPlatform: NodeJS.Platform = isLinuxHost ? "linux" : isWindowsHost ? "win32" : "darwin";
+  const expectedBase = selectTestTempBase(hostPlatform, undefined, outerTmp1);
+  expect(NodePath.dirname(stepTmp)).toBe(expectedBase);
+  expect(NodeFS.existsSync(groupTmp)).toBe(false);
   expect(NodeFS.existsSync(stepTmp)).toBe(false);
   expect(NodeFS.existsSync(staleDir)).toBe(false);
   expect(NodeFS.existsSync(freshDir)).toBe(true);
@@ -3042,7 +3130,9 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
     import path from "node:path";
     import { it } from "vite-plus/test";
     it("leaves a file behind and fails", () => {
-      writeFileSync(path.join(process.env.TMPDIR!, "leaked-on-fail.txt"), "boom");
+      const dir = process.env.TMPDIR!;
+      console.log("FAIL_TMP=" + dir);
+      writeFileSync(path.join(dir, "leaked-on-fail.txt"), "boom");
       throw new Error("expected failure");
     });`,
   );
@@ -3053,7 +3143,304 @@ it("isolates test TMPDIR without busting cache, removes leaked files on pass and
   });
   expect(failed.status, failed.stdout + failed.stderr).toBe(1);
   expect(failed.stdout).toContain("FAIL  test (1 files)");
+  const failMatched = /FAIL_TMP=(.+)/.exec(failed.stdout);
+  expect(failMatched, failed.stdout).not.toBeNull();
+  const failGroupTmp = failMatched![1]!.trim();
+  expect(NodeFS.existsSync(failGroupTmp)).toBe(false);
+  expect(NodeFS.existsSync(NodePath.dirname(failGroupTmp))).toBe(false);
   expect(NodeFS.readdirSync(outerTmp2)).toEqual([]);
+});
+
+it("isMountExecutable parses /proc/self/mountinfo longest-prefix mounts, octal escapes, and noexec options", () => {
+  const baseMountInfo = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "26 29 0:5 / /dev rw,nosuid,noexec,relatime shared:2 - devtmpfs udev rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,inode64",
+    "32 26 0:27 / /dev/shm2 rw,nosuid,nodev,noexec shared:5 - tmpfs tmpfs rw",
+    "33 29 0:28 / /mnt/my\\040shm rw,nosuid,nodev - tmpfs tmpfs rw",
+  ].join("\n");
+
+  // Deepest mount (/dev/shm) overrides /dev's noexec; sibling /dev/shm2 does not match /dev/shm.
+  expect(isMountExecutable(baseMountInfo, "/dev/shm")).toBe(true);
+  expect(isMountExecutable(baseMountInfo, "/dev/shm/")).toBe(true);
+  expect(isMountExecutable(baseMountInfo, "/dev/shm/sub")).toBe(true);
+  expect(isMountExecutable(baseMountInfo, "/dev/other")).toBe(false);
+  expect(isMountExecutable(baseMountInfo, "/dev/shm2")).toBe(false);
+  expect(isMountExecutable(baseMountInfo, "/mnt/my shm")).toBe(true);
+
+  // noexec in VFS mount options (field 6, index 5) rejects the mount.
+  const vfsNoexec = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev,noexec shared:4 - tmpfs tmpfs rw",
+  ].join("\n");
+  expect(isMountExecutable(vfsNoexec, "/dev/shm")).toBe(false);
+
+  // noexec in superblock options (after ` - <fstype> <source> `) rejects the mount.
+  const superNoexec = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,noexec,inode64",
+  ].join("\n");
+  expect(isMountExecutable(superNoexec, "/dev/shm")).toBe(false);
+
+  // Later mount at the same mount point (overmount) wins.
+  const overmounted = [
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw",
+    "40 31 0:29 / /dev/shm rw,nosuid,nodev,noexec shared:9 - tmpfs tmpfs rw",
+  ].join("\n");
+  expect(isMountExecutable(overmounted, "/dev/shm")).toBe(false);
+
+  // Empty or non-matching mountinfo fails closed.
+  expect(isMountExecutable("", "/dev/shm")).toBe(false);
+  expect(isMountExecutable("26 29 0:5 / /run rw,nosuid - tmpfs tmpfs rw", "/dev/shm")).toBe(false);
+});
+
+it("selectTestTempBase checks /dev/shm directory, mountinfo noexec, free space, and POSIX /tmp headroom", () => {
+  const shortFallback = "/fallback/tmp";
+  const longMacFallback = "/private/var/folders/ab/cdefghijklmnopqrstuvwxyz123456/T";
+  const execMountInfo = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,inode64",
+  ].join("\n");
+  const vfsNoexecMountInfo = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev,noexec shared:4 - tmpfs tmpfs rw",
+  ].join("\n");
+  const superNoexecMountInfo = [
+    "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw",
+    "31 26 0:26 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw,noexec",
+  ].join("\n");
+  const statOf = (bytes: number) => () => ({ bsize: 4096, bavail: bytes / 4096 });
+  const linuxProbes = (
+    overrides: Parameters<typeof selectTestTempBase>[1] = {},
+  ): Parameters<typeof selectTestTempBase>[1] => ({
+    isShmDir: () => true,
+    shmRealpath: () => "/dev/shm",
+    readMountInfo: () => execMountInfo,
+    shmStatFs: statOf(4 * GiB),
+    isShortTmpWritable: () => false,
+    ...overrides,
+  });
+
+  // Linux accepts /dev/shm at >= 2 GiB free when writable directory and executable mount.
+  expect(
+    selectTestTempBase("linux", linuxProbes({ shmStatFs: statOf(2 * GiB) }), shortFallback),
+  ).toBe("/dev/shm");
+  expect(
+    selectTestTempBase("linux", linuxProbes({ shmStatFs: statOf(4 * GiB) }), shortFallback),
+  ).toBe("/dev/shm");
+  // Rejects < 2 GiB free, non-directory/unwritable, statfs errors, noexec mounts, or unreadable mountinfo.
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({ shmStatFs: () => ({ bsize: 1, bavail: 2 * GiB - 1 }) }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+  expect(selectTestTempBase("linux", linuxProbes({ isShmDir: () => false }), shortFallback)).toBe(
+    shortFallback,
+  );
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({ readMountInfo: () => vfsNoexecMountInfo }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({ readMountInfo: () => superNoexecMountInfo }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({
+        readMountInfo: () => {
+          throw new Error("ENOENT");
+        },
+      }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({
+        shmStatFs: () => {
+          throw new Error("EACCES");
+        },
+      }),
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+
+  // macOS prefers /tmp when os.tmpdir() is long to preserve Unix socket sun_path headroom,
+  // and falls back to os.tmpdir() when /tmp is unavailable or fallback is already short.
+  const shmProbe = vi.fn(statOf(16 * GiB));
+  expect(
+    selectTestTempBase(
+      "darwin",
+      { shmStatFs: shmProbe, isShortTmpWritable: () => true },
+      longMacFallback,
+    ),
+  ).toBe("/tmp");
+  expect(
+    selectTestTempBase(
+      "darwin",
+      { shmStatFs: shmProbe, isShortTmpWritable: () => false },
+      longMacFallback,
+    ),
+  ).toBe(longMacFallback);
+  expect(
+    selectTestTempBase(
+      "darwin",
+      { shmStatFs: shmProbe, isShortTmpWritable: () => true },
+      shortFallback,
+    ),
+  ).toBe(shortFallback);
+
+  // Linux also uses /tmp when /dev/shm is rejected, /tmp is executable, and fallback is long,
+  // but keeps fallback when /tmp itself is mounted noexec.
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({
+        readMountInfo: () => vfsNoexecMountInfo,
+        isShortTmpWritable: () => true,
+        shortTmpRealpath: () => "/tmp",
+      }),
+      longMacFallback,
+    ),
+  ).toBe("/tmp");
+  const bothNoexecMountInfo = [
+    vfsNoexecMountInfo,
+    "45 20 0:46 / /tmp rw,nosuid,nodev,noexec - tmpfs tmpfs rw",
+  ].join("\n");
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({
+        readMountInfo: () => bothNoexecMountInfo,
+        isShortTmpWritable: () => true,
+        shortTmpRealpath: () => "/tmp",
+      }),
+      longMacFallback,
+    ),
+  ).toBe(longMacFallback);
+
+  // Windows never probes /dev/shm or /tmp even for long paths.
+  const shortTmpProbe = vi.fn(() => true);
+  expect(
+    selectTestTempBase(
+      "win32",
+      { shmStatFs: shmProbe, isShortTmpWritable: shortTmpProbe },
+      "C:\\Users\\developer\\AppData\\Local\\Temp\\long-subdir",
+    ),
+  ).toBe("C:\\Users\\developer\\AppData\\Local\\Temp\\long-subdir");
+  expect(shmProbe).not.toHaveBeenCalled();
+  expect(shortTmpProbe).not.toHaveBeenCalled();
+});
+
+it("runs apps/server groups in parallel chains with distinct group TMPDIRs and replays cache across chain counts", () => {
+  using project = launcherFixture();
+  project.write("pnpm-workspace.yaml", "packages:\n  - packages/*\n  - apps/*\n");
+  project.write(
+    "apps/server/package.json",
+    JSON.stringify({ name: "@t3tools/server", scripts: { test: "vp test run" } }) + "\n",
+  );
+  project.commit("add server package");
+
+  // These three names each hash-split into their own group under CHANGED_TEST_GROUP_SIZE = 4.
+  const serverFiles = [
+    "apps/server/p3.test.ts",
+    "apps/server/p6.test.ts",
+    "apps/server/p10.test.ts",
+  ];
+  for (const file of serverFiles) {
+    project.write(
+      file,
+      `import { readdirSync, writeFileSync } from "node:fs";
+      import os from "node:os";
+      import path from "node:path";
+      import { expect, it } from "vite-plus/test";
+      it("runs in its own group temp dir", () => {
+        const dir = os.tmpdir();
+        expect(path.basename(dir)).toMatch(/^g-/);
+        expect(path.basename(path.dirname(dir))).toMatch(/^t3-cct-/);
+        expect(readdirSync(dir).filter((entry) => entry.startsWith("t3-git-trace-"))).toEqual([]);
+        writeFileSync(path.join(dir, "probe.txt"), ${JSON.stringify(file)});
+        console.log("SERVER_GROUP_TMP=" + dir);
+      });\n`,
+    );
+  }
+
+  // Nine fast steps precede testStep in launcherFixture; 15 total slots leave 6 for testStep (3 chains).
+  const parallel = project.run("lint", "", project.source, ["--concurrency", "15"]);
+  expect(parallel.status, parallel.stdout + parallel.stderr).toBe(1);
+  expect(parallel.stdout).toContain("pass  test (3 files)");
+
+  const testCacheCalls = project
+    .calls()
+    .filter(({ args }) => args.includes("test-cache") && args.includes("--concurrency-limit"));
+  expect(testCacheCalls.length).toBeGreaterThanOrEqual(1);
+  const firstLimitIndex = testCacheCalls[0]!.args.indexOf("--concurrency-limit");
+  expect(Number(testCacheCalls[0]!.args[firstLimitIndex + 1])).toBe(3);
+
+  const groupTmps = [...parallel.stdout.matchAll(/SERVER_GROUP_TMP=(.+)/g)].map((match) =>
+    match[1]!.trim(),
+  );
+  expect(groupTmps).toHaveLength(3);
+  expect(new Set(groupTmps).size).toBe(3);
+  const stepTmps = new Set(groupTmps.map((dir) => NodePath.dirname(dir)));
+  expect(stepTmps.size).toBe(1);
+  const [stepTmp] = [...stepTmps];
+  const hostPlatform: NodeJS.Platform = isLinuxHost ? "linux" : isWindowsHost ? "win32" : "darwin";
+  expect(NodePath.dirname(stepTmp!)).toBe(selectTestTempBase(hostPlatform));
+  for (const dir of groupTmps) expect(NodeFS.existsSync(dir)).toBe(false);
+  expect(NodeFS.existsSync(stepTmp!)).toBe(false);
+
+  // Lowering concurrency changes serverChains (3 -> 1) and task dependsOn, yet every group replays from cache.
+  const serial = project.run("lint", "", project.source, ["--concurrency", "1"]);
+  expect(serial.status, serial.stdout + serial.stderr).toBe(1);
+  expect(serial.stdout).toContain("pass  test (3 files)");
+  expect(serial.stdout.match(/cache hit, replaying/g)).toHaveLength(3);
+});
+
+it("sizes serverGroups slots and concurrency-limit by actual apps/server group count rather than file count", () => {
+  using project = launcherFixture();
+  project.write("pnpm-workspace.yaml", "packages:\n  - packages/*\n  - apps/*\n");
+  project.write(
+    "apps/server/package.json",
+    JSON.stringify({ name: "@t3tools/server", scripts: { test: "vp test run" } }) + "\n",
+  );
+  project.commit("add server package");
+
+  // These four names all hash to non-zero mod CHANGED_TEST_GROUP_SIZE (4), so they form 1 group.
+  for (const file of [
+    "apps/server/g0.test.ts",
+    "apps/server/g1.test.ts",
+    "apps/server/g2.test.ts",
+    "apps/server/g3.test.ts",
+  ]) {
+    project.write(
+      file,
+      `import { expect, it } from "vite-plus/test";
+      it("passes", () => expect(1).toBe(1));\n`,
+    );
+  }
+
+  const result = project.run("lint", "", project.source, ["--concurrency", "14"]);
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("pass  test (4 files)");
+
+  const testCacheCalls = project
+    .calls()
+    .filter(({ args }) => args.includes("test-cache") && args.includes("--concurrency-limit"));
+  expect(testCacheCalls.length).toBeGreaterThanOrEqual(1);
+  const limitIndex = testCacheCalls[0]!.args.indexOf("--concurrency-limit");
+  expect(Number(testCacheCalls[0]!.args[limitIndex + 1])).toBe(1);
 });
 
 it("reuses passes in another worktree with the same inputs and tracked environment, at another worker count", () => {
@@ -3578,14 +3965,14 @@ it.each([
   project.write(
     "fixture.test.ts",
     `import { execFileSync } from "node:child_process";
-    import { mkdtempSync, rmSync } from "node:fs";
+    import { mkdtempSync, realpathSync, rmSync } from "node:fs";
     import { tmpdir } from "node:os";
     import { join, relative } from "node:path";
     import { it } from "vite-plus/test";
     const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe" });
     it("reads the checkout's Git", () => {
       const root = import.meta.dirname;
-      const other = mkdtempSync(join(tmpdir(), "reader-"));
+      const other = realpathSync(mkdtempSync(join(tmpdir(), "reader-")));
       try {
         ${read};
       } finally {

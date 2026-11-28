@@ -232,6 +232,15 @@ const REFUSES: Readonly<Record<string, ReadonlyArray<Refusal>>> = {
     [["--verify-codex-metadata", " ", "staged"], 1, "App must be a non-blank path."],
     [["--verify-codex-metadata", "Test.app", " "], 1, "Staged package must be a non-blank path."],
   ],
+  "./i18n-diff-gate.mjs": [
+    [[UNREAD], 2, unknownOption(UNREAD)],
+    [["--needs-run", UNREAD], 2, unknownOption(UNREAD)],
+  ],
+  "./upstream-drift-radar.mjs": [
+    [[UNREAD], 2, unknownOption(UNREAD)],
+    [["--needs-run", UNREAD], 2, unknownOption(UNREAD)],
+    [["--verify-cmd", "   "], 2, "--verify-cmd must not be blank."],
+  ],
   "./wake-usage.mjs": [
     [["statev2.sqlite", "2026-11-25", UNREAD], 1, wakeUsageUsage],
     [["statev2.sqlite"], 1, wakeUsageUsage],

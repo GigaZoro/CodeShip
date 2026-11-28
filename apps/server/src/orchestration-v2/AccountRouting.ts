@@ -9,6 +9,7 @@ import {
   type ProviderCreditGrant,
   type ProviderCreditUse,
   ProviderInstanceId,
+  type ProviderOptionSelection,
   type ProviderRetryUsageLimitResult,
   type ProviderUsageHold,
   type ServerProvider,
@@ -19,7 +20,11 @@ import { fullReadAt, creditsReadAt } from "@t3tools/provider-core/server/usageLi
 import { mergedProviderInstanceEnvironmentName } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
-import { modelPicksEqual, resolveSelectableModel } from "@t3tools/shared/model";
+import {
+  acceptedOptionSelections,
+  modelPicksEqual,
+  resolveSelectableModel,
+} from "@t3tools/shared/model";
 import {
   autoModeModelFor,
   canAccountRun,
@@ -36,8 +41,8 @@ import {
   isSubscriptionAccount,
   nextWeeklyResetMs,
   softDrainingUsageWindow,
+  refusalScopeCoversModel,
   usageHoldMs,
-  usageScopeCoversModel,
   usageWindowLimitEnd,
   usageWindowAppliesToModel,
 } from "@t3tools/shared/usageLimits";
@@ -58,13 +63,18 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as PrepaidCreditSpend from "./PrepaidCreditSpend.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import {
-  applyAutoComplexityToSelection,
+  applyAutoRoutingConstraints,
   classifyAutoRequestComplexity,
+  excludedVendorFamilies,
+  filterEligibleAutoProviders,
   preserveAutoSelectionOnAccount,
+  vendorFamilyOfDriver,
   type AutoRequestPrompt,
+  type AutoRoutingConstraints,
+  type AutoRoutingDegradationReason,
 } from "./AutoComplexityRouting.ts";
 
-export type { AutoRequestPrompt };
+export type { AutoRequestPrompt, AutoRoutingConstraints, AutoRoutingDegradationReason };
 
 export interface AccountRoutingContext {
   readonly settings: Pick<
@@ -120,7 +130,8 @@ export function runLiftsScope(
 ): ProjectionStore.UsageScopeMatcher {
   return (instanceId, scope, model) => {
     const provider = providers.find((entry) => entry.instanceId === instanceId);
-    return usageScopeCoversModel(
+    return refusalScopeCoversModel(
+      provider,
       scope,
       provider === undefined ? model : canonicalModel(provider, model),
     );
@@ -162,7 +173,10 @@ function refusalEnds(
   model: string | null,
 ): Array<LimitEnd> {
   return refusals.flatMap((refusal) => {
-    if (refusal.modelScope !== undefined && !usageScopeCoversModel(refusal.modelScope, model))
+    if (
+      refusal.modelScope !== undefined &&
+      !refusalScopeCoversModel(provider, refusal.modelScope, model)
+    )
       return [];
     const end = recordedUsageLimitEnd(provider, refusal);
     return end.end > nowMs ? [end] : [];
@@ -421,7 +435,8 @@ export function recoveryRoomAt(
     model === canonicalModel(provider, input.stopped.model) &&
     (input.recordedLimits.get(provider.instanceId) ?? []).some(
       (refusal) =>
-        refusal.modelScope === undefined || usageScopeCoversModel(refusal.modelScope, model),
+        refusal.modelScope === undefined ||
+        refusalScopeCoversModel(provider, refusal.modelScope, model),
     )
   )
     return Infinity;
@@ -601,6 +616,7 @@ function applyRequestComplexity(input: {
   readonly started: boolean;
   readonly previousSelection?: ModelSelection | undefined;
   readonly preservePreviousSelection?: boolean | undefined;
+  readonly routingConstraints?: AutoRoutingConstraints | undefined;
 }): ModelSelection {
   if (input.selection.autoAccount !== true || input.selection.quotaAwareAuto === true) {
     return input.selection;
@@ -625,16 +641,23 @@ function applyRequestComplexity(input: {
       modelHasRoom,
     });
   }
-  if (input.requestPrompt === undefined) {
+  const hasTierConstraint =
+    input.routingConstraints?.capabilityTier !== undefined ||
+    input.routingConstraints?.minTier !== undefined;
+  if (input.requestPrompt === undefined && !hasTierConstraint) {
     return input.selection;
   }
-  const complexity = classifyAutoRequestComplexity({
-    text: input.requestPrompt.text,
-    attachmentCount: input.requestPrompt.attachmentCount,
-    started: input.started,
-  });
-  return applyAutoComplexityToSelection({
+  const complexity =
+    input.requestPrompt === undefined
+      ? undefined
+      : classifyAutoRequestComplexity({
+          text: input.requestPrompt.text,
+          attachmentCount: input.requestPrompt.attachmentCount,
+          started: input.started,
+        });
+  return applyAutoRoutingConstraints({
     selection: input.selection,
+    constraints: input.routingConstraints,
     complexity,
     account: chosenAccount,
     started: input.started,
@@ -644,95 +667,293 @@ function applyRequestComplexity(input: {
   });
 }
 
-/**
- * Where an Auto selection runs. With account switching on, a thread keeps an account with room
- * unless the top one ranks above it (plan usage over credits, then no MCP sign-in); else the top one
- * with room. With none, it keeps one that can still run, else the one whose limit ends first.
- */
-export function routeAutoAccount(
-  input: AccountRoutingContext &
-    McpSignIns & {
-      readonly selection: ModelSelection;
-      readonly projectId: ProjectId;
-      /** The account the thread already runs on; null for a thread with no run yet. */
-      readonly currentInstanceId: ProviderInstanceId | null;
-      /** A thread that already ran keeps its provider. */
-      readonly started: boolean;
-      /** A scheduled task's run, which spends the room that would be lost first. */
-      readonly scheduled?: boolean;
-      readonly observe?: ObserveAccount;
-      /** Optional prompt context for deterministic Auto-mode complexity routing. */
-      readonly requestPrompt?: AutoRequestPrompt | undefined;
-      /** Server-recorded model selection the started thread actually ran. */
-      readonly previousSelection?: ModelSelection | undefined;
-      /** Preserve previousSelection (model + options) on server continuations and wakes. */
-      readonly preservePreviousSelection?: boolean | undefined;
-    },
-): ModelSelection {
-  if (input.selection.autoAccount !== true) return input.selection;
-  const { selection, driver, searchModel } = resolveAutoRoute(input);
-  if (selection === input.selection || driver === undefined) return selection;
-  const current = input.providers.find(
-    (provider) => provider.instanceId === input.currentInstanceId && provider.driver === driver,
-  );
-  const search = {
-    ...input,
-    driver,
-    model: searchModel,
-    preferEarliestReset: input.scheduled === true,
-  };
-  const observed =
-    input.observe && input.settings.failoverLimitedThreads
-      ? accountsWithRoom(search, input.observe)
-      : undefined;
-  const pickTarget = () => {
-    if (current !== undefined) {
-      const model = modelWithRoom(current, search);
-      if (model !== null) {
-        const keep = { instanceId: current.instanceId, model };
-        const onCredits = runsOnCredits(current, input, canonicalModel(current, model));
-        const signedIn = pendingSignIns(input, current.instanceId).length === 0;
-        if (!onCredits && signedIn) return keep;
-        // Plan usage comes first, then no sign-in, so the top one is the move or there is none.
-        const top = (observed ?? accountsWithRoom(search))[0];
-        if (top === undefined || top.instanceId === current.instanceId) return keep;
-        if (onCredits && !top.onCredits) return top;
-        return !signedIn &&
-          pendingSignIns(input, top.instanceId).length === 0 &&
-          (onCredits || !top.onCredits)
-          ? top
-          : keep;
-      }
+export interface AutoRouteInput extends AccountRoutingContext, McpSignIns {
+  readonly selection: ModelSelection;
+  readonly projectId: ProjectId;
+  /** The account the thread already runs on; null for a thread with no run yet. */
+  readonly currentInstanceId: ProviderInstanceId | null;
+  /** A thread that already ran keeps its provider. */
+  readonly started: boolean;
+  /** A scheduled task's run, which spends the room that would be lost first. */
+  readonly scheduled?: boolean;
+  readonly observe?: ObserveAccount;
+  /** Optional prompt context for deterministic Auto-mode complexity routing. */
+  readonly requestPrompt?: AutoRequestPrompt | undefined;
+  /** Server-recorded model selection the started thread actually ran. */
+  readonly previousSelection?: ModelSelection | undefined;
+  /** Preserve previousSelection (model + options) on server continuations and wakes. */
+  readonly preservePreviousSelection?: boolean | undefined;
+  /** Declarative capability tier and cross-provider dissimilarity constraints. */
+  readonly routingConstraints?: AutoRoutingConstraints | undefined;
+}
+
+export interface AutoRouteResult {
+  readonly selection: ModelSelection;
+  readonly degradedReason?: AutoRoutingDegradationReason | undefined;
+}
+
+function resolveCandidateModelForProvider(
+  provider: ServerProvider,
+  input: LimitInput & { readonly projectId: ProjectId },
+  preferredModel: string | null,
+  excludedFamilies: ReadonlySet<string>,
+): string | null {
+  if (preferredModel !== null) {
+    const resolved = runnableModel(provider, { ...input, model: preferredModel });
+    if (
+      resolved !== null &&
+      !excludedFamilies.has(vendorFamilyOfDriver(provider.driver, resolved))
+    ) {
+      return resolved;
     }
-    const withRoom = (observed ?? accountsWithRoom(search))[0];
-    if (withRoom !== undefined) return withRoom;
-    // No subscription account has room. A thread keeps an account that can still run, and a new
-    // one starts on its named account when that has no usage limits (an API key).
-    const named = input.providers.find((provider) => provider.instanceId === selection.instanceId);
-    const keep =
-      current ?? (named !== undefined && !isSubscriptionAccount(named) ? named : undefined);
-    const kept = keep === undefined ? null : runnableModel(keep, search);
-    if (keep !== undefined && kept !== null) return { instanceId: keep.instanceId, model: kept };
-    const waitOn = firstAccountWithRoomAgain(search);
-    return waitOn !== undefined || current === undefined
-      ? waitOn
-      : { instanceId: current.instanceId, model: selection.model };
+  }
+  const activeModels = provider.models.filter((model) => !model.isLegacy && !model.isCustom);
+  const nonExcluded = activeModels.filter(
+    (model) => !excludedFamilies.has(vendorFamilyOfDriver(provider.driver, model.slug)),
+  );
+  const pool = nonExcluded.length > 0 ? nonExcluded : activeModels;
+  const withRoom = pool.find(
+    (model) =>
+      accountLimitEnd(provider, input, model.slug) === null &&
+      (runsOnCredits(provider, input, canonicalModel(provider, model.slug)) ||
+        provider.usageLimits?.usageAllowed !== false),
+  );
+  if (withRoom !== undefined) return withRoom.slug;
+  const preferredDefault = pool.find((model) => model.isDefault) ?? pool[0];
+  if (preferredDefault !== undefined) return preferredDefault.slug;
+  return provider.models.length === 0 ? preferredModel : null;
+}
+
+/**
+ * Resolves an Auto selection and reports any graceful degradation reason when constraints such as
+ * `excludeVendorFamily` cannot be satisfied with available quota.
+ */
+export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteResult {
+  if (input.selection.autoAccount !== true) return { selection: input.selection };
+  const excludedFamilies = excludedVendorFamilies(input.routingConstraints);
+  const { selection, driver, searchModel } = resolveAutoRoute(input);
+  if (selection === input.selection || driver === undefined) {
+    return { selection };
+  }
+
+  if (excludedFamilies.size === 0 || input.started) {
+    const current = input.providers.find(
+      (provider) => provider.instanceId === input.currentInstanceId && provider.driver === driver,
+    );
+    const search = {
+      ...input,
+      driver,
+      model: searchModel,
+      preferEarliestReset: input.scheduled === true,
+    };
+    const observed =
+      input.observe && input.settings.failoverLimitedThreads
+        ? accountsWithRoom(search, input.observe)
+        : undefined;
+    const pickTarget = () => {
+      if (current !== undefined) {
+        const model = modelWithRoom(current, search);
+        if (model !== null) {
+          const keep = { instanceId: current.instanceId, model };
+          const onCredits = runsOnCredits(current, input, canonicalModel(current, model));
+          const signedIn = pendingSignIns(input, current.instanceId).length === 0;
+          if (!onCredits && signedIn) return keep;
+          // Plan usage comes first, then no sign-in, so the top one is the move or there is none.
+          const top = (observed ?? accountsWithRoom(search))[0];
+          if (top === undefined || top.instanceId === current.instanceId) return keep;
+          if (onCredits && !top.onCredits) return top;
+          return !signedIn &&
+            pendingSignIns(input, top.instanceId).length === 0 &&
+            (onCredits || !top.onCredits)
+            ? top
+            : keep;
+        }
+      }
+      const withRoom = (observed ?? accountsWithRoom(search))[0];
+      if (withRoom !== undefined) return withRoom;
+      // No subscription account has room. A thread keeps an account that can still run, and a new
+      // one starts on its named account when that has no usage limits (an API key).
+      const named = input.providers.find(
+        (provider) => provider.instanceId === selection.instanceId,
+      );
+      const keep =
+        current ?? (named !== undefined && !isSubscriptionAccount(named) ? named : undefined);
+      const kept = keep === undefined ? null : runnableModel(keep, search);
+      if (keep !== undefined && kept !== null) return { instanceId: keep.instanceId, model: kept };
+      const waitOn = firstAccountWithRoomAgain(search);
+      return waitOn !== undefined || current === undefined
+        ? waitOn
+        : { instanceId: current.instanceId, model: selection.model };
+    };
+    const target = input.settings.failoverLimitedThreads ? pickTarget() : undefined;
+    const routed =
+      target === undefined ||
+      (target.instanceId === selection.instanceId && target.model === selection.model)
+        ? selection
+        : { ...selection, instanceId: target.instanceId, model: target.model };
+    const tuned = applyRequestComplexity({
+      context: input,
+      selection: routed,
+      requestPrompt: input.requestPrompt,
+      started: input.started,
+      previousSelection: input.started ? (input.previousSelection ?? input.selection) : undefined,
+      preservePreviousSelection: input.preservePreviousSelection,
+      routingConstraints: input.routingConstraints,
+    });
+    return { selection: modelPicksEqual(tuned, input.selection) ? input.selection : tuned };
+  }
+
+  interface AutoProviderRouteCandidate {
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+    readonly model: string;
+    readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
+    readonly hasQuota: boolean;
+    readonly limitEndMs: number;
+  }
+
+  const candidates: Array<AutoProviderRouteCandidate> = [];
+  const seenInstances = new Set<ProviderInstanceId>();
+
+  const pushCandidate = (candidate: AutoProviderRouteCandidate) => {
+    if (seenInstances.has(candidate.instanceId)) return;
+    seenInstances.add(candidate.instanceId);
+    candidates.push(candidate);
   };
-  const target = input.settings.failoverLimitedThreads ? pickTarget() : undefined;
+
+  const addDriverCandidates = (
+    candidateDriver: ProviderDriverKind,
+    preferredModel: string | null,
+    observe?: ObserveAccount,
+  ) => {
+    const auto = autoModeModelFor(input.settings, candidateDriver);
+    const inRoom =
+      input.settings.failoverLimitedThreads && preferredModel !== null
+        ? accountsWithRoom(
+            {
+              ...input,
+              driver: candidateDriver,
+              model: preferredModel,
+              preferEarliestReset: input.scheduled === true,
+            },
+            observe,
+          )
+        : [];
+    for (const account of inRoom) {
+      const provider = input.providers.find((entry) => entry.instanceId === account.instanceId);
+      if (!account.onCredits && provider?.usageLimits?.usageAllowed === false) {
+        continue;
+      }
+      const descriptors = provider?.models.find((model) => model.slug === account.model)
+        ?.capabilities?.optionDescriptors;
+      pushCandidate({
+        instanceId: account.instanceId,
+        driver: candidateDriver,
+        model: account.model,
+        options: acceptedOptionSelections(descriptors, auto?.options),
+        hasQuota: true,
+        limitEndMs: input.nowMs,
+      });
+    }
+    const orderedProviders = orderProviderInstancesForFailover(
+      input.settings.providerInstanceFailoverOrder,
+      input.providers.filter(
+        (provider) =>
+          provider.driver === candidateDriver && !seenInstances.has(provider.instanceId),
+      ),
+    );
+    for (const provider of orderedProviders) {
+      if (
+        !canAccountRun(provider, input.settings, input.projectId) ||
+        (provider.auth.loginExpiresAt && Date.parse(provider.auth.loginExpiresAt) <= input.nowMs)
+      ) {
+        continue;
+      }
+      const chosenModel = resolveCandidateModelForProvider(
+        provider,
+        input,
+        preferredModel,
+        excludedFamilies,
+      );
+      if (chosenModel === null) continue;
+      const limitEnd = accountLimitEnd(provider, input, chosenModel);
+      const usageAllowed =
+        runsOnCredits(provider, input, canonicalModel(provider, chosenModel)) ||
+        provider.usageLimits?.usageAllowed !== false;
+      const descriptors = provider.models.find((model) => model.slug === chosenModel)?.capabilities
+        ?.optionDescriptors;
+      const hasRoomNow =
+        (!isSubscriptionAccount(provider) || (limitEnd === null && usageAllowed)) &&
+        (!supportsAccountFailover(candidateDriver) ||
+          !input.settings.failoverLimitedThreads ||
+          limitEnd === null) &&
+        usageAllowed;
+      pushCandidate({
+        instanceId: provider.instanceId,
+        driver: candidateDriver,
+        model: chosenModel,
+        options: acceptedOptionSelections(descriptors, auto?.options),
+        hasQuota: hasRoomNow,
+        limitEndMs: limitEnd ?? input.nowMs,
+      });
+    }
+  };
+
+  addDriverCandidates(driver, searchModel, input.observe);
+  const visitedDrivers = new Set<ProviderDriverKind>([driver]);
+  for (const provider of orderProviderInstancesForFailover(
+    input.settings.providerInstanceFailoverOrder,
+    input.providers,
+  )) {
+    if (visitedDrivers.has(provider.driver)) continue;
+    visitedDrivers.add(provider.driver);
+    const auto = autoModeModelFor(input.settings, provider.driver);
+    addDriverCandidates(provider.driver, auto?.model ?? null);
+  }
+
+  if (candidates.length === 0) {
+    return { selection };
+  }
+
+  const filtered = filterEligibleAutoProviders(candidates, input.routingConstraints);
+  const chosen = filtered.providers.some((candidate) => candidate.hasQuota)
+    ? filtered.providers.find((candidate) => candidate.hasQuota)
+    : filtered.providers.toSorted((left, right) => left.limitEndMs - right.limitEndMs)[0];
+
   const routed =
-    target === undefined ||
-    (target.instanceId === selection.instanceId && target.model === selection.model)
+    chosen === undefined ||
+    (chosen.instanceId === selection.instanceId && chosen.model === selection.model)
       ? selection
-      : { ...selection, instanceId: target.instanceId, model: target.model };
+      : {
+          instanceId: chosen.instanceId,
+          model: chosen.model,
+          ...(chosen.options && chosen.options.length > 0 ? { options: chosen.options } : {}),
+          autoAccount: true as const,
+        };
+
   const tuned = applyRequestComplexity({
     context: input,
     selection: routed,
     requestPrompt: input.requestPrompt,
     started: input.started,
-    previousSelection: input.started ? (input.previousSelection ?? input.selection) : undefined,
+    previousSelection: undefined,
     preservePreviousSelection: input.preservePreviousSelection,
+    routingConstraints: input.routingConstraints,
   });
-  return modelPicksEqual(tuned, input.selection) ? input.selection : tuned;
+
+  return {
+    selection: modelPicksEqual(tuned, input.selection) ? input.selection : tuned,
+    ...(filtered.degradedReason === undefined ? {} : { degradedReason: filtered.degradedReason }),
+  };
+}
+
+/**
+ * Where an Auto selection runs. With account switching on, a thread keeps an account with room
+ * unless the top one ranks above it (plan usage over credits, then no MCP sign-in); else the top one
+ * with room. With none, it keeps one that can still run, else the one whose limit ends first.
+ */
+export function routeAutoAccount(input: AutoRouteInput): ModelSelection {
+  return routeAutoAccountWithDetails(input).selection;
 }
 
 /** Why a launch started on another account than the one it named. */
@@ -747,12 +968,14 @@ interface LaunchInput {
   readonly scheduled?: boolean;
   readonly fallbackModelSelections?: ReadonlyArray<ModelSelection>;
   readonly requestPrompt?: AutoRequestPrompt | undefined;
+  readonly routingConstraints?: AutoRoutingConstraints | undefined;
 }
 
 export interface LaunchRoute {
   readonly selection: ModelSelection;
   /** Null when the launch stays on the account it named. */
   readonly failover: LaunchFailover | null;
+  readonly degradedReason?: AutoRoutingDegradationReason | undefined;
 }
 
 /**
@@ -803,12 +1026,19 @@ function routeNamedLaunch(input: AccountRoutingContext & McpSignIns & LaunchInpu
 }
 
 function primaryLaunch(input: AccountRoutingContext & McpSignIns & LaunchInput): LaunchRoute {
-  return input.selection.autoAccount === true
-    ? {
-        selection: routeAutoAccount({ ...input, currentInstanceId: null, started: false }),
-        failover: null,
-      }
-    : routeNamedLaunch(input);
+  if (input.selection.autoAccount === true) {
+    const routed = routeAutoAccountWithDetails({
+      ...input,
+      currentInstanceId: null,
+      started: false,
+    });
+    return {
+      selection: routed.selection,
+      failover: null,
+      ...(routed.degradedReason === undefined ? {} : { degradedReason: routed.degradedReason }),
+    };
+  }
+  return routeNamedLaunch(input);
 }
 
 function alternateLaunches(
@@ -854,10 +1084,28 @@ export function failoverLimitedLaunch(
   if (input.selection.quotaAwareAuto === true)
     return { selection: input.selection, failover: null };
   const primary = primaryLaunch(input);
-  const unchanged =
-    input.selection.autoAccount === true ? { selection: input.selection, failover: null } : primary;
+  const excludedFamilies =
+    input.selection.autoAccount === true
+      ? excludedVendorFamilies(input.routingConstraints)
+      : new Set<string>();
+  const hasAutoConstraints =
+    input.selection.autoAccount === true &&
+    (excludedFamilies.size > 0 ||
+      input.routingConstraints?.capabilityTier !== undefined ||
+      input.routingConstraints?.minTier !== undefined);
+  const unchanged: LaunchRoute =
+    input.selection.autoAccount === true
+      ? hasAutoConstraints
+        ? primary
+        : { selection: input.selection, failover: null }
+      : primary;
   const wait = selectionWait(input, primary.selection);
   if (wait === null) return unchanged;
+  const matches: Array<{
+    readonly selection: ModelSelection;
+    readonly driver: ProviderDriverKind;
+    readonly instanceId: ProviderInstanceId;
+  }> = [];
   for (const { selection, driver, preferNamed } of alternateLaunches(input, wait.driver)) {
     const accounts = accountsWithRoom({
       ...input,
@@ -874,19 +1122,46 @@ export function failoverLimitedLaunch(
       : undefined;
     const account = named ?? accounts[0];
     if (account !== undefined) {
-      const routedSelection: ModelSelection = {
-        ...selection,
+      matches.push({
         instanceId: account.instanceId,
-        model: account.model,
-      };
-      return {
+        driver,
         selection: applyRequestComplexity({
           context: input,
-          selection: routedSelection,
+          selection: {
+            ...selection,
+            instanceId: account.instanceId,
+            model: account.model,
+          },
           requestPrompt: input.selection.autoAccount === true ? input.requestPrompt : undefined,
           started: false,
+          routingConstraints:
+            input.selection.autoAccount === true ? input.routingConstraints : undefined,
         }),
+      });
+    }
+  }
+  if (matches.length > 0) {
+    const filtered =
+      excludedFamilies.size > 0
+        ? filterEligibleAutoProviders(
+            matches.map((match) => ({
+              instanceId: match.instanceId,
+              driver: match.driver,
+              model: match.selection.model,
+              hasQuota: true,
+              match,
+            })),
+            input.routingConstraints,
+          )
+        : undefined;
+    const picked = filtered ? filtered.providers[0]?.match : matches[0];
+    if (picked !== undefined) {
+      return {
+        selection: picked.selection,
         failover: { reason: "usageLimit", crossProviderFrom: primary.selection.instanceId },
+        ...(filtered?.degradedReason === undefined
+          ? {}
+          : { degradedReason: filtered.degradedReason }),
       };
     }
   }
@@ -1121,8 +1396,24 @@ export class AccountRouting extends Context.Service<
         readonly requestPrompt?: AutoRequestPrompt | undefined;
         readonly previousSelection?: ModelSelection | undefined;
         readonly preservePreviousSelection?: boolean | undefined;
+        readonly routingConstraints?: AutoRoutingConstraints | undefined;
       } & CreditRequest,
     ) => Effect.Effect<ModelSelection>;
+    /** Resolves an Auto selection along with any graceful degradation reason. */
+    readonly routeWithDetails?: (
+      input: {
+        readonly selection: ModelSelection;
+        readonly projectId: ProjectId;
+        readonly currentInstanceId: ProviderInstanceId | null;
+        readonly started: boolean;
+        readonly scheduled?: boolean;
+        readonly observe?: ObserveAccount;
+        readonly requestPrompt?: AutoRequestPrompt | undefined;
+        readonly previousSelection?: ModelSelection | undefined;
+        readonly preservePreviousSelection?: boolean | undefined;
+        readonly routingConstraints?: AutoRoutingConstraints | undefined;
+      } & CreditRequest,
+    ) => Effect.Effect<AutoRouteResult>;
     /**
      * Subscription accounts that can run this model: plan usage before prepaid credits, signed-in
      * MCP before pending sign-in, then healthy with live usage, unread, and soft-draining; within
@@ -1194,6 +1485,7 @@ export class AccountRouting extends Context.Service<
         readonly selection: ModelSelection;
         readonly projectId: ProjectId;
         readonly allowFailover?: boolean;
+        readonly routingConstraints?: AutoRoutingConstraints | undefined;
       } & CreditRequest,
     ) => Effect.Effect<LaunchLimit | null>;
     /**
@@ -1947,7 +2239,7 @@ export const layer = Layer.effect(
             mode: "discover",
             driver: destinationDriver,
           });
-          return auto && !crossProvider
+          return auto && !crossProvider && input.routingConstraints === undefined
             ? stay
             : failoverLimitedLaunch({ ...context, mcpSignInsNeeded });
         },
@@ -1957,6 +2249,38 @@ export const layer = Layer.effect(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.account-routing.launch-failed", { cause }).pipe(
                 Effect.as({ selection: input.selection, failover: null } satisfies LaunchRoute),
+              ),
+            ),
+          ),
+      ),
+      routeWithDetails: Effect.fn("AccountRouting.routeWithDetails")(
+        function* (input) {
+          if (input.selection.autoAccount !== true) return { selection: input.selection };
+          const now = yield* DateTime.now;
+          const providers = yield* providerRegistry.getProviders;
+          const settings = yield* serverSettings.getSettings;
+          // A message dispatch must not wait on or start a provider, so only what is loaded counts.
+          return routeAutoAccountWithDetails({
+            ...input,
+            settings,
+            providers,
+            recordedLimits: yield* readLimits(now, providers),
+            mcpSignInsNeeded: yield* readMcpSignIns(mcp, {
+              settings,
+              providers,
+              nowMs: DateTime.toEpochMillis(now),
+              mode: "loaded",
+            }),
+            nowMs: DateTime.toEpochMillis(now),
+            creditAccess: yield* readCreditAccess(settings, providers, input.requesterThreadId),
+          });
+        },
+        // Routing only improves where a turn starts; the selected account still runs without it.
+        (effect, input) =>
+          effect.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.account-routing.failed", { cause }).pipe(
+                Effect.as({ selection: input.selection } satisfies AutoRouteResult),
               ),
             ),
           ),

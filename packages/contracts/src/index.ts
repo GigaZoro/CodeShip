@@ -83,6 +83,7 @@ export * from "./workflow.ts";
 export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./hostMemory.ts";
+export * from "./runLoopGuard.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 export * from "./secretRequest.ts";

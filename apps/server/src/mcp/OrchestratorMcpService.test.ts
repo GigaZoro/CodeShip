@@ -2893,7 +2893,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   ServerSettings.layerTest({}),
                   providerRegistryLayer([antigravityProvider]),
                   adapterRegistryLayer([antigravityInstanceId]),
-                  Layer.mock(ProjectService.ProjectService)({}),
+                  Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                   Layer.mock(CommandRunner.CommandRunner)({}),
@@ -8699,6 +8699,271 @@ describe("OrchestratorMcpService provider resolution", () => {
               parentSelection,
             ],
           );
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
+      }),
+  );
+
+  it.effect(
+    "applies capabilityTier, minTier, excludeVendorFamily, graceful degradation, and concrete target bypass in delegateTask",
+    () =>
+      Effect.gen(function* () {
+        const claudeInstanceId = ProviderInstanceId.make("claude_work");
+        const commands: Array<{
+          readonly modelSelection?: unknown;
+          readonly degradedReason?: unknown;
+        }> = [];
+        const claudeModels: ServerProvider["models"] = [
+          {
+            slug: "claude-opus-5-5",
+            name: "Claude Opus 5.5",
+            aliases: ["primary"],
+            isCustom: false,
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "effort",
+                  label: "Effort",
+                  type: "select",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "medium", label: "Medium" },
+                    { id: "high", label: "High" },
+                    { id: "ultra", label: "Ultra" },
+                  ],
+                },
+              ],
+            },
+          },
+          {
+            slug: "claude-sonnet-5-5",
+            name: "Claude Sonnet 5.5",
+            isDefault: true,
+            isCustom: false,
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "effort",
+                  label: "Effort",
+                  type: "select",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "high", label: "High" },
+                  ],
+                },
+              ],
+            },
+          },
+        ];
+        const codexModels: ServerProvider["models"] = [
+          {
+            slug: "gpt-6.2-astra",
+            name: "GPT 6.2 Astra",
+            aliases: ["primary"],
+            isCustom: false,
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "reasoningEffort",
+                  label: "Reasoning",
+                  type: "select",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "medium", label: "Medium" },
+                    { id: "high", label: "High" },
+                    { id: "xhigh", label: "XHigh" },
+                  ],
+                },
+              ],
+            },
+          },
+          {
+            slug: "gpt-6.2-sol",
+            name: "GPT 6.2 Sol",
+            isCustom: false,
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "reasoningEffort",
+                  label: "Reasoning",
+                  type: "select",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "high", label: "High" },
+                  ],
+                },
+              ],
+            },
+          },
+        ];
+        let codexLimited = false;
+        const providers = (): ReadonlyArray<ServerProvider> => [
+          {
+            ...providerSnapshot({
+              instanceId: claudeInstanceId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+              model: "claude-opus-5-5",
+            }),
+            models: claudeModels,
+          },
+          {
+            ...providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-6.2-astra",
+            }),
+            models: codexModels,
+            ...(codexLimited
+              ? {
+                  usageLimits: {
+                    checkedAt: "2026-11-28T00:00:00.000Z",
+                    usageAllowed: false,
+                    windows: [],
+                  },
+                }
+              : {}),
+          },
+        ];
+        const dispatchedTasks: Array<{
+          readonly id: typeof taskId;
+          readonly threadId: typeof parentThreadId;
+          readonly origin: "app_owned";
+          readonly childThreadId: typeof childThreadId;
+          readonly providerInstanceId: ProviderInstanceId;
+          readonly model: string;
+          readonly degradedReason?: "no-dissimilar-provider-available";
+          readonly status: "running";
+          readonly result: null;
+        }> = [];
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            assertProviderInstanceEnabled: () => Effect.void,
+            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId
+                  ? parentProjection(dispatchedTasks.slice(-1))
+                  : childProjection,
+              ),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                const payload = command as {
+                  readonly modelSelection: ModelSelection;
+                  readonly degradedReason?: "no-dissimilar-provider-available";
+                };
+                commands.push(payload);
+                const taskRecord = {
+                  id: taskId,
+                  threadId: parentThreadId,
+                  origin: "app_owned" as const,
+                  childThreadId,
+                  providerInstanceId: payload.modelSelection.instanceId,
+                  model: payload.modelSelection.model,
+                  ...(payload.degradedReason === undefined
+                    ? {}
+                    : { degradedReason: payload.degradedReason }),
+                  status: "running" as const,
+                  result: null,
+                };
+                dispatchedTasks.push(taskRecord);
+                return {
+                  sequence: commands.length,
+                  storedEvents: [{ event: { type: "subagent.updated", payload: taskRecord } }],
+                } as never;
+              }),
+          }),
+          ServerSettings.layerTest({
+            providerInstances: {
+              [claudeInstanceId]: { driver: ProviderDriverKind.make("claudeAgent") },
+              [codexInstanceId]: { driver: ProviderDriverKind.make("codex") },
+            },
+            providerInstanceFailoverOrder: [claudeInstanceId, codexInstanceId],
+            autoModeProvider: ProviderDriverKind.make("claudeAgent"),
+            autoModeModels: {
+              [ProviderDriverKind.make("claudeAgent")]: {
+                model: "claude-opus-5-5",
+                options: [{ id: "effort", value: "high" }],
+              },
+              [ProviderDriverKind.make("codex")]: {
+                model: "gpt-6.2-astra",
+                options: [{ id: "reasoningEffort", value: "high" }],
+              },
+            },
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.sync(() => providers()),
+          }),
+          adapterRegistryLayer([claudeInstanceId, codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+
+          const fastRes = yield* service.delegateTask(scope, {
+            task: "Investigate why this concurrency race condition happens.",
+            auto: true,
+            routing: { capabilityTier: "fast" },
+            mode: "async",
+            clientRequestId: "routing-fast",
+          });
+          assert.equal(fastRes.providerInstanceId, claudeInstanceId);
+          assert.equal(fastRes.model, "claude-sonnet-5-5");
+          assert.equal(fastRes.degradedReason, undefined);
+
+          const flooredRes = yield* service.delegateTask(scope, {
+            task: "git status",
+            auto: true,
+            routing: { capabilityTier: "fast", minTier: "deep" },
+            mode: "async",
+            clientRequestId: "routing-min-tier",
+          });
+          assert.equal(flooredRes.model, "claude-opus-5-5");
+
+          const dissimilarRes = yield* service.delegateTask(scope, {
+            task: "Review the authentication change.",
+            auto: true,
+            routing: { capabilityTier: "frontier", excludeVendorFamily: "anthropic" },
+            mode: "async",
+            clientRequestId: "routing-dissimilar",
+          });
+          assert.equal(dissimilarRes.providerInstanceId, codexInstanceId);
+          assert.equal(dissimilarRes.model, "gpt-6.2-astra");
+          assert.equal(dissimilarRes.degradedReason, undefined);
+
+          codexLimited = true;
+          const degradedRes = yield* service.delegateTask(scope, {
+            task: "Review the authentication change.",
+            auto: true,
+            routing: { capabilityTier: "deep", excludeVendorFamily: "anthropic" },
+            mode: "async",
+            clientRequestId: "routing-degraded",
+          });
+          assert.equal(degradedRes.providerInstanceId, claudeInstanceId);
+          assert.equal(degradedRes.model, "claude-opus-5-5");
+          assert.equal(degradedRes.degradedReason, "no-dissimilar-provider-available");
+
+          const pinnedRes = yield* service.delegateTask(scope, {
+            task: "git status",
+            target: yield* decodeTarget({
+              providerInstanceId: claudeInstanceId,
+              model: "claude-opus-5-5",
+            }),
+            routing: { capabilityTier: "fast", excludeVendorFamily: "anthropic" },
+            mode: "async",
+            clientRequestId: "routing-pinned",
+          });
+          assert.equal(pinnedRes.providerInstanceId, claudeInstanceId);
+          assert.equal(pinnedRes.model, "claude-opus-5-5");
+          assert.equal(pinnedRes.degradedReason, undefined);
+          assert.deepEqual(commands[4]?.modelSelection, {
+            instanceId: claudeInstanceId,
+            model: "claude-opus-5-5",
+          });
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
       }),
   );

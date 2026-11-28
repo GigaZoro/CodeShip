@@ -1952,6 +1952,11 @@ export const layer: Layer.Layer<
                     initialProviderItemIdentityVersion:
                       activeProviderThread.nativeMetadata.itemIdentityVersion,
                   }),
+              ...(activeProviderThread.pinnedSystemInstructions == null
+                ? {}
+                : {
+                    initialPinnedSystemInstructions: activeProviderThread.pinnedSystemInstructions,
+                  }),
             })
             .pipe(withStartStepTimeout("open its session")),
         );

@@ -7,8 +7,12 @@ import {
 } from "@t3tools/contracts";
 import {
   applyAutoComplexityToSelection,
+  applyAutoRoutingConstraints,
   classifyAutoRequestComplexity,
+  filterEligibleAutoProviders,
   preserveAutoSelectionOnAccount,
+  resolveEffectiveCapabilityTier,
+  vendorFamilyOfDriver,
   type AutoComplexityModelOption,
 } from "./AutoComplexityRouting.ts";
 
@@ -420,6 +424,165 @@ describe("applyAutoComplexityToSelection", () => {
         configuredAuto: null,
       }),
       agSelection,
+    );
+  });
+});
+
+describe("Auto capability tiers and vendor-family dissimilarity constraints", () => {
+  const claudeAuto: ModelSelection = {
+    instanceId: claudeInstance,
+    model: "claude-opus-5-5",
+    autoAccount: true,
+    options: [{ id: "effort", value: "high" }],
+  };
+  const codexAuto: ModelSelection = {
+    instanceId: codexInstance,
+    model: "gpt-6.2-astra",
+    autoAccount: true,
+    options: [{ id: "reasoningEffort", value: "high" }],
+  };
+
+  it("normalizes vendor families across driver kinds and multi-vendor model slugs", () => {
+    assert.equal(vendorFamilyOfDriver("claudeAgent"), "anthropic");
+    assert.equal(vendorFamilyOfDriver("codex"), "openai");
+    assert.equal(vendorFamilyOfDriver("antigravity"), "google");
+    assert.equal(vendorFamilyOfDriver("grok"), "xai");
+    assert.equal(vendorFamilyOfDriver("antigravity", "claude-opus-4-6-thinking"), "anthropic");
+    assert.equal(vendorFamilyOfDriver("antigravity", "gpt-oss-120b"), "openai");
+    assert.equal(vendorFamilyOfDriver("opencode", "anthropic/claude-sonnet-4-5"), "anthropic");
+    assert.equal(vendorFamilyOfDriver("opencode", "xai/grok-4"), "xai");
+  });
+
+  it("filters out excluded vendor families when a dissimilar provider with quota exists, and degrades gracefully otherwise", () => {
+    const candidates = [
+      { instanceId: claudeInstance, driver: claude, model: "claude-opus-5-5", hasQuota: true },
+      { instanceId: codexInstance, driver: codex, model: "gpt-6.2-astra", hasQuota: true },
+      { instanceId: agInstance, driver: antigravity, model: "gemini-4-neon", hasQuota: false },
+    ];
+
+    const dissimilar = filterEligibleAutoProviders(candidates, {
+      excludeVendorFamily: "Anthropic",
+    });
+    assert.equal(dissimilar.degradedReason, undefined);
+    assert.deepEqual(
+      dissimilar.providers.map((provider) => provider.instanceId),
+      [codexInstance],
+    );
+
+    const noQuotaLeft = filterEligibleAutoProviders(candidates, {
+      excludeVendorFamily: ["claude", "openai"],
+    });
+    assert.equal(noQuotaLeft.degradedReason, "no-dissimilar-provider-available");
+    assert.deepEqual(
+      noQuotaLeft.providers.map((provider) => provider.instanceId),
+      [claudeInstance, codexInstance],
+    );
+
+    const noMatchesAtAll = filterEligibleAutoProviders(candidates, {
+      excludeVendorFamily: ["anthropic", "openai", "google"],
+    });
+    assert.equal(noMatchesAtAll.degradedReason, "no-dissimilar-provider-available");
+    assert.deepEqual(
+      noMatchesAtAll.providers.map((provider) => provider.instanceId),
+      [claudeInstance, codexInstance],
+    );
+
+    const allExhausted = filterEligibleAutoProviders(
+      candidates.map((candidate) => ({ ...candidate, hasQuota: false })),
+      { excludeVendorFamily: ["anthropic", "openai", "google"] },
+    );
+    assert.equal(allExhausted.degradedReason, "no-dissimilar-provider-available");
+    assert.equal(allExhausted.providers.length, 3);
+  });
+
+  it("maps fast, standard, deep, and frontier tiers and enforces minTier floor without downgrading", () => {
+    assert.equal(
+      resolveEffectiveCapabilityTier({
+        complexity: "lite",
+        constraints: { capabilityTier: "fast", minTier: "deep" },
+      }),
+      "deep",
+    );
+    assert.equal(
+      resolveEffectiveCapabilityTier({
+        complexity: "deep",
+        constraints: { minTier: "standard" },
+      }),
+      "deep",
+    );
+
+    const fastClaude = applyAutoRoutingConstraints({
+      selection: claudeAuto,
+      constraints: { capabilityTier: "fast" },
+      complexity: "deep",
+      account: { instanceId: claudeInstance, driver: claude, models: claudeModels },
+      started: false,
+      configuredAuto: { model: "claude-opus-5-5", options: [{ id: "effort", value: "high" }] },
+    });
+    assert.equal(fastClaude.model, "claude-sonnet-5-5");
+    assert.deepEqual(fastClaude.options, [{ id: "effort", value: "low" }]);
+
+    const flooredClaude = applyAutoRoutingConstraints({
+      selection: claudeAuto,
+      constraints: { capabilityTier: "fast", minTier: "deep" },
+      complexity: "lite",
+      account: { instanceId: claudeInstance, driver: claude, models: claudeModels },
+      started: false,
+      configuredAuto: { model: "claude-opus-5-5", options: [{ id: "effort", value: "high" }] },
+    });
+    assert.equal(flooredClaude.model, "claude-opus-5-5");
+    assert.deepEqual(flooredClaude.options, [{ id: "effort", value: "high" }]);
+
+    const frontierClaude = applyAutoRoutingConstraints({
+      selection: claudeAuto,
+      constraints: { capabilityTier: "frontier" },
+      complexity: "lite",
+      account: { instanceId: claudeInstance, driver: claude, models: claudeModels },
+      started: false,
+      configuredAuto: { model: "claude-sonnet-5-5", options: [{ id: "effort", value: "low" }] },
+    });
+    assert.equal(frontierClaude.model, "claude-opus-5-5");
+    assert.deepEqual(frontierClaude.options, [{ id: "effort", value: "ultra" }]);
+
+    // Codex skips promptInjectedValues (ultra) on frontier and picks max supported non-injected value (xhigh).
+    const frontierCodex = applyAutoRoutingConstraints({
+      selection: codexAuto,
+      constraints: { capabilityTier: "frontier" },
+      complexity: "standard",
+      account: { instanceId: codexInstance, driver: codex, models: codexModels },
+      started: false,
+      configuredAuto: { model: "gpt-6.2-sol", options: [{ id: "reasoningEffort", value: "low" }] },
+    });
+    assert.equal(frontierCodex.model, "gpt-6.2-astra");
+    assert.deepEqual(frontierCodex.options, [{ id: "reasoningEffort", value: "xhigh" }]);
+
+    // Omitting tier constraints preserves exact legacy Auto complexity behavior (standard honors low).
+    const legacyOmitted = applyAutoRoutingConstraints({
+      selection: claudeAuto,
+      constraints: undefined,
+      complexity: "standard",
+      account: { instanceId: claudeInstance, driver: claude, models: claudeModels },
+      started: false,
+      configuredAuto: { model: "claude-opus-5-5", options: [{ id: "effort", value: "low" }] },
+    });
+    assert.deepEqual(legacyOmitted.options, [{ id: "effort", value: "low" }]);
+
+    // Non-Auto concrete selection stays untouched even when constraints are passed.
+    const concretePin: ModelSelection = {
+      instanceId: claudeInstance,
+      model: "claude-sonnet-5-5",
+      options: [{ id: "effort", value: "low" }],
+    };
+    assert.strictEqual(
+      applyAutoRoutingConstraints({
+        selection: concretePin,
+        constraints: { capabilityTier: "frontier", minTier: "frontier" },
+        complexity: "lite",
+        account: { instanceId: claudeInstance, driver: claude, models: claudeModels },
+        started: false,
+        configuredAuto: null,
+      }),
+      concretePin,
     );
   });
 });

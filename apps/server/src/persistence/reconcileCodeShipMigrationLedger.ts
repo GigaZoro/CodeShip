@@ -50,6 +50,7 @@ export const legacyCodeShipMigrationNames = [
   "CommandExitStatusError",
   "CommandStopLeftovers",
   "TextGenerationUsage",
+  "ProviderThreadPinnedSystemInstructions",
 ] as const;
 
 /** Resumable fork migrations whose cursor released builds kept in `migration_progress`. */

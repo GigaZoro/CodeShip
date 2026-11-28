@@ -33,6 +33,11 @@ const SETTINGS_SEARCH_TERMS = {
     msg("work log"),
     msg("zen"),
     msg("final answers only"),
+    msg("language"),
+    msg("translation"),
+    msg("calm preset"),
+    msg("compact"),
+    msg("status colors"),
   ],
   SettingsNavigation: [msg("tabs"), msg("tab order"), msg("reorder"), msg("hide tabs")],
   SettingsKeyboard: [

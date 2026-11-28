@@ -184,8 +184,9 @@ import CodeShipMigration0043 from "./CodeShipMigrations/043_CommandWindowsIdenti
 import CodeShipMigration0044 from "./CodeShipMigrations/044_CommandExitStatusError.ts";
 import CodeShipMigration0045 from "./CodeShipMigrations/045_CommandStopLeftovers.ts";
 import CodeShipMigration0046 from "./CodeShipMigrations/046_TextGenerationUsage.ts";
-import CodeShipMigration0047 from "./CodeShipMigrations/047_PayloadIndexesJsonValid.ts";
-import CodeShipMigration0048 from "./CodeShipMigrations/048_RunDemandIndex.ts";
+import CodeShipMigration0047 from "./CodeShipMigrations/047_ProviderThreadPinnedSystemInstructions.ts";
+import CodeShipMigration0048 from "./CodeShipMigrations/048_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0049 from "./CodeShipMigrations/049_RunDemandIndex.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -357,8 +358,9 @@ const codeShipMigrationEntries = [
   [44, "CommandExitStatusError", CodeShipMigration0044],
   [45, "CommandStopLeftovers", CodeShipMigration0045],
   [46, "TextGenerationUsage", CodeShipMigration0046],
-  [47, "PayloadIndexesJsonValid", CodeShipMigration0047],
-  [48, "RunDemandIndex", CodeShipMigration0048],
+  [47, "ProviderThreadPinnedSystemInstructions", CodeShipMigration0047],
+  [48, "PayloadIndexesJsonValid", CodeShipMigration0048],
+  [49, "RunDemandIndex", CodeShipMigration0049],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

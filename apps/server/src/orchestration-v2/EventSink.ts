@@ -498,13 +498,21 @@ const layerBase: Layer.Layer<
       input: ReadonlyArray<OrchestrationV2DomainEvent>,
       commandId: CommandId | undefined,
     ) {
-      // Only run.delegated-completion-updated changes a cohort, so a stale run cannot carry an old one.
+      // Dedicated events own these fields, so a stale snapshot cannot carry an old value
+      // and the large pin text is stored once per change, not on every provider-thread.updated.
       const events = input.map((event): OrchestrationV2DomainEvent => {
-        if (event.type !== "run.updated" || event.payload.delegatedCompletion === undefined) {
-          return event;
+        if (event.type === "run.updated" && event.payload.delegatedCompletion !== undefined) {
+          const { delegatedCompletion: _delegatedCompletion, ...payload } = event.payload;
+          return { ...event, payload };
         }
-        const { delegatedCompletion: _delegatedCompletion, ...payload } = event.payload;
-        return { ...event, payload };
+        if (
+          event.type === "provider-thread.updated" &&
+          event.payload.pinnedSystemInstructions !== undefined
+        ) {
+          const { pinnedSystemInstructions: _pinnedSystemInstructions, ...payload } = event.payload;
+          return { ...event, payload };
+        }
+        return event;
       });
       yield* guardRunRegressions(events, commandId);
       const runOrdinals = new Map(
@@ -802,7 +810,8 @@ const layerBase: Layer.Layer<
         "orchestration_v2.event_count": input.events.length,
         "orchestration_v2.provider_thread_id": input.expected.id,
       });
-      const expectedJson = yield* ProjectionStore.encodeProviderThreadPayload(input.expected);
+      const { payloadJson: expectedJson } =
+        yield* ProjectionStore.encodeStoredProviderThreadPayload(input.expected);
       return yield* writeIfStoredPayloadMatches(
         sql<{ readonly payload_json: string }>`
           SELECT payload_json

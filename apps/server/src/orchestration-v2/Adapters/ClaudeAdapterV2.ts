@@ -129,6 +129,7 @@ import {
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ProviderRetry,
   type OrchestrationV2ProviderSession,
+  type OrchestrationV2PinnedSystemInstructions,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
@@ -267,6 +268,8 @@ import {
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import {
   autoModePromptBlock,
+  pinnedSystemInstructionsChanged,
+  pinnedSystemInstructionsKey,
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -2879,6 +2882,60 @@ const subagentDeviceInstructions: HookCallback = () =>
     },
   });
 
+export interface ClaudeSystemInstructionsInputs {
+  readonly hasMcpServers: boolean;
+  readonly deviceToolsAvailable: boolean;
+  readonly agentFeedback?: AgentFeedbackMode;
+  readonly runtimePolicy?: {
+    readonly cwd: string | null;
+    readonly workspace?: ProviderAdapter.ProviderAdapterV2RuntimePolicy["workspace"];
+  };
+}
+
+export function buildClaudeSystemInstructions(input: ClaudeSystemInstructionsInputs): string {
+  const agentFeedback = input.hasMcpServers ? (input.agentFeedback ?? "off") : "off";
+  return (
+    buildRuntimeInstructions({
+      harness: "Claude Code",
+      agentFeedback,
+      ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
+    }) +
+    (input.hasMcpServers
+      ? T3_CODE_ORCHESTRATION_INSTRUCTIONS +
+        CLAUDE_SEND_TO_USER_INSTRUCTIONS +
+        (input.deviceToolsAvailable
+          ? `\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}\n`
+          : "")
+      : "")
+  );
+}
+
+/** A resumed thread keeps its stored text while its inputs and the epoch match; otherwise it rebuilds. */
+export function resolveClaudePinnedSystemInstructions(input: {
+  readonly resume: boolean;
+  readonly stored: OrchestrationV2PinnedSystemInstructions | null | undefined;
+  readonly inputs: ClaudeSystemInstructionsInputs;
+}): OrchestrationV2PinnedSystemInstructions {
+  const agentFeedback = input.inputs.hasMcpServers ? (input.inputs.agentFeedback ?? "off") : "off";
+  const extraRoots = input.inputs.runtimePolicy?.workspace?.extraRoots ?? [];
+  const key = pinnedSystemInstructionsKey({
+    harness: "Claude Code",
+    hasMcpServers: input.inputs.hasMcpServers,
+    deviceToolsAvailable: input.inputs.deviceToolsAvailable,
+    ...(agentFeedback === "off" ? {} : { agentFeedback }),
+    ...(extraRoots.length === 0
+      ? {}
+      : {
+          workspace: JSON.stringify({
+            cwd: input.inputs.runtimePolicy?.cwd ?? null,
+            extraRoots,
+          }),
+        }),
+  });
+  if (input.resume && input.stored?.key === key) return input.stored;
+  return { key, text: buildClaudeSystemInstructions(input.inputs) };
+}
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly modelCatalog?: ClaudeModelCatalog;
@@ -2901,6 +2958,8 @@ export function makeClaudeQueryOptions(input: {
   readonly agentFeedback?: AgentFeedbackMode;
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
+  /** The thread's resolved T3 instruction block; resolveClaudePinnedSystemInstructions picks it. */
+  readonly systemInstructions?: string;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -3076,18 +3135,13 @@ export function makeClaudeQueryOptions(input: {
       type: "preset" as const,
       preset: "claude_code" as const,
       append: [
-        buildRuntimeInstructions({
-          harness: "Claude Code",
-          agentFeedback,
-          runtimePolicy: { cwd: input.cwd, workspace: input.workspace },
-        }) +
-          (input.mcpServers === undefined
-            ? ""
-            : T3_CODE_ORCHESTRATION_INSTRUCTIONS +
-              CLAUDE_SEND_TO_USER_INSTRUCTIONS +
-              (deviceInstructions
-                ? `\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}\n`
-                : "")),
+        input.systemInstructions ??
+          buildClaudeSystemInstructions({
+            hasMcpServers: input.mcpServers !== undefined,
+            deviceToolsAvailable: deviceInstructions,
+            agentFeedback,
+            runtimePolicy: { cwd: input.cwd, workspace: input.workspace },
+          }),
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
@@ -7357,6 +7411,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // Digests of MCP app notes already in each native session's history, by key. Cleared when it
         // compacts; persisted in native metadata so a restarted server does not resend them.
         const deliveredAppContext = new Map<string, ReadonlyMap<string, string>>();
+        const pinnedSystemInstructionsByNativeThread = new Map<
+          string,
+          OrchestrationV2PinnedSystemInstructions
+        >();
         const latestPlanByKind = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact>());
         // Claude 5 task tools edit one list per native session, across turns.
         const taskListsByNativeThread = yield* Ref.make(
@@ -16104,6 +16162,31 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
+          const deviceToolsAvailable = mcpSession?.capabilities?.has("device") === true;
+          // A restricted review launches with fixed options and no system instructions to pin.
+          const pinnedSystemInstructions =
+            launch.restricted !== undefined
+              ? undefined
+              : resolveClaudePinnedSystemInstructions({
+                  resume: shouldResume,
+                  stored:
+                    pinnedSystemInstructionsByNativeThread.get(nativeThreadId) ??
+                    turnInput.providerThread.pinnedSystemInstructions,
+                  inputs: {
+                    hasMcpServers: mcpOverrides.mcpServers !== undefined,
+                    deviceToolsAvailable,
+                    agentFeedback: turnInput.agentFeedback ?? "off",
+                    runtimePolicy: {
+                      cwd: turnInput.runtimePolicy.cwd,
+                      ...(turnInput.runtimePolicy.workspace === undefined
+                        ? {}
+                        : { workspace: turnInput.runtimePolicy.workspace }),
+                    },
+                  },
+                });
+          if (pinnedSystemInstructions !== undefined) {
+            pinnedSystemInstructionsByNativeThread.set(nativeThreadId, pinnedSystemInstructions);
+          }
           const launchOptions =
             launch.restricted !== undefined
               ? { restricted: launch.restricted, ordinary: undefined }
@@ -16146,7 +16229,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     ...(mcpOverrides.mcpServers === undefined
                       ? {}
                       : { mcpServers: mcpOverrides.mcpServers }),
-                    deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
+                    deviceToolsAvailable,
+                    ...(pinnedSystemInstructions === undefined
+                      ? {}
+                      : { systemInstructions: pinnedSystemInstructions.text }),
                     permissionMode: queryPolicy.permissionMode,
                     ...(queryPolicy.allowDangerouslySkipPermissions === undefined
                       ? {}
@@ -17069,6 +17155,34 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   completedAt: null,
                 }),
               });
+              const pinnedSystemInstructions =
+                pinnedSystemInstructionsByNativeThread.get(nativeThreadId);
+              if (
+                pinnedSystemInstructions !== undefined &&
+                pinnedSystemInstructionsChanged(
+                  pinnedSystemInstructions,
+                  turnInput.providerThread.pinnedSystemInstructions,
+                )
+              ) {
+                // The remembered thread carries the live roster and goal; the turn input can be older.
+                const liveProviderThread =
+                  (yield* Ref.get(lastProviderThreadByNativeThread)).get(nativeThreadId) ??
+                  turnInput.providerThread;
+                const updatedProviderThread: OrchestrationV2ProviderThread = {
+                  ...liveProviderThread,
+                  providerSessionId: session.id,
+                  status: "active",
+                  pinnedSystemInstructions,
+                  updatedAt: startedAt,
+                };
+                yield* rememberProviderThread(updatedProviderThread);
+                yield* emitProviderEvent({
+                  type: "provider_thread.updated",
+                  driver: CLAUDE_PROVIDER,
+                  providerThread: updatedProviderThread,
+                  pinnedSystemInstructions,
+                });
+              }
             });
             // `offer` may call this twice; a second call must not restore notes compaction cleared.
             let offerCommitted = false;
@@ -18472,6 +18586,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               // usage even at an earlier fork point; this is conservative.
               const claudeAttachmentBudget =
                 forkInput.sourceProviderThread.nativeMetadata?.claudeAttachmentBudget;
+              const inheritedPinnedSystemInstructions =
+                pinnedSystemInstructionsByNativeThread.get(sourceNativeThreadId) ??
+                forkInput.sourceProviderThread.pinnedSystemInstructions ??
+                null;
+              if (inheritedPinnedSystemInstructions !== null) {
+                pinnedSystemInstructionsByNativeThread.set(
+                  forked.sessionId,
+                  inheritedPinnedSystemInstructions,
+                );
+              }
               return makeProviderThread({
                 idAllocator,
                 providerInstanceId: adapterOptions.instanceId,

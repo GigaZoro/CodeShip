@@ -1,3 +1,39 @@
+## 2026-11-28 — `check:changed` runs server tests in parallel chains with RAM-backed temp dirs
+
+- Maintainers: `vp run check:changed` now splits `apps/server` test groups across up to four independent serial chains when the machine's concurrency budget allows, without invalidating cached test passes when the chain count changes.
+- On Linux, `check:changed` places its test step temp directory on `/dev/shm` when writable, executable, and with at least 2 GiB free (using `/tmp` on POSIX when `os.tmpdir()` is long, and falling back to the system temp directory elsewhere), and isolates each running test group in its own short `g-*` `TMPDIR` subdirectory outside Git's trace2 temp folder.
+
+## 2026-11-28 — Run loop guard and thrash circuit breaker
+
+- Automated, delegated, maintenance, and interactive runs now enforce configurable per-role turn and tool-call caps alongside a 3-identical-error thrash circuit breaker, aborting stuck loops with a structured reason instead of burning quota.
+
+## 2026-11-28 — Depth-one landing pipeline pre-checks the next queued change
+
+- Maintainers: `landing-turn.cjs` now pipelines the first queued lander behind the current turn holder: before running under-turn work (`finalize`, under-turn checks, or awaiting an in-flight speculative pre-check), the holder atomically publishes its candidate commit to `refs/heads/landing-lease/candidate` (cleaned up on push, release, or lapsed-lease takeover), and the next waiter in line speculatively rebases and pre-checks a private copy against that candidate. When the holder lands that exact commit and the rebased tree matches, the waiter skips `underTurnCheck` and pushes straight to `main`, logging `speculativeReused` and `phases.speculativeCheck` in `landings.jsonl`.
+
+## 2026-11-28 — Declarative capability tiers and provider dissimilarity for Auto delegations
+
+- `delegate_task` in Auto mode accepts an optional `routing` object (`capabilityTier`, `minTier`, `excludeVendorFamily`) so agents can ask for `fast`, `standard`, `deep`, or `frontier` capability tiers, enforce a minimum reasoning floor across prompt lengths, and steer delegations away from an excluded vendor family (such as `anthropic`, `openai`, `google`, or `xai`).
+- When all dissimilar providers lack quota or availability, Auto routing falls back to an eligible provider and reports `degradedReason: "no-dissimilar-provider-available"` instead of failing the delegation. Concrete `target` model pins remain unaffected.
+
+## 2026-11-28 — Zero-LLM upstream drift radar and i18n parity gate
+
+- Maintainers: added `scripts/upstream-drift-radar.mjs` (deterministic `git merge-tree --write-tree` with legacy fallback, security advisory scan, and optional isolated worktree verification) and `scripts/i18n-diff-gate.mjs` (zero-LLM locale key parity check) as `--needs-run` run conditions for scheduled maintenance tasks.
+- Maintainers: updated `machine-config.json` to retire the weekly dependency upgrade task, stagger fixed schedules onto prime minutes (`:07`, `:17`, `:23`), order shared tasks VPS-first (`Zoro-VPS` → `Zoro-PC` → `MacBook-Pro-Andrii`), and add 3-provider `fallbackModelSelections` (Claude, Codex, Antigravity) to every recurring task.
+
+## 2026-11-28 — Calm preset in Appearance
+
+- **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
+- Applying the preset leaves notification settings untouched, lists each setting it changed, and offers **Undo** (inline in Settings, in the confirmation toast on web and desktop, and as **Undo Calm preset** in the mobile command palette) to restore your prior values.
+
+## 2026-11-27 — Antigravity quota holds wait for their reset
+
+- When Antigravity refuses a turn because a quota ran out, T3.CodeShip holds only the models on that quota (Claude and GPT, Gemini, or Gemini Argon) until the reset Google reports. Work on another quota of the same account no longer ends the hold early, so a waiting chat is no longer resumed every few minutes only to be refused again.
+
+## 2026-11-27 — Pin thread system instructions across server updates
+
+- Resumed Claude and Antigravity chats keep the system instructions stored when their native session started, so a release that only rewords those instructions no longer invalidates their provider prompt cache. A chat rebuilds its instructions when its MCP or device-tool availability changes, or when a release bumps the instruction epoch. Codex chats are unchanged: Codex adds T3's context after the conversation so far, and only when it changes, so its cache already survives an update.
+
 ## 2026-11-27 — At most one marker per sidebar row
 
 - Sidebar thread rows on web, desktop, and mobile now show at most one marker at a time, chosen by priority (**Needs you** > **Failed** > **PR state** > **Machine offline**, then draft, queued, terminal, scheduled, pinned, machine, project, tags, color, notifications, and provider). Any additional markers move to the row's hover card in the same priority order.

@@ -3,8 +3,9 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
-import type { OrchestrationV2ProviderFailure } from "@t3tools/contracts";
+import { ANTIGRAVITY_DEFAULT_MODEL, type OrchestrationV2ProviderFailure } from "@t3tools/contracts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { antigravityQuotaMeter } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -54,6 +55,7 @@ const QUOTA_EXHAUSTED = /\breason:QUOTA_EXHAUSTED\b/;
 // history, so every later prompt to that session fails the same way.
 const INVALID_THINKING_SIGNATURE =
   /\bmessages\.\d+\.content\.\d+(?:\.thinking\.signature: Field required|: Invalid `signature` in `thinking` block)/;
+const QUOTA_MODEL = /\bmetadata:map\[[^\]]*?\bmodel:([^\s\]]+)/;
 const RESET_TIMESTAMP = /\bquotaResetTimeStamp:([^\s\]]+)/;
 const RESET_DELAY = /\bquotaResetDelay:((?:\d+(?:\.\d+)?(?:ns|us|µs|μs|ms|h|m|s))+)(?=[\s\]])/;
 // google.rpc.RetryInfo, which plain rate limits carry instead of a quota reset.
@@ -200,6 +202,7 @@ function turnFailure(
   stopReason: EffectAcpSchema.StopReason,
   step: LastStep | undefined,
   now: DateTime.Utc | undefined,
+  model: string,
 ):
   | {
       readonly failure: OrchestrationV2ProviderFailure;
@@ -215,6 +218,13 @@ function turnFailure(
   if (errorText === undefined && stopReason !== "refusal") return undefined;
   const text = errorText ?? "";
   const apiError = API_ERROR.exec(text) ?? statusError(text);
+  // A refusal holds only the quota meter it names, so work on another meter of the account does
+  // not lift it. The error names the refused model; else it is the turn's. Neither known (an
+  // unresolved default could run on any quota): the account.
+  const refused = QUOTA_MODEL.exec(text)?.[1];
+  const modelScope =
+    (refused === undefined ? undefined : antigravityQuotaMeter([], refused)) ??
+    (model === ANTIGRAVITY_DEFAULT_MODEL ? undefined : antigravityQuotaMeter([], model));
   const reusable = (failure: OrchestrationV2ProviderFailure) =>
     ({ failure, threadDisposition: "reusable" }) as const;
   if (stopReason === "refusal" || QUOTA_EXHAUSTED.test(text)) {
@@ -225,6 +235,7 @@ function turnFailure(
         code: apiError?.[3] ?? "QUOTA_EXHAUSTED",
         retryable: true,
         resetAt: resetAtFrom(text, now) ?? null,
+        modelScope,
       }),
     );
   }
@@ -270,6 +281,7 @@ function turnFailure(
     code: status ?? null,
     retryable: rateLimited || transientNotFound || Number(httpStatus) >= 500,
     resetAt: resetAtFrom(text, now) ?? null,
+    modelScope: rateLimited ? modelScope : undefined,
   });
   return transientNotFound
     ? { failure, threadDisposition: "reusable", resumeWith: "continue" }
@@ -287,9 +299,10 @@ const conversationSegments = ["antigravity-acp", "conversations"];
 export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.watch")(function* (
   profileDirectory: string,
   sessionId: string,
+  model: string,
 ) {
   const typedOnly = (result: EffectAcpSchema.PromptResponse) =>
-    DateTime.now.pipe(Effect.map((now) => turnFailure(result.stopReason, undefined, now)));
+    DateTime.now.pipe(Effect.map((now) => turnFailure(result.stopReason, undefined, now, model)));
   if (!NATIVE_SESSION_ID.test(sessionId)) return typedOnly;
   const segments = [...conversationSegments, `${sessionId}.db`];
   const before = yield* Effect.tryPromise({
@@ -349,6 +362,6 @@ export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.w
       : undefined;
     // A retired prompt's check runs long after the error, so a relative delay has no anchor.
     const now = options?.retired === true ? undefined : yield* DateTime.now;
-    return turnFailure(result.stopReason, step, now);
+    return turnFailure(result.stopReason, step, now, model);
   });
 });

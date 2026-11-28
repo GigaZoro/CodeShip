@@ -391,6 +391,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["wide full width column layout messages composer monitor"],
   },
   {
+    id: "calm-preset",
+    title: msg("Calm preset"),
+    to: "/settings/appearance",
+    searchTerms: [
+      "quiet calm preset compact density essentials thread details fold finished work status colors",
+    ],
+  },
+  {
     id: "interface-density",
     title: msg("Interface density"),
     to: "/settings/appearance",

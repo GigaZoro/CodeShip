@@ -82,18 +82,21 @@ import {
   CHANGED_TEST_GROUP_SIZE,
   changedTestRequestEnv,
   changedTestRuntime,
+  countServerTestGroups,
   gitEnvironment,
   gitPaths,
   installFingerprint,
   isFileAt,
   isReferenceRepoPath,
+  MAX_SERVER_CHAINS,
   nameKey,
+  serverTestChainCount,
   unlessAbsent,
 } from "./lib/cached-tests.ts";
 import { isSqliteBusy, stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 
 const GiB = 1024 ** 3;
-// The test step's limit grows by this much per selected file: server tests run one at a time.
+// The test step's limit grows by this much per selected file: each server chain runs its test files one at a time.
 const TEST_FILE_SECONDS = 120;
 // Without an explicit timeout, a test step stops growing here, so a run selecting thousands of files ends.
 // A landing raises it to what its lease has left (CHECK_CHANGED_TEST_STEP_MAX).
@@ -165,49 +168,57 @@ const sharedBudget = (
   });
 
   // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds a marker file's
-  // transaction from its first take until `close`; other runs start no step meanwhile, so its load-sensitive
-  // tests get the machine. The OS drops the marker with its process, so a crashed landing blocks nobody.
+  // transaction from before its first slot until `close`; other runs start no step meanwhile, so its
+  // load-sensitive tests get the machine. The OS drops the marker with its process, so a crashed landing blocks nobody.
   const markerPrefix = "landing-wait-";
   const markerFile = NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`);
   const isSqliteCantOpen = (cause: unknown) =>
     cause instanceof Error && "errcode" in cause && cause.errcode === 14;
   let marker: NodeSqlite.DatabaseSync | undefined;
+  // False when Windows keeps the file: another run has it open.
+  const removeMarker = (file: string) => {
+    try {
+      NodeFS.rmSync(file, { force: true });
+      return true;
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (platform === "win32" && (code === "EBUSY" || code === "EPERM")) return false;
+      throw cause;
+    }
+  };
+  /** False while a landing run has yet to hold its marker; true for every other run. */
   const markLanding = () => {
-    if (!landing || marker) return;
+    if (!landing || marker) return true;
     let db: NodeSqlite.DatabaseSync;
     try {
       db = new NodeSqlite.DatabaseSync(markerFile);
     } catch (cause) {
-      if (isSqliteCantOpen(cause)) return;
+      if (isSqliteCantOpen(cause)) return false;
       throw cause;
     }
     try {
       db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
     } catch (cause) {
       db.close();
-      // Another run's stale-marker check holds it for a moment; the next take marks again.
-      if (isSqliteBusy(cause)) return;
+      // Another run's stale-marker check holds it for a moment.
+      if (isSqliteBusy(cause)) return false;
       throw cause;
     }
     // That check may have removed the file before this lock; a lock on a removed file holds nobody back.
     if (!NodeFS.existsSync(markerFile)) {
       db.close();
-      return;
+      return false;
     }
     marker = db;
+    return true;
   };
   const unmarkLanding = () => {
     if (!marker) return;
     marker.close();
     marker = undefined;
-    try {
-      NodeFS.rmSync(markerFile, { force: true });
-    } catch (cause) {
-      // On Windows, unlinking a marker while another run probes it fails with EPERM or EBUSY;
-      // its transaction is already closed, so a later probe removes it once the handle closes.
-      const code = cause instanceof Error && "code" in cause ? String(cause.code) : "";
-      if (code !== "EPERM" && code !== "EBUSY") throw cause;
-    }
+    // On Windows, unlinking a marker while another run probes it fails with EPERM or EBUSY;
+    // its transaction is already closed, so a later probe removes it once the handle closes.
+    removeMarker(markerFile);
   };
   const landingWaits = () =>
     NodeFS.readdirSync(directory)
@@ -231,19 +242,10 @@ const sharedBudget = (
         }
         // Nobody held it: a marker its landing left behind. Remove it while still locked, so a landing
         // reopening the name meanwhile fails its lock and retries; Windows cannot remove an open file.
-        if (platform !== "win32") NodeFS.rmSync(file, { force: true });
+        if (platform !== "win32") removeMarker(file);
         db.close();
-        if (platform === "win32") {
-          try {
-            NodeFS.rmSync(file, { force: true });
-          } catch (cause) {
-            const code = (cause as NodeJS.ErrnoException).code;
-            // A landing opened it again since the close.
-            if (code === "EBUSY" || code === "EPERM") return true;
-            throw cause;
-          }
-        }
-        return false;
+        // Kept on Windows only when a landing opened it again since the close.
+        return platform === "win32" && !removeMarker(file);
       });
 
   const lockFree = (max: number) =>
@@ -277,7 +279,11 @@ const sharedBudget = (
   /** Waits for a free slot, then holds as many free ones as it can, up to `max`, until the scope closes. */
   const take = Effect.fnUntraced(function* (max: number) {
     for (;;) {
-      yield* Effect.try({ try: markLanding, catch: String });
+      // A landing starts no step unmarked.
+      if (!(yield* Effect.try({ try: markLanding, catch: String }))) {
+        yield* Effect.sleep(SLOT_POLL_INTERVAL);
+        continue;
+      }
       const signal = freed;
       const held = yield* Effect.uninterruptible(
         lockFree(max).pipe(
@@ -462,6 +468,7 @@ const TestRequest = Schema.Struct({
   groupSize: Schema.Number,
   uncached: Schema.Array(Schema.String),
   completed: Schema.optional(Schema.Array(Schema.String)),
+  serverChains: Schema.optional(Schema.Number),
 });
 const encodeTestRequest = Schema.encodeEffect(Schema.fromJsonString(TestRequest));
 const decodeTestSummary = Schema.decodeEffect(
@@ -1182,14 +1189,150 @@ const removeTempDirectory = (directory: string, platform: NodeJS.Platform): Effe
     ),
   );
 
+const SHM_TEMP_BASE = "/dev/shm";
+const POSIX_SHORT_TEMP_BASE = "/tmp";
+const MIN_SHM_AVAILABLE_BYTES = 2 * GiB;
+// Keep `${base}/t3-cct-XXXXXX/g-YYYYYY` (23 bytes beyond `base`) well below Unix socket `sun_path`
+// limits (103 bytes on macOS, 107 on Linux) by falling back to `/tmp` when `os.tmpdir()` is long.
+const MAX_POSIX_TEMP_BASE_BYTES = 32;
+
+const isWritableDirectory = (directory: string): boolean => {
+  try {
+    if (!NodeFS.statSync(directory).isDirectory()) return false;
+    NodeFS.accessSync(
+      directory,
+      NodeFS.constants.R_OK | NodeFS.constants.W_OK | NodeFS.constants.X_OK,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Check Linux `/proc/self/mountinfo` to determine whether the deepest mount covering `targetPath`
+ * allows execution (neither its VFS mount options nor its superblock options contain `noexec`).
+ * Returns `false` when no mount matches.
+ */
+export const isMountExecutable = (mountinfo: string, targetPath: string): boolean => {
+  const normalizedTarget = targetPath.length > 1 ? targetPath.replace(/\/+$/, "") : targetPath;
+  if (!normalizedTarget.startsWith("/")) return false;
+  let matchedLength = -1;
+  let matchedExecutable = false;
+  for (const line of mountinfo.split(/\r?\n/)) {
+    if (!line) continue;
+    const fields = line.split(" ");
+    if (fields.length < 10) continue;
+    const separatorIndex = fields.indexOf("-", 6);
+    if (separatorIndex < 6 || separatorIndex + 3 >= fields.length) continue;
+    const unescaped = fields[4]!.replace(/\\([0-7]{3})/g, (_, octal: string) =>
+      String.fromCharCode(Number.parseInt(octal, 8)),
+    );
+    const mountPoint = unescaped.length > 1 ? unescaped.replace(/\/+$/, "") : unescaped;
+    if (!mountPoint.startsWith("/")) continue;
+    const covers =
+      mountPoint === "/"
+        ? true
+        : normalizedTarget === mountPoint || normalizedTarget.startsWith(`${mountPoint}/`);
+    if (!covers || mountPoint.length < matchedLength) continue;
+    const vfsOptions = fields[5]!.split(",");
+    const superOptions = fields[separatorIndex + 3]!.split(",");
+    matchedLength = mountPoint.length;
+    matchedExecutable = !vfsOptions.includes("noexec") && !superOptions.includes("noexec");
+  }
+  return matchedLength >= 0 && matchedExecutable;
+};
+
+interface TestTempBaseProbes {
+  readonly shmStatFs?: () => { readonly bavail: number; readonly bsize: number };
+  readonly isShmDir?: () => boolean;
+  readonly shmRealpath?: () => string;
+  readonly readMountInfo?: () => string;
+  readonly isShortTmpWritable?: () => boolean;
+  readonly shortTmpRealpath?: () => string;
+}
+
+const defaultShmStatFs = (): { readonly bavail: number; readonly bsize: number } =>
+  NodeFS.statfsSync(SHM_TEMP_BASE);
+
+/**
+ * Pick `/dev/shm` on Linux when writable, executable, and >= 2 GiB free; otherwise `/tmp` on POSIX
+ * when `fallback` would crowd Unix socket `sun_path` limits; otherwise `fallback` (`os.tmpdir()`).
+ */
+export const selectTestTempBase = (
+  platform: NodeJS.Platform,
+  probes: TestTempBaseProbes = {},
+  fallback: string = NodeOS.tmpdir(),
+): string => {
+  let cachedMountInfo: string | null | undefined;
+  const readMountInfoOnce = (): string | null => {
+    if (cachedMountInfo !== undefined) return cachedMountInfo;
+    try {
+      cachedMountInfo = probes.readMountInfo
+        ? probes.readMountInfo()
+        : NodeFS.readFileSync("/proc/self/mountinfo", "utf8");
+    } catch {
+      cachedMountInfo = null;
+    }
+    return cachedMountInfo;
+  };
+  if (platform === "linux") {
+    try {
+      const shmDirOk = probes.isShmDir ? probes.isShmDir() : isWritableDirectory(SHM_TEMP_BASE);
+      if (shmDirOk) {
+        const realShmPath = probes.shmRealpath
+          ? probes.shmRealpath()
+          : NodeFS.realpathSync(SHM_TEMP_BASE);
+        const mountinfo = readMountInfoOnce();
+        if (mountinfo !== null && isMountExecutable(mountinfo, realShmPath)) {
+          const { bavail, bsize } = (probes.shmStatFs ?? defaultShmStatFs)();
+          if (
+            Number.isFinite(bavail) &&
+            Number.isFinite(bsize) &&
+            bavail >= 0 &&
+            bsize > 0 &&
+            bavail * bsize >= MIN_SHM_AVAILABLE_BYTES
+          ) {
+            return SHM_TEMP_BASE;
+          }
+        }
+      }
+    } catch {
+      // Fall back when /dev/shm or /proc/self/mountinfo is absent, unwritable, or unreadable.
+    }
+  }
+  if (platform !== "win32" && Buffer.byteLength(fallback) > MAX_POSIX_TEMP_BASE_BYTES) {
+    try {
+      const shortTmpOk = probes.isShortTmpWritable
+        ? probes.isShortTmpWritable()
+        : isWritableDirectory(POSIX_SHORT_TEMP_BASE);
+      if (shortTmpOk) {
+        if (platform !== "linux") return POSIX_SHORT_TEMP_BASE;
+        const realTmpPath = probes.shortTmpRealpath
+          ? probes.shortTmpRealpath()
+          : NodeFS.realpathSync(POSIX_SHORT_TEMP_BASE);
+        const mountinfo = readMountInfoOnce();
+        if (mountinfo !== null && isMountExecutable(mountinfo, realTmpPath)) {
+          return POSIX_SHORT_TEMP_BASE;
+        }
+      }
+    } catch {
+      // Fall back to `fallback` when /tmp is absent, unwritable, or mounted noexec.
+    }
+  }
+  return fallback;
+};
+
 // Removes the temp directory when the scope closes, swallowing Windows handle teardown noise.
 export const makeScopedTempDir = (
   fs: FileSystem.FileSystem,
   prefix: string,
   platform: NodeJS.Platform,
+  directory?: string,
 ) =>
-  Effect.acquireRelease(fs.makeTempDirectory({ prefix }), (directory) =>
-    removeTempDirectory(directory, platform),
+  Effect.acquireRelease(
+    fs.makeTempDirectory({ prefix, ...(directory !== undefined ? { directory } : {}) }),
+    (created) => removeTempDirectory(created, platform),
   );
 
 export const spawnVpIsolated = (
@@ -1576,10 +1719,19 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     }),
   );
   yield* Effect.sync(() => sweepStaleTempDirs());
-
   // macOS counts its file cache as used, so available memory there would
   // starve a large Mac. Elsewhere availableMemory() honors a cgroup limit.
   const platform = yield* HostProcess.Platform;
+  yield* Effect.sync(() => {
+    const systemTmp = NodeOS.tmpdir();
+    sweepStaleTempDirs();
+    if (platform === "linux" && SHM_TEMP_BASE !== systemTmp) {
+      sweepStaleTempDirs({ dir: SHM_TEMP_BASE });
+    }
+    if (platform !== "win32" && POSIX_SHORT_TEMP_BASE !== systemTmp) {
+      sweepStaleTempDirs({ dir: POSIX_SHORT_TEMP_BASE });
+    }
+  });
   // The landing command (.github/scripts/landing-turn.cjs) gives its checks the turn it holds.
   const landing = Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN")));
   const concurrency = Option.getOrElse(
@@ -2073,10 +2225,25 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     );
   };
 
-  // Server test files run one at a time (fileParallelism in apps/server/vite.config.ts),
-  // so they keep one worker busy however many there are.
-  const serverTests = vitestTests.filter((file) => file.startsWith("apps/server/")).length;
-  const testWorkers = vitestTests.length - serverTests + Math.min(serverTests, 1);
+  const requestUncached = keepProviderEnv ? vitestTests : uncachedTests;
+  // Each apps/server Vitest runs one file at a time (fileParallelism in apps/server/vite.config.ts),
+  // so check:changed runs up to MAX_SERVER_CHAINS independent chains concurrently when slots allow.
+  const serverGroups = countServerTestGroups(
+    {
+      files: vitestTests,
+      groupSize: CHANGED_TEST_GROUP_SIZE,
+      uncached: requestUncached,
+    },
+    root,
+    platform,
+  );
+  const nonServerTests =
+    serverGroups === 0
+      ? vitestTests.length
+      : vitestTests.length - vitestTests.filter((file) => file.startsWith("apps/server/")).length;
+  const serverSlots =
+    serverGroups <= 1 ? serverGroups : Math.min(serverGroups, MAX_SERVER_CHAINS) * 2;
+  const testWorkers = nonServerTests + serverSlots;
 
   const slotDirectory = yield* budgetDirectory(root);
   const testStep: Step<never> = {
@@ -2085,8 +2252,14 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       Effect.scoped(
         Effect.gen(function* () {
           const temp = yield* makeScopedTempDir(fs, "t3-check-changed-tests-", platform);
-          // Keep the step TMPDIR a short sibling so Unix socket paths stay within sun_path.
-          const stepTmp = yield* makeScopedTempDir(fs, "t3-cct-", platform);
+          // Keep the step TMPDIR a short sibling (in /dev/shm on Linux when room allows, or /tmp
+          // on POSIX when os.tmpdir() is long) so Unix socket paths stay within sun_path.
+          const stepTmp = yield* makeScopedTempDir(
+            fs,
+            "t3-cct-",
+            platform,
+            selectTestTempBase(platform),
+          );
           const head = yield* gitCommit(root, "HEAD");
           const started = yield* testInputs(head, testGit);
           const { install, state } = started;
@@ -2104,8 +2277,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             }),
           );
           const request = path.join(temp, "tests.json");
-          const groups = Math.max(1, Math.floor(slots / 3));
-          const workers = Math.floor(slots / groups);
+          const serverChains = serverTestChainCount(slots);
+          const concurrencyLimit = Math.max(
+            1,
+            Math.floor(slots / 3),
+            Math.min(serverGroups, serverChains),
+          );
+          const workers = Math.max(1, Math.floor(slots / concurrencyLimit));
           const env = {
             ...changedTestRequestEnv(request, testRuntime, workers, cache, state, head, install),
             ...hostCapabilitiesEnv(hostCapabilities),
@@ -2118,9 +2296,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             {
               files: vitestTests,
               groupSize: CHANGED_TEST_GROUP_SIZE,
-              uncached: keepProviderEnv ? vitestTests : uncachedTests,
+              uncached: requestUncached,
+              serverChains,
             },
-            groups,
+            concurrencyLimit,
             platform,
             (limit) => {
               const run = spawnVp(

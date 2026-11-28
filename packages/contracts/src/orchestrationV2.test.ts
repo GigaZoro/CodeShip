@@ -665,6 +665,38 @@ describe("background work kinds from older or newer servers", () => {
       }),
     ).toThrow();
   });
+
+  it("defaults missing pinnedSystemInstructions to null and preserves pinned strings", () => {
+    const legacy = decodeOrchestrationV2ProviderThreadJson({
+      id: "provider-thread-legacy",
+      driver: "claude",
+      providerInstanceId: "claudeAgent",
+      providerSessionId: null,
+      appThreadId: "thread-1",
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "idle",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: "2026-04-20T00:00:00.000Z",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    });
+    expect(legacy.pinnedSystemInstructions).toBeNull();
+
+    const pin = { key: "pin-key-v1", text: "<runtime_info>Pinned v1 instructions</runtime_info>" };
+    const pinned = decodeOrchestrationV2ProviderThread({
+      ...legacy,
+      pinnedSystemInstructions: pin,
+    });
+    expect(pinned.pinnedSystemInstructions).toEqual(pin);
+    const roundTripped = decodeOrchestrationV2ProviderThreadJson(
+      encodeOrchestrationV2ProviderThreadJson(pinned),
+    );
+    expect(roundTripped.pinnedSystemInstructions).toEqual(pin);
+  });
 });
 
 describe("latestProviderTurnForAttempt", () => {

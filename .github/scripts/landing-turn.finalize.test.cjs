@@ -166,25 +166,26 @@ const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encodi
     let finalizedSha = null;
     let approvedSha = null;
     let builtSha = null;
-    let checkedUnderTurnSha = null;
-    let checkedUnderTurnBase = null;
+    let speculativeCheckedTree = null;
+    let speculativeCheckedBase = null;
     let sawQueuedBehindFirst = false;
+    const specDone = Promise.withResolvers();
 
-    const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     const secondResult = await land({
       cwd: second,
       remote: "origin",
       pollMs: 25,
-      sleep: (ms) => {
+      sleep: async () => {
         if (!sawQueuedBehindFirst) {
           const queueRefs = git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
           if (queueRefs !== "") {
             sawQueuedBehindFirst = true;
-            // Release candidate 1 only after candidate 2 is visibly queued behind it.
+            await specDone.promise;
+            // Release candidate 1 only after candidate 2 is queued and has speculatively pre-checked candidate 1.
             firstChild.stdin.end("go\n");
+            await firstDone;
           }
         }
-        pause(ms);
       },
       finalize: async ({ commit, base, rebased, directory }) => {
         events.push(["finalize", commit, base, rebased]);
@@ -200,16 +201,16 @@ const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encodi
       },
       check: (turn, base, _budget, directory) => {
         const sha = git(directory, "rev-parse", "HEAD");
-        events.push(["check", turn ? "turn" : "pre-wait", sha, base]);
-        if (turn) {
-          // Finalization (approval + build) must already have recorded this exact SHA before check:changed.
-          assert.equal(finalizedSha, sha);
+        const phase = turn ? "turn" : base === initialMain ? "pre-wait" : "speculative";
+        events.push(["check", phase, sha, base]);
+        if (phase === "speculative") {
           // Prior pre-wait receipt against initialMain must not satisfy the new base.
           assert.throws(() => requirePass(directory, sha, base), /check:changed/);
-          checkedUnderTurnSha = sha;
-          checkedUnderTurnBase = base;
+          speculativeCheckedTree = git(directory, "rev-parse", "HEAD^{tree}");
+          speculativeCheckedBase = base;
         }
         recordPass(directory, git(directory, "rev-parse", "HEAD^{tree}"), base);
+        if (phase === "speculative") specDone.resolve();
         return true;
       },
     });
@@ -223,8 +224,8 @@ const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encodi
     assert.ok(finalizedSha);
     assert.equal(approvedSha, finalizedSha);
     assert.equal(builtSha, finalizedSha);
-    assert.equal(checkedUnderTurnSha, finalizedSha);
-    assert.equal(checkedUnderTurnBase, firstResult.commit);
+    assert.equal(speculativeCheckedBase, firstResult.commit);
+    assert.equal(speculativeCheckedTree, git(second, "rev-parse", `${finalizedSha}^{tree}`));
     assert.equal(secondResult.commit, finalizedSha);
     assert.equal(git(origin, "rev-parse", "main"), finalizedSha);
     assert.deepEqual(readMainPushes(), [
@@ -234,7 +235,7 @@ const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encodi
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
     assert.deepEqual(
       events.map(([kind, phase]) => (kind === "check" ? `${kind}:${phase}` : kind)),
-      ["check:pre-wait", "finalize", "check:turn"],
+      ["check:pre-wait", "check:speculative", "finalize"],
     );
   } finally {
     if (firstChild && firstChild.exitCode === null) {

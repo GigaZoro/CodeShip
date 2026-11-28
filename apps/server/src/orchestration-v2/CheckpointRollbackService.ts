@@ -563,6 +563,9 @@ export const layer: Layer.Layer<
           : {
               initialProviderItemIdentityVersion: providerThread.nativeMetadata.itemIdentityVersion,
             }),
+        ...(providerThread.pinnedSystemInstructions == null
+          ? {}
+          : { initialPinnedSystemInstructions: providerThread.pinnedSystemInstructions }),
       });
 
       // Rolled-back turns remain in audit history but no longer exist in the provider conversation.

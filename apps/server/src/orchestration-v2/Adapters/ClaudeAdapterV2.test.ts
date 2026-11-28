@@ -52,6 +52,7 @@ import {
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   type OrchestrationV2AppThread,
   type OrchestrationV2PendingBackgroundTask,
+  type OrchestrationV2PinnedSystemInstructions,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurnTokenUsage,
   ProjectId,
@@ -133,9 +134,11 @@ import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.
 import * as ServerConfig from "../../config.ts";
 
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
-
-import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
-
+import {
+  PINNED_INSTRUCTIONS_EPOCH,
+  pinnedSystemInstructionsKey,
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 
 import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
@@ -2162,6 +2165,272 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
       ),
     ),
   );
+});
+
+describe("ClaudeAdapterV2 pinned system instructions", () => {
+  const MCP_AND_DEVICE = { hasMcpServers: true, deviceToolsAvailable: true };
+  const currentKey = (inputs: ClaudeAdapterV2.ClaudeSystemInstructionsInputs, epoch?: number) =>
+    pinnedSystemInstructionsKey(
+      {
+        harness: "Claude Code",
+        hasMcpServers: inputs.hasMcpServers,
+        deviceToolsAvailable: inputs.deviceToolsAvailable,
+      },
+      epoch,
+    );
+
+  it("keeps a resumed pin whose key matches, even when the wording changed", () => {
+    const stored = {
+      key: currentKey(MCP_AND_DEVICE),
+      text: "<runtime_info>Old wording</runtime_info>",
+    };
+    assert.deepEqual(
+      ClaudeAdapterV2.resolveClaudePinnedSystemInstructions({
+        resume: true,
+        stored,
+        inputs: MCP_AND_DEVICE,
+      }),
+      stored,
+    );
+    const fresh = ClaudeAdapterV2.resolveClaudePinnedSystemInstructions({
+      resume: false,
+      stored,
+      inputs: MCP_AND_DEVICE,
+    });
+    assert.equal(fresh.text, ClaudeAdapterV2.buildClaudeSystemInstructions(MCP_AND_DEVICE));
+  });
+
+  it("rebuilds a pin stored under another epoch", () => {
+    assert.notEqual(
+      currentKey(MCP_AND_DEVICE, PINNED_INSTRUCTIONS_EPOCH + 1),
+      currentKey(MCP_AND_DEVICE),
+    );
+    const resolved = ClaudeAdapterV2.resolveClaudePinnedSystemInstructions({
+      resume: true,
+      stored: {
+        key: currentKey(MCP_AND_DEVICE, PINNED_INSTRUCTIONS_EPOCH - 1),
+        text: "<runtime_info>Before the security fix</runtime_info>",
+      },
+      inputs: MCP_AND_DEVICE,
+    });
+    assert.deepEqual(resolved, {
+      key: currentKey(MCP_AND_DEVICE),
+      text: ClaudeAdapterV2.buildClaudeSystemInstructions(MCP_AND_DEVICE),
+    });
+  });
+
+  it.effect(
+    "rebuilds the pin when MCP or device tools change and stores one pin event per change",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pin-cwd-" });
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-pin-home-",
+          });
+          const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-pin-",
+          });
+          const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+          let allocatedCount = 0;
+          // A new adapter stands in for a restarted server: it has no in-memory pins.
+          const makeAdapter = Effect.gen(function* () {
+            return yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+              instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+              settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath },
+              environment: {},
+              attachmentsDir,
+              fileSystem,
+              path: yield* Path.Path,
+              random: yield* SecureRandom.SecureRandom,
+              idAllocator: yield* IdAllocator.IdAllocatorV2,
+              queryRunner: {
+                allocateSessionId: Effect.sync(() => {
+                  allocatedCount += 1;
+                  return `native-thread-claude-pin-${allocatedCount}`;
+                }),
+                open: (input) =>
+                  Effect.sync(() => {
+                    opened.push(input.options);
+                    return {
+                      messages: Stream.never,
+                      offer: () => Effect.void,
+                      setModel: () => Effect.void,
+                      applyFlagSettings: () => Effect.void,
+                      setPermissionMode: () => Effect.void,
+                      renameSession: () => Effect.void,
+                      backgroundTasks: () => Effect.succeed(false),
+                      mcpServerStatus: Effect.succeed([]),
+                      readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                      callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                      mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
+                      mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
+                      reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                      listPermissionRules: Effect.die("unexpected permission rules read"),
+                      stopTask: () => Effect.void,
+                      interrupt: Effect.void,
+                      close: Effect.void,
+                    };
+                  }),
+                forkSession: () => Effect.die("unused"),
+                subagentLaunchToolUseId: () => Effect.succeed(null),
+                subagentModel: () => Effect.succeed(null),
+                assertComplete: Effect.void,
+              },
+            });
+          });
+          const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd,
+          });
+          const threadId = ThreadId.make("thread-claude-pin");
+          const setMcpSession = (capabilities: ReadonlySet<string>) =>
+            mcpSessions.set({
+              environmentId: EnvironmentId.make("environment-claude-pin"),
+              threadId,
+              providerSessionId: "provider-session-claude-pin",
+              providerInstanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+              endpoint: "http://127.0.0.1:43123/mcp",
+              authorizationHeader: "Bearer claude-pin-token",
+              browserToolsAvailable: true,
+              capabilities,
+            });
+          const pinEvents: Array<OrchestrationV2PinnedSystemInstructions> = [];
+          let storedPin: OrchestrationV2PinnedSystemInstructions | null = null;
+          let turn = 0;
+          const runTurn = Effect.fnUntraced(function* (
+            adapter: Effect.Success<typeof makeAdapter>,
+            providerThread: OrchestrationV2ProviderThread | null,
+          ) {
+            turn += 1;
+            const session = yield* adapter.openSession({
+              threadId,
+              providerSessionId: ProviderSessionId.make(`provider-session-claude-pin-${turn}`),
+              modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+              runtimePolicy,
+              ...(providerThread === null
+                ? {}
+                : { initialNativeThreadId: providerThread.nativeThreadRef!.nativeId! }),
+            });
+            yield* session.events.pipe(
+              Stream.runForEach((event) =>
+                Effect.sync(() => {
+                  if (
+                    event.type === "provider_thread.updated" &&
+                    event.pinnedSystemInstructions !== undefined
+                  ) {
+                    pinEvents.push(event.pinnedSystemInstructions);
+                    storedPin = event.pinnedSystemInstructions;
+                  }
+                }),
+              ),
+              Effect.forkScoped,
+            );
+            const resolvedThread =
+              providerThread === null
+                ? yield* session.ensureThread({
+                    threadId,
+                    modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+                    runtimePolicy,
+                  })
+                : { ...providerThread, pinnedSystemInstructions: storedPin };
+            yield* session.startTurn({
+              ...makeClaudeTestTurnInput({
+                threadId,
+                providerThread: resolvedThread,
+                now: yield* DateTime.now,
+                attemptId: RunAttemptId.make(`attempt-claude-pin-${turn}`),
+                text: `turn ${turn}`,
+                attachments: [],
+                runtimePolicy,
+              }),
+              providerTurnOrdinal: turn,
+              ...(providerThread === null ? {} : { nativeThreadHasTurns: true }),
+            });
+            yield* Effect.yieldNow;
+            return {
+              providerThread: resolvedThread,
+              append: (opened.at(-1)?.systemPrompt as { readonly append?: string } | undefined)
+                ?.append,
+            };
+          });
+
+          const adapter = yield* makeAdapter;
+          // Turn 1 has no MCP session, so the pin has no T3 tool instructions.
+          const first = yield* runTurn(adapter, null);
+          assert.equal(
+            first.append,
+            ClaudeAdapterV2.buildClaudeSystemInstructions({
+              hasMcpServers: false,
+              deviceToolsAvailable: false,
+            }),
+          );
+          assert.lengthOf(pinEvents, 1);
+
+          yield* setMcpSession(new Set(["device"]));
+          const second = yield* runTurn(yield* makeAdapter, first.providerThread);
+          assert.equal(
+            second.append,
+            ClaudeAdapterV2.buildClaudeSystemInstructions(MCP_AND_DEVICE),
+          );
+          assert.include(second.append, T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH);
+          assert.lengthOf(pinEvents, 2);
+
+          yield* setMcpSession(new Set());
+          const third = yield* runTurn(yield* makeAdapter, second.providerThread);
+          assert.equal(
+            third.append,
+            ClaudeAdapterV2.buildClaudeSystemInstructions({
+              hasMcpServers: true,
+              deviceToolsAvailable: false,
+            }),
+          );
+          assert.lengthOf(pinEvents, 3);
+
+          // Same inputs after a release that only changed wording: the stored text stays.
+          storedPin = {
+            ...storedPin!,
+            text: "<runtime_info>Previous release wording</runtime_info>",
+          };
+          const fourth = yield* runTurn(yield* makeAdapter, third.providerThread);
+          assert.equal(fourth.append, "<runtime_info>Previous release wording</runtime_info>");
+          assert.lengthOf(pinEvents, 3);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+  );
+
+  it("uses the resolved instructions verbatim and keeps dynamic options live", () => {
+    const resumed = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-thread-claude-pinned",
+      resume: true,
+      cwd: "/workspace",
+      permissionMode: "plan",
+      mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1/mcp" } },
+      deviceToolsAvailable: true,
+      appendSystemPromptFileText: "Dynamic CLI suffix",
+      systemInstructions: "<runtime_info>Pinned Claude instructions v1</runtime_info>",
+      environment: {},
+    });
+    assert.equal(
+      (resumed.systemPrompt as { readonly append?: string }).append,
+      "<runtime_info>Pinned Claude instructions v1</runtime_info>\n\nDynamic CLI suffix",
+    );
+    assert.equal(resumed.permissionMode, "plan");
+    assert.isNotEmpty(resumed.hooks?.SubagentStart ?? []);
+  });
 });
 
 describe("ClaudeAdapterV2 approval cancellation", () => {
@@ -21613,6 +21882,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
       yield* Queue.offer(harness.sdkMessages, turnOneResult);
       yield* harness.awaitTerminal(1);
+      const reportedPins = () =>
+        harness.events.flatMap((event) =>
+          event.type === "provider_thread.updated" && event.pinnedSystemInstructions !== undefined
+            ? [event.pinnedSystemInstructions]
+            : [],
+        );
+      const [sessionPin] = reportedPins();
+      assert.lengthOf(reportedPins(), 1);
 
       yield* harness.offerAndWait(wakeNotification);
       assert.lengthOf(harness.continuationRequests, 0);
@@ -21620,10 +21897,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.lengthOf(harness.continuationRequests, 1);
       assert.equal(harness.continuationRequests[0]?.detail, WAKE_SUMMARY);
 
+      // The wake turn has no user message; a stored pin that differs from the session's is
+      // still reported, so the pin the session runs with is the one stored.
       yield* harness.runtime.startTurn(
         makeClaudeTestTurnInput({
           threadId: harness.threadId,
-          providerThread: harness.providerThread,
+          providerThread: {
+            ...harness.providerThread,
+            pinnedSystemInstructions: {
+              key: "key-from-an-older-epoch",
+              text: "<runtime_info>Before the epoch bump</runtime_info>",
+            },
+          },
           now,
           attemptId: RunAttemptId.make("attempt-claude-wake-init-2"),
           text: "Background task completed.",
@@ -21640,6 +21925,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       yield* harness.awaitTerminal(2);
       assert.equal(harness.terminalEvents()[1]?.status, "completed");
       assert.lengthOf(harness.continuationRequests, 1);
+      assert.deepEqual(reportedPins(), [sessionPin, sessionPin]);
       assert.isTrue(
         harness.events.some(
           (event) => event.type === "message.updated" && event.message.text === WAKE_RESULT_TEXT,

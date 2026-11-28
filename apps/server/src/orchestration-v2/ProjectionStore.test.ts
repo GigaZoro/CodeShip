@@ -14179,4 +14179,149 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         );
       }),
   );
+
+  it.effect("writes the pin only from its own event and hydrates it on adapter-facing reads", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = DateTime.makeUnsafe("2026-11-27T00:00:00.000Z");
+      const later = DateTime.makeUnsafe("2026-11-27T00:05:00.000Z");
+      const threadId = ThreadId.make("thread:pinned-instructions");
+      const providerThreadId = ProviderThreadId.make("provider-thread:pinned-instructions");
+      const pinned = {
+        key: "pin-key-v1",
+        text: "<runtime_info>Pinned system instructions v1</runtime_info>",
+      };
+
+      yield* store.apply({
+        id: EventId.make("event:pinned-instructions:thread"),
+        type: "thread.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project:pinned-instructions"),
+          title: "Pinned instructions thread",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          lineage: {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: threadId,
+          },
+          forkedFrom: null,
+          activeProviderThreadId: providerThreadId,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: providerThreadId,
+        driver,
+        providerInstanceId,
+        providerSessionId: null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver,
+          nativeId: "native-pinned-1",
+          strength: "strong",
+        },
+        nativeConversationHeadRef: null,
+        // An updated snapshot never sets the pin, even when it carries one.
+        pinnedSystemInstructions: { key: "ignored-key", text: "IGNORED_SNAPSHOT_PIN" },
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      yield* store.apply({
+        id: EventId.make("event:pinned-instructions:pt-pin"),
+        type: "provider-thread.updated",
+        threadId,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: providerThread,
+      });
+
+      const readRawRow = sql<{
+        readonly payload_json: string;
+        readonly pinned_system_instructions: string | null;
+        readonly pinned_system_instructions_key: string | null;
+      }>`
+        SELECT payload_json, pinned_system_instructions, pinned_system_instructions_key
+        FROM orchestration_v2_projection_provider_threads
+        WHERE provider_thread_id = ${providerThreadId}
+      `;
+      const unpinned = yield* readRawRow;
+      assert.equal(unpinned.length, 1);
+      assert.isNull(unpinned[0]!.pinned_system_instructions);
+      assert.notInclude(unpinned[0]!.payload_json, "IGNORED_SNAPSHOT_PIN");
+      assert.notInclude(unpinned[0]!.payload_json, "pinnedSystemInstructions");
+
+      yield* store.apply({
+        id: EventId.make("event:pinned-instructions:pin-set"),
+        type: "provider-thread.pinned-instructions-set",
+        threadId,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { providerThreadId, ...pinned },
+      });
+      const rawRows = yield* readRawRow;
+      assert.equal(rawRows[0]!.pinned_system_instructions, pinned.text);
+      assert.equal(rawRows[0]!.pinned_system_instructions_key, pinned.key);
+      assert.notInclude(rawRows[0]!.payload_json, pinned.text);
+
+      const projection = yield* store.getThreadProjection(threadId);
+      assert.deepEqual(projection.providerThreads[0]?.pinnedSystemInstructions, pinned);
+
+      const providerContext = yield* store.getThreadProviderContext(threadId, providerInstanceId);
+      assert.deepEqual(providerContext.providerThreads[0]?.pinnedSystemInstructions, pinned);
+
+      const recovery = yield* store.getRuntimeRecoveryProjection(threadId);
+      assert.deepEqual(recovery.providerThreads[0]?.pinnedSystemInstructions, pinned);
+
+      yield* store.apply({
+        id: EventId.make("event:pinned-instructions:pt-later"),
+        type: "provider-thread.updated",
+        threadId,
+        driver,
+        providerInstanceId,
+        occurredAt: later,
+        payload: { ...providerThread, pinnedSystemInstructions: null, updatedAt: later },
+      });
+
+      const kept = yield* store.getThreadProjection(threadId);
+      assert.deepEqual(kept.providerThreads[0]?.pinnedSystemInstructions, pinned);
+      assert.deepEqual(
+        ProjectionStore.applyToProjection(kept, {
+          id: EventId.make("event:pinned-instructions:pt-in-memory"),
+          type: "provider-thread.updated",
+          threadId,
+          driver,
+          providerInstanceId,
+          occurredAt: later,
+          payload: { ...providerThread, pinnedSystemInstructions: null, updatedAt: later },
+        }).providerThreads[0]?.pinnedSystemInstructions,
+        pinned,
+      );
+    }),
+  );
 });

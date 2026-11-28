@@ -1639,6 +1639,7 @@ const catalog: MessageCatalog = {
   "{label}: {description} This cannot be undone.": "{label}: {description} Це неможливо скасувати.",
   "{label}: {detail}": "{label}: {detail}",
   "{label}: {failure}": "{label}: {failure}",
+  "{label}: {from} → {to}": "{label}: {from} → {to}",
   "{label}: {kind}.": "{label}: {kind}.",
   "{label}: {kind}. {message}": "{label}: {kind}. {message}",
   "{label}: {left}% left": "{label}: залишилось {left}%",
@@ -2886,6 +2887,7 @@ const catalog: MessageCatalog = {
   Allowed: "Дозволено",
   "Allows scoped background probes while any subscribed client remains connected.":
     "Дозволяє обмежені фонові перевірки, поки підключений будь-який підписаний клієнт.",
+  "Already active": "Уже активний",
   "Already added {name}": "{name} уже додано",
   "Already asked": "Уже запрошено",
   "Already available locally": "Уже доступно локально",
@@ -3064,6 +3066,10 @@ const catalog: MessageCatalog = {
   "Apple Speech handles silence itself.": "Apple Speech самостійно обробляє тишу.",
   "Apple Speech is not available on this Mac.": "Apple Speech недоступний на цьому Mac.",
   Applied: "Застосовано",
+  "Applies compact spacing and calm status colors. Notifications stay unchanged.":
+    "Застосовує компактні відступи й спокійні кольори статусів. Сповіщення залишаються без змін.",
+  "Applies compact spacing, Essentials thread details, folding older finished turns, and calm status colors. Notifications stay unchanged.":
+    "Застосовує компактні відступи, подробиці чату «Основне», згортання старіших завершених ходів і спокійні кольори статусів. Сповіщення залишаються без змін.",
   "Applies to the composer when a hardware keyboard is connected.":
     "Діє в полі повідомлення, коли підключено апаратну клавіатуру.",
   "Applies to the route marked In use. Other routes may have different permissions and have not been checked.":
@@ -3071,6 +3077,8 @@ const catalog: MessageCatalog = {
   "Applies to the selected environments.": "Застосовується до вибраних середовищ.",
   "Applies to: {machines}.": "Стосується: {machines}.",
   "Apply auto-settle defaults": "Застосувати типові значення автозавершення",
+  "Apply Calm": "Застосувати спокійний",
+  "Apply Calm preset": "Застосувати спокійний набір",
   "Apply instructions to all": "Застосувати інструкції до всіх",
   "Apply to": "Застосувати до",
   "Applying settings for": "Застосування налаштувань для",
@@ -3687,6 +3695,10 @@ const catalog: MessageCatalog = {
   Calendar: "Календар",
   Calm: "Спокійні",
   "Calm (default)": "Спокійні (за замовчуванням)",
+  "calm preset": "спокійний набір",
+  "Calm preset": "Спокійний набір",
+  "Calm preset applied": "Спокійний набір застосовано",
+  "Calm preset is already active": "Спокійний набір уже активний",
   "Calm shows healthy statuses in gray, keeps them still, and quiets borders; only what needs you has color. Vivid gives every status its own color.":
     "Спокійні показують звичайні статуси сірим і без анімації та приглушують рамки; кольоровим лишається тільки те, що чекає на вас. Яскраві дають кожному статусу власний колір.",
   "Calm status colors": "Спокійні кольори статусів",
@@ -3854,6 +3866,7 @@ const catalog: MessageCatalog = {
   "Changed {fileName}": "Змінено {fileName}",
   "Changed {name}": "Змінено {name}",
   "Changed an issue's state": "Змінено стан задачі",
+  "Changed by Calm preset": "Змінено спокійним набором",
   "Changed files": "Змінені файли",
   "Changed files the tour does not otherwise cover.":
     "Змінені файли, яких тур не охоплює в інших місцях.",
@@ -4789,6 +4802,7 @@ const catalog: MessageCatalog = {
   "Committed {sha}": "Створено коміт {sha}",
   "Committed changes": "Зміни закомічено",
   "Committing...": "Створення коміту…",
+  compact: "компактний",
   Compact: "Стиснути",
   "Compact {tokens} tokens of history before sending":
     "Стиснути {tokens} токенів історії перед надсиланням",
@@ -4796,6 +4810,9 @@ const catalog: MessageCatalog = {
   "compact idle threads": "стиснення неактивних чатів",
   "Compact idle threads": "Стискати неактивні чати",
   "Compact spacing": "Компактні відступи",
+  "Compact spacing · Calm status colors": "Компактні відступи · Спокійні кольори статусів",
+  "Compact spacing, Essentials details, fold older turns, calm status colors":
+    "Компактні відступи, подробиці «Основне», згортання старіших ходів, спокійні кольори статусів",
   "Compacting before the cache expires…": "Ущільнення перед завершенням терміну дії кешу…",
   "Compacting context": "Стиснення контексту",
   "Compacting for {timer}": "Стиснення: {timer}",
@@ -18865,6 +18882,7 @@ const catalog: MessageCatalog = {
     other: "Скасовано відкріплення {count} чату",
   },
   Undo: "Скасувати",
+  "Undo Calm preset": "Скасувати спокійний набір",
   "Undo reset": "Скасувати скидання",
   "Undo reset for {model}": "Скасувати скидання для {model}",
   "Unexpected Android fold response.": "Неочікувана відповідь складання Android.",

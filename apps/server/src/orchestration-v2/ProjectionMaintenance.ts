@@ -138,6 +138,8 @@ const COLD_HISTORY_RULE: Record<OrchestrationV2DomainEvent["type"], "latest" | "
   "turn-item.updated": "latest",
   // The projection keeps the last token usage when a newer event has none.
   "provider-turn.updated": "latest",
+  // Replaces both pin columns; every provider-thread.updated stays, so the row exists on replay.
+  "provider-thread.pinned-instructions-set": "latest",
   // Subagent snapshots keep the prompt later rows point at.
   "subagent.updated": "all",
   "checkpoint-scope.created": "all",
@@ -1139,7 +1141,14 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
                   event_type <> 'turn-item.updated'
                   OR json_extract(payload_json, '$.type') IS NOT 'subagent'
                 )
-              THEN json_extract(payload_json, '$.id')
+              THEN json_extract(
+                payload_json,
+                CASE
+                  WHEN event_type = 'provider-thread.pinned-instructions-set'
+                  THEN '$.providerThreadId'
+                  ELSE '$.id'
+                END
+              )
             END AS entity_id,
             command_id IS NOT NULL AS commanded,
             (

@@ -825,6 +825,68 @@ const keptHistoryEventIds = (threadId: ThreadId, revisions: number) => [
 const supersededHistoryEventCount = (revisions: number) =>
   historyEntities.length * (revisions - 1) - 1;
 
+// Two provider threads repinned in turn. A pin event names its provider thread, not an id of its
+// own, so it is the newest pin of each provider thread that compaction keeps.
+const pinnedProviderThreadKeys = ["a", "b", "a", "a", "b"] as const;
+
+const writePinHistory = Effect.fnUntraced(function* (thread: OrchestrationV2AppThread) {
+  const sink = yield* EventSink.EventSinkV2;
+  const at = thread.updatedAt;
+  const providerThreadId = (key: string) =>
+    ProviderThreadId.make(`${thread.id}:provider-thread:${key}`);
+  const common = {
+    threadId: thread.id,
+    driver: providerDriver,
+    providerInstanceId,
+    occurredAt: at,
+  };
+  yield* sink.write({
+    events: [
+      ...(["a", "b"] as const).map((key) => ({
+        ...common,
+        id: EventId.make(`event:history:${thread.id}:provider-thread:${key}`),
+        type: "provider-thread.updated" as const,
+        payload: {
+          id: providerThreadId(key),
+          driver: providerDriver,
+          providerInstanceId,
+          providerSessionId: null,
+          appThreadId: thread.id,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle" as const,
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: at,
+          updatedAt: at,
+        },
+      })),
+      ...pinnedProviderThreadKeys.map((key, revision) => ({
+        ...common,
+        id: EventId.make(`event:history:${thread.id}:pin:${revision}`),
+        type: "provider-thread.pinned-instructions-set" as const,
+        payload: {
+          providerThreadId: providerThreadId(key),
+          key: `pin-key-${revision}`,
+          text: `Pin ${revision}`,
+        },
+      })),
+    ] satisfies ReadonlyArray<OrchestrationV2DomainEvent>,
+  });
+});
+
+const keptPinEventIds = (threadId: ThreadId) => [
+  `event:history:${threadId}:provider-thread:a`,
+  `event:history:${threadId}:provider-thread:b`,
+  `event:history:${threadId}:pin:${pinnedProviderThreadKeys.lastIndexOf("a")}`,
+  `event:history:${threadId}:pin:${pinnedProviderThreadKeys.lastIndexOf("b")}`,
+];
+
+const supersededPinEventCount = pinnedProviderThreadKeys.length - 2;
+
 const historyEventIds = Effect.fnUntraced(function* (threadId: ThreadId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ readonly event_id: string }>`
@@ -847,17 +909,31 @@ it.effect(
       const long = retentionThread("history-long", longAgo, { archivedAt: longAgo });
       yield* writeHistoryThread(brief, 3);
       yield* writeHistoryThread(long, 40);
+      yield* writePinHistory(long);
       const projected = Effect.forEach([brief, long], (thread) =>
         projections.getThreadProjection(thread.id),
       );
       const before = yield* projected;
+      assert.deepEqual(
+        before[1]!.providerThreads.map((providerThread) => providerThread.pinnedSystemInstructions),
+        [
+          { key: "pin-key-3", text: "Pin 3" },
+          { key: "pin-key-4", text: "Pin 4" },
+        ],
+      );
 
       assert.deepEqual(yield* maintenance.compactColdThreadHistory({ idleBefore }), {
         threadCount: 2,
-        deletedEventCount: supersededHistoryEventCount(3) + supersededHistoryEventCount(40),
+        deletedEventCount:
+          supersededHistoryEventCount(3) +
+          supersededHistoryEventCount(40) +
+          supersededPinEventCount,
       });
       assert.deepEqual(yield* historyEventIds(brief.id), keptHistoryEventIds(brief.id, 3));
-      assert.deepEqual(yield* historyEventIds(long.id), keptHistoryEventIds(long.id, 40));
+      assert.deepEqual(yield* historyEventIds(long.id), [
+        ...keptHistoryEventIds(long.id, 40),
+        ...keptPinEventIds(long.id),
+      ]);
       assert.deepEqual(yield* projected, before);
       assert.isTrue((yield* (yield* ProjectionReplay.ProjectionReplay).verify).valid);
       assert.isTrue((yield* (yield* ProjectionReplay.ProjectionReplay).rebuild).valid);

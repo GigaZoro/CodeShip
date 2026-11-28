@@ -1047,6 +1047,7 @@ const make = Effect.gen(function* () {
       readonly projectId?: ProjectId | undefined;
       readonly scheduled: boolean;
       readonly requestPrompt?: AccountRouting.AutoRequestPrompt | undefined;
+      readonly routingConstraints?: AccountRouting.AutoRoutingConstraints | undefined;
       readonly preservePreviousSelection?: boolean | undefined;
       readonly steersActiveRun?: boolean | undefined;
     }) {
@@ -1079,12 +1080,18 @@ const make = Effect.gen(function* () {
           ...(selection.autoAccount === true && input.requestPrompt !== undefined
             ? { requestPrompt: input.requestPrompt }
             : {}),
+          ...(selection.autoAccount === true && input.routingConstraints !== undefined
+            ? { routingConstraints: input.routingConstraints }
+            : {}),
         });
         if (launch.failover?.reason === "usageLimit") {
           const from = launch.failover.crossProviderFrom;
           return {
             ...command,
             modelSelection: launch.selection,
+            ...(launch.degradedReason === undefined
+              ? {}
+              : { degradedReason: launch.degradedReason }),
             ...(from === undefined
               ? {}
               : {
@@ -1119,7 +1126,7 @@ const make = Effect.gen(function* () {
           previousSelection = latestQueued.modelSelection;
         }
       }
-      const routed = yield* routing.route({
+      const routeInput = {
         ...(observe && { observe }),
         selection,
         projectId,
@@ -1134,11 +1141,29 @@ const make = Effect.gen(function* () {
         ...(previousSelection !== undefined ? { previousSelection } : {}),
         ...(input.preservePreviousSelection === true ? { preservePreviousSelection: true } : {}),
         ...(input.requestPrompt !== undefined ? { requestPrompt: input.requestPrompt } : {}),
-      });
+        ...(input.routingConstraints !== undefined
+          ? { routingConstraints: input.routingConstraints }
+          : {}),
+      };
+      const routeResult =
+        input.routingConstraints !== undefined && routing.routeWithDetails
+          ? yield* routing.routeWithDetails(routeInput)
+          : { selection: yield* routing.route(routeInput) };
+      const routed = routeResult.selection;
+      const degradedReason = routeResult.degradedReason ?? command.degradedReason;
       // A recorded continuation pins the account it was routed to, so the evidence names where it ran.
-      return routed === selection && !(observe && input.selection === undefined)
-        ? command
-        : { ...command, modelSelection: routed };
+      if (
+        routed === selection &&
+        !(observe && input.selection === undefined) &&
+        degradedReason === command.degradedReason
+      ) {
+        return command;
+      }
+      return {
+        ...command,
+        modelSelection: routed,
+        ...(degradedReason === undefined ? {} : { degradedReason }),
+      };
     });
     switch (command.type) {
       case "message.dispatch": {
@@ -1179,6 +1204,9 @@ const make = Effect.gen(function* () {
           newThread: true,
           projectId: command.projectId,
           scheduled: false,
+          ...(command.routingConstraints === undefined
+            ? {}
+            : { routingConstraints: command.routingConstraints }),
           ...(command.modelSelection.autoAccount === true
             ? {
                 requestPrompt: {

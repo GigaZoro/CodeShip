@@ -2,7 +2,7 @@ Keep CodeShip's interface translation complete on main without being asked: find
 
 ## Context
 
-- This is a CodeShip shared task that runs on one machine per run (Zoro-VPS first, the MacBook as its backup). Every step below works on both.
+- This is a CodeShip shared task that runs on one machine per run (Zoro-VPS first, then Zoro-PC, then the MacBook as backup), gated by `node scripts/i18n-diff-gate.mjs --needs-run` so parity-clean days skip without starting a chat. Every step below works on all three hosts.
 - Local checkout: `~/Projects/CodeShip`, the CodeShip project's folder on this machine. Do not switch branches, commit, stash, or edit files in it: on the Mac, the user's CodeShip (Dev).app runs from it. Work in a separate git worktree next to it.
 - `origin` = https://github.com/GigaZoro/CodeShip.git, the fork's home. Every push to `origin/main` publishes a release. There is no Azure DevOps remote; ignore any instruction that mentions one.
 - GitHub credentials: pushing to `origin` over HTTPS uses the credentials this machine saved for github.com, through git's credential helper. On Linux that helper is the GitHub CLI (`gh auth status` shows the signed-in account); on the Mac it is the macOS Keychain. Use no other credentials, and never print or read stored ones. If a push fails on authentication, stop: add a Hands-on item "Sign in to GitHub on <this machine> (CodeShip: keep translations up to date could not push)" to this machine's pending list as the machine-inbox skill describes (on Linux the step is `gh auth login`; on the Mac, signing in to GitHub again so the Keychain holds a valid credential), and say so in the report.

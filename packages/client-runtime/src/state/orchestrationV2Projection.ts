@@ -433,6 +433,9 @@ export function applyOrchestrationV2ProjectionEvent(
             : base.thread,
         providerThreads: upsertEntity(base.providerThreads, event.payload),
       };
+    // The wire strips the pin text; clients never send it back to a provider.
+    case "provider-thread.pinned-instructions-set":
+      return projection;
     case "provider-turn.updated":
       return {
         ...base,

@@ -138,6 +138,7 @@ function shouldPublishAgentAwarenessEvent(
     case "provider-session.attached":
     case "provider-session.updated":
     case "provider-session.detached":
+    case "provider-thread.pinned-instructions-set":
     case "provider-turn.updated":
     case "turn-item.updated":
       return (

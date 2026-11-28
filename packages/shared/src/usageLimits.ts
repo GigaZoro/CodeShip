@@ -127,6 +127,46 @@ function antigravityQuotaFamily(models: ServerProvider["models"], model: string)
     : model;
 }
 
+const ANTIGRAVITY_QUOTA_METERS = [
+  "gemini-default",
+  "gemini-argon",
+  "gemini-carbon",
+  "third-party",
+] as const;
+export type AntigravityQuotaMeter = (typeof ANTIGRAVITY_QUOTA_METERS)[number];
+
+/** The Antigravity quota `model` draws on; undefined for a model of no known family. */
+export function antigravityQuotaMeter(
+  models: ServerProvider["models"],
+  model: string,
+): AntigravityQuotaMeter | undefined {
+  const family = antigravityQuotaFamily(models, model);
+  if (family === ANTIGRAVITY_DEFAULT_MODEL) return "gemini-default";
+  if (/^(claude|gpt)(?:-|$)/.test(family)) return "third-party";
+  if (!/^gemini(?:-|$)/.test(family)) return undefined;
+  if (usageScopeCoversModel("argon", family)) return "gemini-argon";
+  if (usageScopeCoversModel("carbon", family)) return "gemini-carbon";
+  return "gemini-default";
+}
+
+const isAntigravityQuotaMeter = (scope: string): scope is AntigravityQuotaMeter =>
+  (ANTIGRAVITY_QUOTA_METERS as ReadonlyArray<string>).includes(scope);
+
+/**
+ * Whether a usage-limit refusal scoped to `scope` holds `model`, or work on `model` lifts it. An
+ * Antigravity refusal names its quota meter, which a model's words cannot show.
+ */
+export function refusalScopeCoversModel(
+  provider: Pick<ServerProvider, "driver" | "models"> | undefined,
+  scope: string,
+  model: string | null | undefined,
+): boolean {
+  if (provider?.driver === "antigravity" && isAntigravityQuotaMeter(scope)) {
+    return model != null && antigravityQuotaMeter(provider.models, model) === scope;
+  }
+  return usageScopeCoversModel(scope, model);
+}
+
 /** Whether a rate window covers a canonical model slug. Pass null for account-wide windows. */
 export function usageWindowAppliesToModel(
   provider: Pick<ServerProvider, "driver" | "models">,
@@ -153,25 +193,11 @@ export function usageWindowAppliesToModel(
         ? window.modelIds !== undefined || window.providerIds !== undefined
         : window.model === model;
     }
-    case "gemini-default": {
-      const family = antigravityQuotaFamily(provider.models, model);
-      return (
-        family === ANTIGRAVITY_DEFAULT_MODEL ||
-        (/^gemini(?:-|$)/.test(family) &&
-          !usageScopeCoversModel("argon", family) &&
-          !usageScopeCoversModel("carbon", family))
-      );
-    }
-    case "gemini-argon": {
-      const family = antigravityQuotaFamily(provider.models, model);
-      return family.startsWith("gemini-") && usageScopeCoversModel("argon", family);
-    }
-    case "gemini-carbon": {
-      const family = antigravityQuotaFamily(provider.models, model);
-      return family.startsWith("gemini-") && usageScopeCoversModel("carbon", family);
-    }
+    case "gemini-default":
+    case "gemini-argon":
+    case "gemini-carbon":
     case "third-party":
-      return /^(claude|gpt)(?:-|$)/.test(antigravityQuotaFamily(provider.models, model));
+      return antigravityQuotaMeter(provider.models, model) === scope;
     case "opencode-go":
       return model.startsWith("opencode-go/");
     case "cursor-auto":

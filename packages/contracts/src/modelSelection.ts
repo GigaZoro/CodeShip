@@ -78,3 +78,28 @@ export const CanonicalModelSelection = Schema.Struct({
   autoAccount: ModelSelectionWire.fields.autoAccount,
   quotaAwareAuto: ModelSelectionWire.fields.quotaAwareAuto,
 });
+
+const AUTO_CAPABILITY_TIERS = ["fast", "standard", "deep", "frontier"] as const;
+export const AutoCapabilityTier = Schema.Literals(AUTO_CAPABILITY_TIERS);
+export type AutoCapabilityTier = typeof AutoCapabilityTier.Type;
+
+export const AutoRoutingDegradationReason = Schema.Literal("no-dissimilar-provider-available");
+export type AutoRoutingDegradationReason = typeof AutoRoutingDegradationReason.Type;
+
+export const AutoRoutingConstraints = Schema.Struct({
+  capabilityTier: Schema.optional(AutoCapabilityTier).annotate({
+    description:
+      "Requested capability tier for Auto routing: 'fast', 'standard', 'deep', or 'frontier'.",
+  }),
+  minTier: Schema.optional(AutoCapabilityTier).annotate({
+    description:
+      "Minimum capability tier floor for Auto routing. Auto will not downgrade below this tier.",
+  }),
+  excludeVendorFamily: Schema.optional(
+    Schema.Union([TrimmedNonEmptyString, Schema.Array(TrimmedNonEmptyString)]).annotate({
+      description:
+        "Vendor family or families to exclude when a dissimilar eligible Auto provider has quota (e.g. 'anthropic', 'openai', 'google', 'xai').",
+    }),
+  ),
+});
+export type AutoRoutingConstraints = typeof AutoRoutingConstraints.Type;

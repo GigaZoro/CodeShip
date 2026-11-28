@@ -1,5 +1,6 @@
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -8,9 +9,16 @@ import { openCommandPalette } from "../commandPaletteBus";
 import { dispatchCommandPalette, useCommandPaletteStore } from "../commandPaletteStore";
 import { LAST_USED_PROJECT_STORAGE_KEY } from "../hooks/useHandleNewThread";
 import { removeLocalStorageItem } from "../hooks/useLocalStorage";
+import {
+  __resetClientSettingsPersistenceForTests,
+  __setClientSettingsForTests,
+  getClientSettings,
+} from "../hooks/useSettings";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Project, Thread } from "../types";
 import { CommandPalette } from "./CommandPalette";
+import { __resetCalmPresetForTests } from "./settings/calmPreset";
+import { AnchoredToastProvider, ToastProvider } from "./ui/toast";
 
 const entities = vi.hoisted(() => ({
   projects: [] as ReadonlyArray<Project>,
@@ -61,6 +69,15 @@ function setup(state: Partial<typeof entities> = {}) {
   entities.activeThread = state.activeThread;
   entities.delegatedUnderParent = state.delegatedUnderParent ?? new Set();
   entities.handleNewThread.mockClear();
+  __resetCalmPresetForTests();
+  __resetClientSettingsPersistenceForTests();
+  __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
+  return {
+    [Symbol.dispose]: () => {
+      __resetCalmPresetForTests();
+      __resetClientSettingsPersistenceForTests();
+    },
+  };
 }
 
 function makeProject(title: string): Project {
@@ -131,7 +148,7 @@ describe("CommandPalette open intents", () => {
   });
 
   it("opens New thread in... with focus in the search input, not the Back button", async () => {
-    setup();
+    using _cleanup = setup();
     await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
 
     openCommandPalette({ open: "new-thread-in" });
@@ -173,7 +190,7 @@ describe("CommandPalette open intents", () => {
   });
 
   it("opens a search intent with its query in the focused input", async () => {
-    setup();
+    using _cleanup = setup();
     await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
 
     openCommandPalette({ query: "acme" });
@@ -383,5 +400,50 @@ describe("CommandPalette open intents", () => {
 
     await userEvent.keyboard("{Escape}");
     await expect.element(palette).not.toBeInTheDocument();
+  });
+
+  it("applies the Calm preset from the command palette and offers undo with what changed", async () => {
+    using _cleanup = setup();
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      interfaceDensity: "comfortable",
+      statusColors: "vivid",
+      foldFinishedWork: "never",
+      notificationMode: "notifications-and-sound",
+    });
+    await using _screen = await render(
+      <ToastProvider>
+        <AnchoredToastProvider>
+          <CommandPalette>{null}</CommandPalette>
+        </AnchoredToastProvider>
+      </ToastProvider>,
+    );
+
+    openCommandPalette({ query: "> calm preset" });
+    await userEvent.click(page.getByText("Apply Calm preset"));
+
+    expect(getClientSettings()).toMatchObject({
+      interfaceDensity: "compact",
+      threadDetailsItems: {},
+      foldFinishedWork: "older",
+      statusColors: "calm",
+      notificationMode: "notifications-and-sound",
+    });
+    await expect.element(page.getByText("Calm preset applied")).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Interface density: Comfortable → Compact spacing · Fold finished work: Never → Older turns · Status colors: Vivid → Calm",
+        ),
+      )
+      .toBeVisible();
+
+    await userEvent.click(page.getByRole("button", { name: "Undo" }));
+    expect(getClientSettings()).toMatchObject({
+      interfaceDensity: "comfortable",
+      statusColors: "vivid",
+      foldFinishedWork: "never",
+      notificationMode: "notifications-and-sound",
+    });
   });
 });
