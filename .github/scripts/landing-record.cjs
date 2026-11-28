@@ -100,8 +100,14 @@ function startLandingRecord({ now, clock, carried }) {
     return end;
   };
 
+  /** Adds a measured positive duration to phase `name`, ignoring zero, negative, or non-finite values. */
+  const add = (name, ms) => {
+    if (isTime(ms) && ms > 0) phases[name] = (phases[name] ?? 0) + ms;
+  };
+
   return {
     begin,
+    add,
     async time(name, run) {
       const end = begin(name);
       try {

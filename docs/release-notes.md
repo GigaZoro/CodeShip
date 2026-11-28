@@ -1,3 +1,8 @@
+## 2026-11-28 — Landing telemetry records inner `check:changed` slot-wait time
+
+- Maintainers: `vp run check:changed` now tracks cumulative time spent stalled with zero budget slots held while waiting on other runs (`slotWaitMs`), logs it in live summary output without baking it into the pass cache, and emits it to `CHECK_CHANGED_METRICS_FILE` when set (clearing the variable from child processes).
+- Maintainers: `landing-turn.cjs` passes a temporary metrics file to each `check:changed` run and accumulates reported wait times into `phases.checkSlotWait` in `t3-landing/landings.jsonl` alongside `localSlotWait`.
+
 ## 2026-11-28 — Reserve accounts for interactive chats only
 
 - Added **Allow background runs** in **Settings → Providers** so you can mark a provider instance as **Interactive only** (`allowBackground: false`). Background work—scheduled tasks, Auto background routing, limit failover, idle compaction, final review, and delegated subagents—never consumes a reserved account, even when all other accounts hit usage limits, while interactive chats can still select and run on it normally.

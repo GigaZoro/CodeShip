@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  CHECK_METRICS_FILE_ENV,
   LEASE_REF,
   LEASE_RESERVE_MS,
   RECORD_ENV,
@@ -17,7 +18,7 @@ const {
   overlappingWorktrees,
   main,
   pushChecked,
-  testing: { acquire, release, tryAcquire, withPrivateCheckout },
+  testing: { acquire, release, runCheck, tryAcquire, withPrivateCheckout },
   verifyPush,
 } = require("./landing-turn.cjs");
 const { startLandingRecord } = require("./landing-record.cjs");
@@ -1316,4 +1317,93 @@ test("a relaunch keeps only the carried fields of their own type", (t) => {
       ["2026-01-01T00:00:00.000Z", 0, {}],
     ],
   );
+});
+
+test("startLandingRecord.add accumulates positive phase durations, ignores invalid values, and survives carry()", (t) => {
+  const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "landing-record-add-"));
+  t.after(() => fs.rmSync(gitDir, { recursive: true, force: true }));
+
+  const ignored = startLandingRecord({ now: () => Date.UTC(2026, 0, 1), clock: () => 0 });
+  for (const invalid of [
+    0,
+    -1,
+    -0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    "100",
+    null,
+    undefined,
+  ]) {
+    ignored.add("checkSlotWait", invalid);
+  }
+  ignored.write(() => gitDir, "landed");
+
+  const first = startLandingRecord({ now: () => Date.UTC(2026, 0, 1), clock: () => 0 });
+  first.add("checkSlotWait", 120.4);
+  first.add("checkSlotWait", 0);
+  first.add("checkSlotWait", 80.3);
+  const carried = first.carry();
+
+  const relaunched = startLandingRecord({
+    now: () => Date.UTC(2026, 0, 1),
+    clock: () => 0,
+    carried,
+  });
+  relaunched.add("checkSlotWait", 50);
+  relaunched.write(() => gitDir, "landed");
+
+  const records = fs
+    .readFileSync(path.join(gitDir, "t3-landing", "landings.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    records.map((entry) => entry.phases),
+    [{}, { checkSlotWait: 251 }],
+  );
+});
+
+test("land() accumulates inner check:changed slotWaitMs across preWaitCheck and underTurnCheck into landings.jsonl", async () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "change.txt");
+    const helper = path.join(root, "emit-metrics.cjs");
+    fs.writeFileSync(
+      helper,
+      [
+        'const fs = require("node:fs");',
+        `const metricsPath = process.env[${JSON.stringify(CHECK_METRICS_FILE_ENV)}];`,
+        "if (metricsPath) fs.writeFileSync(metricsPath, JSON.stringify({ schema: 1, slotWaitMs: Number(process.argv[2]) }));",
+      ].join("\n"),
+    );
+    const noopInstall = `"${process.execPath}" -e "process.exit(0)"`;
+    const mover = clone("mover");
+    let checkCalls = 0;
+    const result = await land({
+      cwd: dir,
+      remote: origin,
+      check: async (turn, base, budgetSeconds, directory, signal, checkoutContext) => {
+        checkCalls += 1;
+        const waitMs = turn === null ? 1200 : 800;
+        if (turn === null) {
+          commit(mover, "moved.txt");
+          git(mover, "push", "-q", "origin", "HEAD:main");
+        }
+        return runCheck(directory, turn, base, budgetSeconds, signal, {
+          ...checkoutContext,
+          installCommand: noopInstall,
+          checkCommand: `"${process.execPath}" "${helper}" ${waitMs}`,
+          stdio: "pipe",
+          onCheckMetrics: ({ slotWaitMs }) => checkoutContext?.recordSlotWait?.(slotWaitMs),
+        });
+      },
+    });
+    assert.equal(result.status, "landed");
+    assert.equal(checkCalls, 2);
+    const [landRecord] = recordsOf(dir);
+    assert.equal(landRecord.phases.checkSlotWait, 2000);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

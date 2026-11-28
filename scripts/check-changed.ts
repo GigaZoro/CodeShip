@@ -138,6 +138,20 @@ export const defaultConcurrency = (cores: number, availableBytes: number) =>
 
 // Another run frees its slots without telling this one, so a run that found none looks again this often.
 const SLOT_POLL_INTERVAL = "1 second";
+const CHECK_METRICS_FILE_ENV = "CHECK_CHANGED_METRICS_FILE";
+const CHECK_METRICS_SCHEMA = 1;
+
+// Unsets CHECK_CHANGED_METRICS_FILE (in any case variant) in spawned child environments so a per-run
+// temp path never leaks into nested `vp run --cache` keys or child `check:changed` runs.
+const clearMetricsEnv = (
+  source: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string | undefined> => {
+  const env: Record<string, string | undefined> = { [CHECK_METRICS_FILE_ENV]: undefined };
+  for (const key of Object.keys(source)) {
+    if (key.toUpperCase() === CHECK_METRICS_FILE_ENV) env[key] = undefined;
+  }
+  return env;
+};
 
 // Every run sharing `directory` draws from this budget. A slot is an open exclusive
 // transaction on its file, which the OS releases when the process exits, killed or not.
@@ -153,8 +167,27 @@ const sharedBudget = (
   );
   let holding = 0;
   let announced = false;
+  let totalSlotWaitMs = 0;
+  let waitStartedAt: number | undefined;
   // Completed when this run frees slots, so its next step starts without waiting for a poll.
   let freed = Deferred.makeUnsafe<void>();
+
+  const startWait = Clock.currentTimeMillis.pipe(
+    Effect.map((now) => {
+      if (holding === 0 && waitStartedAt === undefined) {
+        waitStartedAt = now;
+      }
+    }),
+  );
+
+  const flushWait = Clock.currentTimeMillis.pipe(
+    Effect.map((now) => {
+      if (waitStartedAt === undefined) return;
+      const elapsed = now - waitStartedAt;
+      waitStartedAt = undefined;
+      if (elapsed > 0) totalSlotWaitMs += elapsed;
+    }),
+  );
 
   const release = Effect.fn("checkChanged.releaseSlots")(function* (
     held: ReadonlyArray<NodeSqlite.DatabaseSync>,
@@ -278,34 +311,43 @@ const sharedBudget = (
 
   /** Waits for a free slot, then holds as many free ones as it can, up to `max`, until the scope closes. */
   const take = Effect.fnUntraced(function* (max: number) {
-    for (;;) {
-      // A landing starts no step unmarked.
-      if (!(yield* Effect.try({ try: markLanding, catch: String }))) {
-        yield* Effect.sleep(SLOT_POLL_INTERVAL);
-        continue;
-      }
-      const signal = freed;
-      const held = yield* Effect.uninterruptible(
-        lockFree(max).pipe(
-          Effect.tap((held) =>
-            held.length > 0 ? Effect.addFinalizer(() => release(held)) : Effect.void,
+    return yield* Effect.gen(function* () {
+      for (;;) {
+        // A landing starts no step unmarked.
+        if (!(yield* Effect.try({ try: markLanding, catch: String }))) {
+          if (holding === 0) yield* startWait;
+          yield* Effect.sleep(SLOT_POLL_INTERVAL);
+          continue;
+        }
+        const signal = freed;
+        const held = yield* Effect.uninterruptible(
+          lockFree(max).pipe(
+            Effect.tap((held) =>
+              held.length > 0 ? Effect.addFinalizer(() => release(held)) : Effect.void,
+            ),
           ),
-        ),
-      );
-      if (held.length > 0) return held.length;
-      if (holding === 0 && !announced) {
-        announced = true;
-        yield* Console.log(
-          "check:changed: other check:changed runs on this machine hold every slot; waiting for one.",
         );
+        if (held.length > 0) {
+          yield* flushWait;
+          return held.length;
+        }
+        if (holding === 0) {
+          yield* startWait;
+          if (!announced) {
+            announced = true;
+            yield* Console.log(
+              "check:changed: other check:changed runs on this machine hold every slot; waiting for one.",
+            );
+          }
+        }
+        yield* Effect.timeoutOrElse(Deferred.await(signal), {
+          duration: SLOT_POLL_INTERVAL,
+          orElse: () => Effect.void,
+        });
       }
-      yield* Effect.timeoutOrElse(Deferred.await(signal), {
-        duration: SLOT_POLL_INTERVAL,
-        orElse: () => Effect.void,
-      });
-    }
+    }).pipe(Effect.ensuring(flushWait));
   });
-  return { take, close: unmarkLanding };
+  return { take, close: unmarkLanding, flushWait, slotWaitMs: () => totalSlotWaitMs };
 };
 
 export type Outcome = "pass" | "FAIL" | "TIMEOUT" | "STOPPED";
@@ -374,6 +416,8 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
     // Set for the run that holds main's landing turn: other runs start no step until it ends,
     // and its first failing step stops the rest.
     readonly landing?: boolean;
+    // Called once when the run ends with cumulative milliseconds waited while holding zero slots.
+    readonly onSlotWaitMs?: (ms: number) => void;
   },
 ) {
   const stopped = yield* Deferred.make<void>();
@@ -455,7 +499,21 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
       return step.serial ? serial.withPermit(limited) : limited;
     },
     { concurrency: "unbounded" },
-  ).pipe(Effect.ensuring(Effect.sync(budget.close)));
+  ).pipe(
+    Effect.ensuring(
+      budget.flushWait.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            try {
+              budget.close();
+            } finally {
+              options.onSlotWaitMs?.(budget.slotWaitMs());
+            }
+          }),
+        ),
+      ),
+    ),
+  );
 });
 
 const CacheEntry = Schema.fromJsonString(
@@ -463,6 +521,9 @@ const CacheEntry = Schema.fromJsonString(
 );
 const decodeCacheEntry = Schema.decodeEffect(CacheEntry);
 const encodeCacheEntry = Schema.encodeEffect(CacheEntry);
+const encodeCheckMetrics = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Struct({ schema: Schema.Number, slotWaitMs: Schema.Number })),
+);
 const TestRequest = Schema.Struct({
   files: Schema.Array(Schema.String),
   groupSize: Schema.Number,
@@ -515,7 +576,7 @@ const gitRun = Effect.fn("checkChanged.gitRun")(function* (
       const handle = yield* spawner.spawn(
         ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], {
           cwd,
-          env: { ...REAL_HISTORY_ENV, ...env },
+          env: { ...clearMetricsEnv(), ...REAL_HISTORY_ENV, ...env },
           extendEnv: true,
           forceKillAfter: "5 seconds",
         }),
@@ -1123,7 +1184,11 @@ export const spawnVp = (
       const handle = yield* endingWindowsTrees(spawner, platform, "always").spawn(
         ChildProcess.make(command, commandArgs, {
           cwd,
-          env: { ...(process.stdout.isTTY ? { FORCE_COLOR: "1" } : {}), ...extraEnv },
+          env: {
+            ...(process.stdout.isTTY ? { FORCE_COLOR: "1" } : {}),
+            ...extraEnv,
+            ...clearMetricsEnv(),
+          },
           extendEnv: true,
           forceKillAfter: "5 seconds",
         }),
@@ -1663,7 +1728,10 @@ const loadConfig = Effect.fn("checkChanged.loadConfig")(function* (
           {
             cwd: root,
             extendEnv: true,
-            env: { CHECK_CHANGED_CONFIG: NodeURL.pathToFileURL(NodePath.join(root, file)).href },
+            env: {
+              ...clearMetricsEnv(),
+              CHECK_CHANGED_CONFIG: NodeURL.pathToFileURL(NodePath.join(root, file)).href,
+            },
             forceKillAfter: "5 seconds",
           },
         ),
@@ -1688,12 +1756,18 @@ const loadConfig = Effect.fn("checkChanged.loadConfig")(function* (
   yield* Console.log(`check:changed: loaded ${file} in ${seconds}s`);
 });
 
-const checkChanged = Effect.fn("checkChanged")(function* (input: {
-  readonly ref: Option.Option<string>;
-  readonly concurrency: Option.Option<number>;
-  readonly timeout: Option.Option<number>;
-  readonly suites: ReadonlyArray<string>;
-}) {
+const checkChangedRun = Effect.fn("checkChanged.run")(function* (
+  input: {
+    readonly ref: Option.Option<string>;
+    readonly concurrency: Option.Option<number>;
+    readonly timeout: Option.Option<number>;
+    readonly suites: ReadonlyArray<string>;
+  },
+  metrics: {
+    readonly onSlotWaitMs: (ms: number) => void;
+    readonly slotWaitMs: () => number;
+  },
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -1762,12 +1836,15 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         timeoutSeconds: explicitTimeout ? timeoutSeconds : TEST_STEP_MAX_SECONDS,
         slotDirectory: yield* budgetDirectory(root),
         landing,
+        onSlotWaitMs: metrics.onSlotWaitMs,
       },
     );
+    const waitedMs = metrics.slotWaitMs();
     yield* Console.log(
       [
         "\ncheck:changed suites summary",
         ...results.map((r) => `  ${r.outcome}  ${r.name}  ${r.time}`),
+        ...(waitedMs >= 50 ? [`  slot wait: ${(waitedMs / 1000).toFixed(1)}s`] : []),
       ].join("\n"),
     );
     return results.every((result) => result.outcome === "pass");
@@ -2384,6 +2461,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     timeoutSeconds,
     slotDirectory,
     landing,
+    onSlotWaitMs: metrics.onSlotWaitMs,
   });
 
   const summary = ["check:changed summary"];
@@ -2413,6 +2491,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
+  const waitedMs = metrics.slotWaitMs();
+  const slotWaitLine = waitedMs >= 50 ? `  slot wait: ${(waitedMs / 1000).toFixed(1)}s` : undefined;
   // A test run keeps the version of each file it loaded first, so its result
   // can mix two versions of the code, and a pass would not describe these files.
   const after = yield* fingerprints(base);
@@ -2424,9 +2504,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     if (!(yield* treeUnchanged)) return false;
     yield* Console.log("Checks passed with the previous run's summary.\n");
     for (const line of previousPass.value.summary) yield* Console.log(line);
+    if (slotWaitLine !== undefined) yield* Console.log(slotWaitLine);
     return yield* recordCheckedPass;
   }
-  yield* Console.log(`\n${summary.join("\n")}`);
+  yield* Console.log(`\n${[...summary, ...(slotWaitLine ? [slotWaitLine] : [])].join("\n")}`);
   if (after.source !== before.source) {
     const changes = yield* changesBetween(before.tree, after.tree);
     yield* Console.log(
@@ -2457,6 +2538,48 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   }).pipe(Effect.catch((error) => Console.warn(`  pass not cached: ${error.message}`)));
   return yield* recordCheckedPass;
 }, Effect.scoped);
+
+const checkChanged = Effect.fn("checkChanged")(function* (input: {
+  readonly ref: Option.Option<string>;
+  readonly concurrency: Option.Option<number>;
+  readonly timeout: Option.Option<number>;
+  readonly suites: ReadonlyArray<string>;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const metricsFile = Option.filter(
+    yield* Config.option(Config.String(CHECK_METRICS_FILE_ENV)),
+    (value) => value.trim().length > 0,
+  );
+  let totalSlotWaitMs = 0;
+  const recordSlotWaitMs = (ms: number) => {
+    if (Number.isFinite(ms) && ms > 0) totalSlotWaitMs += ms;
+  };
+  const writeMetrics = Option.match(metricsFile, {
+    onNone: () => Effect.void,
+    onSome: (file) => {
+      const temp = `${file}.${process.pid}.tmp`;
+      return Effect.gen(function* () {
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+        const payload = yield* encodeCheckMetrics({
+          schema: CHECK_METRICS_SCHEMA,
+          slotWaitMs: Math.round(totalSlotWaitMs),
+        });
+        yield* fs.writeFileString(temp, payload);
+        yield* fs.rename(temp, file);
+      }).pipe(
+        Effect.onError(() => fs.remove(temp, { force: true }).pipe(Effect.ignore)),
+        Effect.catch((error) =>
+          Console.warn(`check:changed: could not write metrics to ${file}: ${String(error)}`),
+        ),
+      );
+    },
+  });
+  return yield* checkChangedRun(input, {
+    onSlotWaitMs: recordSlotWaitMs,
+    slotWaitMs: () => totalSlotWaitMs,
+  }).pipe(Effect.ensuring(writeMetrics));
+});
 
 export const checkChangedCommand = Command.make(
   "check-changed",

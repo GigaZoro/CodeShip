@@ -5,11 +5,12 @@ const path = require("node:path");
 
 const {
   CANDIDATE_REF,
+  CHECK_METRICS_FILE_ENV,
   LEASE_REF,
   LEASE_TTL_MS,
   land,
   withTurn,
-  testing: { acquireCheckoutSlot, checkoutsFolder, deleteLease, release, tryAcquire },
+  testing: { acquireCheckoutSlot, checkoutsFolder, deleteLease, release, runCheck, tryAcquire },
 } = require("./landing-turn.cjs");
 const { recordPass, requirePass } = require("./check-changed-receipt.cjs");
 const {
@@ -98,7 +99,7 @@ test("AB#7666: holder publishes candidate, head waiter speculatively pre-checks,
         releaseHolder.resolve();
         await holderPromise;
       },
-      check: async (turn, base, _budget, directory, signal) => {
+      check: async (turn, base, budgetSeconds, directory, signal, checkoutContext) => {
         if (!turn && base === initialBase) {
           waiterPreDone.resolve();
           await holderInUnderTurn.promise;
@@ -109,6 +110,17 @@ test("AB#7666: holder publishes candidate, head waiter speculatively pre-checks,
           assert.equal(git(waiter, "rev-parse", "HEAD"), initialWaiterHead);
           assert.equal(signal instanceof AbortSignal, true);
           assert.equal(signal.aborted, false);
+          const specCheckCmd = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+            `require("node:fs").writeFileSync(process.env[${JSON.stringify(CHECK_METRICS_FILE_ENV)}], JSON.stringify({ schema: 1, slotWaitMs: 450 }))`,
+          )}`;
+          const ok = await runCheck(directory, turn, base, budgetSeconds, signal, {
+            ...checkoutContext,
+            installCommand: `"${process.execPath}" -e "process.exit(0)"`,
+            checkCommand: specCheckCmd,
+            stdio: "pipe",
+            onCheckMetrics: ({ slotWaitMs }) => checkoutContext?.recordSlotWait?.(slotWaitMs),
+          });
+          assert.equal(ok, true);
           const tree = git(directory, "rev-parse", "HEAD^{tree}");
           recordPass(directory, tree, base);
           waiterSpecCheck = { base, tree, head: git(directory, "rev-parse", "HEAD") };
@@ -157,12 +169,13 @@ test("AB#7666: holder publishes candidate, head waiter speculatively pre-checks,
     // End-to-end receipt written during speculative pre-check satisfies requirePass for the landed commit.
     assert.doesNotThrow(() => requirePass(waiter, waiterResult.commit, holderResult.commit));
 
-    // Telemetry records speculativeReused and phases.speculativeCheck on waiter's landing record.
+    // Telemetry records speculativeReused, phases.speculativeCheck, and phases.checkSlotWait on waiter's landing record.
     const waiterRecords = readLandings(waiter, git);
     assert.equal(waiterRecords.length, 1);
     assert.equal(waiterRecords[0].status, "landed");
     assert.equal(waiterRecords[0].speculativeReused, true);
     assert.equal(typeof waiterRecords[0].phases.speculativeCheck, "number");
+    assert.equal(waiterRecords[0].phases.checkSlotWait, 450);
     assert.equal(waiterRecords[0].phases.underTurnCheck, undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

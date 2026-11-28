@@ -27,6 +27,7 @@ const TURN_ENV = "T3_LANDING_TURN";
 // What a landing's relaunch after its rebase gets of the first process's record.
 const RECORD_ENV = "T3_LANDING_RECORD";
 const TEST_STEP_MAX_ENV = "CHECK_CHANGED_TEST_STEP_MAX";
+const CHECK_METRICS_FILE_ENV = "CHECK_CHANGED_METRICS_FILE";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 // A check:changed run took 2 hours on a busy day. A turn ends this long after its take, on the wall clock, a holder's
@@ -2350,6 +2351,7 @@ async function runLanding(
   } finally {
     endSlotWait?.();
   }
+  const recordSlotWait = (ms) => record.add("checkSlotWait", ms);
   try {
     if (preSlot.waited) {
       if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
@@ -2386,7 +2388,10 @@ async function runLanding(
     }
     const preWaitPassed = await record.time("preWaitCheck", () =>
       runInCheckoutSlot(preSlot, tip, (directory, checkoutContext) =>
-        check(null, checked, undefined, directory, undefined, checkoutContext),
+        check(null, checked, undefined, directory, undefined, {
+          ...checkoutContext,
+          recordSlotWait,
+        }),
       ),
     );
     if (!preWaitPassed) return { status: "check-failed" };
@@ -2397,7 +2402,10 @@ async function runLanding(
     withPrivateCheckout(
       { cwd, commit: tip, role: "underTurn", warmLimit, now },
       (directory, checkoutContext) =>
-        check(turn, base, budgetSeconds, directory, signal, checkoutContext),
+        check(turn, base, budgetSeconds, directory, signal, {
+          ...checkoutContext,
+          recordSlotWait,
+        }),
     );
   let specTask = null;
   let lastSpecPromise = Promise.resolve();
@@ -2483,6 +2491,7 @@ async function runLanding(
                 const specCheckoutContext = {
                   ...checkoutContext,
                   rebuild: (rebuildSignal) => checkoutContext.rebuild(rebuildSignal, specTip),
+                  recordSlotWait,
                 };
                 return await check(
                   null,
@@ -2728,6 +2737,18 @@ async function runTreeCommand(
 }
 
 /**
+ * Shallow copy of `source` omitting `CHECK_CHANGED_METRICS_FILE` under any case variant so outer metrics paths never
+ * leak into child commands or collide on case-insensitive Windows environments.
+ */
+function withoutMetricsEnv(source = process.env) {
+  const cleaned = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (key.toUpperCase() !== CHECK_METRICS_FILE_ENV) cleaned[key] = value;
+  }
+  return cleaned;
+}
+
+/**
  * Installs and runs `vp run check:changed` against `base` in the private checkout `directory`, under the turn when
  * `turn` is one. If install fails in a reused warm checkout, rebuilds cleanly once and retries install so a poisoned
  * `node_modules` auto-recovers. A lost turn stops them and every process they started, since their pass could no
@@ -2747,6 +2768,7 @@ async function runCheck(
     checkCommand = `vp run check:changed ${base}`,
     stdio = "inherit",
     onSpawn = () => {},
+    onCheckMetrics,
     reused = false,
     rebuild,
     trackChild,
@@ -2754,14 +2776,57 @@ async function runCheck(
   } = {},
 ) {
   const env = {
-    ...process.env,
+    ...withoutMetricsEnv(),
     // Unset before the wait: only the holder's checks take slots ahead of other runs.
     [TURN_ENV]: turn ?? undefined,
     [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
   };
-  const runStep = (step) =>
-    runTreeCommand(step, { cwd: directory, stdio, env, signal, onSpawn, trackChild, isStopping });
-  if (command !== undefined) return (await runStep(command)).ok;
+  const runStep = (step, stepEnv = env) =>
+    runTreeCommand(step, {
+      cwd: directory,
+      stdio,
+      env: stepEnv,
+      signal,
+      onSpawn,
+      trackChild,
+      isStopping,
+    });
+  const runMeasuredCheck = async (step) => {
+    const metricsDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-check-metrics-"));
+    const metricsFile = path.join(metricsDir, "metrics.json");
+    try {
+      return (await runStep(step, { ...env, [CHECK_METRICS_FILE_ENV]: metricsFile })).ok;
+    } finally {
+      let metrics = null;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(metricsFile, "utf8"));
+        if (
+          typeof parsed?.slotWaitMs === "number" &&
+          Number.isFinite(parsed.slotWaitMs) &&
+          parsed.slotWaitMs > 0
+        ) {
+          metrics = { slotWaitMs: parsed.slotWaitMs };
+        }
+      } catch {
+        // Best-effort: ENOENT, unreadable, or malformed JSON never changes check outcome.
+      }
+      try {
+        fs.rmSync(metricsDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort temp directory cleanup (sweeps both metrics.json and any leftover *.tmp).
+      }
+      if (metrics !== null) {
+        try {
+          onCheckMetrics?.(metrics);
+        } catch {
+          // Best-effort: metrics callback errors must never mask the check result.
+        }
+      }
+    }
+  };
+  if (command !== undefined) {
+    return onCheckMetrics ? await runMeasuredCheck(command) : (await runStep(command)).ok;
+  }
   let installed = await runStep(installCommand);
   if (
     !installed.ok &&
@@ -2779,7 +2844,7 @@ async function runCheck(
     installed = await runStep(installCommand);
   }
   if (!installed.ok || signal?.aborted || isStopping?.()) return false;
-  return (await runStep(checkCommand)).ok;
+  return onCheckMetrics ? await runMeasuredCheck(checkCommand) : (await runStep(checkCommand)).ok;
 }
 
 /**
@@ -2792,7 +2857,7 @@ async function runFinalize(
   { command, stdio = "inherit", onSpawn = () => {}, trackChild, isStopping },
 ) {
   const env = {
-    ...process.env,
+    ...withoutMetricsEnv(),
     [TURN_ENV]: turn,
     [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
     [FINAL_COMMIT_ENV]: commit,
@@ -2880,7 +2945,10 @@ async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = 
       check:
         check ??
         ((turn, base, budgetSeconds, directory, signal, checkoutContext) =>
-          runCheck(directory, turn, base, budgetSeconds, signal, checkoutContext)),
+          runCheck(directory, turn, base, budgetSeconds, signal, {
+            ...checkoutContext,
+            onCheckMetrics: ({ slotWaitMs }) => checkoutContext?.recordSlotWait?.(slotWaitMs),
+          })),
     });
     if (result.status === "rebased") {
       return (
@@ -2975,6 +3043,7 @@ module.exports = {
   CANDIDATE_REF,
   TURN_ENV,
   RECORD_ENV,
+  CHECK_METRICS_FILE_ENV,
   FINAL_COMMIT_ENV,
   FINAL_BASE_ENV,
   FINAL_REBASED_ENV,

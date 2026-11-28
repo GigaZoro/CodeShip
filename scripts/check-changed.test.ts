@@ -20,6 +20,7 @@ import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -778,6 +779,7 @@ describe("check:changed", () => {
       );
       checker.exec("BEGIN EXCLUSIVE;");
       const marked: Array<boolean> = [];
+      const reported: Array<number> = [];
       const landing = yield* runSteps(
         [
           {
@@ -797,7 +799,13 @@ describe("check:changed", () => {
               }),
           },
         ],
-        { concurrency: 1, timeoutSeconds: 60, slotDirectory: directory, landing: true },
+        {
+          concurrency: 1,
+          timeoutSeconds: 60,
+          slotDirectory: directory,
+          landing: true,
+          onSlotWaitMs: (ms) => reported.push(ms),
+        },
       ).pipe(Effect.forkChild);
       // A slot is free all along; only the missing marker holds the step back.
       for (let second = 0; second < 3; second++) yield* TestClock.adjust("1 second");
@@ -807,6 +815,7 @@ describe("check:changed", () => {
       yield* TestClock.adjust("1 second");
       yield* Fiber.join(landing);
       assert.deepStrictEqual(marked, [true]);
+      assert.deepStrictEqual(reported, [4000]);
     }),
   );
 
@@ -1040,6 +1049,242 @@ describe("check:changed", () => {
       yield* Fiber.join(fiber);
       assert.isTrue(logs.some((line) => line.includes("FAIL apps/server/x.test.ts")));
     }),
+  );
+
+  it.effect("records exact slotWaitMs when another run holds every budget slot", () =>
+    Effect.gen(function* () {
+      const dir = yield* slotDirectory;
+      const holderStarted = yield* Deferred.make<void>();
+      const releaseHolder = yield* Deferred.make<void>();
+      const waitingEntered = yield* Deferred.make<void>();
+      const reported: Array<number> = [];
+      const holder = yield* runSteps(
+        [
+          {
+            name: "holder",
+            run: () =>
+              Deferred.succeed(holderStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseHolder)),
+                Effect.as({ ok: true, output: "" }),
+              ),
+          },
+        ],
+        { concurrency: 1, timeoutSeconds: 60, slotDirectory: dir },
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(holderStarted);
+
+      const waiter = yield* runSteps(
+        [{ name: "waiter", run: () => Effect.succeed({ ok: true, output: "" }) }],
+        {
+          concurrency: 1,
+          timeoutSeconds: 60,
+          slotDirectory: dir,
+          onSlotWaitMs: (ms) => reported.push(ms),
+        },
+      ).pipe(
+        Effect.provideService(Console.Console, {
+          ...globalThis.console,
+          log: (...args: ReadonlyArray<unknown>) => {
+            if (args.join(" ").includes("hold every slot")) {
+              Deferred.doneUnsafe(waitingEntered, Exit.void);
+            }
+          },
+        } as Console.Console),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(waitingEntered);
+      yield* TestClock.adjust("1 second");
+      yield* TestClock.adjust("1 second");
+      yield* Deferred.succeed(releaseHolder, undefined);
+      yield* Fiber.join(holder);
+      yield* TestClock.adjust("1 second");
+      const results = yield* Fiber.join(waiter);
+
+      assert.deepStrictEqual(
+        results.map((result) => result.outcome),
+        ["pass"],
+      );
+      assert.deepStrictEqual(reported, [3000]);
+    }),
+  );
+
+  it.effect("keeps slotWaitMs at 0 when this run's own steps occupy every slot", () =>
+    Effect.gen(function* () {
+      const dir = yield* slotDirectory;
+      const firstStarted = yield* Deferred.make<void>();
+      const reported: Array<number> = [];
+      const run = yield* runSteps(
+        [
+          {
+            name: "first",
+            run: () =>
+              Deferred.succeed(firstStarted, undefined).pipe(
+                Effect.andThen(Effect.sleep("3 seconds")),
+                Effect.as({ ok: true, output: "" }),
+              ),
+          },
+          { name: "second", run: () => Effect.succeed({ ok: true, output: "" }) },
+        ],
+        {
+          concurrency: 1,
+          timeoutSeconds: 60,
+          slotDirectory: dir,
+          onSlotWaitMs: (ms) => reported.push(ms),
+        },
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(firstStarted);
+      for (let second = 0; second < 4; second++) yield* TestClock.adjust("1 second");
+      const results = yield* Fiber.join(run);
+
+      assert.deepStrictEqual(
+        results.map((result) => result.outcome),
+        ["pass", "pass"],
+      );
+      assert.deepStrictEqual(reported, [0]);
+    }),
+  );
+
+  it.effect(
+    "records elapsed slotWaitMs when a waiting run is interrupted before acquiring a slot",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* slotDirectory;
+        const holderStarted = yield* Deferred.make<void>();
+        const releaseHolder = yield* Deferred.make<void>();
+        const waitingEntered = yield* Deferred.make<void>();
+        const reported: Array<number> = [];
+        const holder = yield* runSteps(
+          [
+            {
+              name: "holder",
+              run: () =>
+                Deferred.succeed(holderStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseHolder)),
+                  Effect.as({ ok: true, output: "" }),
+                ),
+            },
+          ],
+          { concurrency: 1, timeoutSeconds: 60, slotDirectory: dir },
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(holderStarted);
+
+        const waiter = yield* runSteps(
+          [{ name: "waiter", run: () => Effect.succeed({ ok: true, output: "" }) }],
+          {
+            concurrency: 1,
+            timeoutSeconds: 60,
+            slotDirectory: dir,
+            onSlotWaitMs: (ms) => reported.push(ms),
+          },
+        ).pipe(
+          Effect.provideService(Console.Console, {
+            ...globalThis.console,
+            log: (...args: ReadonlyArray<unknown>) => {
+              if (args.join(" ").includes("hold every slot")) {
+                Deferred.doneUnsafe(waitingEntered, Exit.void);
+              }
+            },
+          } as Console.Console),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(waitingEntered);
+        yield* TestClock.adjust("1 second");
+        yield* TestClock.adjust("1 second");
+        yield* Fiber.interrupt(waiter);
+        yield* Deferred.succeed(releaseHolder, undefined);
+        yield* Fiber.join(holder);
+
+        assert.deepStrictEqual(reported, [2000]);
+      }),
+  );
+
+  it.effect(
+    "counts only the holding === 0 interval when holding drops from > 0 to 0 across take() iterations",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* slotDirectory;
+        // External run holds slot 0.
+        const externalSlot = yield* Effect.acquireRelease(
+          Effect.sync(() => new NodeSqlite.DatabaseSync(NodePath.join(dir, "slot-0.sqlite"))),
+          (db) => Effect.sync(() => db.isOpen && db.close()),
+        );
+        externalSlot.exec("BEGIN EXCLUSIVE;");
+
+        const step1Started = yield* Deferred.make<void>();
+        const releaseStep1 = yield* Deferred.make<void>();
+        const waitingEntered = yield* Deferred.make<void>();
+        const reported: Array<number> = [];
+
+        const run = yield* runSteps(
+          [
+            {
+              name: "step1",
+              workers: 1,
+              run: () =>
+                Deferred.succeed(step1Started, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseStep1)),
+                  Effect.as({ ok: true, output: "" }),
+                ),
+            },
+            {
+              name: "step2",
+              workers: 1,
+              run: () => Effect.succeed({ ok: true, output: "" }),
+            },
+          ],
+          {
+            concurrency: 2,
+            timeoutSeconds: 60,
+            slotDirectory: dir,
+            onSlotWaitMs: (ms) => reported.push(ms),
+          },
+        ).pipe(
+          Effect.provideService(Console.Console, {
+            ...globalThis.console,
+            log: (...args: ReadonlyArray<unknown>) => {
+              if (args.join(" ").includes("hold every slot")) {
+                Deferred.doneUnsafe(waitingEntered, Exit.void);
+              }
+            },
+          } as Console.Console),
+          Effect.forkChild,
+        );
+
+        // step1 holds slot 1 (holding === 1) while externalSlot holds slot 0; step2 waits internally.
+        yield* Deferred.await(step1Started);
+        yield* TestClock.adjust("1 second");
+        yield* TestClock.adjust("1 second");
+
+        // Block slot acquisition externally right before step1 finishes so holding drops 1 -> 0
+        // and step2 transitions to waiting externally with holding === 0.
+        const markerPath = NodePath.join(dir, "landing-wait-external.sqlite");
+        const externalMarker = yield* Effect.acquireRelease(
+          Effect.sync(() => new NodeSqlite.DatabaseSync(markerPath)),
+          (db) =>
+            Effect.sync(() => {
+              if (db.isOpen) db.close();
+              NodeFS.rmSync(markerPath, { force: true });
+            }),
+        );
+        externalMarker.exec("BEGIN EXCLUSIVE;");
+
+        yield* Deferred.succeed(releaseStep1, undefined);
+        yield* Deferred.await(waitingEntered);
+
+        // Advance 3 seconds while holding === 0: only this interval must be counted in slotWaitMs.
+        yield* TestClock.adjust("1 second");
+        yield* TestClock.adjust("1 second");
+        externalMarker.close();
+        NodeFS.rmSync(markerPath, { force: true });
+        yield* TestClock.adjust("1 second");
+
+        const results = yield* Fiber.join(run);
+        assert.deepStrictEqual(
+          results.map((result) => result.outcome),
+          ["pass", "pass"],
+        );
+        assert.deepStrictEqual(reported, [3000]);
+      }),
   );
 
   it("bounds the test step by an explicit timeout and caps its per-file growth otherwise", () => {
@@ -2668,6 +2913,31 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
         },
       );
     },
+    spawn(
+      checkArgs: ReadonlyArray<string> = [],
+      extraEnv?: Record<string, string>,
+      checkout = root,
+    ) {
+      return NodeChildProcess.spawn(
+        process.execPath,
+        [
+          "scripts/check-changed.ts",
+          "HEAD",
+          ...(checkArgs.includes("--concurrency") ? [] : ["--concurrency", "6"]),
+          ...checkArgs,
+        ],
+        {
+          cwd: checkout,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: checkEnv(checkout, {
+            FAIL_STEP: "",
+            EDIT_STEP: "",
+            EDIT_FILE: NodePath.join(root, source),
+            ...extraEnv,
+          }),
+        },
+      );
+    },
     calls: (): Array<{ args: Array<string>; cwd: string }> =>
       recorded().map(({ args, cwd }) => ({ args, cwd })),
     settings: (): Array<Record<string, string>> => recorded().map(({ settings }) => settings),
@@ -4023,4 +4293,100 @@ it.each([
   expect(
     NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
   ).toBe(false);
+});
+
+it("writes CHECK_CHANGED_METRICS_FILE on pass and fail, excludes slot wait from cached summary, clears child env, and cleans up temp files on error", async () => {
+  using project = launcherFixture();
+  const metricsRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-metrics-test-"));
+  try {
+    project.write(project.source, "export const value = 2;\n");
+
+    // Hold the sole budget slot until check:changed announces waiting, then release it so the run
+    // records a real non-zero slotWaitMs and logs `slot wait:` in live output without caching it.
+    const budgetDir = NodePath.join(project.root, ".git", "t3-check-changed");
+    NodeFS.mkdirSync(budgetDir, { recursive: true });
+    const slotDb = new NodeSqlite.DatabaseSync(NodePath.join(budgetDir, "slot-0.sqlite"));
+    slotDb.exec("BEGIN EXCLUSIVE;");
+    const firstMetrics = NodePath.join(metricsRoot, "nested", "first.json");
+    let firstStdout = "";
+    let firstStderr = "";
+    let firstStatus: number | null = null;
+    try {
+      const child = project.spawn(["--concurrency", "1"], {
+        CHECK_CHANGED_METRICS_FILE: firstMetrics,
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        firstStdout += chunk.toString("utf8");
+        if (slotDb.isOpen && firstStdout.includes("hold every slot")) slotDb.close();
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        firstStderr += chunk.toString("utf8");
+      });
+      firstStatus = await new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+    } finally {
+      if (slotDb.isOpen) slotDb.close();
+    }
+    expect(firstStatus, firstStdout + firstStderr).toBe(0);
+    expect(firstStdout).toMatch(/^\s+slot wait: \d+\.\ds$/m);
+    const firstPayload = JSON.parse(NodeFS.readFileSync(firstMetrics, "utf8")) as {
+      schema: number;
+      slotWaitMs: number;
+    };
+    expect(firstPayload.schema).toBe(1);
+    expect(firstPayload.slotWaitMs).toBeGreaterThanOrEqual(50);
+    expect(
+      project.settings().every((settings) => !("CHECK_CHANGED_METRICS_FILE" in settings)),
+    ).toBe(true);
+
+    // Cached summary must never contain ephemeral `slot wait:` lines.
+    const cached = JSON.parse(
+      NodeFS.readFileSync(
+        NodePath.join(project.root, "node_modules/.cache/check-changed.json"),
+        "utf8",
+      ),
+    ) as { key: string; summary: Array<string> };
+    expect(cached.summary[0]).toBe("check:changed summary");
+    expect(cached.summary.some((line) => line.includes("slot wait:"))).toBe(false);
+
+    // Varying CHECK_CHANGED_METRICS_FILE must not bust the check:changed cache, and replay prints no slot wait.
+    const secondMetrics = NodePath.join(metricsRoot, "second.json");
+    const second = project.run("", "", project.source, ["--concurrency", "1"], {
+      CHECK_CHANGED_METRICS_FILE: secondMetrics,
+    });
+    expect(second.status, second.stdout + second.stderr).toBe(0);
+    expect(second.stdout).toContain("Checks passed with the previous run's summary.");
+    expect(second.stdout).not.toContain("slot wait:");
+    expect(project.calls().filter(({ args }) => args[0] === "lint")).toHaveLength(1);
+    expect(JSON.parse(NodeFS.readFileSync(secondMetrics, "utf8"))).toEqual({
+      schema: 1,
+      slotWaitMs: 0,
+    });
+
+    // Failing runs still emit metrics.
+    project.write(project.source, "export const value = 3;\n");
+    const failedMetrics = NodePath.join(metricsRoot, "failed.json");
+    const failed = project.run("lint", "", project.source, [], {
+      CHECK_CHANGED_METRICS_FILE: failedMetrics,
+    });
+    expect(failed.status, failed.stdout + failed.stderr).toBe(1);
+    expect(JSON.parse(NodeFS.readFileSync(failedMetrics, "utf8"))).toEqual({
+      schema: 1,
+      slotWaitMs: 0,
+    });
+
+    // When rename fails (destination is an existing directory), warn without failing and remove the *.tmp file.
+    const existingDir = NodePath.join(metricsRoot, "existing-dir");
+    NodeFS.mkdirSync(existingDir);
+    const unwritable = project.run("", "", project.source, [], {
+      CHECK_CHANGED_METRICS_FILE: existingDir,
+    });
+    expect(unwritable.status, unwritable.stdout + unwritable.stderr).toBe(0);
+    expect(unwritable.stdout + unwritable.stderr).toContain("could not write metrics");
+    expect(NodeFS.readdirSync(metricsRoot).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  } finally {
+    removeDir(metricsRoot);
+  }
 });
