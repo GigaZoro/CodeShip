@@ -1514,6 +1514,12 @@ const catalog: MessageCatalog = {
     "{machine} залишає запуски для {other}, де працює інша версія T3.CodeShip. Оновіть T3.CodeShip на обох комп’ютерах.",
   "{machine} left it to {other}, which runs another version of T3.CodeShip: on different versions both could run it. Update T3.CodeShip on both machines.":
     "{machine} залишив його для {other}, де працює інша версія T3.CodeShip: на різних версіях його могли б запустити обидва. Оновіть T3.CodeShip на обох комп’ютерах.",
+  "{machine} offline · {count} threads waiting": {
+    one: "{machine} офлайн · {count} чат чекає",
+    few: "{machine} офлайн · {count} чати чекають",
+    many: "{machine} офлайн · {count} чатів чекають",
+    other: "{machine} офлайн · {count} чату чекають",
+  },
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
   "{machine} ran it last, at {time}": "Востаннє запущено на {machine} о {time}",
   "{machine} ran it.": "Його виконав {machine}.",
@@ -1685,9 +1691,21 @@ const catalog: MessageCatalog = {
   "{provider} provider is unavailable.": "Провайдер {provider} недоступний.",
   "{provider} repository": "Репозиторій {provider}",
   "{provider} still needs an update": "{provider} досі потребує оновлення",
+  "{provider} unavailable · {count} threads failed": {
+    one: "{provider} недоступний · {count} чат завершився помилкою",
+    few: "{provider} недоступний · {count} чати завершилися помилкою",
+    many: "{provider} недоступний · {count} чатів завершилися помилкою",
+    other: "{provider} недоступний · {count} чату завершилися помилкою",
+  },
   "{provider} update failed": "Не вдалося оновити {provider}",
   "{provider} updated": "{provider} оновлено",
   "{provider} updated: {version}": "{provider} оновлено: {version}",
+  "{provider} usage limit · {count} threads stopped": {
+    one: "Ліміт використання {provider} · {count} чат зупинено",
+    few: "Ліміт використання {provider} · {count} чати зупинено",
+    many: "Ліміт використання {provider} · {count} чатів зупинено",
+    other: "Ліміт використання {provider} · {count} чату зупинено",
+  },
   "{provider} Workspace": "Робочий простір {provider}",
   "{provider} write-only headers JSON": "JSON заголовків {provider} лише для запису",
   "{provider}, {count} models": "{provider}, моделей: {count}",
@@ -6744,6 +6762,7 @@ const catalog: MessageCatalog = {
   "Inactive days": "Днів неактивності",
   "Inactivity does not settle threads with a pull request. Merge and close still do.":
     "Бездіяльність не завершує чати з пул-реквестом. Злиття та закриття завершують.",
+  Incidents: "Інциденти",
   "incl. {tokens} reasoning": "зокрема міркування: {tokens}",
   "Include {file}": "Включити {file}",
   "Include all files": "Включити всі файли",
@@ -8758,6 +8777,7 @@ const catalog: MessageCatalog = {
   "Open provider setup to sign in with Google.":
     "Відкрийте налаштування провайдера, щоб увійти через Google.",
   "Open provider setup to sign in.": "Відкрийте налаштування провайдера, щоб увійти.",
+  "Open providers": "Відкрити провайдерів",
   "Open pull request #{number}, {state}: {title}":
     "Відкрити пул-реквест #{number}, {state}: {title}",
   "Open pull requests": "Відкрити пул-реквести",
@@ -9797,6 +9817,7 @@ const catalog: MessageCatalog = {
   "Recording preview": "Перегляд запису",
   "Recording saved": "Запис збережено",
   Recordings: "Записи",
+  Recovered: "Відновлено",
   "Recovered ({count})": "Відновилися ({count})",
   Recovery: "Відновлення",
   recurring: "повторювані",

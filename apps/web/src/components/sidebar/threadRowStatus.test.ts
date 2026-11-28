@@ -17,6 +17,21 @@ describe("resolveThreadRowStatus on an unreachable machine", () => {
     });
   });
 
+  it("leaves the machine state to the incident row that names it", () => {
+    expect(
+      resolveThreadRowStatus({
+        ...base,
+        status: "working",
+        machine: "offline",
+        machineNamedByIncident: true,
+      }),
+    ).toMatchObject({
+      label: "Working",
+      icon: "offline",
+      lastKnown: { label: "Offline, last known status: Working" },
+    });
+  });
+
   it.each([
     ["working", "live"],
     ["working", "connecting"],

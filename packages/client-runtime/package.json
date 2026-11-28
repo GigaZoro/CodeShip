@@ -443,6 +443,10 @@
       "types": "./src/state/threadInbox.ts",
       "default": "./src/state/threadInbox.ts"
     },
+    "./state/thread-incidents": {
+      "types": "./src/state/threadIncidents.ts",
+      "default": "./src/state/threadIncidents.ts"
+    },
     "./state/thread-outbox": {
       "types": "./src/state/threadOutbox.ts",
       "default": "./src/state/threadOutbox.ts"

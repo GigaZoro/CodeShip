@@ -23,6 +23,7 @@ export type NoticeSource =
   | "permission-update"
   | "project-clone"
   | "slow-rpc"
+  | "thread-incident"
   | "thread-notification";
 
 export interface NoticeData {

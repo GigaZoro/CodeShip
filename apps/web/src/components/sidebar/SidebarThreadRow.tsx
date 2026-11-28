@@ -3,6 +3,7 @@ import type { ThreadColor } from "@t3tools/contracts";
 import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "./threadRowStatus";
+import { useThreadMachineNamedByIncident } from "../../state/threadIncidents";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
 import {
   ThreadScheduledTaskIndicator,
@@ -1034,6 +1035,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       isSelected,
     });
   const stall = useThreadStall(thread);
+  const machineNamedByIncident = useThreadMachineNamedByIncident(threadRef);
   const topStatus = resolveThreadRowStatus({
     status,
     goalActive: thread.goal?.status === "active",
@@ -1041,6 +1043,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isUnread,
     stalled: stall !== null,
     machine,
+    machineNamedByIncident,
   });
   // A frozen status has no live clock: the time it shows would only keep counting from memory.
   const statusIsLive = topStatus?.lastKnown === undefined;

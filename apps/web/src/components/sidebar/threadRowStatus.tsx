@@ -95,6 +95,8 @@ export function resolveThreadRowStatus(input: {
   readonly stalled?: boolean | undefined;
   /** The thread's machine; while it is unreachable, a live status shows as last known. */
   readonly machine?: MachineAvailability | undefined;
+  /** An incident row already names the unreachable machine, so the row does not repeat it. */
+  readonly machineNamedByIncident?: boolean | undefined;
 }): ThreadRowStatus | null {
   const status = resolveLiveThreadRowStatus(input);
   if (
@@ -107,7 +109,9 @@ export function resolveThreadRowStatus(input: {
   }
   const machineLabel = machineAvailabilityLabel(input.machine);
   return {
-    label: t("{machine} · {status}", { machine: machineLabel, status: status.label }),
+    label: input.machineNamedByIncident
+      ? status.label
+      : t("{machine} · {status}", { machine: machineLabel, status: status.label }),
     icon: "offline",
     className: "text-muted-foreground",
     lastKnown: {

@@ -1,3 +1,4 @@
+import { SidebarIncidents } from "./SidebarIncidents";
 import { SidebarMachineStrip } from "./SidebarMachineStrip";
 import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
 import { memo } from "react";
@@ -191,6 +192,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   return (
     // Takes no space while it has nothing to show, so the thread list runs to the bottom.
     <SidebarFooter className="not-has-[>:not(:empty)]:hidden">
+      <SidebarIncidents />
       <SidebarMachineStrip />
       <SidebarProviderUpdatePill />
       <SidebarUpdateArchitectureWarning />

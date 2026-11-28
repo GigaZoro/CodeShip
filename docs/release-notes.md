@@ -1,3 +1,8 @@
+## 2026-11-28 — One notice per cause when a machine, provider or usage limit stops several threads
+
+- When a machine goes offline, a provider is down, or a usage limit stops several threads, the web and desktop sidebar, the thread's notice and the pop-up name the cause once with the number of threads it holds, for example **VPS offline · 7 threads waiting**, with a link to Machines, Usage or Providers.
+- The incident clears by itself when the cause recovers, and **Background notices** notes **Recovered**.
+
 ## 2026-11-28 — Live machine capacity telemetry and least-loaded placement for worktree implementation delegates
 
 - `orchestrator_capabilities` now includes an optional `capacity` snapshot (`loadAverage1m`, `cpuCores`, `loadPerCore`, `activeThreads`, `activeLandingCommands`, `checkSlots`, `freeCheckSlots`, `availableMemoryBytes`, `totalMemoryBytes`, `memoryShort`, and `activeImplementationThreadsByRepo`), remaining backward- and forward-compatible with older linked peers.
