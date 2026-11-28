@@ -15,6 +15,9 @@ import {
   type EnvironmentId,
   type ThreadId,
   type EnvironmentStartup,
+  type OrchestrationV2RestartHold,
+  OrchestrationV2RestartHoldError,
+  type OrchestrationV2RestartHoldTurn,
   type OrchestrationV2RestartHoldWork,
   type ProviderInstanceId,
   type ServerConfig,
@@ -100,7 +103,10 @@ import {
   type ServerConfigProjection,
   withoutEnvironmentThemes,
 } from "./serverConfigProjection.ts";
-import { untilListedRestartHoldWorkEnds } from "@t3tools/shared/restartHold";
+import {
+  untilListedRestartHoldWorkEnds,
+  untilRestartHoldIsEmpty,
+} from "@t3tools/shared/restartHold";
 
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
@@ -117,6 +123,10 @@ export type ServerUpdateState =
       readonly waitingOn?: ReadonlyArray<OrchestrationV2RestartHoldWork>;
       /** The service launcher's id for an accepted update, used to find its outcome later. */
       readonly updateId?: string;
+      /** While `waiting` with update drain or idle wait: chats whose turn is still running. */
+      readonly waitingOnTurns?: ReadonlyArray<OrchestrationV2RestartHoldTurn>;
+      /** True while the server holds an update drain lease blocking new turns. */
+      readonly draining?: boolean;
     }
   | {
       readonly status: "failed";
@@ -169,6 +179,71 @@ export const serverRestartHoldWaitingOnAtom = Atom.family((environmentId: Enviro
     Atom.keepAlive,
     Atom.withLabel(`environment-data:server:restart-hold-waiting-on:${environmentId}`),
   ),
+);
+
+/** Chats answering that an update of this server still waits on; empty while waiting on none. */
+export const serverRestartHoldWaitingOnTurnsAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make<ReadonlyArray<OrchestrationV2RestartHoldTurn>>([]).pipe(
+    Atom.keepAlive,
+    Atom.withLabel(`environment-data:server:restart-hold-waiting-on-turns:${environmentId}`),
+  ),
+);
+
+/**
+ * Keeps a `server.drainForUpdate` stream open in the caller's scope even after the wait finishes,
+ * so the server-side manual drain lease stays held across the restart handoff and releases cleanly
+ * if the scope exits on cancel, error, or completion.
+ */
+export const openScopedDrainHoldStream = Effect.fn("ServerUpdate.openScopedDrainHoldStream")(
+  function* <E>(drainStream: Stream.Stream<OrchestrationV2RestartHold, E>) {
+    const events = yield* Queue.unbounded<Exit.Exit<
+      OrchestrationV2RestartHold,
+      E | OrchestrationV2RestartHoldError
+    > | null>();
+    let forwarding = true;
+    yield* drainStream.pipe(
+      Stream.runForEach((hold) =>
+        forwarding ? Queue.offer(events, Exit.succeed(hold)).pipe(Effect.asVoid) : Effect.void,
+      ),
+      Effect.onExit((exit) => {
+        if (!forwarding) return Effect.void;
+        if (Exit.isFailure(exit)) {
+          return Cause.hasInterruptsOnly(exit.cause)
+            ? Queue.offer(events, null).pipe(Effect.asVoid)
+            : Queue.offer(events, Exit.failCause(exit.cause)).pipe(Effect.asVoid);
+        }
+        return Queue.offer(
+          events,
+          Exit.fail(
+            new OrchestrationV2RestartHoldError({
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
+              message: "The server closed the update drain stream before active work finished.",
+            }),
+          ),
+        ).pipe(Effect.asVoid);
+      }),
+      Effect.ignore,
+      Effect.forkScoped,
+    );
+    const holds: Stream.Stream<OrchestrationV2RestartHold, E | OrchestrationV2RestartHoldError> =
+      Stream.fromQueue(events).pipe(
+        Stream.takeWhile(
+          (
+            item,
+          ): item is Exit.Exit<OrchestrationV2RestartHold, E | OrchestrationV2RestartHoldError> =>
+            item !== null,
+        ),
+        Stream.mapEffect((exit) =>
+          Exit.isSuccess(exit) ? Effect.succeed(exit.value) : Effect.failCause(exit.cause),
+        ),
+      );
+    return {
+      holds,
+      stopForwarding: Effect.sync(() => {
+        forwarding = false;
+      }),
+    };
+  },
 );
 
 /** Decisions made after this call; the wait that reads them ignores earlier ones. */
@@ -1218,45 +1293,101 @@ export function createServerEnvironmentAtoms<R, E>(
   );
   const updateStateAtom = (environmentId: EnvironmentId | null) =>
     environmentId === null ? EMPTY_SERVER_UPDATE_STATE_ATOM : updateStateValueAtom(environmentId);
-  /**
-   * Ends when the work chats there waited on has ended and each chat then running tool calls ran
-   * none, or when the user decides first.
-   */
+  // Wait for active work to clear (or for the user to cancel/force). When `drain` is set, the caller's
+  // scope holds the `server.drainForUpdate` stream open across handoff and releases it on cancel/error.
   const awaitRestartHoldClear = Effect.fn("ServerUpdate.awaitRestartHoldClear")(function* (
     environmentId: EnvironmentId,
     atomRegistry: AtomRegistry.AtomRegistry,
-    onWaiting: (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) => void,
+    onWaiting: (waiting: {
+      readonly work: ReadonlyArray<OrchestrationV2RestartHoldWork>;
+      readonly runningTurns: ReadonlyArray<OrchestrationV2RestartHoldTurn>;
+      readonly draining: boolean;
+    }) => void,
+    options?: { readonly untilIdle?: boolean; readonly drain?: boolean },
   ) {
     const environmentRegistry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const decisions = restartHoldDecisions(atomRegistry, environmentId);
     const waitingOnAtom = serverRestartHoldWaitingOnAtom(environmentId);
-    const holds = environmentRegistry.followStream(
-      environmentId,
-      subscribe(WS_METHODS.serverWatchRestartHold, {}),
-    );
-    const record = (work: ReadonlyArray<OrchestrationV2RestartHoldWork>) =>
+    const waitingOnTurnsAtom = serverRestartHoldWaitingOnTurnsAtom(environmentId);
+    const useDrain = options?.drain === true;
+    const waitUntilEmpty = useDrain || options?.untilIdle === true;
+    const drain = useDrain
+      ? yield* openScopedDrainHoldStream(
+          environmentRegistry.runStream(
+            environmentId,
+            runStream(WS_METHODS.serverDrainForUpdate, {}),
+          ),
+        )
+      : null;
+    const holds =
+      drain !== null
+        ? drain.holds
+        : environmentRegistry.followStream(
+            environmentId,
+            subscribe(WS_METHODS.serverWatchRestartHold, {}),
+          );
+    const record = (
+      work: ReadonlyArray<OrchestrationV2RestartHoldWork>,
+      runningTurns: ReadonlyArray<OrchestrationV2RestartHoldTurn>,
+      draining: boolean,
+    ) =>
       Effect.sync(() => {
         atomRegistry.set(waitingOnAtom, work);
-        onWaiting(work);
+        atomRegistry.set(waitingOnTurnsAtom, runningTurns);
+        onWaiting({ work, runningTurns, draining });
       });
-    const cleared = untilListedRestartHoldWorkEnds(holds, record);
+    const cleared = waitUntilEmpty
+      ? untilRestartHoldIsEmpty(holds, (hold) =>
+          record(hold.work, hold.runningTurns ?? [], hold.draining ?? useDrain),
+        )
+      : untilListedRestartHoldWorkEnds(holds, (work) => record(work, [], false));
     const outcome = yield* Stream.merge(cleared, decisions).pipe(
       Stream.runHead,
-      Effect.ensuring(Effect.sync(() => atomRegistry.set(waitingOnAtom, []))),
+      Effect.ensuring(
+        Effect.sync(() => {
+          atomRegistry.set(waitingOnAtom, []);
+          atomRegistry.set(waitingOnTurnsAtom, []);
+        }).pipe(Effect.andThen(drain?.stopForwarding ?? Effect.void)),
+      ),
     );
     return Option.getOrElse(outcome, (): "clear" | RestartHoldDecision => "clear");
   });
   const awaitRestartHold = createRuntimeCommand<
     EnvironmentRegistry.EnvironmentRegistry | R,
     E,
-    { readonly environmentId: EnvironmentId },
+    {
+      readonly environmentId: EnvironmentId;
+      readonly untilIdle?: boolean;
+      readonly drain?: boolean;
+      /**
+       * Runs once the hold clears or the user chooses "update-now" while any acquired manual drain
+       * lease is still held open. Skipped on cancel or failure.
+       */
+      readonly holdUntil?: (outcome: "clear" | "update-now") => Promise<unknown>;
+    },
     "clear" | RestartHoldDecision,
     unknown
   >(runtime, {
     label: "environment-data:server:await-restart-hold",
     concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
     execute: (input, atomRegistry) =>
-      awaitRestartHoldClear(input.environmentId, atomRegistry, () => undefined),
+      Effect.scoped(
+        Effect.gen(function* () {
+          const outcome = yield* awaitRestartHoldClear(
+            input.environmentId,
+            atomRegistry,
+            () => undefined,
+            {
+              ...(input.untilIdle === true ? { untilIdle: true } : {}),
+              ...(input.drain === true ? { drain: true } : {}),
+            },
+          );
+          if (outcome !== "cancel" && input.holdUntil !== undefined) {
+            yield* Effect.promise(() => input.holdUntil!(outcome));
+          }
+          return outcome;
+        }),
+      ),
   });
   const restartHold = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:server:restart-hold",
@@ -1337,187 +1468,204 @@ export function createServerEnvironmentAtoms<R, E>(
           Effect.andThen(Deferred.succeed(desktopReconnected, undefined)),
           Effect.forkChild,
         );
-        // Outside the config queue: a long wait must not hold other settings for this server.
-        if (
-          atomRegistry.get(configValueAtom(target.environmentId))?.environment.capabilities
-            .restartHold === true
-        ) {
-          const decision = yield* awaitRestartHoldClear(
-            target.environmentId,
-            atomRegistry,
-            (waitingOn) => {
-              currentStage = "waiting";
+        // Scope holds any server.drainForUpdate lease across both the wait and the update handoff,
+        // releasing it immediately if cancelled or if the handoff fails.
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const initialCapabilities = atomRegistry.get(configValueAtom(target.environmentId))
+              ?.environment.capabilities;
+            const supportsDrain = initialCapabilities?.updateDrain === true;
+            // Outside the config queue: a long wait must not hold other settings for this server.
+            if (supportsDrain || initialCapabilities?.restartHold === true) {
+              const decision = yield* awaitRestartHoldClear(
+                target.environmentId,
+                atomRegistry,
+                ({ work, runningTurns, draining }) => {
+                  currentStage = "waiting";
+                  atomRegistry.set(stateAtom, {
+                    status: "running",
+                    stage: currentStage,
+                    fromVersion,
+                    targetVersion,
+                    waitingOn: work,
+                    ...(runningTurns.length > 0 ? { waitingOnTurns: runningTurns } : {}),
+                    ...(draining ? { draining: true } : {}),
+                  });
+                },
+                supportsDrain ? { drain: true } : undefined,
+              );
+              if (decision === "cancel") return yield* Effect.interrupt;
+              currentStage = "downloading";
               atomRegistry.set(stateAtom, {
                 status: "running",
                 stage: currentStage,
                 fromVersion,
                 targetVersion,
-                waitingOn,
               });
-            },
-          );
-          if (decision === "cancel") return yield* Effect.interrupt;
-          currentStage = "downloading";
-          atomRegistry.set(stateAtom, {
-            status: "running",
-            stage: currentStage,
-            fromVersion,
-            targetVersion,
-          });
-        }
-        const result = yield* configScheduler.schedule(
-          atomRegistry,
-          configConcurrency,
-          target,
-          Effect.gen(function* () {
-            const currentConfig = atomRegistry.get(configValueAtom(target.environmentId));
-            fromVersion = currentConfig?.environment.serverVersion ?? targetVersion;
-            atomRegistry.set(stateAtom, {
-              status: "running",
-              stage: currentStage,
-              fromVersion,
-              targetVersion,
-            });
-            // Only launcher updates carry an updateId. Read before the request so a ready from
-            // after it can never pose as the accepting process.
-            if (currentConfig?.environment.capabilities.serverSelfUpdate === "boot-service") {
-              accepting = yield* environmentRegistry
-                .followStream(
-                  target.environmentId,
-                  subscribeDynamicWithSession(WS_METHODS.subscribeServerLifecycle, () =>
-                    Effect.succeed({}),
-                  ),
-                )
-                .pipe(
-                  Stream.filter(
-                    (entry): entry is readonly [RpcSession, ServerLifecycleStreamReadyEvent] =>
-                      entry[1].type === "ready",
-                  ),
-                  Stream.map(([session, ready]) => ({ session, at: ready.payload.at })),
-                  Stream.runHead,
-                  Effect.timeoutOption(SERVER_UPDATE_ACCEPTING_READY_TIMEOUT),
-                  Effect.map((head) => Option.getOrUndefined(Option.flatten(head))),
-                  Effect.orElseSucceed(() => undefined),
-                );
             }
-
-            const supportsProgress =
-              currentConfig?.environment.capabilities.serverSelfUpdateProgress === true;
-            const updateResult: ServerSelfUpdateResult = supportsProgress
-              ? yield* Effect.gen(function* () {
-                  let receivedProgress = false;
-                  const terminal = yield* Ref.make<Option.Option<ServerSelfUpdateResult>>(
-                    Option.none(),
-                  );
-                  const streamExit = yield* environmentRegistry
-                    .runStream(
+            return yield* configScheduler.schedule(
+              atomRegistry,
+              configConcurrency,
+              target,
+              Effect.gen(function* () {
+                const currentConfig = atomRegistry.get(configValueAtom(target.environmentId));
+                fromVersion = currentConfig?.environment.serverVersion ?? targetVersion;
+                atomRegistry.set(stateAtom, {
+                  status: "running",
+                  stage: currentStage,
+                  fromVersion,
+                  targetVersion,
+                });
+                // Only launcher updates carry an updateId. Read before the request so a ready from
+                // after it can never pose as the accepting process.
+                if (currentConfig?.environment.capabilities.serverSelfUpdate === "boot-service") {
+                  accepting = yield* environmentRegistry
+                    .followStream(
                       target.environmentId,
-                      Stream.unwrap(
-                        acceptingSession.pipe(
-                          Effect.map((session) =>
-                            runStreamInSession(
-                              session,
-                              WS_METHODS.serverUpdateServerWithProgress,
-                              target.input,
-                            ),
-                          ),
-                        ),
+                      subscribeDynamicWithSession(WS_METHODS.subscribeServerLifecycle, () =>
+                        Effect.succeed({}),
                       ),
                     )
                     .pipe(
-                      Stream.runForEach((event) =>
-                        Effect.sync(() => {
-                          receivedProgress ||= event.type === "progress";
-                          const state = serverUpdateStateForProgressEvent(
-                            fromVersion,
-                            targetVersion,
-                            event,
-                          );
-                          currentStage = state.stage;
-                          atomRegistry.set(stateAtom, state);
-                        }).pipe(
-                          Effect.andThen(
-                            event.type === "complete"
-                              ? Ref.set(terminal, Option.some(event.result))
-                              : Effect.void,
-                          ),
-                        ),
+                      Stream.filter(
+                        (entry): entry is readonly [RpcSession, ServerLifecycleStreamReadyEvent] =>
+                          entry[1].type === "ready",
                       ),
-                      Effect.exit,
+                      Stream.map(([session, ready]) => ({ session, at: ready.payload.at })),
+                      Stream.runHead,
+                      Effect.timeoutOption(SERVER_UPDATE_ACCEPTING_READY_TIMEOUT),
+                      Effect.map((head) => Option.getOrUndefined(Option.flatten(head))),
+                      Effect.orElseSucceed(() => undefined),
                     );
-                  const selfUpdateMethod = currentConfig?.environment.capabilities.serverSelfUpdate;
-                  // Desktop preparation needs its terminal commit token.
-                  const accepted =
-                    receivedProgress &&
-                    (selfUpdateMethod === "boot-service" || selfUpdateMethod === "respawn")
-                      ? { targetVersion, method: selfUpdateMethod }
-                      : undefined;
-                  return yield* resolveServerUpdateProgressResult(
-                    targetVersion,
-                    yield* Ref.get(terminal),
-                    streamExit,
-                    accepted,
-                  );
-                })
-              : yield* Effect.gen(function* () {
-                  const selfUpdateMethod = currentConfig?.environment.capabilities.serverSelfUpdate;
-                  const exit = yield* environmentRegistry
+                }
+
+                const supportsProgress =
+                  currentConfig?.environment.capabilities.serverSelfUpdateProgress === true;
+                const updateResult: ServerSelfUpdateResult = supportsProgress
+                  ? yield* Effect.gen(function* () {
+                      let receivedProgress = false;
+                      const terminal = yield* Ref.make<Option.Option<ServerSelfUpdateResult>>(
+                        Option.none(),
+                      );
+                      const streamExit = yield* environmentRegistry
+                        .runStream(
+                          target.environmentId,
+                          Stream.unwrap(
+                            acceptingSession.pipe(
+                              Effect.map((session) =>
+                                runStreamInSession(
+                                  session,
+                                  WS_METHODS.serverUpdateServerWithProgress,
+                                  target.input,
+                                ),
+                              ),
+                            ),
+                          ),
+                        )
+                        .pipe(
+                          Stream.runForEach((event) =>
+                            Effect.sync(() => {
+                              receivedProgress ||= event.type === "progress";
+                              const state = serverUpdateStateForProgressEvent(
+                                fromVersion,
+                                targetVersion,
+                                event,
+                              );
+                              currentStage = state.stage;
+                              atomRegistry.set(stateAtom, state);
+                            }).pipe(
+                              Effect.andThen(
+                                event.type === "complete"
+                                  ? Ref.set(terminal, Option.some(event.result))
+                                  : Effect.void,
+                              ),
+                            ),
+                          ),
+                          Effect.exit,
+                        );
+                      const selfUpdateMethod =
+                        currentConfig?.environment.capabilities.serverSelfUpdate;
+                      // Desktop preparation needs its terminal commit token.
+                      const accepted =
+                        receivedProgress &&
+                        (selfUpdateMethod === "boot-service" || selfUpdateMethod === "respawn")
+                          ? { targetVersion, method: selfUpdateMethod }
+                          : undefined;
+                      return yield* resolveServerUpdateProgressResult(
+                        targetVersion,
+                        yield* Ref.get(terminal),
+                        streamExit,
+                        accepted,
+                      );
+                    })
+                  : yield* Effect.gen(function* () {
+                      const selfUpdateMethod =
+                        currentConfig?.environment.capabilities.serverSelfUpdate;
+                      const exit = yield* environmentRegistry
+                        .run(
+                          target.environmentId,
+                          acceptingSession.pipe(
+                            Effect.flatMap((session) =>
+                              requestInSession(
+                                session,
+                                WS_METHODS.serverUpdateServer,
+                                target.input,
+                              ),
+                            ),
+                          ),
+                        )
+                        .pipe(Effect.exit);
+                      if (Exit.isSuccess(exit)) {
+                        return exit.value;
+                      }
+                      if (
+                        (selfUpdateMethod === "boot-service" || selfUpdateMethod === "respawn") &&
+                        isLegacyUpdateHandoffLoss(exit.cause)
+                      ) {
+                        // Older servers can tear down the transport before their
+                        // unary acknowledgement arrives. Treat only that transport
+                        // loss as a handoff, then prove it by waiting for target ready.
+                        return { targetVersion, method: selfUpdateMethod };
+                      }
+                      return yield* Effect.failCause(exit.cause);
+                    });
+
+                if (
+                  updateResult.method === "desktop-app" &&
+                  updateResult.desktopUpdateToken !== undefined
+                ) {
+                  yield* Deferred.succeed(desktopCommitStarting, undefined);
+                  yield* Deferred.await(desktopReconnectObserverArmed);
+                  const commitExit = yield* environmentRegistry
                     .run(
                       target.environmentId,
-                      acceptingSession.pipe(
-                        Effect.flatMap((session) =>
-                          requestInSession(session, WS_METHODS.serverUpdateServer, target.input),
-                        ),
-                      ),
+                      request(WS_METHODS.serverCommitDesktopUpdate, {
+                        requestId: updateResult.desktopUpdateToken,
+                      }),
                     )
                     .pipe(Effect.exit);
-                  if (Exit.isSuccess(exit)) {
-                    return exit.value;
+                  if (Exit.isFailure(commitExit) && !isLegacyUpdateHandoffLoss(commitExit.cause)) {
+                    return yield* Effect.failCause(commitExit.cause);
                   }
-                  if (
-                    (selfUpdateMethod === "boot-service" || selfUpdateMethod === "respawn") &&
-                    isLegacyUpdateHandoffLoss(exit.cause)
-                  ) {
-                    // Older servers can tear down the transport before their
-                    // unary acknowledgement arrives. Treat only that transport
-                    // loss as a handoff, then prove it by waiting for target ready.
-                    return { targetVersion, method: selfUpdateMethod };
-                  }
-                  return yield* Effect.failCause(exit.cause);
+                  desktopCommitLostTransport = Exit.isFailure(commitExit);
+                }
+
+                targetVersion = updateResult.targetVersion;
+
+                currentStage = "resuming";
+                atomRegistry.set(stateAtom, {
+                  status: "running",
+                  stage: currentStage,
+                  fromVersion,
+                  targetVersion,
+                  ...(updateResult.updateId === undefined
+                    ? {}
+                    : { updateId: updateResult.updateId }),
                 });
-
-            if (
-              updateResult.method === "desktop-app" &&
-              updateResult.desktopUpdateToken !== undefined
-            ) {
-              yield* Deferred.succeed(desktopCommitStarting, undefined);
-              yield* Deferred.await(desktopReconnectObserverArmed);
-              const commitExit = yield* environmentRegistry
-                .run(
-                  target.environmentId,
-                  request(WS_METHODS.serverCommitDesktopUpdate, {
-                    requestId: updateResult.desktopUpdateToken,
-                  }),
-                )
-                .pipe(Effect.exit);
-              if (Exit.isFailure(commitExit) && !isLegacyUpdateHandoffLoss(commitExit.cause)) {
-                return yield* Effect.failCause(commitExit.cause);
-              }
-              desktopCommitLostTransport = Exit.isFailure(commitExit);
-            }
-
-            targetVersion = updateResult.targetVersion;
-
-            currentStage = "resuming";
-            atomRegistry.set(stateAtom, {
-              status: "running",
-              stage: currentStage,
-              fromVersion,
-              targetVersion,
-              ...(updateResult.updateId === undefined ? {} : { updateId: updateResult.updateId }),
-            });
-            return updateResult;
-          }).pipe(Effect.mapError(localizeServerSelfUpdateError)),
+                return updateResult;
+              }).pipe(Effect.mapError(localizeServerSelfUpdateError)),
+            );
+          }),
         );
 
         // A track switch's desktop host already on its track's newest build only saved the
@@ -2219,6 +2367,12 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.scheduledTasksSubscribeLinked,
     }),
     // A cold transcript scan is measured in seconds, so keep the result around
+    apiCreditUsage: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:api-credit-usage",
+      tag: WS_METHODS.serverGetApiCreditUsage,
+      staleTimeMs: 60_000,
+      refreshTrigger: ({ environmentId }) => providersValueAtom(environmentId),
+    }),
     // long enough that switching windows or re-rendering does not rescan. With
     // nothing to show yet, the server's last scan answers first, then a plain
     // read, then a read that waits for slow sources.

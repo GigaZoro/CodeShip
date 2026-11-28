@@ -299,10 +299,16 @@ export const ScheduledTaskRunSkipReason = Schema.Literals([
   "live_run_limit",
   /** This machine's memory read short, so nothing new started on it. */
   "memory",
+  /** The repository already had its maximum concurrent active or landing implementation threads across linked machines. */
+  "repo_capacity",
   /** A machine that would run this one-machine task follows another claim protocol, named in `ranOn`. */
   "other_version",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
+
+/** Explicit exemption from the per-repository concurrent implementation thread cap. */
+export const RepoCapExemption = Schema.Literals(["broken_main", "incident"]);
+export type RepoCapExemption = typeof RepoCapExemption.Type;
 
 /**
  * How this build checks, claims and settles one-machine occurrences. Machines that follow different
@@ -381,7 +387,7 @@ export type ScheduledTaskRunCheck = typeof ScheduledTaskRunCheck.Type;
 /** The provider whose accounts were all out of usage, and when the first of them got room. */
 export const ScheduledTaskRunUsageLimit = Schema.Struct({
   driver: ProviderDriverKind,
-  until: IsoDateTime,
+  until: Schema.NullOr(IsoDateTime),
 });
 export type ScheduledTaskRunUsageLimit = typeof ScheduledTaskRunUsageLimit.Type;
 
@@ -767,6 +773,8 @@ export const ScheduledTask = Schema.Struct({
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   /** Absent from servers without a live-run limit. */
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
+  /** Null when not exempt from the per-repository implementation thread cap. */
+  capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
   /** Null when unknown: changed before changes were recorded, or by a machine without them. */
   changedBy: Schema.optional(Schema.NullOr(ScheduledTaskChangedBy)),
 });
@@ -889,6 +897,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
     description:
       "How many runs of a recurring task that starts a new chat may work at once, delegated tasks included. A scheduled occurrence is skipped while that many still work. Omitted keeps the stored limit, or for a new task 1.",
   }),
+  capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
@@ -937,6 +946,8 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   /** Absent from machines without a live-run limit; the receiving machine keeps its own. */
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
+  /** Absent from machines without repo cap exemptions; the receiving machine keeps its own. */
+  capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,

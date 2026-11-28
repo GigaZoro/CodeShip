@@ -1,5 +1,6 @@
 import { WindowsJobHost, windowsJobOf } from "@t3tools/shared/windowsJob";
 import { windowsJobSpawn } from "@t3tools/shared/windowsJobNode";
+import * as ApiCreditBalance from "../../provider/ApiCreditBalance.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import {
   compactDynamicToolOutput,
@@ -241,6 +242,7 @@ import {
   ClaudeTermsReviewRequiredError,
   isClaudeTermsReviewNotice,
   makeClaudeEnvironment,
+  validateClaudeBillingSettings,
   mergeClaudeInstanceEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
@@ -6971,6 +6973,30 @@ export interface ClaudeAdapterV2Options {
 export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   adapterOptions: ClaudeAdapterV2Options,
 ) {
+  const apiCreditBalance = yield* Effect.serviceOption(ApiCreditBalance.ApiCreditBalance);
+  const paid = adapterOptions.settings.billingKind === "payPerUse";
+  const assertApiCredit: Effect.Effect<
+    void,
+    ApiCreditBalance.ApiCreditExhausted | ProviderAdapter.ProviderAdapterProtocolError
+  > = !paid
+    ? Effect.void
+    : Option.isSome(apiCreditBalance)
+      ? apiCreditBalance.value.assertAvailable(adapterOptions.instanceId)
+      : Effect.fail(
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: CLAUDE_PROVIDER,
+            detail:
+              "API credit tracking is unavailable. This pay-per-use account cannot start work.",
+          }),
+        );
+  const recordApiFailure = (error: unknown) =>
+    paid && Option.isSome(apiCreditBalance)
+      ? apiCreditBalance.value.recordFailure(adapterOptions.instanceId, "claudeAgent", error)
+      : Effect.void;
+  const recordApiSuccess =
+    paid && Option.isSome(apiCreditBalance)
+      ? apiCreditBalance.value.recordSuccess(adapterOptions.instanceId)
+      : Effect.void;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   // `onElicitation` shows T3 Code's own requests and passes on the person's answer to each.
   yield* mcpSessions.showsApprovalRequests(adapterOptions.instanceId);
@@ -7216,6 +7242,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const onUsageLimits = adapterOptions.bindUsageLimits
           ? yield* adapterOptions.bindUsageLimits
           : undefined;
+        yield* assertApiCredit;
         const sessionScope = yield* Effect.scope;
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -12995,6 +13022,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
             return;
           }
+          if (
+            input.replayed !== true &&
+            (message.type === "assistant" || message.type === "result")
+          ) {
+            if (
+              (message.type === "assistant" && message.error) ||
+              (message.type === "result" && message.is_error)
+            )
+              yield* recordApiFailure(message);
+            if (
+              message.type === "result" &&
+              message.subtype === "success" &&
+              !message.is_error &&
+              message.usage.output_tokens > 0
+            )
+              yield* recordApiSuccess;
+          }
+
           // Track before routing: idle-wake Monitors report tasks before replaying their tool calls.
           yield* trackClaudeMonitorCalls(message);
           yield* trackClaudeScheduledWakeup(liveQuery.nativeThreadId, message);
@@ -14504,34 +14549,51 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? yield* Ref.get(adapterOptions.scopedLimitNames)
                 : { overageIncluded: undefined },
             );
-            const resultFailure = interrupted
-              ? null
-              : limitedCompaction !== null
+            const creditBalance =
+              paid && Option.isSome(apiCreditBalance)
+                ? yield* apiCreditBalance.value.snapshot(adapterOptions.instanceId)
+                : undefined;
+            const creditFailure =
+              creditBalance?.balanceState === "exhausted"
                 ? makeProviderFailure({
                     class: "usage_limit",
-                    message: limitedCompaction.message ?? failureHint,
-                    code: "compaction_failed",
+                    code: "api_credit_exhausted",
+                    message: creditBalance.reason ?? "API credit is exhausted.",
                   })
-                : providerFailureFromResult(
-                    message,
-                    bufferedResultArrivals.get(message) ?? completedAt,
-                    failureHint,
-                    usageLimited,
-                    signedOut,
-                  );
+                : null;
+            const resultFailure =
+              creditFailure ??
+              (interrupted
+                ? null
+                : limitedCompaction !== null
+                  ? makeProviderFailure({
+                      class: "usage_limit",
+                      message: limitedCompaction.message ?? failureHint,
+                      code: "compaction_failed",
+                    })
+                  : providerFailureFromResult(
+                      message,
+                      bufferedResultArrivals.get(message) ?? completedAt,
+                      failureHint,
+                      usageLimited,
+                      signedOut,
+                    ));
             const terminalFailure =
-              resultFailure?.class === "usage_limit"
+              creditFailure === null && resultFailure?.class === "usage_limit"
                 ? {
                     ...resultFailure,
                     resetAt: blockedUsageLimitResetAt(context, resultFailure.resetAt),
                     ...(modelScope === undefined ? {} : { modelScope }),
                   }
                 : resultFailure;
-            const status = interrupted
-              ? "interrupted"
-              : limitedCompaction !== null
+            const status =
+              creditFailure !== null
                 ? "failed"
-                : terminalStatusFromResult(message, failureHint);
+                : interrupted
+                  ? "interrupted"
+                  : limitedCompaction !== null
+                    ? "failed"
+                    : terminalStatusFromResult(message, failureHint);
             const echoed = claudeEchoedPromptUuids(message);
             // The CLI echoes a prompt once, in the turn that consumed it. A notification can open
             // that turn and give it its origin, so the echo alone proves the reply is ours.
@@ -16159,6 +16221,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? { restricted: restrictedReview }
               : yield* Effect.gen(function* () {
                   const cascade = yield* turnCascade;
+                  yield* validateClaudeBillingSettings(
+                    adapterOptions.settings,
+                    cascade.tiers.map((tier) => tier.settings),
+                    adapterOptions.environment,
+                  );
                   // Managed policy outranks --settings when Claude Code starts, though not a live switch.
                   const policyUltracode =
                     cascade.unreadablePolicy === undefined
@@ -16599,6 +16666,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 queryOptions.cwd,
               )
             : Effect.void;
+          yield* assertApiCredit;
           const openQueryRuntime = Effect.gen(function* () {
             const program = yield* readProgram;
             const executable = yield* resolveExecutable;
@@ -16625,6 +16693,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     openQueryRuntime,
                   ),
             ),
+            Effect.tapError(recordApiFailure),
             Effect.catchTags({
               ClaudeAgentSdkQueryRunnerError: Effect.fn("ClaudeAdapterV2.queryOpenFailure")(
                 function* (cause) {
@@ -16839,6 +16908,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }),
               ),
             ),
+            Effect.tapError(recordApiFailure),
             Effect.exit,
             Effect.flatMap(
               Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
@@ -16882,6 +16952,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const startDeliveredTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             modelCatalog = yield* loadModelCatalog;
+            yield* assertApiCredit;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
             const nativeTurnId = `turn:${turnInput.attemptId}`;
@@ -17248,12 +17319,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     Effect.andThen(
                       Effect.uninterruptibleMask((restore) =>
                         restore(querySession.query.offer(userMessage, commitOffer)).pipe(
+                          Effect.tapError(recordApiFailure),
                           Effect.tap(() => Effect.sync(commitOffer)),
                         ),
                       ),
                     ),
                   );
             if (userMessage !== null && !turnInput.resume) {
+              yield* assertApiCredit;
               yield* attachTurn;
               yield* offerUserMessage.pipe(
                 // Only a close shuts the prompt queue, and whoever closed the query settles this turn.
@@ -17811,9 +17884,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.add(turnInput.providerTurnId);
               return next;
             });
+            yield* assertApiCredit;
             yield* emitSteerStatus(currentTurn, messageId, "pending");
             yield* Effect.uninterruptibleMask((restore) =>
               restore(existing.query.offer(prompt, commitOffer)).pipe(
+                Effect.tapError(recordApiFailure),
                 Effect.tap(() => Effect.sync(commitOffer)),
                 Effect.ensuring(
                   Effect.sync(() => {

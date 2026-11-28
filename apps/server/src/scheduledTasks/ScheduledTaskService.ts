@@ -4,6 +4,7 @@ import {
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProjectId,
+  RepoCapExemption,
   ScheduledTask,
   ScheduledTaskChangedBy,
   ScheduledTaskDescription,
@@ -114,6 +115,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 import { originalDemandId } from "../orchestration-v2/demandId.ts";
 import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
+import * as RepoConcurrencyAdmission from "../peer/RepoConcurrencyAdmission.ts";
 import * as PromptFileReader from "./PromptFileReader.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -131,6 +133,7 @@ import { isDraining as isUpdateDraining, tryAdmitStart } from "../cloud/updateDr
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as LaunchJournal from "./LaunchJournal.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import {
   isMissedFixedTimeRun,
@@ -206,6 +209,7 @@ const QUIET_SKIP_REASONS = [
   "usage_limited",
   "live_run_limit",
   "memory",
+  "repo_capacity",
 ] as const satisfies ReadonlyArray<ScheduledTaskRunSkipReason>;
 const QUIET_SKIP_RETENTION = 10;
 // The newest run chats a live-run count reads: room for a full limit plus as many Run now runs.
@@ -411,6 +415,9 @@ const decodeRunMemoryJson = Schema.decodeUnknownOption(RunMemoryJson);
 const encodeRunMemoryJson = Schema.encodeSync(RunMemoryJson);
 // A one-time task keeps its only occurrence and tries again this much later.
 const ONCE_MEMORY_RETRY = Duration.minutes(5);
+// An automated scheduled occurrence deferred by the per-repo cap retries once a slot can open.
+const REPO_CAPACITY_RETRY = Duration.minutes(2);
+const decodeCapExemption = Schema.decodeUnknownOption(RepoCapExemption);
 const DelegateProvidersJson = Schema.fromJsonString(ScheduledTaskDelegateProviders);
 const decodeDelegateProvidersJson = Schema.decodeUnknownEffect(DelegateProvidersJson);
 const encodeDelegateProvidersSchema = Schema.encodeSync(DelegateProvidersJson);
@@ -551,6 +558,8 @@ interface ScheduledTaskRow {
   readonly delegate_providers_json?: string | null;
   /** From scheduled_task_live_run_limit: null for the default. */
   readonly max_live_runs?: number | null;
+  /** From scheduled_task_cap_exemption: null when not exempt from the per-repo cap. */
+  readonly cap_exemption?: string | null;
   /** From scheduled_task_changed_by: null when who made the latest change is unknown. */
   readonly changed_by_json?: string | null;
 }
@@ -1064,6 +1073,14 @@ const decodeRow = Effect.fnUntraced(
       ...(row.max_live_runs === undefined
         ? {}
         : { maxLiveRuns: row.max_live_runs ?? DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS }),
+      ...(row.cap_exemption === undefined
+        ? {}
+        : {
+            capExemption:
+              row.cap_exemption === null
+                ? null
+                : Option.getOrNull(decodeCapExemption(row.cap_exemption)),
+          }),
       ...(row.changed_by_json === undefined
         ? {}
         : {
@@ -1146,6 +1163,9 @@ export const layer = Layer.effect(
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     // Optional so tests without accounts run every launch on the task's own account.
     const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
+    const repoConcurrencyAdmission = yield* Effect.serviceOption(
+      RepoConcurrencyAdmission.RepoConcurrencyAdmission,
+    );
     const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
     const journal = yield* LaunchJournal.LaunchJournal;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
@@ -1387,6 +1407,13 @@ export const layer = Layer.effect(
       CREATE TABLE IF NOT EXISTS scheduled_task_live_run_limit (
         task_id TEXT PRIMARY KEY,
         max_live_runs INTEGER NOT NULL
+      )
+    `;
+    // A row marks a task exempt from the per-repository concurrent implementation thread cap.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_cap_exemption (
+        task_id TEXT PRIMARY KEY,
+        exemption TEXT NOT NULL
       )
     `;
     // Who made a task's latest change. Tasks changed before this table existed have no row, so
@@ -1655,6 +1682,8 @@ export const layer = Layer.effect(
           WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json,
         (SELECT max_live_runs FROM scheduled_task_live_run_limit lr
           WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs,
+        (SELECT exemption FROM scheduled_task_cap_exemption ce
+          WHERE ce.task_id = scheduled_tasks.task_id) AS cap_exemption,
         (SELECT changed_by_json FROM scheduled_task_changed_by cb
           WHERE cb.task_id = scheduled_tasks.task_id) AS changed_by_json
       FROM scheduled_tasks
@@ -1767,6 +1796,8 @@ export const layer = Layer.effect(
           WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json,
         (SELECT max_live_runs FROM scheduled_task_live_run_limit lr
           WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs,
+        (SELECT exemption FROM scheduled_task_cap_exemption ce
+          WHERE ce.task_id = scheduled_tasks.task_id) AS cap_exemption,
         (SELECT changed_by_json FROM scheduled_task_changed_by cb
           WHERE cb.task_id = scheduled_tasks.task_id) AS changed_by_json
       FROM scheduled_tasks
@@ -2177,6 +2208,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_group WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_delegate_providers WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_live_run_limit WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_cap_exemption WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_changed_by WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_runs WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_threads WHERE task_id = ${id}`),
@@ -3532,6 +3564,173 @@ export const layer = Layer.effect(
       return true;
     });
 
+    const capExemptionOf = (taskId: ScheduledTaskId) =>
+      sql<{ readonly exemption: string }>`
+        SELECT exemption FROM scheduled_task_cap_exemption WHERE task_id = ${taskId}
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.map((rows) => Option.getOrNull(decodeCapExemption(rows[0]?.exemption))),
+      );
+
+    const isRepoCapacityExempt = Effect.fnUntraced(function* (task: ScheduledTask) {
+      if (task.interactionMode === "plan") return true;
+      const exemption = yield* capExemptionOf(task.id).pipe(Effect.orElseSucceed(() => null));
+      return exemption !== null;
+    });
+
+    const recordRepoCapacityDeferral = Effect.fn("ScheduledTaskService.recordRepoCapacityDeferral")(
+      function* (
+        task: ScheduledTask,
+        fire: ScheduledFire,
+        decision: RepoConcurrencyAdmission.RepoConcurrencyDecision,
+        checked?: {
+          readonly condition: RunConditionRow;
+          readonly check: ScheduledTaskRunCheck;
+          readonly startedAt: DateTime.DateTime;
+        },
+      ) {
+        const now = yield* localNow;
+        const retryAt = iso(DateTime.addDuration(now, REPO_CAPACITY_RETRY));
+        const following = nextRunAt(task, now);
+        const next =
+          task.schedule.type === "once" ||
+          following === null ||
+          Date.parse(retryAt) < Date.parse(following)
+            ? retryAt
+            : following;
+        const unmoved =
+          checked === undefined
+            ? occurrenceUnmoved(task)
+            : occurrenceAsChecked(task, checked.condition);
+        const skipped = yield* recordQuietSkip(task, fire, unmoved, {
+          reason: "repo_capacity",
+          next,
+          now,
+          ...(checked === undefined ? {} : { startedAt: checked.startedAt, check: checked.check }),
+        });
+        if (skipped) {
+          yield* Effect.logInfo(
+            "Deferring a schedule task run: repository concurrency cap reached",
+            {
+              taskId: task.id,
+              projectId: task.projectId,
+              scheduledFor: fire.scheduledFor ?? task.nextRunAt,
+              activeCount: decision.activeCount,
+              limit: decision.limit,
+              repoKey: decision.repoKey,
+              retryAt: next,
+            },
+          );
+          yield* notifyChanged;
+        }
+        return true;
+      },
+    );
+
+    /**
+     * Defers an automated scheduled occurrence while the task's repository is at or above its
+     * concurrent implementation thread cap across linked machines. Nothing ran, so the run columns
+     * stay and the occurrence retries shortly once a slot frees.
+     */
+    const skippedForRepoCapacity = Effect.fn("ScheduledTaskService.skippedForRepoCapacity")(
+      function* (
+        task: ScheduledTask,
+        fire: ScheduledFire,
+        /** The task's check that ran first; its answer goes into the record. */
+        checked?: {
+          readonly condition: RunConditionRow;
+          readonly check: ScheduledTaskRunCheck;
+          readonly startedAt: DateTime.DateTime;
+        },
+      ) {
+        if (Option.isNone(repoConcurrencyAdmission)) return false;
+        if (yield* isRepoCapacityExempt(task)) return false;
+        const decision = yield* repoConcurrencyAdmission.value.check({
+          projectId: task.projectId,
+        });
+        if (decision.allowed) return false;
+        return yield* recordRepoCapacityDeferral(task, fire, decision, checked);
+      },
+      (effect, task) =>
+        effect.pipe(
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            (cause) =>
+              Effect.logWarning(
+                "Could not check repository concurrency cap for schedule task run",
+                {
+                  taskId: task.id,
+                  cause,
+                },
+              ).pipe(Effect.as(false)),
+          ),
+        ),
+    );
+
+    /**
+     * Serializes an automated scheduled launch against concurrent admissions on the same
+     * repository via `withReservation`. When capacity is full, records a quiet `repo_capacity`
+     * deferral without running `run`. Non-interrupt admission failures fail open so the task
+     * still runs; failures from `run` propagate unchanged.
+     */
+    const runWithRepoCapacitySlot = Effect.fn("ScheduledTaskService.runWithRepoCapacitySlot")(
+      function* <A, E, R>(
+        task: ScheduledTask,
+        fire: ScheduledFire,
+        run: () => Effect.Effect<A, E, R>,
+        checked?: {
+          readonly condition: RunConditionRow;
+          readonly check: ScheduledTaskRunCheck;
+          readonly startedAt: DateTime.DateTime;
+        },
+      ) {
+        if (Option.isNone(repoConcurrencyAdmission) || (yield* isRepoCapacityExempt(task))) {
+          yield* run();
+          return "ran" as const;
+        }
+        const admission = repoConcurrencyAdmission.value;
+        const outcome = yield* admission
+          .withReservation({ projectId: task.projectId }, () => Effect.exit(run()))
+          .pipe(
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) =>
+                Effect.logWarning(
+                  "Could not check repository concurrency cap for schedule task run",
+                  {
+                    taskId: task.id,
+                    cause,
+                  },
+                ).pipe(Effect.as(null)),
+            ),
+          );
+        if (outcome === null) {
+          yield* run();
+          return "ran" as const;
+        }
+        if (!outcome.admitted) {
+          yield* recordRepoCapacityDeferral(task, fire, outcome.decision, checked).pipe(
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) =>
+                Effect.logWarning(
+                  "Could not record repository concurrency deferral for schedule task run",
+                  {
+                    taskId: task.id,
+                    cause,
+                  },
+                ),
+            ),
+          );
+          return "skipped" as const;
+        }
+        if (outcome.value._tag === "Failure") {
+          return yield* Effect.failCause(outcome.value.cause);
+        }
+        return "ran" as const;
+      },
+    );
+
     /**
      * Skips an occurrence while every account it could start on, or every account of a delegate
      * provider it needs, is out of usage. Like a no-work skip, nothing ran, so the run columns
@@ -3563,6 +3762,7 @@ export const layer = Layer.effect(
         const waitsForRoom =
           current.schedule.type === "once" ||
           (current.schedule.type === "fixed_time" &&
+            block.until !== null &&
             (current.catchUpMissedRun ?? defaultCatchUpMissedRun(current.schedule)) &&
             (following === null || Date.parse(block.until) < Date.parse(following)));
         const unmoved = fire.localFixedTime
@@ -3572,7 +3772,9 @@ export const layer = Layer.effect(
           : occurrenceUnmoved(task);
         const skipped = yield* recordQuietSkip(task, fire, unmoved, {
           reason: "usage_limited",
-          ...(fire.localFixedTime && (waitsForRoom || following === block.until)
+          ...(fire.localFixedTime &&
+          block.until !== null &&
+          (waitsForRoom || following === block.until)
             ? {
                 usageHold: encodeUsageHold({
                   until: block.until,
@@ -3848,14 +4050,18 @@ export const layer = Layer.effect(
           ),
         );
         if (unchanged.length > 0) {
-          // A check can take minutes, so memory is judged again right before the chat starts.
+          // A check can take minutes, so memory and repo capacity are judged again right before the chat starts.
           if (
             yield* skippedForMemory(task, fire, { condition, check, startedAt: checkStartedAt })
           ) {
             return "skipped" as const;
           }
-          yield* runTask(task, "scheduled", undefined, { ...fire, check });
-          return "ran" as const;
+          return yield* runWithRepoCapacitySlot(
+            task,
+            fire,
+            () => runTask(task, "scheduled", undefined, { ...fire, check }),
+            { condition, check, startedAt: checkStartedAt },
+          );
         }
       }
       // Once the check is off the list, the next poll judges the occurrence due then afresh.
@@ -3875,6 +4081,7 @@ export const layer = Layer.effect(
     const startScheduledRun = Effect.fn("ScheduledTaskService.startScheduledRun")(function* (
       task: ScheduledTask,
       fire: ScheduledFire,
+      options?: { readonly repoCapacityPrechecked?: boolean },
     ) {
       // Due rows come without either, so look both up.
       const [condition] = yield* sql<RunConditionRow>`
@@ -3886,7 +4093,9 @@ export const layer = Layer.effect(
         ),
       );
       if (condition === undefined) {
-        const run = runTask(task, "scheduled", undefined, fire).pipe(Effect.asVoid);
+        const run = runWithRepoCapacitySlot(task, fire, () =>
+          runTask(task, "scheduled", undefined, fire),
+        ).pipe(Effect.asVoid);
         const readsFile = yield* sql`
           SELECT 1 FROM scheduled_task_prompt_files WHERE task_id = ${task.id}
         `.pipe(
@@ -3918,6 +4127,7 @@ export const layer = Layer.effect(
         );
         return;
       }
+      if (!options?.repoCapacityPrechecked && (yield* skippedForRepoCapacity(task, fire))) return;
       const checkStartedAt = yield* localNow;
       const claimed = yield* Ref.modify(runChecks, (checks) =>
         checks.has(task.id)
@@ -4037,6 +4247,20 @@ export const layer = Layer.effect(
               INSERT INTO scheduled_task_live_run_limit (task_id, max_live_runs)
               VALUES (${id}, ${limit})
               ON CONFLICT (task_id) DO UPDATE SET max_live_runs = excluded.max_live_runs
+            `;
+
+    const writeCapExemption = (
+      id: ScheduledTaskId,
+      exemption: RepoCapExemption | null | undefined,
+    ) =>
+      exemption === undefined
+        ? Effect.void
+        : exemption === null
+          ? sql`DELETE FROM scheduled_task_cap_exemption WHERE task_id = ${id}`
+          : sql`
+              INSERT INTO scheduled_task_cap_exemption (task_id, exemption)
+              VALUES (${id}, ${exemption})
+              ON CONFLICT (task_id) DO UPDATE SET exemption = excluded.exemption
             `;
 
     /** "keep" keeps the last read while the path stays the same; null drops it. */
@@ -4557,6 +4781,8 @@ export const layer = Layer.effect(
           // A machine that could not start it claims nothing, so the next machine may run it.
           if (yield* skippedForMemory(task, fire)) return;
           if (yield* skippedForUsage(task, fire)) return;
+          // With its sharing, so a deferral lands on the aligned slot every copy runs.
+          if (yield* skippedForRepoCapacity(shared, fire)) return;
           const claim = yield* claimOneMachineOccurrence(task.id, slot, plan, replaces);
           yield* logUnchecked(claim.unchecked);
           if (claim.holder !== null && claim.holder !== hereEnvironmentId) {
@@ -4582,7 +4808,7 @@ export const layer = Layer.effect(
               }),
             ),
           );
-          return yield* startScheduledRun(task, fire);
+          return yield* startScheduledRun(shared, fire, { repoCapacityPrechecked: true });
         });
         // Every machine, also while watching one, since any of them may hold a run outside the
         // claims, such as one on an older version.
@@ -5163,6 +5389,7 @@ export const layer = Layer.effect(
                     ? {}
                     : { delegateProviders: task.delegateProviders }),
                   ...(task.maxLiveRuns === undefined ? {} : { maxLiveRuns: task.maxLiveRuns }),
+                  ...(task.capExemption === undefined ? {} : { capExemption: task.capExemption }),
                   runtimeMode: task.runtimeMode,
                   interactionMode: task.interactionMode,
                   createdBy: task.createdBy,
@@ -5697,6 +5924,7 @@ export const layer = Layer.effect(
             yield* writeCatchUp(id, input.catchUpMissedRun);
             yield* writeDelegateProviders(id, input.delegateProviders);
             yield* writeMaxLiveRuns(id, input.maxLiveRuns);
+            yield* writeCapExemption(id, input.capExemption);
             yield* writeRunCondition(id, runCondition);
             yield* writePromptFile(
               id,
@@ -5847,6 +6075,9 @@ export const layer = Layer.effect(
             const liveRunLimitDiffers =
               task.maxLiveRuns !== undefined &&
               task.maxLiveRuns !== (yield* liveRunLimitOf(taskId));
+            const capExemptionDiffers =
+              task.capExemption !== undefined &&
+              task.capExemption !== (yield* capExemptionOf(taskId));
             const [changedBy] = yield* sql<{ readonly changed_by_json: string }>`
               SELECT changed_by_json FROM scheduled_task_changed_by WHERE task_id = ${taskId}`;
             // One revision has one author, so only a copy that lacked it can be filled in.
@@ -5877,6 +6108,7 @@ export const layer = Layer.effect(
               !promptFileDiffers &&
               !delegatesDiffer &&
               !liveRunLimitDiffers &&
+              !capExemptionDiffers &&
               !changedByMissing &&
               filledDescription.length === 0 &&
               filledFallbacks.length === 0
@@ -5888,6 +6120,7 @@ export const layer = Layer.effect(
             if (promptFileDiffers) yield* writePromptFile(taskId, task.promptFile ?? null, null);
             if (delegatesDiffer) yield* writeDelegateProviders(taskId, task.delegateProviders);
             if (liveRunLimitDiffers) yield* writeMaxLiveRuns(taskId, task.maxLiveRuns);
+            if (capExemptionDiffers) yield* writeCapExemption(taskId, task.capExemption);
             if (changedByMissing) yield* writeChangedBy(taskId, task.changedBy ?? null);
             return { outcome: "applied" as const };
           }),
@@ -6041,6 +6274,7 @@ export const layer = Layer.effect(
             : writeGroup(id, task.group, task.pausedWithGroup === true && !task.enabled);
           yield* writeDelegateProviders(id, task.delegateProviders);
           yield* writeMaxLiveRuns(id, task.maxLiveRuns);
+          yield* writeCapExemption(id, task.capExemption);
           // A copy that does not say who made its revision leaves the author unknown here, not
           // the author of the revision it replaces.
           yield* writeChangedBy(id, task.changedBy ?? null);
@@ -7491,6 +7725,90 @@ export const layer = Layer.effect(
       );
     });
     yield* scheduler.register("webhook-coalescing", dispatchPending());
+
+    const readmitUsageWaits = Effect.fn("ScheduledTaskService.readmitUsageWaits")(function* () {
+      if (Option.isNone(accountRouting)) return;
+      let cursor = "";
+      while (true) {
+        const rows = yield* sql<{
+          task_id: ScheduledTaskId;
+          updated_at: string;
+          next_run_at: string | null;
+        }>`
+          SELECT t.task_id, t.updated_at, t.next_run_at FROM scheduled_tasks t
+          WHERE t.task_id > ${cursor} AND t.enabled = 1
+            AND t.last_run_at IS NULL AND t.last_run_status <> 'running'
+            AND json_extract(t.schedule_json, '$.type') = 'once'
+            AND EXISTS (
+              SELECT 1 FROM scheduled_task_runs r WHERE r.task_id = t.task_id
+                AND r.skip_reason = 'usage_limited' AND r.completed_at = t.updated_at
+                AND json_extract(r.usage_limit_json, '$.until') IS t.next_run_at
+            )
+          ORDER BY t.task_id LIMIT 100
+        `;
+        for (const row of rows) {
+          const task = yield* findTask(row.task_id);
+          if (task === null || task.updatedAt !== row.updated_at) continue;
+          const block = yield* accountRouting.value.scheduledRunBlock({
+            selection:
+              task.threadId === null ? launchModelSelection(yield* readSettings, task) : null,
+            projectId: task.projectId,
+            delegates: task.delegateProviders ?? [],
+          });
+          if (block !== null) continue;
+          const now = iso(yield* localNow);
+          const moved = yield* sql`
+            UPDATE scheduled_tasks SET next_run_at = ${now}, updated_at = ${now}
+            WHERE task_id = ${task.id} AND updated_at = ${row.updated_at}
+              AND enabled = 1 AND next_run_at IS ${row.next_run_at} AND last_run_at IS NULL
+              AND last_run_status <> 'running'
+            RETURNING task_id
+          `;
+          if (moved.length > 0) yield* notifyChanged;
+        }
+        if (rows.length < 100) return;
+        cursor = rows[rows.length - 1]!.task_id;
+      }
+    });
+    const registry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+    if (Option.isSome(registry)) {
+      yield* Stream.merge(
+        Stream.fromEffect(registry.value.getProviders),
+        registry.value.streamChanges,
+      ).pipe(
+        Stream.map((providers) =>
+          JSON.stringify(
+            providers.map((provider) => [
+              provider.instanceId,
+              provider.enabled,
+              provider.installed,
+              provider.auth.status,
+              provider.status,
+              provider.availability,
+              provider.billingKind,
+              provider.models,
+              provider.usageLimits?.credits,
+              provider.payPerUse?.balanceState,
+              provider.usageLimits?.usageAllowed,
+              provider.usageLimits?.windows.map((window) => [
+                window.id,
+                window.usedPercent,
+                window.resetsAt,
+              ]),
+            ]),
+          ),
+        ),
+        Stream.changes,
+        Stream.runForEach(() =>
+          readmitUsageWaits().pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Could not readmit schedule tasks waiting for usage", { cause }),
+            ),
+          ),
+        ),
+        Effect.forkIn(serviceScope),
+      );
+    }
 
     // Following tasks list the model settings resolve for them, so default changes re-send it.
     yield* serverSettings.streamChanges.pipe(

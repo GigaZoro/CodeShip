@@ -33,6 +33,7 @@ export function RetryAccountButton({
   instanceId,
   threadId,
   resumes = false,
+  apiCredit = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
@@ -40,6 +41,7 @@ export function RetryAccountButton({
   readonly threadId?: ThreadId;
   /** The chat is set to resume, so the server continues it once the account has room. */
   readonly resumes?: boolean;
+  readonly apiCredit?: boolean;
 }) {
   const retryUsageLimit = useAtomCommand(serverEnvironment.retryUsageLimit, {
     reportFailure: false,
@@ -74,7 +76,15 @@ export function RetryAccountButton({
   return (
     <View className="gap-1">
       <Button
-        label={pending ? t("Saving...") : t("Try again")}
+        label={
+          pending
+            ? apiCredit
+              ? t("Checking...")
+              : t("Saving...")
+            : apiCredit
+              ? t("Check API credit")
+              : t("Try again")
+        }
         tone="secondary"
         disabled={pending}
         onPress={() => void retry()}
@@ -94,7 +104,13 @@ export function RetryAccountButton({
                   : "text-sm font-t3-medium text-foreground"
             }
           >
-            {outcome.ok ? outcome.title : t("Could not release the account")}
+            {outcome.ok
+              ? apiCredit
+                ? t("API credit available")
+                : outcome.title
+              : apiCredit
+                ? t("Could not confirm API credit")
+                : t("Could not release the account")}
           </Text>
           <Text
             className={outcome.ok ? "text-sm text-foreground-muted" : "text-sm text-destructive"}

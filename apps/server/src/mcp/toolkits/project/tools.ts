@@ -1,8 +1,10 @@
 import { McpAttachmentInput } from "../attachment/input.ts";
 import {
   clampedPositiveInt,
+  DelegatedTaskRole,
   NonNegativeInt,
   ModelSelection,
+  RepoCapExemption,
   TrimmedNonEmptyString,
   ThreadId,
   RunId,
@@ -207,6 +209,9 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     /** Set by a linked environment whose workflow run this thread is a step of; ignored otherwise. */
     workflowRun: Schema.optional(OrchestrationV2WorkflowOrigin),
     matchedRemote: Schema.optional(TrimmedNonEmptyString),
+    capExemption: Schema.optional(RepoCapExemption),
+    /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
+    delegatedRole: Schema.optional(DelegatedTaskRole),
   }),
   success: Schema.Struct({
     threadId: ThreadId,

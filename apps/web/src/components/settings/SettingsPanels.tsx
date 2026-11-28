@@ -156,7 +156,11 @@ import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverythi
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
 import { SafeUpdateDialog, useThisAppRunningThreads } from "../sidebar/SafeUpdateDialog";
 import { installLocalUpdate, installLocalUpdateWhenIdle } from "../sidebar/SidebarUpdatePill";
-import { usePendingLocalInstall, usePendingLocalInstallWork } from "../sidebar/localInstallWait";
+import {
+  usePendingLocalInstall,
+  usePendingLocalInstallTurns,
+  usePendingLocalInstallWork,
+} from "../sidebar/localInstallWait";
 import { PendingLocalInstallDialog } from "../sidebar/PendingLocalInstallDialog";
 import { restartHoldTooltip, waitingOnWorkLabel } from "../restartHold.logic";
 
@@ -194,6 +198,7 @@ function AboutVersionSection() {
   const [isShowingPendingInstall, setIsShowingPendingInstall] = useState(false);
   const pendingInstall = usePendingLocalInstall();
   const pendingWork = usePendingLocalInstallWork();
+  const pendingTurns = usePendingLocalInstallTurns();
   const thisAppThreads = useThisAppRunningThreads(
     resolveDesktopUpdatePendingAction(updateState) === "install",
   );
@@ -309,7 +314,7 @@ function AboutVersionSection() {
   const showUpdateButton = pendingAction !== "none" || isDownloading;
   const buttonTooltip =
     pendingInstall !== null
-      ? restartHoldTooltip(pendingWork)
+      ? restartHoldTooltip(pendingWork, pendingTurns)
       : updateState
         ? getDesktopUpdateButtonTooltip(updateState)
         : null;
@@ -318,7 +323,7 @@ function AboutVersionSection() {
     updateState?.status === "checking" || isDesktopUpdateButtonDisabled(updateState);
   const buttonLabel =
     pendingInstall !== null
-      ? waitingOnWorkLabel(pendingWork.length)
+      ? waitingOnWorkLabel(pendingWork.length, pendingTurns.length)
       : isDownloading
         ? t("Downloading…")
         : pendingAction === "install"

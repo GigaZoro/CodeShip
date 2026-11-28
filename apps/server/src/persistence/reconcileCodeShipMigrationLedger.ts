@@ -52,6 +52,7 @@ export const legacyCodeShipMigrationNames = [
   "TextGenerationUsage",
   "ProviderThreadPinnedSystemInstructions",
   "DetachedSessionHosts",
+  "ApiCreditBalances",
 ] as const;
 
 /** Resumable fork migrations whose cursor released builds kept in `migration_progress`. */

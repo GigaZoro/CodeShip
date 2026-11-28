@@ -581,7 +581,12 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
-        const { delegatedFrom: _claimed, ...safeParams } = params as { delegatedFrom?: unknown };
+        // The peer trusts `delegatedFrom` and `delegatedRole` from this link, so only RemoteDelegation sets them, never a caller.
+        const {
+          delegatedFrom: _claimed,
+          delegatedRole: _claimedRole,
+          ...safeParams
+        } = params as { delegatedFrom?: unknown; delegatedRole?: unknown };
         const result = yield* forwarding.value.call(scope, tool, target, {
           ...safeParams,
           environmentId,

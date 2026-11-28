@@ -122,6 +122,10 @@ function skipReasonText(
         : t("Its live-run limit was reached: runs on {machine} were still working.", {
             machine: machineLabel(run.ranOn),
           });
+    case "repo_capacity":
+      return t(
+        "The repository already reached its limit of concurrent active or landing implementation threads.",
+      );
     default:
       return run.skipReason;
   }

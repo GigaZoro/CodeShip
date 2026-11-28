@@ -3,6 +3,7 @@ import {
   decideRestartHold,
   type RestartHoldDecision,
   serverRestartHoldWaitingOnAtom,
+  serverRestartHoldWaitingOnTurnsAtom,
 } from "@t3tools/client-runtime/state/server";
 import {
   isAtomCommandInterrupted,
@@ -13,6 +14,7 @@ import {
   EnvironmentId,
   type OrchestrationV2RestartHold,
   type OrchestrationV2RestartHoldCommand,
+  type OrchestrationV2RestartHoldTurn,
   type OrchestrationV2RestartHoldWork,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -28,9 +30,11 @@ import { environmentPresentations } from "~/state/presentation";
 import { serverEnvironment } from "~/state/server";
 import { isHostedByThisApp } from "./useUpdateEverything";
 
-/** An update install of this desktop app that waits for chats' background work to finish. */
+/** An update install of this desktop app that waits for chats' active work to finish. */
 export interface PendingLocalInstall {
   readonly version: string | null;
+  /** Holds a server-side update drain while waiting for running chats and background work. */
+  readonly draining?: true;
 }
 
 export const pendingLocalInstallAtom = Atom.make<PendingLocalInstall | null>(null).pipe(
@@ -44,10 +48,14 @@ export function usePendingLocalInstall(): PendingLocalInstall | null {
 
 const EMPTY_WORK: ReadonlyArray<OrchestrationV2RestartHoldWork> = [];
 const EMPTY_COMMANDS: ReadonlyArray<OrchestrationV2RestartHoldCommand> = [];
+const EMPTY_TURNS: ReadonlyArray<OrchestrationV2RestartHoldTurn> = [];
 
 /** Only servers that advertise the capability can report background work; others have none. */
 const reportsRestartHold = (environment: EnvironmentPresentation) =>
   environment.serverConfig?.environment.capabilities.restartHold === true;
+
+const supportsUpdateDrain = (environment: EnvironmentPresentation) =>
+  environment.serverConfig?.environment.capabilities.updateDrain === true;
 
 const holdsRestart = (environment: EnvironmentPresentation) =>
   isHostedByThisApp(environment) && reportsRestartHold(environment);
@@ -83,6 +91,15 @@ const waitingOnWorkAtom = Atom.family((environmentIds: string) =>
   }).pipe(Atom.withLabel(`restart-hold-waiting-on:${environmentIds}`)),
 );
 
+/** Keyed by `environmentIdsKey`; the chats answering that a pending install still waits on. */
+const waitingOnTurnsAtom = Atom.family((environmentIds: string) =>
+  Atom.make((get): ReadonlyArray<OrchestrationV2RestartHoldTurn> => {
+    const ids = environmentIds.split("\n").filter((id) => id !== "");
+    if (ids.length === 0) return EMPTY_TURNS;
+    return ids.flatMap((id) => get(serverRestartHoldWaitingOnTurnsAtom(EnvironmentId.make(id))));
+  }).pipe(Atom.withLabel(`restart-hold-waiting-on-turns:${environmentIds}`)),
+);
+
 const restartHoldWorkCountAtom = Atom.family((environmentIds: string) =>
   Atom.make((get) => get(restartHoldWorkAtom(environmentIds)).length).pipe(
     Atom.withLabel(`restart-hold-work-count:${environmentIds}`),
@@ -109,6 +126,21 @@ export function useHostedRestartHoldKey(enabled = true): string {
   return enabled
     ? environmentIdsKey(environments.filter(holdsRestart).map(({ environmentId }) => environmentId))
     : "";
+}
+
+/** Whether any server this app hosts advertises the server-side update drain barrier. */
+export function useHostedSupportsUpdateDrain(): boolean {
+  const { environments } = useEnvironments();
+  return environments.some(
+    (environment) => holdsRestart(environment) && supportsUpdateDrain(environment),
+  );
+}
+
+export function readHostedSupportsUpdateDrain(): boolean {
+  return readHostedRestartHoldEnvironmentIds().some((environmentId) => {
+    const environment = readEnvironment(environmentId);
+    return environment !== null && supportsUpdateDrain(environment);
+  });
 }
 
 export function useRestartHoldWork(environmentIds: string) {
@@ -148,6 +180,12 @@ export function usePendingLocalInstallWork() {
   return useAtomValue(waitingOnWorkAtom(useHostedRestartHoldKey(pending !== null)));
 }
 
+/** The chats answering that a draining install still waits on. */
+export function usePendingLocalInstallTurns() {
+  const pending = usePendingLocalInstall();
+  return useAtomValue(waitingOnTurnsAtom(useHostedRestartHoldKey(pending !== null)));
+}
+
 function readHostedRestartHoldEnvironmentIds(): ReadonlyArray<EnvironmentId> {
   return [...appAtomRegistry.get(environmentPresentations.presentationsAtom).keys()].filter(
     (environmentId) => {
@@ -164,40 +202,73 @@ export function decideHostedRestartHold(decision: RestartHoldDecision): void {
   }
 }
 
-export type HostedWorkWait =
-  | { readonly status: "clear" }
-  /** The user chose to update now, whatever still runs. */
-  | { readonly status: "update-now" }
+export type HostedDrainRunResult<T> =
+  | { readonly status: "completed"; readonly value: T }
   | { readonly status: "cancelled" }
   | { readonly status: "failed"; readonly error: unknown };
 
 /**
- * Resolves when the work listed on this app's servers has ended, or the user decides first.
+ * Drains this app's hosted servers (using `server.drainForUpdate` where supported, or falling back
+ * to `server.watchRestartHold` on older servers), runs `onReady` while all manual drain leases
+ * remain held across the handoff, and releases every lease cleanly on cancel, failure, or return.
  */
-export async function waitForHostedBackgroundWork(): Promise<HostedWorkWait> {
+export async function runWithHostedUpdateDrain<T>(
+  onReady: () => Promise<T>,
+): Promise<HostedDrainRunResult<T>> {
   const environmentIds = readHostedRestartHoldEnvironmentIds();
+  if (environmentIds.length === 0) {
+    return { status: "completed", value: await onReady() };
+  }
+
+  let aborted = false;
+  let remaining = environmentIds.length;
+  let readyPromise: Promise<T> | null = null;
+  let resolveReady!: () => void;
+  const allReadyOrAborted = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+
+  const abortAll = () => {
+    if (aborted) return;
+    aborted = true;
+    decideHostedRestartHold("cancel");
+    resolveReady();
+  };
+
   const results = await Promise.all(
     environmentIds.map(async (environmentId) => {
+      const environment = readEnvironment(environmentId);
+      const drain = environment !== null && supportsUpdateDrain(environment);
       const result = await runAtomCommand(appAtomRegistry, serverEnvironment.awaitRestartHold, {
         environmentId,
+        ...(drain ? { drain: true } : {}),
+        holdUntil: async () => {
+          remaining -= 1;
+          if (remaining === 0 && !aborted) {
+            readyPromise = onReady();
+            resolveReady();
+          }
+          await allReadyOrAborted;
+          if (readyPromise !== null) {
+            // Keep the drain lease held until the handoff settles (or the process exits).
+            await readyPromise.catch(() => undefined);
+          }
+        },
       });
-      // The other servers' waits end with this one, or the install would stay half-decided.
-      if (result._tag === "Failure" || result.value === "cancel") decideHostedRestartHold("cancel");
+      if (result._tag === "Failure" || result.value === "cancel") {
+        abortAll();
+      }
       return result;
     }),
   );
+
   for (const result of results) {
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       return { status: "failed", error: squashAtomCommandFailure(result) };
     }
   }
-  const cancelled = results.some(
-    (result) =>
-      result._tag === "Failure" || (result._tag === "Success" && result.value === "cancel"),
-  );
-  if (cancelled) return { status: "cancelled" };
-  const decidedNow = results.some(
-    (result) => result._tag === "Success" && result.value === "update-now",
-  );
-  return decidedNow ? { status: "update-now" } : { status: "clear" };
+  if (aborted || readyPromise === null) {
+    return { status: "cancelled" };
+  }
+  return { status: "completed", value: await readyPromise };
 }

@@ -1,5 +1,6 @@
 import {
   defaultInstanceIdForDriver,
+  settingsSecretLiteral,
   ProviderDriverKind,
   type ClaudeSettings,
   type ProviderInstanceEnvironment,
@@ -70,11 +71,62 @@ export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function
   return path.resolve(path.join(home, ".claude"));
 });
 
+export class ClaudeBillingConfigurationError extends Schema.TaggedError<ClaudeBillingConfigurationError>()(
+  "ClaudeBillingConfigurationError",
+  {},
+) {
+  override get message(): string {
+    return "Configure this account's Billing and required API key settings, and remove conflicting authentication overrides from Claude settings.";
+  }
+}
+
+export const validateClaudeBillingSettings = Effect.fn("validateClaudeBillingSettings")(function* (
+  config: Pick<ClaudeSettings, "billingKind" | "apiKey">,
+  tiers: ReadonlyArray<{
+    readonly env?: Readonly<Record<string, string>>;
+    readonly apiKeyHelper?: string;
+  }>,
+  baseEnvironment: NodeJS.ProcessEnv = {},
+) {
+  const environment = {
+    ...baseEnvironment,
+    ...Object.fromEntries(tiers.flatMap((tier) => Object.entries(tier.env ?? {}))),
+  };
+  const alternateBackend = [
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+  ].some((key) => {
+    const value = environment[key]?.trim().toLowerCase();
+    return value !== undefined && value !== "" && value !== "0" && value !== "false";
+  });
+  const apiKey = config.billingKind === "payPerUse" ? settingsSecretLiteral(config.apiKey) : "";
+  if (
+    alternateBackend ||
+    (environment.ANTHROPIC_BASE_URL &&
+      environment.ANTHROPIC_BASE_URL.replace(/\/$/, "") !== "https://api.anthropic.com") ||
+    (config.billingKind === "payPerUse" && !apiKey.trim()) ||
+    tiers.some((tier) => Boolean(tier.apiKeyHelper)) ||
+    (environment.ANTHROPIC_API_KEY && environment.ANTHROPIC_API_KEY !== apiKey) ||
+    environment.ANTHROPIC_AUTH_TOKEN ||
+    (config.billingKind === "payPerUse" && environment.CLAUDE_CODE_OAUTH_TOKEN)
+  )
+    return yield* new ClaudeBillingConfigurationError({});
+});
+
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (
-  config: Pick<ClaudeSettings, "homePath">,
+  config: Pick<ClaudeSettings, "homePath"> &
+    Partial<Pick<ClaudeSettings, "billingKind" | "apiKey">>,
   baseEnv?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
-  const resolvedBaseEnv = baseEnv ?? process.env;
+  const resolvedBaseEnv = { ...(baseEnv ?? process.env) };
+  resolvedBaseEnv.ANTHROPIC_API_KEY = "";
+  resolvedBaseEnv.ANTHROPIC_AUTH_TOKEN = "";
+  if (config.billingKind === "payPerUse") {
+    resolvedBaseEnv.CLAUDE_CODE_OAUTH_TOKEN = "";
+    const apiKey = settingsSecretLiteral(config.apiKey);
+    if (apiKey) resolvedBaseEnv.ANTHROPIC_API_KEY = apiKey;
+  }
   const homePath = config.homePath.trim();
   if (homePath.length === 0) return resolvedBaseEnv;
   const resolvedHomePath = yield* resolveClaudeHomePath(config);

@@ -1808,6 +1808,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
                 { name: "BASE_URL", value: "https://example.test", sensitive: false },
               ],
             },
+            [ProviderInstanceId.make("claude_prepaid")]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              config: { billingKind: "payPerUse", apiKey: "claude-prepaid-secret" },
+            },
           },
           sourceControlHosts: {
             github: { tokens: { "github.com": "github-secret" } },
@@ -1837,6 +1841,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         });
         const values = [
           "config-secret",
+          "claude-prepaid-secret",
           "env-secret",
           "github-secret",
           "bitbucket-secret",

@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   ChatFileAttachment,
   MessageId,
   NodeId,
@@ -405,6 +406,10 @@ describe("AntigravityAdapterV2 session open", () => {
       assert.equal(
         error._tag === "ProviderAdapterOpenSessionError" && error.requiresSignIn,
         requiresSignIn,
+      );
+      assert.equal(
+        error._tag === "ProviderAdapterOpenSessionError" ? error.failure?.code : undefined,
+        requiresSignIn ? AUTHENTICATION_FAILED_FAILURE_CODE : undefined,
       );
     }).pipe(Effect.provide(layerSession)),
   );

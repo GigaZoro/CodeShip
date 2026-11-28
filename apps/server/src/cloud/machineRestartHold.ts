@@ -104,6 +104,7 @@ const mergeHolds = (
   work: holds.flatMap((hold) => hold.work),
   runningTurns: holds.flatMap((hold) => hold.runningTurns ?? []),
   commands: holds.flatMap((hold) => hold.commands ?? []),
+  ...(holds.some((hold) => hold.draining === true) ? { draining: true } : {}),
 });
 
 export const make = Effect.fn("cloud.machine_restart_hold.make")(function* () {

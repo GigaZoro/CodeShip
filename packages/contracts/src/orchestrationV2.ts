@@ -892,6 +892,8 @@ export const OrchestrationV2RestartHold = Schema.Struct({
   runningTurns: Schema.optional(Schema.Array(OrchestrationV2RestartHoldTurn)),
   /** Absent from servers that predate `t3_command_run`. */
   commands: Schema.optional(Schema.Array(OrchestrationV2RestartHoldCommand)),
+  /** True while the server is draining for an update and holding new turn/wake/schedule starts. */
+  draining: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2RestartHold = typeof OrchestrationV2RestartHold.Type;
 
@@ -990,6 +992,8 @@ export const OrchestrationV2Run = Schema.Struct({
   queueHeld: Schema.optional(Schema.Boolean),
   /** Held by a restart, not a person: the thread's next completed run releases it. */
   queueHeldByRestart: Schema.optional(Schema.Boolean),
+  /** Held by an update drain, not a person: released when drain clears or right after restart. */
+  queueHeldByUpdateDrain: Schema.optional(Schema.Boolean),
   /** The sender asked for a separate turn; it is not an ordering barrier for a later auto send. */
   explicitQueue: Schema.optional(Schema.Literal(true)),
   steerWhenReadyRunId: Schema.optional(RunId),
@@ -3767,6 +3771,7 @@ export const OrchestrationV2Command = Schema.Union([
     branch: Schema.NullOr(GitRefName),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
     folder: Schema.optional(ThreadFolder),
+    tags: Schema.optional(Schema.Array(ThreadTag)),
     /** Only the server sets this; a client's thread.create never carries one. */
     linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
     /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
@@ -4299,6 +4304,7 @@ export const OrchestrationV2Command = Schema.Union([
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
     // A review task: the parent counts its review rounds and refuses one past the limit.
     review: Schema.optional(OrchestrationV2DelegatedReviewRequest),
+    tags: Schema.optional(Schema.Array(ThreadTag)),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

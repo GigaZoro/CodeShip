@@ -176,6 +176,7 @@ import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
 import * as ManualStepChats from "./threadPage/ManualStepChats.ts";
 import * as ManualStepReviews from "./threadPage/ManualStepReviews.ts";
 import * as ThreadPageManualSteps from "./threadPage/ThreadPageManualSteps.ts";
+import * as ApiCreditUsage from "./provider/ApiCreditUsage.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -949,6 +950,10 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ThreadSearch.ThreadSearch)({}),
   Layer.mock(HtmlRenderLibrary.HtmlRenderLibrary)({}),
   Layer.mock(UsageService.UsageService)({ clientSettingsKey: usageSettingsKeyOf }),
+  Layer.mock(ApiCreditUsage.ApiCreditUsage)({
+    read: () => Effect.succeed(new Map()),
+    listRows: () => Effect.succeed([]),
+  }),
   Layer.mock(VcsProvisioningService.VcsProvisioningService)({}),
   Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
   Layer.mock(WorkspaceEntries.WorkspaceEntries)({}),

@@ -186,8 +186,9 @@ import CodeShipMigration0045 from "./CodeShipMigrations/045_CommandStopLeftovers
 import CodeShipMigration0046 from "./CodeShipMigrations/046_TextGenerationUsage.ts";
 import CodeShipMigration0047 from "./CodeShipMigrations/047_ProviderThreadPinnedSystemInstructions.ts";
 import CodeShipMigration0048 from "./CodeShipMigrations/048_DetachedSessionHosts.ts";
-import CodeShipMigration0049 from "./CodeShipMigrations/049_PayloadIndexesJsonValid.ts";
-import CodeShipMigration0050 from "./CodeShipMigrations/050_RunDemandIndex.ts";
+import CodeShipMigration0049 from "./CodeShipMigrations/049_ApiCreditBalances.ts";
+import CodeShipMigration0050 from "./CodeShipMigrations/050_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0051 from "./CodeShipMigrations/051_RunDemandIndex.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -361,8 +362,9 @@ const codeShipMigrationEntries = [
   [46, "TextGenerationUsage", CodeShipMigration0046],
   [47, "ProviderThreadPinnedSystemInstructions", CodeShipMigration0047],
   [48, "DetachedSessionHosts", CodeShipMigration0048],
-  [49, "PayloadIndexesJsonValid", CodeShipMigration0049],
-  [50, "RunDemandIndex", CodeShipMigration0050],
+  [49, "ApiCreditBalances", CodeShipMigration0049],
+  [50, "PayloadIndexesJsonValid", CodeShipMigration0050],
+  [51, "RunDemandIndex", CodeShipMigration0051],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

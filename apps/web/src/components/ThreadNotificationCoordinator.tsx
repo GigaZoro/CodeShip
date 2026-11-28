@@ -15,6 +15,11 @@ import {
 } from "@t3tools/client-runtime/state/thread-status";
 import type { AnyRouter } from "@tanstack/react-router";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
+import {
+  advanceOpenThreadIncidents,
+  threadIncidentOf,
+  type ThreadIncident,
+} from "@t3tools/client-runtime/state/thread-incidents";
 import type {
   EnvironmentId,
   OrchestrationV2ThreadShell,
@@ -34,8 +39,13 @@ import {
 
 import { getClientSettings, subscribeClientSettings } from "../hooks/useSettings";
 import { isWindowsPlatform } from "../lib/utils";
-import { environmentSummaries } from "../state/presentation";
+import { environmentPresentations, environmentSummaries } from "../state/presentation";
 import { environmentShell } from "../state/shell";
+import {
+  downProvidersAtom,
+  machineByEnvironmentAtom,
+  threadIncidentsAtom,
+} from "../state/threadIncidents";
 import { environmentThreadShells } from "../state/threads";
 import {
   hasDesktopNotifications,
@@ -53,6 +63,11 @@ import {
   type ThreadNotificationKind,
   type ThreadNotificationObservation,
 } from "./ThreadNotificationCoordinator.logic";
+import {
+  presentThreadIncident,
+  threadIncidentNames,
+  type ThreadIncidentPresentation,
+} from "./incidents/threadIncidentPresentation";
 import { toastManager } from "./ui/toast";
 
 interface NotificationState extends ThreadNotificationObservation {
@@ -158,6 +173,41 @@ export function startThreadNotifications(
     });
   };
 
+  const presentIncident = (incident: ThreadIncident): ThreadIncidentPresentation =>
+    presentThreadIncident(
+      incident.cause,
+      incident.threadKeys.length,
+      threadIncidentNames(
+        registry.get(environmentSummaries.environmentsAtom),
+        registry.get(environmentPresentations.providersByEnvironmentAtom),
+      ),
+    );
+  // One toast per shared cause; the threads it holds close their own toasts into it.
+  const openIncidentToasts = new Set<string>();
+  const incidentToastId = (incident: ThreadIncident) => `incident:${incident.cause.key}`;
+
+  // A repeat toast can stand for threads outside the incident too; those keep it open.
+  const closeThreadNoticesInto = (incident: ThreadIncident) => {
+    const affected = new Set(incident.threadKeys);
+    const heldElsewhere = new Set<ToastId>();
+    for (const [key, toastIds] of openToasts) {
+      if (!affected.has(key)) for (const toastId of toastIds) heldElsewhere.add(toastId);
+    }
+    for (const key of incident.threadKeys) {
+      for (const toastId of openToasts.get(key) ?? []) {
+        if (!heldElsewhere.has(toastId)) toastManager.close(toastId);
+      }
+      openToasts.delete(key);
+    }
+    const incidentTag = incidentToastId(incident);
+    for (const [tag, entry] of pending) {
+      if (tag === incidentTag || !affected.has(threadKey(entry))) continue;
+      entry.notification.close();
+      pending.delete(tag);
+    }
+  };
+
+  // Completions fire from a timer, so read settings, focus and route when presenting.
   const present = (
     environmentId: EnvironmentId,
     state: NotificationState,
@@ -185,6 +235,14 @@ export function startThreadNotifications(
           : THREAD_STATUS_DISPLAY.input.summary,
     );
     const place = notificationPlace(environmentId, thread.projectId);
+    const incident =
+      status === "failed" || status === "limited"
+        ? threadIncidentOf(registry.get(threadIncidentsAtom), {
+            environmentId,
+            threadId: thread.id,
+          })
+        : null;
+    const incidentView = incident === null ? null : presentIncident(incident);
     if (hasNotificationSound(mode)) {
       void playNotificationSound(
         kind,
@@ -203,6 +261,42 @@ export function startThreadNotifications(
       document.hasFocus() &&
       (active.environmentId !== environmentId || active.threadId !== thread.id)
     ) {
+      if (incident !== null && incidentView !== null) {
+        closeThreadNoticesInto(incident);
+        const toastId = incidentToastId(incident);
+        const Icon = incidentView.icon;
+        openIncidentToasts.add(toastId);
+        toastManager.add({
+          id: toastId,
+          onRemove: (): void => {
+            openIncidentToasts.delete(toastId);
+          },
+          type: status === "failed" ? "error" : "warning",
+          title: incidentView.summary,
+          data: {
+            source: "thread-incident",
+            hideCopyButton: true,
+            leadingIcon: (
+              <Icon
+                aria-hidden
+                className={
+                  status === "failed"
+                    ? "size-4 text-destructive-foreground"
+                    : "size-4 text-warning-foreground"
+                }
+              />
+            ),
+          },
+          actionProps: {
+            children: incidentView.actionLabel,
+            onClick: () => {
+              toastManager.close(toastId);
+              void router.navigate({ to: incidentView.to });
+            },
+          },
+        });
+        return;
+      }
       const toastKey = threadKey({ environmentId, threadId: thread.id });
       const toastId: ToastId = toastManager.add({
         onRemove: (): void => forgetToast(toastKey, toastId),
@@ -255,9 +349,14 @@ export function startThreadNotifications(
     )
       return;
     try {
-      const notification = new Notification(title, {
+      if (incident !== null) closeThreadNoticesInto(incident);
+      const notification = new Notification(incidentView?.summary ?? title, {
         body: place === null ? thread.title : `${thread.title}\n${place}`,
-        tag: threadNotificationTag(environmentId, thread.id),
+        // One notification per shared cause: each affected thread replaces the last.
+        tag:
+          incident === null
+            ? threadNotificationTag(environmentId, thread.id)
+            : incidentToastId(incident),
         silent: true,
         // Windows drops clicks after a toast moves into Notification Center.
         requireInteraction: kind === "completion" && isWindowsPlatform(navigator.platform),
@@ -513,6 +612,42 @@ export function startThreadNotifications(
       syncEnvironments();
     },
   );
+  // An incident that ended closes its toast; one that ended because its cause recovered says so.
+  let openIncidents: ReadonlyMap<string, ThreadIncident> = new Map();
+  const advanceIncidents = () => {
+    const { open, ended } = advanceOpenThreadIncidents(
+      openIncidents,
+      registry.get(threadIncidentsAtom),
+      registry.get(environmentThreadShells.listedThreadShellsAtom),
+      {
+        machineByEnvironment: registry.get(machineByEnvironmentAtom),
+        downProviders: registry.get(downProvidersAtom),
+      },
+    );
+    openIncidents = open;
+    for (const { incident, recovered } of ended) {
+      const toastId = incidentToastId(incident);
+      if (openIncidentToasts.delete(toastId)) toastManager.close(toastId);
+      pending.get(toastId)?.notification.close();
+      pending.delete(toastId);
+      if (!recovered) continue;
+      // Closed at once, so the log shows it resolved and each recovery gets its own entry.
+      toastManager.close(
+        toastManager.add({
+          type: "success",
+          title: t("Recovered"),
+          description: presentIncident(incident).summary,
+          data: { source: "thread-incident", quiet: true },
+        }),
+      );
+    }
+  };
+  advanceIncidents();
+  // A reconnect can end an offline incident without changing which threads any cause holds.
+  const unsubscribeIncidents = [
+    registry.subscribe(threadIncidentsAtom, advanceIncidents),
+    registry.subscribe(machineByEnvironmentAtom, advanceIncidents),
+  ];
   const unsubscribeHidden = [
     registry.subscribe(environmentThreadShells.hiddenThreadKeysAtom, closeHiddenPending),
     registry.subscribe(environmentThreadShells.anyEnvironmentHidingAtom, closeHiddenPending),
@@ -526,6 +661,7 @@ export function startThreadNotifications(
     window.removeEventListener("focus", clearPending);
     unsubscribeSettings();
     unsubscribeEnvironmentIds();
+    for (const unsubscribe of unsubscribeIncidents) unsubscribe();
     for (const unsubscribe of unsubscribeHidden) unsubscribe();
     unsubscribeRoute();
     for (const entry of watched.values()) entry.unsubscribe();

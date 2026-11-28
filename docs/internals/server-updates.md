@@ -149,6 +149,39 @@ fails. A check can stop with no other line, when the
 schedule changes or the release is no longer due, so without that line its log would read as an
 install still under way.
 
+## Update drain barrier, pre-staging, and manual turn-boundary updates
+
+While [`UpdateDrain`](../../apps/server/src/cloud/updateDrain.ts) has one or more active holders,
+the orchestrator also enforces the drain barrier alongside scheduled starts:
+
+- Idle-thread background completion wakes (`t3_command_run` and delegated child deliveries), new user
+  turns, and `mode: "async"` delegations wait for drain to clear (new runs queue with
+  `queueHeldByUpdateDrain: true` rather than `queueHeld`).
+- Running turns, tool approvals, and `mode: "wait"` child delegations spawned by an active turn are
+  never blocked, so in-flight turns can finish cleanly without deadlocking.
+- If a drain clears without restarting, the orchestrator's reactive `watchDraining` watcher releases
+  held delegated deliveries and queued runs automatically; after a clean drained restart where no
+  active run was cut, startup reconciliation leaves `queueHeldByUpdateDrain` runs unheld so they
+  start immediately.
+- `OrchestrationV2RestartHold` reports `draining: true` while `UpdateDrain` is held, and
+  `watchRestartHold` reacts to drain state changes immediately.
+
+For launcher-managed (`boot-service`) automatic updates, [`ServerSelfUpdate.prepare`](../../apps/server/src/cloud/selfUpdate.ts)
+downloads, verifies, and preflights the release outside `UpdateDrain` (caching the prepared runtime
+in memory by version and database migration head), and `activatePrepared` hands it off inside the
+drain barrier so download time does not hold back chats or scheduled starts.
+
+Manual updates ("Update when it finishes" and remote server updates) use the same barrier when the
+server advertises the `updateDrain` capability: clients open the streaming `server.drainForUpdate`
+RPC, which calls `UpdateDrain.drainUntilClosed` and streams `OrchestrationV2RestartHold` with
+`draining: true`. Clients wait with `untilRestartHoldIsEmpty` (waiting for both background work and
+running turns) and keep the stream open across the restart handoff; once the server accepts a
+boot-service or desktop handoff, it acquires a bounded server-side `UpdateDrain` lease until
+shutdown so closing the client stream after `complete` cannot release held work into a dying
+process. Cancelling or disconnecting before handoff closes the stream and releases the holder
+immediately. Older servers
+without `updateDrain` fall back to `server.watchRestartHold` and `untilListedRestartHoldWorkEnds`.
+
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A

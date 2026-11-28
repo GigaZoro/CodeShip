@@ -1,18 +1,20 @@
 import * as Cause from "effect/Cause";
+import { ProviderRegistry } from "../provider/ProviderRegistry.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type { ModelSelection, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import type { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
 import {
+  ProjectId,
   isProviderAvailable,
   isProviderInstanceBackgroundAllowed,
   isProviderTextGenerationCapable,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
+import { exhaustedUsageWindow, isPayPerUseAccount } from "@t3tools/shared/usageLimits";
 import { fallbackTextGenerationModelSelection } from "@t3tools/shared/serverSettings";
 import * as ServerSettings from "../serverSettings.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
@@ -23,6 +25,10 @@ import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import { ApiCreditBalance } from "../provider/ApiCreditBalance.ts";
+import { UsageService } from "../usage/UsageService.ts";
+import { TokenPricing } from "../usage/TokenPricing.ts";
+import { routeAutoAccount } from "../orchestration-v2/AccountRouting.ts";
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 import * as TextGenerators from "./TextGenerators.ts";
 import * as TextGenerationUsageRepository from "../persistence/TextGenerationUsage.ts";
@@ -132,6 +138,9 @@ export const make = Effect.gen(function* () {
         ),
       );
   });
+  const balances = yield* Effect.serviceOption(ApiCreditBalance);
+  const usage = yield* Effect.serviceOption(UsageService);
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const generate = Effect.fn("TextGeneration.generate")(function* <A>(
     operation: TextGenerationOp,
     selection: ModelSelection,
@@ -161,8 +170,42 @@ export const make = Effect.gen(function* () {
     }
     const instances = yield* registry.listInstances;
     const instanceById = new Map(instances.map((instance) => [instance.instanceId, instance]));
-    const snapshots = yield* Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot);
+    const snapshots = yield* Option.isSome(providerRegistry)
+      ? providerRegistry.value.getProviders
+      : Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot);
     const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const settings = yield* serverSettings.getSettings.pipe(
+      Effect.mapError(
+        (cause) =>
+          new TextGenerationError({
+            operation,
+            detail: "Could not read billing routing settings.",
+            cause,
+          }),
+      ),
+    );
+    if (
+      Option.isNone(providerRegistry) &&
+      snapshots.some((provider) => provider.billingKind === "payPerUse")
+    ) {
+      return yield* new TextGenerationError({
+        operation,
+        detail: "Validated API credit account routing is unavailable.",
+      });
+    }
+    const route = (candidate: ModelSelection) =>
+      routeAutoAccount({
+        selection: candidate,
+        settings,
+        providers: snapshots,
+        nowMs: now,
+        projectId: ProjectId.make("text-generation"),
+        currentInstanceId: candidate.instanceId,
+        started: true,
+        recordedLimits: new Map(),
+        mcpSignInsNeeded: new Map(),
+      });
+    selection = route(selection);
     const selected = snapshots.find((provider) => provider.instanceId === selection.instanceId);
     const selectedDisabled = selected?.enabled === false;
     // Only a failed probe counts: a pending one is also not installed yet.
@@ -176,16 +219,6 @@ export const make = Effect.gen(function* () {
           (selected.status === "error" &&
             (!selected.installed || selected.auth.status === "unauthenticated"))));
     if (unusable || exhaustedUsageWindow(selected, now, selection.model)) {
-      const settings = yield* serverSettings.getSettings.pipe(
-        Effect.mapError(
-          (cause) =>
-            new TextGenerationError({
-              operation,
-              detail: "Could not read fallback model settings.",
-              cause,
-            }),
-        ),
-      );
       const rejected = selection;
       const fallbackWhere = (sameInstance: boolean) =>
         fallbackTextGenerationModelSelection(
@@ -209,10 +242,12 @@ export const make = Effect.gen(function* () {
               !exhaustedUsageWindow(provider, now, model)
             );
           },
-          { defaultModelSelection: settings.defaultModelSelection },
+          {
+            defaultModelSelection: settings.defaultModelSelection,
+          },
         );
       // Another instance first; the rejected instance's other models only when none qualifies.
-      selection = fallbackWhere(false) ?? fallbackWhere(true) ?? selection;
+      selection = route(fallbackWhere(false) ?? fallbackWhere(true) ?? selection);
     }
     if (textGeneratorCannotRun && selection.instanceId === textGeneratorId) {
       return yield* new TextGenerationError({
@@ -228,6 +263,38 @@ export const make = Effect.gen(function* () {
           "No text generation provider is available. Enable a provider that can generate text in Settings → Providers.",
       });
     }
+    const provider = snapshots.find((candidate) => candidate.instanceId === selection.instanceId);
+    if (
+      provider &&
+      (!isProviderAvailable(provider) || provider.auth.status === "unauthenticated")
+    ) {
+      return yield* new TextGenerationError({
+        operation,
+        detail: "The selected provider account is unavailable or not authenticated.",
+      });
+    }
+    const paid = provider !== undefined && isPayPerUseAccount(provider);
+    if (paid && Option.isNone(balances)) {
+      return yield* new TextGenerationError({
+        operation,
+        detail: "API balance tracking is unavailable.",
+      });
+    }
+    if (paid && Option.isSome(balances)) {
+      yield* balances.value
+        .assertAvailable(selection.instanceId)
+        .pipe(
+          Effect.mapError(
+            (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+          ),
+        );
+    }
+    if (provider && exhaustedUsageWindow(provider, now, selection.model)) {
+      return yield* new TextGenerationError({
+        operation,
+        detail: "No provider account has usage available for text generation.",
+      });
+    }
     return yield* installationGate.execute(
       selection.instanceId,
       Effect.gen(function* () {
@@ -241,7 +308,16 @@ export const make = Effect.gen(function* () {
         let dispatched = 0;
         let written = 0;
         let settled: UsageOutcome | undefined;
-        return yield* invoke(instance.textGeneration, selection).pipe(
+        const generation = invoke(instance.textGeneration, selection);
+        const tracked = Option.isSome(balances)
+          ? generation.pipe(Effect.provideService(ApiCreditBalance, balances.value))
+          : generation;
+        const priced = Option.isSome(usage)
+          ? tracked.pipe(
+              Effect.provideService(TokenPricing, { priceTokens: usage.value.priceTokens }),
+            )
+          : tracked;
+        return yield* priced.pipe(
           Effect.provideService(TextGenerationUsageSink, (calls) => {
             reported.push(...calls);
           }),

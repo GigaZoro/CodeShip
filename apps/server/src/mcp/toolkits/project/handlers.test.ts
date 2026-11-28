@@ -14,11 +14,13 @@ import {
   type ModelSelection,
   type ProjectScript,
   type RuntimeMode,
+  type OrchestrationV2AppThread,
   type OrchestrationV2ThreadShell,
   type ChatAttachment,
   ChatAttachmentId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
@@ -41,12 +43,14 @@ import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
+import * as HostResources from "../../../resourceTelemetry/HostResources.ts";
 import * as MemoryAdmission from "../../../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
+import * as RepoConcurrencyAdmission from "../../../peer/RepoConcurrencyAdmission.ts";
 import * as SourceControlProviderRegistry from "../../../sourceControl/SourceControlProviderRegistry.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
@@ -100,6 +104,7 @@ const clientLaunchHarness = (input: {
   readonly overrideModel?: ModelSelection;
   readonly overrideScripts?: readonly ProjectScript[];
   readonly launched: Array<ThreadLaunch.ThreadLaunchInput>;
+  readonly onLaunch?: (launch: ThreadLaunch.ThreadLaunchInput) => Effect.Effect<void>;
   readonly client?: Pick<McpInvocationContext.McpClientCaller, "linked" | "narrowedTo">;
   readonly launchShell?: (
     shell: OrchestrationV2ThreadShell,
@@ -227,11 +232,14 @@ const clientLaunchHarness = (input: {
     }),
     Layer.mock(ThreadLaunch.ThreadLaunchService)({
       checkWorktreeBase: input.checkWorktreeBase ?? (() => Effect.void),
-      launch: (launch) => {
-        input.launched.push(launch);
-        if (input.refusedByCeiling) {
-          return Effect.fail(
-            new ThreadLaunch.ThreadLaunchError({
+      launch: (launch) =>
+        Effect.gen(function* () {
+          input.launched.push(launch);
+          if (input.onLaunch !== undefined) {
+            yield* input.onLaunch(launch);
+          }
+          if (input.refusedByCeiling) {
+            return yield* new ThreadLaunch.ThreadLaunchError({
               operation: "create-thread",
               commandId: launch.commandId,
               projectId: launch.projectId,
@@ -243,22 +251,21 @@ const clientLaunchHarness = (input: {
                 maxRuntimeMode: "approval-required",
                 organization: "Example Corp",
               }),
-            }),
-          );
-        }
-        return Effect.succeed({
-          threadId: launch.threadId,
-          projection: {
-            thread: launchShell(launch, "result"),
-            runs: [],
-            messages:
-              launch.initialMessage === undefined
-                ? []
-                : [{ attachments: launch.initialMessage.attachments }],
-          },
-          resumed: false,
-        } as unknown as ThreadLaunch.ThreadLaunchResult);
-      },
+            });
+          }
+          return {
+            threadId: launch.threadId,
+            projection: {
+              thread: launchShell(launch, "result"),
+              runs: [],
+              messages:
+                launch.initialMessage === undefined
+                  ? []
+                  : [{ attachments: launch.initialMessage.attachments }],
+            },
+            resumed: false,
+          } as unknown as ThreadLaunch.ThreadLaunchResult;
+        }),
     }),
     Layer.mock(Project.ProjectService)({
       getById: (id) =>
@@ -2172,4 +2179,248 @@ it.effect("a project update or create that is refused tells the agent why", () =
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
     expect(dropped.at(-1)?.result).toMatchObject({ code: "invalid_request" });
   }),
+);
+
+it.effect(
+  "t3_thread_launch enforces the repo concurrency cap while honoring exemptions, replays, and linked read-only delegates",
+  () =>
+    Effect.gen(function* () {
+      let activeCount = 3;
+      const limit = 4;
+      const checkCalls: Array<ProjectId> = [];
+      const admissionLayer = RepoConcurrencyAdmission.layerTest(({ projectId, requestedCount }) =>
+        Effect.sync(() => {
+          checkCalls.push(projectId);
+          const req = requestedCount ?? 1;
+          return {
+            allowed: activeCount + req <= limit,
+            activeCount,
+            requestedCount: req,
+            limit,
+            repoKey: "github.com/pingdotgg/t3code",
+            breakdown: [{ environmentId: "local" as const, label: "local", count: activeCount }],
+          };
+        }),
+      );
+
+      const runLaunch = (
+        params: Record<string, unknown>,
+        options: {
+          readonly launched?: Array<ThreadLaunch.ThreadLaunchInput>;
+          readonly linked?: boolean;
+        } = {},
+      ) =>
+        Effect.gen(function* () {
+          const launched = options.launched ?? [];
+          const harness = clientLaunchHarness({
+            runtimeModeCeiling: "full-access",
+            launched,
+            ...(options.linked ? { client: { linked: true } } : {}),
+          });
+          const dependencies = Layer.mergeAll(
+            harness.dependencies,
+            admissionLayer,
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "/projects",
+              ensureScratchProject: Effect.succeed({
+                projectId: harness.projectId,
+                workspaceRoot: "/projects/scratch",
+              }),
+            }),
+          );
+          const toolkit = yield* ProjectToolkit.pipe(
+            Effect.provide(
+              McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+                Layer.provide(dependencies),
+              ),
+            ),
+          );
+          const chunks = yield* toolkit
+            .handle("t3_thread_launch", {
+              ...("scratch" in params && params.scratch === true
+                ? {}
+                : { projectId: harness.projectId }),
+              ...params,
+            } as never)
+            .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+          return { result: chunks.at(-1)?.result, launched, projectId: harness.projectId };
+        });
+
+      // 3/4 active -> 4th implementation launch succeeds without non-implementation tags.
+      const launchedShared: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const fourth = yield* runLaunch(
+        { title: "Fourth", clientRequestId: "launch-4" },
+        { launched: launchedShared },
+      );
+      expect(fourth.result).toMatchObject({ projectId: fourth.projectId });
+      expect(launchedShared).toHaveLength(1);
+      expect(launchedShared[0]?.tags).toBeUndefined();
+
+      // 4/4 active -> 5th ordinary implementation launch is blocked.
+      activeCount = 4;
+      const fifth = yield* runLaunch({ title: "Fifth" });
+      expect(fifth.result).toMatchObject({ code: "repo_capacity_full" });
+      expect(fifth.launched).toHaveLength(0);
+
+      // Idempotent replay of the already-launched 4th thread still succeeds at 4/4.
+      const replay = yield* runLaunch(
+        { title: "Fourth", clientRequestId: "launch-4" },
+        { launched: launchedShared },
+      );
+      expect(replay.result).toMatchObject({ projectId: replay.projectId });
+
+      // Plan mode, scratch, broken_main, and incident exemptions bypass the cap at 4/4.
+      const plan = yield* runLaunch({ title: "Plan", interactionMode: "plan" });
+      expect(plan.result).toMatchObject({ projectId: plan.projectId });
+      expect(plan.launched).toHaveLength(1);
+
+      const scratch = yield* runLaunch({ title: "Scratch", scratch: true });
+      expect(scratch.result).toMatchObject({ projectId: scratch.projectId });
+      expect(scratch.launched).toHaveLength(1);
+
+      const brokenMain = yield* runLaunch({ title: "Fix main", capExemption: "broken_main" });
+      expect(brokenMain.result).toMatchObject({ projectId: brokenMain.projectId });
+      expect(brokenMain.launched).toHaveLength(1);
+
+      const incident = yield* runLaunch({ title: "Prod incident", capExemption: "incident" });
+      expect(incident.result).toMatchObject({ projectId: incident.projectId });
+      expect(incident.launched).toHaveLength(1);
+
+      // Linked remote delegation with non-implementation role bypasses the cap AND tags the thread...
+      for (const role of ["review", "research", "design"] as const) {
+        const linkedRole = yield* runLaunch(
+          {
+            title: `Remote ${role}`,
+            delegatedRole: role,
+            delegatedFrom: {
+              environmentId: EnvironmentId.make("env:peer"),
+              threadId: ThreadId.make("thread:parent"),
+              title: "Parent",
+            },
+          },
+          { linked: true },
+        );
+        expect(linkedRole.result).toMatchObject({ projectId: linkedRole.projectId });
+        expect(linkedRole.launched).toHaveLength(1);
+        expect(linkedRole.launched[0]?.tags).toEqual([role]);
+      }
+
+      // ...while an unlinked caller passing delegatedRole:"review" cannot spoof the exemption.
+      const spoofedReview = yield* runLaunch({
+        title: "Spoofed review",
+        delegatedRole: "review",
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("env:peer"),
+          threadId: ThreadId.make("thread:parent"),
+          title: "Parent",
+        },
+      });
+      expect(spoofedReview.result).toMatchObject({ code: "repo_capacity_full" });
+      expect(spoofedReview.launched).toHaveLength(0);
+      expect(checkCalls.length).toBeGreaterThanOrEqual(2);
+
+      // Two concurrent t3_thread_launch calls racing at 3/4 against live RepoConcurrencyAdmission:
+      // exactly 1 launches while the 2nd fails with repo_capacity_full.
+      const raceLaunched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const firstEntered = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      const raceHarness = clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        launched: raceLaunched,
+        onLaunch: () =>
+          raceLaunched.length === 1
+            ? Deferred.succeed(firstEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirst)),
+              )
+            : Effect.void,
+      });
+      const existingThreads = new Map<ThreadId, OrchestrationV2AppThread>(
+        (["thread:race-1", "thread:race-2", "thread:race-3"] as const).map((id) => [
+          ThreadId.make(id),
+          {
+            projectId: raceHarness.projectId,
+            interactionMode: "default",
+            archivedAt: null,
+          } as unknown as OrchestrationV2AppThread,
+        ]),
+      );
+      const raceAdmissionDeps = Layer.mergeAll(
+        Layer.succeed(HostProcess.Platform, "linux" as NodeJS.Platform),
+        MemoryAdmission.layerTest(),
+        Layer.succeed(HostResources.HostResources, {
+          read: Effect.succeed({
+            sampledAt: 1_000,
+            cpuUtilization: 0.1,
+            cpuCount: 8,
+            availableMemoryBytes: 24 * 1024 ** 3,
+            totalMemoryBytes: 32 * 1024 ** 3,
+            loadAverage: [1, 1, 1] as const,
+          }),
+        }),
+        Layer.mock(Project.ProjectService)({
+          getWithRepositoryIdentity: (id) =>
+            Effect.succeed(
+              id === raceHarness.projectId
+                ? Option.some({
+                    id,
+                    workspaceRoot: "/projects/client-target",
+                    repositoryIdentity: {
+                      canonicalKey: "github.com/pingdotgg/t3code",
+                      locator: {
+                        source: "git-remote",
+                        remoteName: "origin",
+                        remoteUrl: "https://github.com/pingdotgg/t3code.git",
+                      },
+                    },
+                  } as unknown as ProjectRecord)
+                : Option.none(),
+            ),
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getActiveTurnWorkspaces: () =>
+            Effect.succeed(
+              [...existingThreads.keys()].map((threadId) => ({
+                threadId,
+                projectId: raceHarness.projectId,
+                worktreePath: null,
+              })),
+            ),
+          getOpenCommandTasks: Effect.succeed([]),
+          getThread: (threadId) => {
+            const found = existingThreads.get(threadId);
+            return found === undefined
+              ? Effect.fail(new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }))
+              : Effect.succeed(found);
+          },
+        }),
+      );
+      const raceDependencies = Layer.mergeAll(
+        raceHarness.dependencies,
+        RepoConcurrencyAdmission.layerLive().pipe(Layer.provide(raceAdmissionDeps)),
+      );
+      const raceLayer = McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+        Layer.provideMerge(raceDependencies),
+      );
+      yield* Effect.gen(function* () {
+        const raceToolkit = yield* ProjectToolkit;
+        const invokeRace = (title: string) =>
+          raceToolkit
+            .handle("t3_thread_launch", { projectId: raceHarness.projectId, title } as never)
+            .pipe(
+              Stream.unwrap,
+              Stream.runCollect,
+              Effect.map((chunks) => chunks.at(-1)?.result),
+            );
+
+        const firstFiber = yield* invokeRace("Concurrent 1").pipe(Effect.forkChild);
+        yield* Deferred.await(firstEntered);
+        const secondResult = yield* invokeRace("Concurrent 2");
+        expect(secondResult).toMatchObject({ code: "repo_capacity_full" });
+
+        yield* Deferred.succeed(releaseFirst, undefined);
+        const firstResult = yield* Fiber.join(firstFiber);
+        expect(firstResult).toMatchObject({ projectId: raceHarness.projectId });
+        expect(raceLaunched).toHaveLength(1);
+      }).pipe(Effect.provide(raceLayer));
+    }),
 );

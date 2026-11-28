@@ -56,7 +56,10 @@ import {
   makeAntigravityUserInputResponse,
   normalizeAntigravityToolCall,
 } from "../../provider/acp/AntigravityProtocol.ts";
-import { isAntigravitySignInRequiredError } from "../../provider/antigravityAuthSupport.ts";
+import {
+  ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
+  isAntigravitySignInRequiredError,
+} from "../../provider/antigravityAuthSupport.ts";
 import {
   AcpProviderCapabilitiesV2,
   makeAcpAdapterV2,
@@ -322,9 +325,11 @@ export function makeAntigravityAcpAdapterFlavor(
     supportsImagePrompts: true,
     compactViaAdvertisedCommand: true,
     requiresSignIn: isAntigravitySignInRequiredError,
+    signInRequiredMessage: ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
     checksVersionAtHandshake: true,
     // Antigravity can leave a prompt open without updates; long tools and approvals pause this.
     promptInactivityTimeout: "15 minutes",
+    // 1.4.5 returns the root trajectory's Gemini usageMetadata delta; 1.4.1 returns none.
     reportsPerTurnPromptUsage: true,
     geminiPromptUsage: true,
     ...(profileDirectory === undefined

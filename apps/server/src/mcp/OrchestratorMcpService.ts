@@ -118,7 +118,12 @@ import {
   canAccountRun,
   orderProviderInstancesForFailover,
 } from "@t3tools/shared/serverSettings";
-import { exhaustedUsageWindow, isSubscriptionAccount } from "@t3tools/shared/usageLimits";
+import {
+  accountUsageTier,
+  exhaustedUsageWindow,
+  isPayPerUseAccount,
+  isSubscriptionAccount,
+} from "@t3tools/shared/usageLimits";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { threadPullRequestUpdatedAtMs } from "@t3tools/shared/threadPullRequests";
 import {
@@ -147,8 +152,10 @@ import {
   filterEligibleAutoProviders,
   vendorFamilyOfDriver,
 } from "../orchestration-v2/AutoComplexityRouting.ts";
+import * as ApiCreditUsage from "../provider/ApiCreditUsage.ts";
 import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
+import * as RepoConcurrencyAdmission from "../peer/RepoConcurrencyAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   SUBAGENT_RESULT_TURN_ITEM_TYPES,
@@ -550,6 +557,7 @@ function scheduledTaskSummary(
     ...(task.delegateProviders === undefined || task.delegateProviders.length === 0
       ? {}
       : { delegateProviders: task.delegateProviders }),
+    ...(task.capExemption === undefined ? {} : { capExemption: task.capExemption }),
     ...(liveRuns === null
       ? {}
       : { maxLiveRuns: task.maxLiveRuns ?? DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS, liveRuns }),
@@ -809,9 +817,10 @@ function pickAutoSelectionWithConstraintsFallback(input: {
       const descriptors = provider.models.find((model) => model.slug === chosenModel)?.capabilities
         ?.optionDescriptors;
       const usageAllowed = provider.usageLimits?.usageAllowed !== false;
-      const windowExhausted =
-        isSubscriptionAccount(provider) &&
-        exhaustedUsageWindow(provider, input.nowMs, chosenModel) !== undefined;
+      const windowExhausted = isPayPerUseAccount(provider)
+        ? accountUsageTier(provider, input.nowMs, chosenModel) === null
+        : isSubscriptionAccount(provider) &&
+          exhaustedUsageWindow(provider, input.nowMs, chosenModel) !== undefined;
       candidates.push({
         instanceId: provider.instanceId,
         driver: provider.driver,
@@ -898,7 +907,10 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     if (Option.isNone(routing)) return;
     const limit = yield* routing.value.launchLimit(input);
     if (limit === null) return;
-    const until = ` until ${limit.limitedUntil}`;
+    const until =
+      limit.limitedUntil === null
+        ? " until an account reports available usage again"
+        : ` until ${limit.limitedUntil}`;
     const reason =
       limit.credits === undefined || limit.credits === "spending" || limit.credits === "standby"
         ? ""
@@ -1852,6 +1864,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   // Optional so test runtimes without provider state refuse no launch on a usage limit.
   const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
+  const apiCreditUsage = yield* Effect.serviceOption(ApiCreditUsage.ApiCreditUsage);
   const usageResetRedeemer = yield* Effect.serviceOption(UsageResetRedeemer.UsageResetRedeemer);
   const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
@@ -1871,6 +1884,9 @@ const make = Effect.gen(function* () {
   const hostResources = yield* Effect.serviceOption(HostResources.HostResources);
   const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
   const peerForwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
+  const repoConcurrencyAdmission = yield* Effect.serviceOption(
+    RepoConcurrencyAdmission.RepoConcurrencyAdmission,
+  );
 
   const readCapacity = () =>
     MachinePlacement.readLocalCapacity({
@@ -3640,6 +3656,7 @@ const make = Effect.gen(function* () {
           ? {}
           : { delegateProviders: input.delegateProviders }),
         ...(input.maxLiveRuns === undefined ? {} : { maxLiveRuns: input.maxLiveRuns }),
+        ...(input.capExemption === undefined ? {} : { capExemption: input.capExemption }),
         // A replay saves over the task it created: what it does not mention stays.
         ...(input.shared === true ? { shared: sharedChoice(input, replayed?.shared) } : {}),
         ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
@@ -3927,6 +3944,7 @@ const make = Effect.gen(function* () {
             ? {}
             : { delegateProviders: input.delegateProviders }),
           ...(input.maxLiveRuns === undefined ? {} : { maxLiveRuns: input.maxLiveRuns }),
+          ...(input.capExemption === undefined ? {} : { capExemption: input.capExemption }),
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }
@@ -4185,6 +4203,7 @@ const make = Effect.gen(function* () {
           checking,
           availability,
           redemptions,
+          accountSpend,
           publishedAtMs,
         },
         capacity,
@@ -4225,7 +4244,7 @@ const make = Effect.gen(function* () {
             const providers = withWorkspaceModels(recheckedProviders, cwd);
             const availability = Option.isNone(accountRouting)
               ? {
-                  accounts: new Map<ProviderInstanceId, string>(),
+                  accounts: new Map<ProviderInstanceId, string | null>(),
                   estimated: new Set<ProviderInstanceId>(),
                   models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
                   credits: new Map<ProviderInstanceId, ProviderCreditUse>(),
@@ -4236,6 +4255,10 @@ const make = Effect.gen(function* () {
               input.usage === true && Option.isSome(usageResetRedeemer)
                 ? yield* usageResetRedeemer.value.lastRedemptions
                 : new Map<string, OrchestratorMcpLastRedemption>();
+            const accountSpend =
+              input.usage === true && Option.isSome(apiCreditUsage)
+                ? yield* apiCreditUsage.value.read(providers.filter(publishesUsage))
+                : new Map<ProviderInstanceId, NonNullable<ServerProvider["payPerUse"]>>();
             // Read after the re-check, so no reading is newer than the time the reset rule decides at.
             const publishedAtMs = yield* Clock.currentTimeMillis;
             return {
@@ -4245,6 +4268,7 @@ const make = Effect.gen(function* () {
               checking,
               availability,
               redemptions,
+              accountSpend,
               publishedAtMs,
             };
           }),
@@ -4352,6 +4376,7 @@ const make = Effect.gen(function* () {
                   credits: prepaidCredits ?? null,
                   nowMs: publishedAtMs,
                   maxWaitHours: settings.maxPlanResetWaitHours,
+                  credit: accountSpend.get(provider.instanceId),
                 })
               : {}),
           };
@@ -4476,21 +4501,13 @@ const make = Effect.gen(function* () {
             { ...input, target: { ...input.target, environmentId } },
             { key, commandId },
           )
-          .pipe(
-            Effect.flatMap(({ taskId }) =>
-              input.mode === "wait"
-                ? awaitTask(scope, taskId, input.timeoutMs)
-                : readTask(scope, taskId, false, true),
-            ),
-          );
+          .pipe(Effect.map(({ taskId }) => taskId));
       const explicitEnvironmentId =
         original === undefined
           ? PeerForwarding.remoteTarget(scope, input.target?.environmentId)
           : undefined;
-      if (explicitEnvironmentId !== undefined) {
-        return yield* delegateToEnvironment(explicitEnvironmentId);
-      }
       const foreignProjectId =
+        explicitEnvironmentId === undefined &&
         original === undefined &&
         input.target?.projectId !== undefined &&
         input.target.projectId !== parent.thread.projectId
@@ -4502,488 +4519,529 @@ const make = Effect.gen(function* () {
           "A local task runs in this thread's project unless it gets its own checkout. Set isolation \"worktree\" to run in a new worktree of target.projectId's repository, omit target.projectId, or pass target.environmentId to run in that environment's project.",
         );
       }
-      const providers = yield* loadProviders;
-      const cwd =
-        foreignProjectId === undefined
-          ? yield* parentWorkspaceCwd(parent)
-          : (yield* requireProject(foreignProjectId)).workspaceRoot;
       const isRetryOfAcceptedDelegation =
         original !== undefined || (yield* threadManagement.hasReceipt(commandId));
-      const committedThread = isRetryOfAcceptedDelegation
-        ? yield* threadManagement
-            .getThreadShell(derive.delegatedTaskThread({ commandId }))
-            .pipe(Effect.mapError(threadManagementFailure))
-        : null;
-      if (original === undefined && isRetryOfAcceptedDelegation) {
-        // Without the child the accepted isolation is unknown, so only an ordinary retry goes on.
-        yield* requireAcceptedIsolation({
-          accepted: { childThreadId: committedThread?.id ?? null },
-          requested: reviewAssignment,
-        });
-      }
-      const currentSettings = yield* readSettings;
-      const roleSelection =
-        committedThread === null && input.auto !== true
-          ? yield* delegatedTaskRoleSelection(input)
-          : undefined;
-      const automaticEnvironmentId =
-        original === undefined &&
-        !isRetryOfAcceptedDelegation &&
-        input.target?.environmentId === undefined &&
-        Option.isSome(peerForwarding)
-          ? yield* MachinePlacement.resolveAutomaticPlacement({
-              scope,
-              parentProjectId: parent.thread.projectId,
-              parentWorktreePath: parent.thread.worktreePath,
-              parentLinkOrigin: parent.thread.linkOrigin,
-              inheritedInstanceId: parent.thread.modelSelection.instanceId,
-              inheritedParentModel: advertisedSlug(
-                providers.find(
-                  (provider) => provider.instanceId === parent.thread.modelSelection.instanceId,
-                ),
-                parent.thread.modelSelection.model,
-              ),
-              inheritedAutoAccount: parent.thread.modelSelection.autoAccount === true,
-              hasRoleSelection: roleSelection !== undefined,
-              input,
-              localCapacity: readCapacity,
-              peerLinks,
-              peerForwarding: peerForwarding.value,
-              projects,
-              git: gitDriver,
-            })
-          : undefined;
-      if (automaticEnvironmentId !== undefined) {
-        return yield* delegateToEnvironment(automaticEnvironmentId);
-      }
-      // The child runs in its own project, so that project's accounts and Auto settings apply.
-      const projectId = foreignProjectId ?? parent.thread.projectId;
-      // The role's provider and the parent's, its fallback, share the request's one wait.
-      const recheckBy = yield* recheckDeadline;
-      // Auto's pick, or the role's model, stands in for the parent's, so the child inherits it the
-      // same way.
-      const resolveDelegateTarget = (modelSelection: ModelSelection) =>
-        resolveTargetRechecking(
-          {
-            parent: { thread: { ...parent.thread, projectId, modelSelection } },
-            target: input.target,
-            providers,
-            cwd,
-            heldSelection: parent.thread.modelSelection,
-            skipAgentModeRefusal: isRetryOfAcceptedDelegation,
-          },
-          recheckBy,
-        );
-      // A stand-in model replaces an inherited one, which resolution does not check against the
-      // account's models, so one the account no longer offers is caught here, in the snapshot
-      // after any recheck of the account.
-      const resolveStandIn = (standIn: ModelSelection) =>
-        resolveDelegateTarget(standIn).pipe(
-          Effect.tap(() =>
-            loadProviders.pipe(
-              Effect.flatMap((current) => {
-                const standInProvider = withWorkspaceModels(current, cwd).find(
-                  (provider) => provider.instanceId === standIn.instanceId,
-                );
-                return standInProvider === undefined
-                  ? Effect.void
-                  : requireAdvertisedModel(standInProvider, standIn.model);
-              }),
-            ),
-          ),
-        );
-      // A role's model set to Auto runs where Auto mode starts a new chat, and on its saved model
-      // while Auto mode cannot run, as the Settings picker shows it.
-      const autoPick =
-        committedThread !== null
-          ? undefined
-          : input.auto === true
-            ? yield* requireAutoModePick(currentSettings, providers, projectId)
-            : input.auto === undefined && roleSelection?.autoAccount === true
-              ? (autoModePick({
-                  settings: currentSettings,
-                  accounts: providers,
-                  projectId,
-                  background: true,
-                }) ?? undefined)
-              : undefined;
-      const targetPinsModel =
-        input.target?.providerInstanceId !== undefined ||
-        input.target?.driverKind !== undefined ||
-        input.target?.model !== undefined ||
-        input.target?.options !== undefined;
-      const autoRoutingBase =
-        !isRetryOfAcceptedDelegation &&
-        committedThread === null &&
+      const isPlanInteractionMode =
         reviewAssignment === undefined &&
-        input.routing !== undefined &&
-        input.auto !== false &&
-        !targetPinsModel
-          ? (autoPick ??
-            (roleSelection === undefined && parent.thread.modelSelection.autoAccount === true
-              ? (autoModePick({
-                  settings: currentSettings,
-                  accounts: providers,
-                  projectId,
-                  background: true,
-                }) ?? parent.thread.modelSelection)
-              : undefined))
-          : undefined;
-      const constrainedRoute =
-        autoRoutingBase !== undefined && input.routing !== undefined
-          ? Option.isSome(accountRouting)
-            ? yield* Effect.gen(function* () {
-                const launch = yield* accountRouting.value.failoverLaunch({
-                  selection: autoRoutingBase,
-                  projectId,
-                  background: true,
-                  discoverMcpSignIns: false,
-                  requesterThreadId: parent.thread.id,
-                  requestPrompt: { text: input.task },
-                  routingConstraints: input.routing,
-                });
-                if (launch.failover?.reason === "usageLimit") {
-                  return {
-                    selection: launch.selection,
-                    crossProviderFailoverFrom: launch.failover.crossProviderFrom,
-                    degradedReason: launch.degradedReason,
-                  };
-                }
-                const routeInput = {
-                  selection: autoRoutingBase,
-                  projectId,
-                  currentInstanceId: null,
-                  started: false,
-                  background: true,
-                  requesterThreadId: parent.thread.id,
-                  requestPrompt: { text: input.task },
-                  routingConstraints: input.routing,
-                };
-                const routed =
-                  accountRouting.value.routeWithDetails !== undefined
-                    ? yield* accountRouting.value.routeWithDetails(routeInput)
-                    : { selection: yield* accountRouting.value.route(routeInput) };
-                return {
-                  selection: routed.selection,
-                  crossProviderFailoverFrom: undefined,
-                  degradedReason: routed.degradedReason ?? launch.degradedReason,
-                };
-              })
-            : {
-                ...pickAutoSelectionWithConstraintsFallback({
-                  baseSelection: autoRoutingBase,
-                  settings: currentSettings,
-                  providers,
-                  projectId,
-                  taskText: input.task,
-                  routing: input.routing,
-                  nowMs: yield* Clock.currentTimeMillis,
-                }),
-                crossProviderFailoverFrom: undefined,
-              }
-          : undefined;
-      const standIn = constrainedRoute?.selection ?? autoPick ?? roleSelection;
-      let prefailoverCrossProviderFrom: ProviderInstanceId | undefined;
-      const resolveParentDelegateTarget = Effect.gen(function* () {
-        const settings = yield* readSettings;
-        const inherited = parent.thread.modelSelection;
-        if (
-          input.target?.providerInstanceId === undefined &&
-          input.target?.driverKind === undefined &&
-          reviewAssignment === undefined &&
-          !isProviderInstanceBackgroundAllowed(settings, inherited.instanceId)
-        ) {
-          if (Option.isSome(accountRouting)) {
-            const routed = yield* accountRouting.value.failoverLaunch({
-              selection: {
-                ...inherited,
-                ...(input.target?.model === undefined ? {} : { model: input.target.model }),
-              },
-              projectId,
-              background: true,
-              discoverMcpSignIns: false,
-              requesterThreadId: parent.thread.id,
-            });
-            if (
-              routed.selection.instanceId !== inherited.instanceId &&
-              isProviderInstanceBackgroundAllowed(settings, routed.selection.instanceId)
-            ) {
-              if (routed.failover?.reason === "usageLimit") {
-                prefailoverCrossProviderFrom = routed.failover.crossProviderFrom;
-              }
-              return yield* resolveDelegateTarget(routed.selection);
-            }
-          } else {
-            const inheritedProvider = providers.find(
-              (provider) => provider.instanceId === inherited.instanceId,
-            );
-            if (inheritedProvider !== undefined) {
-              const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-              const ordered = orderProviderInstancesForFailover(
-                settings.providerInstanceFailoverOrder,
-                providers.filter(
-                  (candidate) =>
-                    candidate.instanceId !== inherited.instanceId &&
-                    candidate.driver === inheritedProvider.driver &&
-                    isProviderInstanceBackgroundAllowed(settings, candidate.instanceId) &&
-                    resolveProjectProviderInstanceEnabled(
-                      settings,
-                      projectId,
-                      candidate.instanceId,
-                    ) &&
-                    providerConstraints(
-                      candidate,
-                      orchestrationCapableInstanceIds.has(candidate.instanceId),
-                    ).length === 0,
+        (input.interactionMode === "plan" ||
+          ((input.interactionMode === undefined || input.interactionMode === "inherit") &&
+            parent.thread.interactionMode === "plan"));
+      const nonImplementationRole = RepoConcurrencyAdmission.isNonImplementationRole(input.role)
+        ? input.role
+        : undefined;
+      const needsRepoSlot =
+        !isRetryOfAcceptedDelegation &&
+        reviewAssignment === undefined &&
+        nonImplementationRole === undefined &&
+        !isPlanInteractionMode &&
+        input.capExemption === undefined;
+      const dispatchDelegation = Effect.gen(function* () {
+        if (explicitEnvironmentId !== undefined) {
+          return yield* delegateToEnvironment(explicitEnvironmentId);
+        }
+        const providers = yield* loadProviders;
+        const cwd =
+          foreignProjectId === undefined
+            ? yield* parentWorkspaceCwd(parent)
+            : (yield* requireProject(foreignProjectId)).workspaceRoot;
+        const committedThread = isRetryOfAcceptedDelegation
+          ? yield* threadManagement
+              .getThreadShell(derive.delegatedTaskThread({ commandId }))
+              .pipe(Effect.mapError(threadManagementFailure))
+          : null;
+        if (original === undefined && isRetryOfAcceptedDelegation) {
+          // Without the child the accepted isolation is unknown, so only an ordinary retry goes on.
+          yield* requireAcceptedIsolation({
+            accepted: { childThreadId: committedThread?.id ?? null },
+            requested: reviewAssignment,
+          });
+        }
+        const currentSettings = yield* readSettings;
+        const roleSelection =
+          committedThread === null && input.auto !== true
+            ? yield* delegatedTaskRoleSelection(input)
+            : undefined;
+        const automaticEnvironmentId =
+          original === undefined &&
+          !isRetryOfAcceptedDelegation &&
+          input.target?.environmentId === undefined &&
+          Option.isSome(peerForwarding)
+            ? yield* MachinePlacement.resolveAutomaticPlacement({
+                scope,
+                parentProjectId: parent.thread.projectId,
+                parentWorktreePath: parent.thread.worktreePath,
+                parentLinkOrigin: parent.thread.linkOrigin,
+                inheritedInstanceId: parent.thread.modelSelection.instanceId,
+                inheritedParentModel: advertisedSlug(
+                  providers.find(
+                    (provider) => provider.instanceId === parent.thread.modelSelection.instanceId,
+                  ),
+                  parent.thread.modelSelection.model,
                 ),
-              );
-              const targetModel = input.target?.model ?? inherited.model;
-              for (const candidate of ordered) {
-                const enabledForProject =
-                  yield* threadManagement.isProviderInstanceEnabledForProject({
+                inheritedAutoAccount: parent.thread.modelSelection.autoAccount === true,
+                hasRoleSelection: roleSelection !== undefined,
+                input,
+                localCapacity: readCapacity,
+                peerLinks,
+                peerForwarding: peerForwarding.value,
+                projects,
+                git: gitDriver,
+              })
+            : undefined;
+        if (automaticEnvironmentId !== undefined) {
+          return yield* delegateToEnvironment(automaticEnvironmentId);
+        }
+        // The child runs in its own project, so that project's accounts and Auto settings apply.
+        const projectId = foreignProjectId ?? parent.thread.projectId;
+        // The role's provider and the parent's, its fallback, share the request's one wait.
+        const recheckBy = yield* recheckDeadline;
+        // Auto's pick, or the role's model, stands in for the parent's, so the child inherits it the
+        // same way.
+        const resolveDelegateTarget = (modelSelection: ModelSelection) =>
+          resolveTargetRechecking(
+            {
+              parent: { thread: { ...parent.thread, projectId, modelSelection } },
+              target: input.target,
+              providers,
+              cwd,
+              heldSelection: parent.thread.modelSelection,
+              skipAgentModeRefusal: isRetryOfAcceptedDelegation,
+            },
+            recheckBy,
+          );
+        // A stand-in model replaces an inherited one, which resolution does not check against the
+        // account's models, so one the account no longer offers is caught here, in the snapshot
+        // after any recheck of the account.
+        const resolveStandIn = (standIn: ModelSelection) =>
+          resolveDelegateTarget(standIn).pipe(
+            Effect.tap(() =>
+              loadProviders.pipe(
+                Effect.flatMap((current) => {
+                  const standInProvider = withWorkspaceModels(current, cwd).find(
+                    (provider) => provider.instanceId === standIn.instanceId,
+                  );
+                  return standInProvider === undefined
+                    ? Effect.void
+                    : requireAdvertisedModel(standInProvider, standIn.model);
+                }),
+              ),
+            ),
+          );
+        // A role's model set to Auto runs where Auto mode starts a new chat, and on its saved model
+        // while Auto mode cannot run, as the Settings picker shows it.
+        const autoPick =
+          committedThread !== null
+            ? undefined
+            : input.auto === true
+              ? yield* requireAutoModePick(currentSettings, providers, projectId)
+              : input.auto === undefined && roleSelection?.autoAccount === true
+                ? (autoModePick({
+                    settings: currentSettings,
+                    accounts: providers,
                     projectId,
-                    instanceId: candidate.instanceId,
+                    background: true,
+                  }) ?? undefined)
+                : undefined;
+        const targetPinsModel =
+          input.target?.providerInstanceId !== undefined ||
+          input.target?.driverKind !== undefined ||
+          input.target?.model !== undefined ||
+          input.target?.options !== undefined;
+        const autoRoutingBase =
+          !isRetryOfAcceptedDelegation &&
+          committedThread === null &&
+          reviewAssignment === undefined &&
+          input.routing !== undefined &&
+          input.auto !== false &&
+          !targetPinsModel
+            ? (autoPick ??
+              (roleSelection === undefined && parent.thread.modelSelection.autoAccount === true
+                ? (autoModePick({
+                    settings: currentSettings,
+                    accounts: providers,
+                    projectId,
+                    background: true,
+                  }) ?? parent.thread.modelSelection)
+                : undefined))
+            : undefined;
+        const constrainedRoute =
+          autoRoutingBase !== undefined && input.routing !== undefined
+            ? Option.isSome(accountRouting)
+              ? yield* Effect.gen(function* () {
+                  const launch = yield* accountRouting.value.failoverLaunch({
+                    selection: autoRoutingBase,
+                    projectId,
+                    background: true,
+                    discoverMcpSignIns: false,
+                    requesterThreadId: parent.thread.id,
+                    requestPrompt: { text: input.task },
+                    routingConstraints: input.routing,
                   });
-                if (!enabledForProject) continue;
-                const model =
-                  input.target?.model !== undefined
-                    ? resolveSelectableModel(candidate.driver, input.target.model, candidate.models)
-                    : (resolveSelectableModel(candidate.driver, targetModel, candidate.models) ??
-                      candidate.models[0]?.slug);
-                if (model !== null && model !== undefined) {
-                  return yield* resolveDelegateTarget({ instanceId: candidate.instanceId, model });
+                  if (launch.failover?.reason === "usageLimit") {
+                    return {
+                      selection: launch.selection,
+                      crossProviderFailoverFrom: launch.failover.crossProviderFrom,
+                      degradedReason: launch.degradedReason,
+                    };
+                  }
+                  const routeInput = {
+                    selection: autoRoutingBase,
+                    projectId,
+                    currentInstanceId: null,
+                    started: false,
+                    background: true,
+                    requesterThreadId: parent.thread.id,
+                    requestPrompt: { text: input.task },
+                    routingConstraints: input.routing,
+                  };
+                  const routed =
+                    accountRouting.value.routeWithDetails !== undefined
+                      ? yield* accountRouting.value.routeWithDetails(routeInput)
+                      : { selection: yield* accountRouting.value.route(routeInput) };
+                  return {
+                    selection: routed.selection,
+                    crossProviderFailoverFrom: undefined,
+                    degradedReason: routed.degradedReason ?? launch.degradedReason,
+                  };
+                })
+              : {
+                  ...pickAutoSelectionWithConstraintsFallback({
+                    baseSelection: autoRoutingBase,
+                    settings: currentSettings,
+                    providers,
+                    projectId,
+                    taskText: input.task,
+                    routing: input.routing,
+                    nowMs: yield* Clock.currentTimeMillis,
+                  }),
+                  crossProviderFailoverFrom: undefined,
+                }
+            : undefined;
+        const standIn = constrainedRoute?.selection ?? autoPick ?? roleSelection;
+        let prefailoverCrossProviderFrom: ProviderInstanceId | undefined;
+        const resolveParentDelegateTarget = Effect.gen(function* () {
+          const settings = yield* readSettings;
+          const inherited = parent.thread.modelSelection;
+          if (
+            input.target?.providerInstanceId === undefined &&
+            input.target?.driverKind === undefined &&
+            reviewAssignment === undefined &&
+            !isProviderInstanceBackgroundAllowed(settings, inherited.instanceId)
+          ) {
+            if (Option.isSome(accountRouting)) {
+              const routed = yield* accountRouting.value.failoverLaunch({
+                selection: {
+                  ...inherited,
+                  ...(input.target?.model === undefined ? {} : { model: input.target.model }),
+                },
+                projectId,
+                background: true,
+                discoverMcpSignIns: false,
+                requesterThreadId: parent.thread.id,
+              });
+              if (
+                routed.selection.instanceId !== inherited.instanceId &&
+                isProviderInstanceBackgroundAllowed(settings, routed.selection.instanceId)
+              ) {
+                if (routed.failover?.reason === "usageLimit") {
+                  prefailoverCrossProviderFrom = routed.failover.crossProviderFrom;
+                }
+                return yield* resolveDelegateTarget(routed.selection);
+              }
+            } else {
+              const inheritedProvider = providers.find(
+                (provider) => provider.instanceId === inherited.instanceId,
+              );
+              if (inheritedProvider !== undefined) {
+                const orchestrationCapableInstanceIds =
+                  yield* loadOrchestrationCapableInstanceIds();
+                const ordered = orderProviderInstancesForFailover(
+                  settings.providerInstanceFailoverOrder,
+                  providers.filter(
+                    (candidate) =>
+                      candidate.instanceId !== inherited.instanceId &&
+                      candidate.driver === inheritedProvider.driver &&
+                      isProviderInstanceBackgroundAllowed(settings, candidate.instanceId) &&
+                      resolveProjectProviderInstanceEnabled(
+                        settings,
+                        projectId,
+                        candidate.instanceId,
+                      ) &&
+                      providerConstraints(
+                        candidate,
+                        orchestrationCapableInstanceIds.has(candidate.instanceId),
+                      ).length === 0,
+                  ),
+                );
+                const targetModel = input.target?.model ?? inherited.model;
+                for (const candidate of ordered) {
+                  const enabledForProject =
+                    yield* threadManagement.isProviderInstanceEnabledForProject({
+                      projectId,
+                      instanceId: candidate.instanceId,
+                    });
+                  if (!enabledForProject) continue;
+                  const model =
+                    input.target?.model !== undefined
+                      ? resolveSelectableModel(
+                          candidate.driver,
+                          input.target.model,
+                          candidate.models,
+                        )
+                      : (resolveSelectableModel(candidate.driver, targetModel, candidate.models) ??
+                        candidate.models[0]?.slug);
+                  if (model !== null && model !== undefined) {
+                    return yield* resolveDelegateTarget({
+                      instanceId: candidate.instanceId,
+                      model,
+                    });
+                  }
                 }
               }
             }
           }
+          return yield* resolveDelegateTarget(inherited);
+        });
+        const resolved =
+          committedThread !== null
+            ? {
+                modelSelection: committedThread.modelSelection,
+                supportedRuntimeModes: providers.find(
+                  (provider) => provider.instanceId === committedThread.modelSelection.instanceId,
+                )?.supportedRuntimeModes,
+              }
+            : standIn === undefined
+              ? yield* resolveParentDelegateTarget
+              : input.auto === true || constrainedRoute !== undefined
+                ? yield* resolveStandIn(standIn)
+                : yield* resolveStandIn(standIn).pipe(
+                    // Only a role model that is gone falls back; options it rejects fail as named.
+                    Effect.catchIf(
+                      (cause) =>
+                        cause.code === "provider_unavailable" || cause.code === "model_unavailable",
+                      (cause) =>
+                        Effect.logWarning(
+                          "orchestrator-mcp.delegated-task-role-model-unavailable",
+                          {
+                            role: input.role ?? "general",
+                            instanceId: standIn.instanceId,
+                            cause,
+                          },
+                        ).pipe(Effect.andThen(resolveParentDelegateTarget)),
+                    ),
+                  );
+        // The evidence binds one native account, so a restricted review never moves to another.
+        const primaryTarget =
+          (input.auto === false || reviewAssignment !== undefined) && committedThread === null
+            ? { ...resolved, modelSelection: withAutoAccount(resolved.modelSelection, false) }
+            : resolved;
+        if (reviewAssignment !== undefined) {
+          const driver = providers.find(
+            (provider) => provider.instanceId === primaryTarget.modelSelection.instanceId,
+          )?.driver;
+          if (driver === undefined || !RESTRICTED_REVIEW_DRIVERS.has(driver)) {
+            return yield* failure(
+              "restricted_review_unsupported",
+              "Assignment isolation needs a Claude account: only its sessions are verified before inference.",
+            );
+          }
         }
-        return yield* resolveDelegateTarget(inherited);
-      });
-      const resolved =
-        committedThread !== null
-          ? {
-              modelSelection: committedThread.modelSelection,
-              supportedRuntimeModes: providers.find(
-                (provider) => provider.instanceId === committedThread.modelSelection.instanceId,
-              )?.supportedRuntimeModes,
-            }
-          : standIn === undefined
-            ? yield* resolveParentDelegateTarget
-            : input.auto === true || constrainedRoute !== undefined
-              ? yield* resolveStandIn(standIn)
-              : yield* resolveStandIn(standIn).pipe(
-                  // Only a role model that is gone falls back; options it rejects fail as named.
-                  Effect.catchIf(
-                    (cause) =>
-                      cause.code === "provider_unavailable" || cause.code === "model_unavailable",
-                    (cause) =>
-                      Effect.logWarning("orchestrator-mcp.delegated-task-role-model-unavailable", {
-                        role: input.role ?? "general",
-                        instanceId: standIn.instanceId,
-                        cause,
-                      }).pipe(Effect.andThen(resolveParentDelegateTarget)),
-                  ),
-                );
-      // The evidence binds one native account, so a restricted review never moves to another.
-      const primaryTarget =
-        (input.auto === false || reviewAssignment !== undefined) && committedThread === null
-          ? { ...resolved, modelSelection: withAutoAccount(resolved.modelSelection, false) }
-          : resolved;
-      if (reviewAssignment !== undefined) {
-        const driver = providers.find(
-          (provider) => provider.instanceId === primaryTarget.modelSelection.instanceId,
-        )?.driver;
-        if (driver === undefined || !RESTRICTED_REVIEW_DRIVERS.has(driver)) {
-          return yield* failure(
-            "restricted_review_unsupported",
-            "Assignment isolation needs a Claude account: only its sessions are verified before inference.",
-          );
-        }
-      }
-      const route =
-        constrainedRoute !== undefined ||
-        isRetryOfAcceptedDelegation ||
-        input.target !== undefined ||
-        reviewAssignment !== undefined ||
-        Option.isNone(accountRouting)
-          ? null
-          : yield* accountRouting.value.failoverLaunch({
-              selection: primaryTarget.modelSelection,
+        const route =
+          constrainedRoute !== undefined ||
+          isRetryOfAcceptedDelegation ||
+          input.target !== undefined ||
+          reviewAssignment !== undefined ||
+          Option.isNone(accountRouting)
+            ? null
+            : yield* accountRouting.value.failoverLaunch({
+                selection: primaryTarget.modelSelection,
+                projectId,
+                background: true,
+                discoverMcpSignIns: false,
+                requesterThreadId: parent.thread.id,
+              });
+        const routeCrossProviderFailoverFrom =
+          route?.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined;
+        const crossProviderFailoverFrom =
+          constrainedRoute?.crossProviderFailoverFrom ??
+          routeCrossProviderFailoverFrom ??
+          prefailoverCrossProviderFrom;
+        const degradedReason = constrainedRoute?.degradedReason ?? route?.degradedReason;
+        const target =
+          route !== null && routeCrossProviderFailoverFrom !== undefined
+            ? {
+                modelSelection: route.selection,
+                supportedRuntimeModes: providers.find(
+                  (provider) => provider.instanceId === route.selection.instanceId,
+                )?.supportedRuntimeModes,
+              }
+            : primaryTarget;
+        if (!isRetryOfAcceptedDelegation) {
+          yield* requireAccountWithRoom(
+            {
+              selection: target.modelSelection,
               projectId,
               background: true,
-              discoverMcpSignIns: false,
               requesterThreadId: parent.thread.id,
-            });
-      const routeCrossProviderFailoverFrom =
-        route?.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined;
-      const crossProviderFailoverFrom =
-        constrainedRoute?.crossProviderFailoverFrom ??
-        routeCrossProviderFailoverFrom ??
-        prefailoverCrossProviderFrom;
-      const degradedReason = constrainedRoute?.degradedReason ?? route?.degradedReason;
-      const target =
-        route !== null && routeCrossProviderFailoverFrom !== undefined
-          ? {
-              modelSelection: route.selection,
-              supportedRuntimeModes: providers.find(
-                (provider) => provider.instanceId === route.selection.instanceId,
-              )?.supportedRuntimeModes,
-            }
-          : primaryTarget;
-      if (!isRetryOfAcceptedDelegation) {
-        yield* requireAccountWithRoom(
-          {
-            selection: target.modelSelection,
-            projectId,
-            background: true,
-            requesterThreadId: parent.thread.id,
-            ...(input.routing === undefined ? {} : { routingConstraints: input.routing }),
-          },
-          accountRouting,
-        );
-        yield* requireMemoryForDelegation(memoryAdmission, peerLinks);
-      }
-      const runtimeMode =
-        reviewAssignment === undefined
-          ? yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode, target)
-          : RESTRICTED_REVIEW_RUNTIME_MODE;
-      const interactionMode =
-        reviewAssignment === undefined
-          ? yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode)
-          : "default";
-      let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (
-        input.isolation === "worktree" &&
-        !isRetryOfAcceptedDelegation &&
-        (yield* threadLaunch.isNonGitProject(parent.thread.projectId))
-      ) {
-        // A plain project folder has no commit of its own; `HEAD` leaves each repository on its default branch.
-        workspaceStrategy = { type: "worktree", baseRef: "HEAD" };
-      } else if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
-        const project = yield* requireProject(foreignProjectId ?? parent.thread.projectId);
-        if (foreignProjectId !== undefined) {
-          // The parent's commit means nothing in another repository: start from its default branch.
-          workspaceStrategy = yield* defaultWorktreeStrategy(gitDriver, project.workspaceRoot);
-        } else {
-          const base = yield* gitDriver
-            .resolveCommit({
-              cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-              revision: "HEAD",
-            })
-            .pipe(
-              Effect.mapError(() =>
-                failure("invalid_request", "Unable to resolve the parent checkout commit."),
-              ),
-            );
-          // Launch preparation creates the worktree from the project root, so a
-          // parent checkout in another repository (such as a Git folder inside
-          // Scratch) would hand it a commit it cannot find.
-          if (parent.thread.worktreePath !== null) {
-            yield* gitDriver
-              .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+              ...(input.routing === undefined ? {} : { routingConstraints: input.routing }),
+            },
+            accountRouting,
+          );
+          yield* requireMemoryForDelegation(memoryAdmission, peerLinks);
+        }
+        const runtimeMode =
+          reviewAssignment === undefined
+            ? yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode, target)
+            : RESTRICTED_REVIEW_RUNTIME_MODE;
+        const interactionMode =
+          reviewAssignment === undefined
+            ? yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode)
+            : "default";
+        let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
+        if (
+          input.isolation === "worktree" &&
+          !isRetryOfAcceptedDelegation &&
+          (yield* threadLaunch.isNonGitProject(parent.thread.projectId))
+        ) {
+          // A plain project folder has no commit of its own; `HEAD` leaves each repository on its default branch.
+          workspaceStrategy = { type: "worktree", baseRef: "HEAD" };
+        } else if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
+          const project = yield* requireProject(foreignProjectId ?? parent.thread.projectId);
+          if (foreignProjectId !== undefined) {
+            // The parent's commit means nothing in another repository: start from its default branch.
+            workspaceStrategy = yield* defaultWorktreeStrategy(gitDriver, project.workspaceRoot);
+          } else {
+            const base = yield* gitDriver
+              .resolveCommit({
+                cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+                revision: "HEAD",
+              })
               .pipe(
                 Effect.mapError(() =>
-                  failure(
-                    "invalid_request",
-                    `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
-                  ),
+                  failure("invalid_request", "Unable to resolve the parent checkout commit."),
                 ),
               );
+            // Launch preparation creates the worktree from the project root, so a
+            // parent checkout in another repository (such as a Git folder inside
+            // Scratch) would hand it a commit it cannot find.
+            if (parent.thread.worktreePath !== null) {
+              yield* gitDriver
+                .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+                .pipe(
+                  Effect.mapError(() =>
+                    failure(
+                      "invalid_request",
+                      `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
+                    ),
+                  ),
+                );
+            }
+            // Other repositories in the project can only match a branch name, so name the
+            // parent's branch when it still points at the parent's commit.
+            const branch = parent.thread.branch;
+            const branchAtBase =
+              branch !== null &&
+              (yield* gitDriver
+                .resolveCommit({ cwd: project.workspaceRoot, revision: `refs/heads/${branch}` })
+                .pipe(
+                  Effect.map((resolved) => resolved.commitSha === base.commitSha),
+                  Effect.orElseSucceed(() => false),
+                ));
+            workspaceStrategy = {
+              type: "worktree",
+              baseRef: branchAtBase ? branch : base.commitSha,
+              startFromOrigin: false,
+            };
           }
-          // Other repositories in the project can only match a branch name, so name the
-          // parent's branch when it still points at the parent's commit.
-          const branch = parent.thread.branch;
-          const branchAtBase =
-            branch !== null &&
-            (yield* gitDriver
-              .resolveCommit({ cwd: project.workspaceRoot, revision: `refs/heads/${branch}` })
-              .pipe(
-                Effect.map((resolved) => resolved.commitSha === base.commitSha),
-                Effect.orElseSucceed(() => false),
-              ));
-          workspaceStrategy = {
-            type: "worktree",
-            baseRef: branchAtBase ? branch : base.commitSha,
-            startFromOrigin: false,
-          };
         }
-      }
-      const parentNodeId = parentRun.rootNodeId;
+        const parentNodeId = parentRootNodeId;
+        // ThreadManagementService.dispatch is the chokepoint for this command
+        // type's own enablement check, using the same command id and its
+        // receipt-replay exemption, so no separate assert runs here.
+        const result = yield* threadManagement
+          .dispatch({
+            type: "delegated_task.request",
+            createdBy: "agent",
+            creationSource: "mcp",
+            commandId,
+            parentThreadId: scope.thread.threadId,
+            parentRunId: parentRun.id,
+            parentNodeId,
+            task: taskPrompt(input),
+            ...(input.title === undefined ? {} : { title: input.title }),
+            modelSelection: target.modelSelection,
+            ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
+            ...(degradedReason === undefined ? {} : { degradedReason }),
+            ...(input.routing !== undefined && target.modelSelection.autoAccount === true
+              ? { routingConstraints: input.routing }
+              : {}),
+            ...(foreignProjectId === undefined ? {} : { projectId: foreignProjectId }),
+            runtimeMode,
+            interactionMode,
+            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            // Async delegations wake the parent on every child terminal; wait
+            // delegations deliver through the blocking tool call until `awaitTask`
+            // gives up the wait (timeout, cancelled call) and upgrades the wake.
+            completionWake: input.mode === "wait" ? "settled_only" : "always",
+            ...(review === undefined ? {} : { review }),
+            ...(reviewAssignment === undefined ? {} : { reviewAssignment }),
+            ...(nonImplementationRole === undefined ? {} : { tags: [nonImplementationRole] }),
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadManagementProviderInstanceDisabledError"
+                ? threadManagementFailure(error)
+                : error._tag === "OrchestratorReviewRoundLimitError"
+                  ? reviewRoundLimitFailure(error)
+                  : failure(
+                      "orchestration_error",
+                      `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                    ),
+            ),
+          );
+        const taskEvent = result.storedEvents.find(
+          (stored) =>
+            stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",
+        );
+        if (taskEvent?.event.type !== "subagent.updated") {
+          return yield* failure(
+            "orchestration_error",
+            "Delegated task command did not produce a task projection.",
+          );
+        }
+        const taskId = taskEvent.event.payload.id;
+        const childThreadId = taskEvent.event.payload.childThreadId;
+        const childRunEvent = result.storedEvents.find(
+          (stored) =>
+            stored.event.type === "run.created" && stored.event.threadId === childThreadId,
+        );
+        if (
+          childThreadId !== null &&
+          childRunEvent?.event.type === "run.created" &&
+          childRunEvent.event.payload.workspacePreparation !== undefined
+        ) {
+          yield* threadLaunch.prepareRun({
+            commandId,
+            threadId: childThreadId,
+            runId: childRunEvent.event.payload.id,
+          });
+        }
+        return taskId;
+      });
+
       // The command commits the child's preparing run, which only this call
-      // prepares, so a caller that goes away must not stop it in between.
+      // prepares, so a caller that goes away must not stop it in between or
+      // before awaitTask registers its wake-policy upgrade on interrupt.
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          // ThreadManagementService.dispatch is the chokepoint for this command
-          // type's own enablement check, using the same command id and its
-          // receipt-replay exemption, so no separate assert runs here.
-          const result = yield* threadManagement
-            .dispatch({
-              type: "delegated_task.request",
-              createdBy: "agent",
-              creationSource: "mcp",
-              commandId,
-              parentThreadId: scope.thread.threadId,
-              parentRunId: parentRun.id,
-              parentNodeId,
-              task: taskPrompt(input),
-              ...(input.title === undefined ? {} : { title: input.title }),
-              modelSelection: target.modelSelection,
-              ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
-              ...(degradedReason === undefined ? {} : { degradedReason }),
-              ...(input.routing !== undefined && target.modelSelection.autoAccount === true
-                ? { routingConstraints: input.routing }
-                : {}),
-              ...(foreignProjectId === undefined ? {} : { projectId: foreignProjectId }),
-              runtimeMode,
-              interactionMode,
-              ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-              // Async delegations wake the parent on every child terminal; wait
-              // delegations deliver through the blocking tool call until `awaitTask`
-              // gives up the wait (timeout, cancelled call) and upgrades the wake.
-              completionWake: input.mode === "wait" ? "settled_only" : "always",
-              ...(review === undefined ? {} : { review }),
-              ...(reviewAssignment === undefined ? {} : { reviewAssignment }),
-            })
-            .pipe(
-              Effect.mapError((error) =>
-                error._tag === "ThreadManagementProviderInstanceDisabledError"
-                  ? threadManagementFailure(error)
-                  : error._tag === "OrchestratorReviewRoundLimitError"
-                    ? reviewRoundLimitFailure(error)
-                    : failure(
-                        "orchestration_error",
-                        `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                      ),
-              ),
-            );
-          const taskEvent = result.storedEvents.find(
-            (stored) =>
-              stored.event.type === "subagent.updated" &&
-              stored.event.payload.origin === "app_owned",
-          );
-          if (taskEvent?.event.type !== "subagent.updated") {
-            return yield* failure(
-              "orchestration_error",
-              "Delegated task command did not produce a task projection.",
-            );
-          }
-          const taskId = taskEvent.event.payload.id;
-          const childThreadId = taskEvent.event.payload.childThreadId;
-          const childRunEvent = result.storedEvents.find(
-            (stored) =>
-              stored.event.type === "run.created" && stored.event.threadId === childThreadId,
-          );
-          if (
-            childThreadId !== null &&
-            childRunEvent?.event.type === "run.created" &&
-            childRunEvent.event.payload.workspacePreparation !== undefined
-          ) {
-            yield* threadLaunch.prepareRun({
-              commandId,
-              threadId: childThreadId,
-              runId: childRunEvent.event.payload.id,
-            });
-          }
+          const taskId = needsRepoSlot
+            ? yield* RepoConcurrencyAdmission.withRepoConcurrencySlot({
+                admission: repoConcurrencyAdmission,
+                projectId: input.target?.projectId ?? parent.thread.projectId,
+                use: () => dispatchDelegation,
+              })
+            : yield* dispatchDelegation;
+
           return yield* input.mode === "wait"
             ? awaitTask(scope, taskId, input.timeoutMs, restore)
             : restore(readTask(scope, taskId, false, true));
@@ -5276,260 +5334,291 @@ const make = Effect.gen(function* () {
         const providers = yield* loadProviders;
         const cwd = yield* parentWorkspaceCwd(parent);
         const key = yield* requestKey(input.clientRequestId);
-        // Every thread's provider re-check shares the request's one wait.
-        const recheckBy = yield* recheckDeadline;
-        const created = yield* Effect.forEach(
-          input.threads,
-          (request, index) =>
-            Effect.gen(function* () {
-              const commandId = stableCommandId({
-                scope,
-                requestKey: key,
-                operation: "create-thread",
-                index,
-              });
-              const threadId = stableThreadId({
-                scope,
-                requestKey: key,
-                index,
-              });
-              if (request.auto === true && request.target !== undefined) {
-                return yield* failure(
-                  "invalid_request",
-                  `Thread ${index + 1}: pass auto:true or target, not both.`,
-                );
-              }
-              const isRetryOfAcceptedCreation = yield* threadManagement.hasReceipt(commandId);
-              const committedThread = isRetryOfAcceptedCreation
-                ? yield* threadManagement
-                    .getThreadShell(threadId)
-                    .pipe(Effect.mapError(threadManagementFailure))
-                : null;
-              const autoPick =
-                request.auto === true && committedThread === null
-                  ? yield* requireAutoModePick(
-                      yield* readSettings,
-                      providers,
-                      parent.thread.projectId,
-                    )
-                  : undefined;
-              // An accepted entry answers from its committed thread: its provider instance may be gone by now.
-              const resolved: ResolvedTarget =
-                committedThread !== null
-                  ? {
-                      modelSelection: committedThread.modelSelection,
-                      supportedRuntimeModes: providers.find(
-                        (provider) =>
-                          provider.instanceId === committedThread.modelSelection.instanceId,
-                      )?.supportedRuntimeModes,
-                    }
-                  : yield* resolveTargetRechecking(
-                      {
-                        parent,
-                        target:
-                          autoPick !== undefined
-                            ? { providerInstanceId: autoPick.instanceId }
-                            : request.target,
+        let requestedImplementationCount = 0;
+        if (input.capExemption === undefined) {
+          for (const [index, request] of input.threads.entries()) {
+            const itemCommandId = stableCommandId({
+              scope,
+              requestKey: key,
+              operation: "create-thread",
+              index,
+            });
+            if (yield* threadManagement.hasReceipt(itemCommandId)) continue;
+            const isPlan =
+              request.interactionMode === "plan" ||
+              ((request.interactionMode === undefined || request.interactionMode === "inherit") &&
+                parent.thread.interactionMode === "plan");
+            if (!isPlan) {
+              requestedImplementationCount += 1;
+            }
+          }
+        }
+        const createBatch = Effect.gen(function* () {
+          // Every thread's provider re-check shares the request's one wait.
+          const recheckBy = yield* recheckDeadline;
+          return yield* Effect.forEach(
+            input.threads,
+            (request, index) =>
+              Effect.gen(function* () {
+                const commandId = stableCommandId({
+                  scope,
+                  requestKey: key,
+                  operation: "create-thread",
+                  index,
+                });
+                const threadId = stableThreadId({
+                  scope,
+                  requestKey: key,
+                  index,
+                });
+                if (request.auto === true && request.target !== undefined) {
+                  return yield* failure(
+                    "invalid_request",
+                    `Thread ${index + 1}: pass auto:true or target, not both.`,
+                  );
+                }
+                const isRetryOfAcceptedCreation = yield* threadManagement.hasReceipt(commandId);
+                const committedThread = isRetryOfAcceptedCreation
+                  ? yield* threadManagement
+                      .getThreadShell(threadId)
+                      .pipe(Effect.mapError(threadManagementFailure))
+                  : null;
+                const autoPick =
+                  request.auto === true && committedThread === null
+                    ? yield* requireAutoModePick(
+                        yield* readSettings,
                         providers,
-                        cwd,
-                        skipAgentModeRefusal: isRetryOfAcceptedCreation,
-                      },
-                      recheckBy,
-                    );
-              const target =
-                autoPick !== undefined
-                  ? { ...resolved, modelSelection: autoPick }
-                  : request.auto === false && committedThread === null
+                        parent.thread.projectId,
+                      )
+                    : undefined;
+                // An accepted entry answers from its committed thread: its provider instance may be gone by now.
+                const resolved: ResolvedTarget =
+                  committedThread !== null
                     ? {
-                        ...resolved,
-                        modelSelection: withAutoAccount(resolved.modelSelection, false),
+                        modelSelection: committedThread.modelSelection,
+                        supportedRuntimeModes: providers.find(
+                          (provider) =>
+                            provider.instanceId === committedThread.modelSelection.instanceId,
+                        )?.supportedRuntimeModes,
                       }
-                    : resolved;
-              const runtimeMode = yield* resolveRuntimeMode(
-                parent.thread.runtimeMode,
-                request.runtimeMode,
-                target,
-              );
-              const interactionMode = yield* resolveInteractionMode(
-                parent.thread.interactionMode,
-                request.interactionMode,
-              );
-              yield* assertTargetEnabledForProject(parent, commandId, target);
-              if (!isRetryOfAcceptedCreation)
-                yield* requireAccountWithRoom(
-                  {
-                    selection: target.modelSelection,
-                    projectId: parent.thread.projectId,
-                    allowFailover: true,
-                    background: true,
-                  },
-                  accountRouting,
-                ).pipe(
-                  Effect.mapError((error) =>
-                    failure(error.code, `Thread ${index + 1}: ${error.message}`),
-                  ),
+                    : yield* resolveTargetRechecking(
+                        {
+                          parent,
+                          target:
+                            autoPick !== undefined
+                              ? { providerInstanceId: autoPick.instanceId }
+                              : request.target,
+                          providers,
+                          cwd,
+                          skipAgentModeRefusal: isRetryOfAcceptedCreation,
+                        },
+                        recheckBy,
+                      );
+                const target =
+                  autoPick !== undefined
+                    ? { ...resolved, modelSelection: autoPick }
+                    : request.auto === false && committedThread === null
+                      ? {
+                          ...resolved,
+                          modelSelection: withAutoAccount(resolved.modelSelection, false),
+                        }
+                      : resolved;
+                const runtimeMode = yield* resolveRuntimeMode(
+                  parent.thread.runtimeMode,
+                  request.runtimeMode,
+                  target,
                 );
-              const title = threadTitle({
-                parentTitle: parent.thread.title,
-                prompt: request.prompt,
-                title: request.title,
-                index,
-              });
-              const initialMessage =
-                request.prompt === undefined
-                  ? undefined
-                  : {
-                      senderThreadId: scope.thread.threadId,
-                      messageId: stableMessageId({
-                        scope,
-                        requestKey: key,
-                        index,
-                      }),
-                      text: request.prompt,
-                      attachments: [],
-                    };
-              const created = yield* threadManagement
-                .dispatch({
-                  type: "thread.create",
-                  createdBy: "agent",
-                  creationSource: "mcp",
-                  commandId,
-                  threadId,
-                  projectId: parent.thread.projectId,
-                  title,
-                  ...(request.title?.trim() ? { titleRenamed: true } : {}),
-                  modelSelection: target.modelSelection,
-                  runtimeMode,
-                  interactionMode,
-                  branch: parent.thread.branch,
-                  worktreePath: parent.thread.worktreePath,
-                  ...(parent.thread.linkOrigin === undefined
-                    ? {}
-                    : { linkOrigin: parent.thread.linkOrigin }),
-                  ...(initialMessage === undefined ? {} : { initialMessage }),
-                })
-                .pipe(
-                  Effect.mapError((error) =>
-                    failure(
-                      "orchestration_error",
-                      `Unable to create thread ${index + 1}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                const interactionMode = yield* resolveInteractionMode(
+                  parent.thread.interactionMode,
+                  request.interactionMode,
+                );
+                yield* assertTargetEnabledForProject(parent, commandId, target);
+                if (!isRetryOfAcceptedCreation)
+                  yield* requireAccountWithRoom(
+                    {
+                      selection: target.modelSelection,
+                      projectId: parent.thread.projectId,
+                      allowFailover: true,
+                      background: true,
+                    },
+                    accountRouting,
+                  ).pipe(
+                    Effect.mapError((error) =>
+                      failure(error.code, `Thread ${index + 1}: ${error.message}`),
                     ),
-                  ),
-                );
-              // A receipt can appear after target resolution; use the committed thread's selection.
-              const resolvedModelSelection = (yield* threadManagement
-                .getThreadRecords(threadId, [])
-                .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
-              // A replayed creation that carried no prompt has no run yet.
-              if (
-                initialMessage !== undefined &&
-                !created.storedEvents.some(({ event }) => event.type === "run.created")
-              ) {
-                const currentParent = (yield* loadThreadRecords(scope.thread.threadId, [])).thread;
-                const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
-                yield* threadManagement
+                  );
+                const title = threadTitle({
+                  parentTitle: parent.thread.title,
+                  prompt: request.prompt,
+                  title: request.title,
+                  index,
+                });
+                const initialMessage =
+                  request.prompt === undefined
+                    ? undefined
+                    : {
+                        senderThreadId: scope.thread.threadId,
+                        messageId: stableMessageId({
+                          scope,
+                          requestKey: key,
+                          index,
+                        }),
+                        text: request.prompt,
+                        attachments: [],
+                      };
+                const created = yield* threadManagement
                   .dispatch({
-                    ...initialMessage,
-                    type: "message.dispatch",
+                    type: "thread.create",
                     createdBy: "agent",
                     creationSource: "mcp",
-                    commandId: stableCommandId({
-                      scope,
-                      requestKey: key,
-                      operation: "dispatch-thread",
-                      index,
-                    }),
+                    commandId,
                     threadId,
-                    modelSelection: resolvedModelSelection,
-                    dispatchMode: { type: "start_immediately" },
+                    projectId: parent.thread.projectId,
+                    title,
+                    ...(request.title?.trim() ? { titleRenamed: true } : {}),
+                    modelSelection: target.modelSelection,
+                    runtimeMode,
+                    interactionMode,
+                    branch: parent.thread.branch,
+                    worktreePath: parent.thread.worktreePath,
+                    ...(parent.thread.linkOrigin === undefined
+                      ? {}
+                      : { linkOrigin: parent.thread.linkOrigin }),
+                    ...(initialMessage === undefined ? {} : { initialMessage }),
                   })
                   .pipe(
-                    Effect.provideService(DispatchModeLimit, {
-                      runtimeMode: currentParent.runtimeMode,
-                      interactionMode: currentParent.interactionMode,
-                      refused,
-                    }),
                     Effect.mapError((error) =>
-                      error._tag === "ThreadManagementProviderInstanceDisabledError"
-                        ? threadManagementFailure(error)
-                        : error._tag === "OrchestratorThreadAboveModeLimitError"
-                          ? failure(
-                              error.mode === "runtime"
-                                ? "runtime_mode_escalation_denied"
-                                : "interaction_mode_escalation_denied",
-                              `Thread ${error.threadId} now runs in ${error.runtimeMode}/${error.interactionMode} mode, above this caller's.`,
-                            )
-                          : failure(
-                              "orchestration_error",
-                              `Unable to start thread ${index + 1}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                            ),
-                    ),
-                    Effect.catch((error) =>
-                      Effect.flatMap(Ref.get(refused), (refusal) =>
-                        Effect.fail(
-                          refusal === undefined
-                            ? error
-                            : failure(
-                                refusal.mode === "runtime"
-                                  ? "runtime_mode_escalation_denied"
-                                  : "interaction_mode_escalation_denied",
-                                `Thread ${refusal.threadId} now runs in ${refusal.runtimeMode}/${refusal.interactionMode} mode, above this thread's.`,
-                              ),
-                        ),
+                      failure(
+                        "orchestration_error",
+                        `Unable to create thread ${index + 1}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
                       ),
                     ),
                   );
-              }
-              const projection = yield* loadThreadRecords(threadId, ["runs"]);
-              // A replay reports the run this prompt started, not a later one on the thread.
-              const run =
-                initialMessage === undefined
-                  ? undefined
-                  : projection.runs.find(
-                      (candidate) => candidate.userMessageId === initialMessage.messageId,
+                // A receipt can appear after target resolution; use the committed thread's selection.
+                const resolvedModelSelection = (yield* threadManagement
+                  .getThreadRecords(threadId, [])
+                  .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
+                // A replayed creation that carried no prompt has no run yet.
+                if (
+                  initialMessage !== undefined &&
+                  !created.storedEvents.some(({ event }) => event.type === "run.created")
+                ) {
+                  const currentParent = (yield* loadThreadRecords(scope.thread.threadId, []))
+                    .thread;
+                  const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+                  yield* threadManagement
+                    .dispatch({
+                      ...initialMessage,
+                      type: "message.dispatch",
+                      createdBy: "agent",
+                      creationSource: "mcp",
+                      commandId: stableCommandId({
+                        scope,
+                        requestKey: key,
+                        operation: "dispatch-thread",
+                        index,
+                      }),
+                      threadId,
+                      modelSelection: resolvedModelSelection,
+                      dispatchMode: { type: "start_immediately" },
+                    })
+                    .pipe(
+                      Effect.provideService(DispatchModeLimit, {
+                        runtimeMode: currentParent.runtimeMode,
+                        interactionMode: currentParent.interactionMode,
+                        refused,
+                      }),
+                      Effect.mapError((error) =>
+                        error._tag === "ThreadManagementProviderInstanceDisabledError"
+                          ? threadManagementFailure(error)
+                          : error._tag === "OrchestratorThreadAboveModeLimitError"
+                            ? failure(
+                                error.mode === "runtime"
+                                  ? "runtime_mode_escalation_denied"
+                                  : "interaction_mode_escalation_denied",
+                                `Thread ${error.threadId} now runs in ${error.runtimeMode}/${error.interactionMode} mode, above this caller's.`,
+                              )
+                            : failure(
+                                "orchestration_error",
+                                `Unable to start thread ${index + 1}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                              ),
+                      ),
+                      Effect.catch((error) =>
+                        Effect.flatMap(Ref.get(refused), (refusal) =>
+                          Effect.fail(
+                            refusal === undefined
+                              ? error
+                              : failure(
+                                  refusal.mode === "runtime"
+                                    ? "runtime_mode_escalation_denied"
+                                    : "interaction_mode_escalation_denied",
+                                  `Thread ${refusal.threadId} now runs in ${refusal.runtimeMode}/${refusal.interactionMode} mode, above this thread's.`,
+                                ),
+                          ),
+                        ),
+                      ),
                     );
-              // Routing may move a fresh run to another account, so a started thread reports its run's.
-              const runsOn = run?.modelSelection ?? projection.thread.modelSelection;
-              yield* threadManagement
-                .dispatch({
-                  type: "thread.created.record",
-                  commandId: stableCommandId({
-                    scope,
-                    requestKey: key,
-                    operation: "record-created-thread",
-                    index,
-                  }),
-                  parentThreadId: scope.thread.threadId,
-                  parentRunId: parentRun.id,
-                  parentNodeId,
-                  targetThreadId: threadId,
-                  targetRunId: run?.id ?? null,
-                })
-                .pipe(
-                  Effect.mapError((error) =>
-                    failure(
-                      "orchestration_error",
-                      `Unable to record thread ${index + 1} in the parent timeline: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                }
+                const projection = yield* loadThreadRecords(threadId, ["runs"]);
+                // A replay reports the run this prompt started, not a later one on the thread.
+                const run =
+                  initialMessage === undefined
+                    ? undefined
+                    : projection.runs.find(
+                        (candidate) => candidate.userMessageId === initialMessage.messageId,
+                      );
+                // Routing may move a fresh run to another account, so a started thread reports its run's.
+                const runsOn = run?.modelSelection ?? projection.thread.modelSelection;
+                yield* threadManagement
+                  .dispatch({
+                    type: "thread.created.record",
+                    commandId: stableCommandId({
+                      scope,
+                      requestKey: key,
+                      operation: "record-created-thread",
+                      index,
+                    }),
+                    parentThreadId: scope.thread.threadId,
+                    parentRunId: parentRun.id,
+                    parentNodeId,
+                    targetThreadId: threadId,
+                    targetRunId: run?.id ?? null,
+                  })
+                  .pipe(
+                    Effect.mapError((error) =>
+                      failure(
+                        "orchestration_error",
+                        `Unable to record thread ${index + 1} in the parent timeline: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                      ),
                     ),
+                  );
+                return {
+                  threadId,
+                  link: formatThreadLink(
+                    { environmentId: scope.environmentId, threadId },
+                    projection.thread.title,
                   ),
-                );
-              return {
-                threadId,
-                link: formatThreadLink(
-                  { environmentId: scope.environmentId, threadId },
-                  projection.thread.title,
-                ),
-                runId: run?.id ?? null,
-                status: run?.status ?? "idle",
-                title: projection.thread.title,
-                createdBy: projection.thread.createdBy,
-                creationSource: projection.thread.creationSource,
-                providerInstanceId: runsOn.instanceId,
-                model: runsOn.model,
-              } satisfies OrchestratorMcpCreatedThread;
-            }),
-          { concurrency: 1 },
-        );
+                  runId: run?.id ?? null,
+                  status: run?.status ?? "idle",
+                  title: projection.thread.title,
+                  createdBy: projection.thread.createdBy,
+                  creationSource: projection.thread.creationSource,
+                  providerInstanceId: runsOn.instanceId,
+                  model: runsOn.model,
+                } satisfies OrchestratorMcpCreatedThread;
+              }),
+            { concurrency: 1 },
+          );
+        });
+        const created =
+          requestedImplementationCount > 0
+            ? yield* RepoConcurrencyAdmission.withRepoConcurrencySlot({
+                admission: repoConcurrencyAdmission,
+                projectId: parent.thread.projectId,
+                requestedCount: requestedImplementationCount,
+                use: () => createBatch,
+              })
+            : yield* createBatch;
         return { threads: created };
       },
     ),

@@ -42,6 +42,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatThreadLink, hostedThreadLink } from "@t3tools/shared/threadLinks";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -90,10 +91,12 @@ import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as CommandRunner from "../commandRunner/CommandRunner.ts";
+import * as MachinePlacement from "../peer/MachinePlacement.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as RepoConcurrencyAdmission from "../peer/RepoConcurrencyAdmission.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -4420,6 +4423,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
                 Layer.mock(AccountRouting.AccountRouting)({
                   launchLimit: () => Ref.get(limit),
+                  route: ({ selection }) => Effect.succeed(selection),
                   failoverLaunch: (input) =>
                     Ref.get(failover).pipe(
                       Effect.map((moved) =>
@@ -10742,6 +10746,718 @@ describe("OrchestratorMcpService capacity and automatic placement", () => {
         assert.deepEqual(unpushedLocal.remoteEnvs, []);
         assert.equal(unpushedLocal.localDispatches, 1);
         assert.equal(unpushedLocal.peerProbes, 0);
+      }),
+  );
+
+  it.effect(
+    "delegateTask enforces the repo concurrency cap while honoring exemptions, read-only roles, retries, and remote forwarding",
+    () =>
+      Effect.gen(function* () {
+        const codexProvider: ServerProvider = {
+          instanceId: codexInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Codex",
+          enabled: true,
+          status: "ready",
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-11-28T00:00:00Z",
+          version: "1.0.0",
+          slashCommands: [],
+          skills: [],
+          models: [
+            {
+              slug: "gpt-5.4",
+              name: "GPT 5.4",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        };
+
+        const runDelegate = (input: {
+          readonly activeCount: number;
+          readonly hasReceipt?: boolean;
+          readonly role?: "implementation" | "review" | "research" | "design";
+          readonly interactionMode?: "default" | "plan";
+          readonly capExemption?: "broken_main" | "incident";
+          readonly targetEnvironmentId?: EnvironmentId;
+        }) =>
+          Effect.gen(function* () {
+            const dispatchedLocally = yield* Ref.make(0);
+            const dispatchedTags = yield* Ref.make<
+              ReadonlyArray<ReadonlyArray<string> | undefined>
+            >([]);
+            const remoteDelegations = yield* Ref.make<
+              ReadonlyArray<{
+                readonly environmentId: EnvironmentId;
+                readonly role?: string;
+                readonly capExemption?: string;
+              }>
+            >([]);
+            const remoteTaskId = NodeId.make("node:remote-cap");
+            let createdRemoteSubagent: OrchestrationV2ThreadProjection["subagents"][number] | null =
+              null;
+
+            const dependencies = Layer.mergeAll(
+              NodeServices.layer,
+              ServerSettings.layerTest(),
+              RepoConcurrencyAdmission.layerTest(({ requestedCount }) =>
+                Effect.succeed({
+                  allowed: input.activeCount + (requestedCount ?? 1) <= 4,
+                  activeCount: input.activeCount,
+                  requestedCount: requestedCount ?? 1,
+                  limit: 4,
+                  repoKey: "github.com/pingdotgg/t3code",
+                  breakdown: [{ environmentId: "local", label: "local", count: input.activeCount }],
+                }),
+              ),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([codexProvider]),
+              }),
+              Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+                list: () => Effect.succeed([codexInstanceId]),
+              }),
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                getThreadRecords: () =>
+                  Effect.succeed(
+                    parentProjection(createdRemoteSubagent === null ? [] : [createdRemoteSubagent]),
+                  ),
+                hasReceipt: () => Effect.succeed(input.hasReceipt ?? false),
+                getThreadShell: () => Effect.succeed(null),
+                dispatch: (command) =>
+                  Ref.update(dispatchedLocally, (n) => n + 1).pipe(
+                    Effect.andThen(
+                      Ref.update(dispatchedTags, (items) => [
+                        ...items,
+                        command.type === "delegated_task.request" ? command.tags : undefined,
+                      ]),
+                    ),
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestratorProjectionError({
+                          threadId: parentThreadId,
+                          cause: new Error("local-dispatch-sentinel"),
+                        }),
+                      ),
+                    ),
+                  ),
+              }),
+              Layer.mock(ProjectService.ProjectService)({
+                getById: () => Effect.succeedSome(projectRecord),
+                getWithRepositoryIdentity: () => Effect.succeedSome(projectRecord),
+              }),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(RemoteDelegation.RemoteDelegation)({
+                runStatus: () => Effect.succeed("running" as const),
+                delegate: (_scope, _parent, delegateInput) =>
+                  Effect.gen(function* () {
+                    yield* Ref.update(remoteDelegations, (items) => [
+                      ...items,
+                      {
+                        environmentId: delegateInput.target.environmentId,
+                        ...(delegateInput.role === undefined ? {} : { role: delegateInput.role }),
+                        ...(delegateInput.capExemption === undefined
+                          ? {}
+                          : { capExemption: delegateInput.capExemption }),
+                      },
+                    ]);
+                    createdRemoteSubagent = {
+                      id: remoteTaskId,
+                      threadId: parentThreadId,
+                      origin: "app_owned",
+                      childThreadId: null,
+                      remoteChild: {
+                        environmentId: delegateInput.target.environmentId,
+                        threadId: ThreadId.make("thread:remote-cap-child"),
+                        label: "VPS",
+                      },
+                      driver: ProviderDriverKind.make("remote"),
+                      model: "gpt-5.4",
+                      modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+                      status: "running",
+                      result: null,
+                    } as unknown as OrchestrationV2ThreadProjection["subagents"][number];
+                    return { taskId: remoteTaskId };
+                  }),
+              }),
+              Layer.mock(CommandRunner.CommandRunner)({}),
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            );
+
+            const layer = layerOrchestratorServiceWithGit({
+              resolveCommit: () => Effect.succeed({ commitSha: "abc123" }),
+            }).pipe(Layer.provide(dependencies));
+
+            const outcome = yield* Effect.gen(function* () {
+              const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+              return yield* service
+                .delegateTask(scope, {
+                  task: "Do work",
+                  role: input.role ?? "implementation",
+                  isolation: "worktree",
+                  ...(input.interactionMode === undefined
+                    ? {}
+                    : { interactionMode: input.interactionMode }),
+                  ...(input.capExemption === undefined ? {} : { capExemption: input.capExemption }),
+                  ...(input.targetEnvironmentId === undefined
+                    ? {}
+                    : { target: { environmentId: input.targetEnvironmentId } }),
+                })
+                .pipe(Effect.result);
+            }).pipe(Effect.provide(layer));
+
+            return {
+              outcome,
+              localDispatches: yield* Ref.get(dispatchedLocally),
+              dispatchedTags: yield* Ref.get(dispatchedTags),
+              remoteDelegations: yield* Ref.get(remoteDelegations),
+            };
+          });
+
+        // 3/4 active -> 4th implementation task proceeds to dispatch without non-impl tags.
+        const fourth = yield* runDelegate({ activeCount: 3 });
+        assert.equal(fourth.localDispatches, 1);
+        assert.deepEqual(fourth.dispatchedTags, [undefined]);
+
+        // 4/4 active -> 5th ordinary implementation task is rejected before dispatch.
+        const fifth = yield* runDelegate({ activeCount: 4 });
+        assert.equal(fifth.outcome._tag, "Failure");
+        if (fifth.outcome._tag === "Failure") {
+          assert.equal(fifth.outcome.failure.code, "repo_capacity_full");
+        }
+        assert.equal(fifth.localDispatches, 0);
+
+        // At 4/4 active: review, research, design bypass the cap AND stamp their role tag.
+        for (const role of ["review", "research", "design"] as const) {
+          const allowedRole = yield* runDelegate({ activeCount: 4, role });
+          assert.equal(allowedRole.localDispatches, 1);
+          assert.deepEqual(allowedRole.dispatchedTags, [[role]]);
+        }
+        const plan = yield* runDelegate({ activeCount: 4, interactionMode: "plan" });
+        assert.equal(plan.localDispatches, 1);
+        const retry = yield* runDelegate({ activeCount: 4, hasReceipt: true });
+        assert.equal(retry.localDispatches, 1);
+
+        // Two concurrent delegate_task calls racing at 3/4 against live RepoConcurrencyAdmission:
+        // exactly 1 enters dispatch while the 2nd fails with repo_capacity_full.
+        const firstDispatchEntered = yield* Deferred.make<void>();
+        const releaseFirstDispatch = yield* Deferred.make<void>();
+        const concurrentDispatches = yield* Ref.make(0);
+        const existingThreads = new Map<ThreadId, OrchestrationV2AppThread>(
+          (["thread:live-1", "thread:live-2", "thread:live-3"] as const).map((id) => [
+            ThreadId.make(id),
+            {
+              projectId,
+              interactionMode: "default",
+              archivedAt: null,
+            } as unknown as OrchestrationV2AppThread,
+          ]),
+        );
+        const liveAdmissionDeps = Layer.mergeAll(
+          Layer.succeed(HostProcess.Platform, "linux" as NodeJS.Platform),
+          MemoryAdmission.layerTest(),
+          Layer.succeed(HostResources.HostResources, {
+            read: Effect.succeed({
+              sampledAt: 1_000,
+              cpuUtilization: 0.1,
+              cpuCount: 8,
+              availableMemoryBytes: 24 * 1024 ** 3,
+              totalMemoryBytes: 32 * 1024 ** 3,
+              loadAverage: [1, 1, 1] as const,
+            }),
+          }),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () => Effect.succeedSome(projectRecord),
+            getWithRepositoryIdentity: () => Effect.succeedSome(projectRecord),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getActiveTurnWorkspaces: () =>
+              Effect.succeed(
+                [...existingThreads.keys()].map((threadId) => ({
+                  threadId,
+                  projectId,
+                  worktreePath: null,
+                })),
+              ),
+            getOpenCommandTasks: Effect.succeed([]),
+            getThread: (threadId) => {
+              const found = existingThreads.get(threadId);
+              return found === undefined
+                ? Effect.fail(new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }))
+                : Effect.succeed(found);
+            },
+          }),
+        );
+        const raceDeps = Layer.mergeAll(
+          NodeServices.layer,
+          ServerSettings.layerTest(),
+          RepoConcurrencyAdmission.layerLive().pipe(Layer.provide(liveAdmissionDeps)),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([codexProvider]),
+          }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([codexInstanceId]),
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(parentProjection()),
+            hasReceipt: () => Effect.succeed(false),
+            getThreadShell: () => Effect.succeed(null),
+            dispatch: () =>
+              Effect.gen(function* () {
+                const count = yield* Ref.updateAndGet(concurrentDispatches, (n) => n + 1);
+                if (count === 1) {
+                  yield* Deferred.succeed(firstDispatchEntered, undefined);
+                  yield* Deferred.await(releaseFirstDispatch);
+                }
+                return yield* new OrchestratorProjectionError({
+                  threadId: parentThreadId,
+                  cause: new Error("race-dispatch-sentinel"),
+                });
+              }),
+          }),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () => Effect.succeedSome(projectRecord),
+            getWithRepositoryIdentity: () => Effect.succeedSome(projectRecord),
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({
+            runStatus: () => Effect.succeed("running" as const),
+          }),
+          Layer.mock(CommandRunner.CommandRunner)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        const raceLayer = layerOrchestratorServiceWithGit({
+          resolveCommit: () => Effect.succeed({ commitSha: "abc123" }),
+        }).pipe(Layer.provide(raceDeps));
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const first = yield* service
+            .delegateTask(scope, { task: "Race 1", role: "implementation", isolation: "worktree" })
+            .pipe(Effect.result, Effect.forkChild);
+          yield* Deferred.await(firstDispatchEntered);
+          const second = yield* service
+            .delegateTask(scope, { task: "Race 2", role: "implementation", isolation: "worktree" })
+            .pipe(Effect.result);
+          assert.equal(second._tag, "Failure");
+          if (second._tag === "Failure") {
+            assert.equal(second.failure.code, "repo_capacity_full");
+          }
+          yield* Deferred.succeed(releaseFirstDispatch, undefined);
+          yield* Fiber.join(first);
+          assert.equal(yield* Ref.get(concurrentDispatches), 1);
+        }).pipe(Effect.provide(raceLayer));
+
+        // At 4/4 active: broken_main and incident exemptions proceed and forward to RemoteDelegation.
+        const remoteBrokenMain = yield* runDelegate({
+          activeCount: 4,
+          capExemption: "broken_main",
+          targetEnvironmentId: peerEnvId,
+        });
+        assert.equal(remoteBrokenMain.outcome._tag, "Success");
+        assert.deepEqual(remoteBrokenMain.remoteDelegations, [
+          { environmentId: peerEnvId, role: "implementation", capExemption: "broken_main" },
+        ]);
+
+        const remoteIncident = yield* runDelegate({
+          activeCount: 4,
+          capExemption: "incident",
+          targetEnvironmentId: peerEnvId,
+        });
+        assert.equal(remoteIncident.outcome._tag, "Success");
+        assert.deepEqual(remoteIncident.remoteDelegations, [
+          { environmentId: peerEnvId, role: "implementation", capExemption: "incident" },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "createThreads enforces the repo cap across batches, scheduled task tools preserve capExemption, and role-tagged delegates stay excluded from repo capacity",
+    () =>
+      Effect.gen(function* () {
+        const codexProvider: ServerProvider = {
+          instanceId: codexInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Codex",
+          enabled: true,
+          status: "ready",
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-11-28T00:00:00Z",
+          version: "1.0.0",
+          slashCommands: [],
+          skills: [],
+          models: [
+            {
+              slug: "gpt-5.4",
+              name: "GPT 5.4",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        };
+
+        const runCreateThreads = (input: {
+          readonly activeCount: number;
+          readonly threads: ReadonlyArray<{
+            readonly title: string;
+            readonly prompt: string;
+            readonly interactionMode?: "default" | "plan";
+          }>;
+          readonly existingReceiptIndices?: ReadonlyArray<number>;
+          readonly capExemption?: "broken_main" | "incident";
+        }) =>
+          Effect.gen(function* () {
+            const dispatched = yield* Ref.make(0);
+            const requestedCounts: Array<number> = [];
+            let receiptIndex = 0;
+            const dependencies = Layer.mergeAll(
+              NodeServices.layer,
+              ServerSettings.layerTest(),
+              RepoConcurrencyAdmission.layerTest(({ requestedCount }) =>
+                Effect.sync(() => {
+                  const req = requestedCount ?? 1;
+                  requestedCounts.push(req);
+                  return {
+                    allowed: input.activeCount + req <= 4,
+                    activeCount: input.activeCount,
+                    requestedCount: req,
+                    limit: 4,
+                    repoKey: "github.com/pingdotgg/t3code",
+                    breakdown: [
+                      { environmentId: "local" as const, label: "local", count: input.activeCount },
+                    ],
+                  };
+                }),
+              ),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([codexProvider]),
+              }),
+              Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+                list: () => Effect.succeed([codexInstanceId]),
+              }),
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                getThreadRecords: () => Effect.succeed(parentProjection()),
+                hasReceipt: () =>
+                  Effect.sync(() => {
+                    const index = receiptIndex;
+                    receiptIndex += 1;
+                    return (input.existingReceiptIndices ?? []).includes(index);
+                  }),
+                assertProviderInstanceEnabled: () => Effect.void,
+                dispatch: () =>
+                  Ref.update(dispatched, (n) => n + 1).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestratorProjectionError({
+                          threadId: parentThreadId,
+                          cause: new Error("create-thread-dispatch-sentinel"),
+                        }),
+                      ),
+                    ),
+                  ),
+              }),
+              Layer.mock(ProjectService.ProjectService)({
+                getById: () => Effect.succeedSome(projectRecord),
+                getWithRepositoryIdentity: () => Effect.succeedSome(projectRecord),
+              }),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(RemoteDelegation.RemoteDelegation)({
+                runStatus: () => Effect.succeed("running" as const),
+              }),
+              Layer.mock(CommandRunner.CommandRunner)({}),
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            );
+
+            const layer = layerOrchestratorService.pipe(Layer.provide(dependencies));
+            const outcome = yield* Effect.gen(function* () {
+              const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+              return yield* service
+                .createThreads(scope, {
+                  threads: input.threads,
+                  ...(input.capExemption === undefined ? {} : { capExemption: input.capExemption }),
+                })
+                .pipe(Effect.result);
+            }).pipe(Effect.provide(layer));
+            return { outcome, dispatched: yield* Ref.get(dispatched), requestedCounts };
+          });
+
+        // 2/4 active + requesting 3 implementation threads -> rejected upfront with 0 dispatched.
+        const overBatch = yield* runCreateThreads({
+          activeCount: 2,
+          threads: [
+            { title: "One", prompt: "First" },
+            { title: "Two", prompt: "Second" },
+            { title: "Three", prompt: "Third" },
+          ],
+        });
+        assert.equal(overBatch.outcome._tag, "Failure");
+        if (overBatch.outcome._tag === "Failure") {
+          assert.equal(overBatch.outcome.failure.code, "repo_capacity_full");
+        }
+        assert.equal(overBatch.dispatched, 0);
+
+        // 2/4 active + requesting 2 implementation threads -> allowed through to dispatch.
+        const fitsBatch = yield* runCreateThreads({
+          activeCount: 2,
+          threads: [
+            { title: "One", prompt: "First" },
+            { title: "Two", prompt: "Second" },
+          ],
+        });
+        assert.isTrue(fitsBatch.dispatched > 0);
+
+        // 3/4 active + mixed batch (1 retry + 1 plan + 1 fresh implementation) -> requests only 1 slot.
+        const mixedBatch = yield* runCreateThreads({
+          activeCount: 3,
+          existingReceiptIndices: [0],
+          threads: [
+            { title: "Retry", prompt: "Already created" },
+            { title: "Plan", prompt: "Design it", interactionMode: "plan" },
+            { title: "Fresh", prompt: "New impl" },
+          ],
+        });
+        assert.deepEqual(mixedBatch.requestedCounts, [1]);
+        assert.isTrue(mixedBatch.dispatched > 0);
+
+        // 4/4 active + plan-only batch or capExemption:"incident" -> allowed through to dispatch.
+        const planBatch = yield* runCreateThreads({
+          activeCount: 4,
+          threads: [{ title: "Plan", prompt: "Design it", interactionMode: "plan" }],
+        });
+        assert.isTrue(planBatch.dispatched > 0);
+
+        const incidentBatch = yield* runCreateThreads({
+          activeCount: 4,
+          capExemption: "incident",
+          threads: [{ title: "Hotfix", prompt: "Mitigate incident" }],
+        });
+        assert.isTrue(incidentBatch.dispatched > 0);
+
+        // saveScheduledTask forwards capExemption and listScheduledTasks exposes capExemption.
+        const savedCapExemptions: Array<string | null | undefined> = [];
+        const savedTask = {
+          id: ScheduledTaskId.make("task:cap"),
+          title: "Fix broken main",
+          prompt: "Repair main",
+          enabled: true,
+          schedule: { type: "interval" as const, everyMs: 60_000 },
+          projectId,
+          threadId: null,
+          workspaceStrategy: { type: "root" as const },
+          modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          capExemption: "broken_main" as const,
+          createdAt: "2026-11-28T00:00:00Z",
+          updatedAt: "2026-11-28T00:00:00Z",
+          nextRunAt: "2026-11-28T00:01:00Z",
+          lastRunAt: null,
+          lastRunStatus: null,
+          lastRunThreadId: null,
+          lastError: null,
+          runCount: 0,
+        } as unknown as ScheduledTask;
+        const ordinaryTask = {
+          ...savedTask,
+          id: ScheduledTaskId.make("task:ordinary"),
+          title: "Ordinary",
+          capExemption: null,
+        } as unknown as ScheduledTask;
+        const scheduleDeps = Layer.mergeAll(
+          NodeServices.layer,
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([codexProvider]),
+          }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([codexInstanceId]),
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(parentProjection()),
+            getThreadShell: () => Effect.succeed(null),
+          }),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () => Effect.succeedSome(projectRecord),
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({
+            runStatus: () => Effect.succeed("running" as const),
+          }),
+          Layer.mock(CommandRunner.CommandRunner)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+            upsert: (upsertInput: ScheduledTaskUpsertInput) => {
+              savedCapExemptions.push(upsertInput.capExemption);
+              return Effect.succeed({ task: savedTask, created: true });
+            },
+            list: () => Effect.succeed({ tasks: [savedTask, ordinaryTask] }),
+            recentRunCounts: () => Effect.succeed(new Map()),
+            liveRuns: () => Effect.succeed(0),
+          }),
+        );
+        const listedScheduled = yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          yield* service.scheduleTask(scope, {
+            title: "Fix broken main",
+            prompt: "Repair main",
+            schedule: { type: "interval", everyMs: 60_000 },
+            capExemption: "broken_main",
+          });
+          return yield* service.listScheduledTasks(scope, {});
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(scheduleDeps))));
+        assert.deepEqual(savedCapExemptions, ["broken_main"]);
+        assert.deepEqual(
+          listedScheduled.tasks.map((task) => ({
+            scheduledTaskId: task.scheduledTaskId,
+            capExemption: task.capExemption,
+          })),
+          [
+            { scheduledTaskId: savedTask.id, capExemption: "broken_main" },
+            { scheduledTaskId: ordinaryTask.id, capExemption: null },
+          ],
+        );
+
+        // User chats stay exempt at 4/4, and role-tagged threads (thread.create & delegated_task.request)
+        // persist their tags and are excluded from MachinePlacement.readLocalCapacity repo counts.
+        const userThreadId = ThreadId.make("thread:user-exempt");
+        const remoteResearchThreadId = ThreadId.make("thread:remote-research");
+        const adapter = {
+          instanceId: codexInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+          getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+          planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+          openSession: () => Effect.die("Runs here never reach a provider"),
+        } as ProviderAdapter.ProviderAdapterV2["Service"];
+        const orchestratorLayer = ProviderReplayHarness.layerWithRegistry(
+          { name: "repo-cap-user-exempt" },
+          ProviderAdapterRegistry.layerFromAdapters([adapter]),
+          { databaseLayer: SqlitePersistence.layerMemory, runEffectWorker: false },
+        ).pipe(
+          Layer.provideMerge(
+            RepoConcurrencyAdmission.layerTest(() =>
+              Effect.succeed({
+                allowed: false,
+                activeCount: 4,
+                requestedCount: 1,
+                limit: 4,
+                repoKey: "github.com/pingdotgg/t3code",
+                breakdown: [{ environmentId: "local", label: "local", count: 4 }],
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("user-exempt:create"),
+            threadId: userThreadId,
+            projectId,
+            title: "User chat at 4/4",
+            modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: "/workspace/codeship",
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("user-exempt:message-dispatch"),
+            threadId: userThreadId,
+            messageId: MessageId.make("msg:user-exempt:1"),
+            text: "Coordinate design",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const parentBeforeDelegate = yield* orchestrator.getThreadProjection(userThreadId);
+          const activeParentRun = parentBeforeDelegate.runs[0]!;
+
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("remote-research:create"),
+            threadId: remoteResearchThreadId,
+            projectId,
+            title: "Remote research delegate",
+            modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: "/workspace/codeship",
+            createdBy: "agent",
+            creationSource: "mcp",
+            tags: ["research"],
+          });
+          yield* orchestrator.dispatch({
+            type: "delegated_task.request",
+            commandId: CommandId.make("local-design:request"),
+            parentThreadId: userThreadId,
+            parentRunId: activeParentRun.id,
+            parentNodeId: activeParentRun.rootNodeId!,
+            task: "Design the architecture",
+            modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            completionWake: "always",
+            createdBy: "agent",
+            creationSource: "mcp",
+            tags: ["design"],
+          });
+
+          const userProjection = yield* orchestrator.getThreadProjection(userThreadId);
+          assert.equal(userProjection.thread.id, userThreadId);
+          assert.equal(userProjection.thread.createdBy, "user");
+          const localDesignThreadId = userProjection.subagents[0]?.childThreadId;
+          assert.isNotNull(localDesignThreadId);
+          const researchThread = yield* projections.getThread(remoteResearchThreadId);
+          const designThread = yield* projections.getThread(localDesignThreadId!);
+          assert.deepEqual(researchThread.tags, ["research"]);
+          assert.deepEqual(designThread.tags, ["design"]);
+
+          // When all three threads are active, only the untagged implementation thread counts.
+          const capacity = yield* MachinePlacement.readLocalCapacity({
+            hostResources: Option.some({
+              read: Effect.succeed({
+                sampledAt: 1_000,
+                cpuUtilization: 0.1,
+                cpuCount: 8,
+                availableMemoryBytes: 24 * 1024 ** 3,
+                totalMemoryBytes: 32 * 1024 ** 3,
+                loadAverage: [1, 1, 1] as const,
+              }),
+            }),
+            memoryAdmission: {
+              shortage: Effect.succeed(null),
+              admit: () => Effect.succeed(null),
+              admitManual: () => Effect.succeed(null),
+            } as unknown as MemoryAdmission.MemoryAdmission["Service"],
+            projections: Option.some({
+              ...projections,
+              getActiveTurnWorkspaces: () =>
+                Effect.succeed([
+                  { threadId: userThreadId, projectId, worktreePath: null },
+                  { threadId: remoteResearchThreadId, projectId, worktreePath: null },
+                  { threadId: localDesignThreadId!, projectId, worktreePath: null },
+                ]),
+              getOpenCommandTasks: Effect.succeed([]),
+            }),
+            projects: {
+              getWithRepositoryIdentity: (id: ProjectId) =>
+                Effect.succeed(id === projectId ? Option.some(projectRecord) : Option.none()),
+            } as unknown as ProjectService.ProjectService["Service"],
+          }).pipe(Effect.provideService(HostProcess.Platform, "linux" as NodeJS.Platform));
+          assert.equal(
+            RepoConcurrencyAdmission.maxRepoCountForKeys(
+              capacity.activeImplementationThreadsByRepo,
+              ["github.com/pingdotgg/t3code", "github.com/gigazoro/codeship"],
+            ),
+            1,
+          );
+        }).pipe(Effect.provide(orchestratorLayer));
       }),
   );
 });

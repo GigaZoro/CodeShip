@@ -29,6 +29,7 @@ import {
   TextGenerationError,
   ThreadId,
   type ThreadFolder,
+  type ThreadTag,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -133,6 +134,8 @@ export interface ThreadLaunchInput {
   readonly folder?: ThreadFolder;
   /** The workflow run this thread is an agent step of. */
   readonly workflowRun?: OrchestrationV2WorkflowOrigin;
+  /** Initial tags for a newly created thread (e.g. non-implementation delegated role). */
+  readonly tags?: ReadonlyArray<ThreadTag>;
 }
 
 type PreparationInput = Pick<
@@ -1749,6 +1752,9 @@ const make = Effect.gen(function* () {
                   : { importedNativeThread: input.importedNativeThread }),
                 ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
                 ...(input.folder === undefined ? {} : { folder: input.folder }),
+                ...(input.tags === undefined || input.tags.length === 0
+                  ? {}
+                  : { tags: input.tags }),
                 ...(input.delegatedFrom === undefined
                   ? {}
                   : { delegatedFrom: input.delegatedFrom }),

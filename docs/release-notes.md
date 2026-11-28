@@ -1,3 +1,23 @@
+## 2026-11-28 — Auto mode and account failover now include Antigravity
+
+- When every Claude and Codex account is out of usage, new Auto mode chats can fail over to Antigravity (choosing Gemini 4 Neon with headroom before falling back to Antigravity's Claude Opus pool), and Antigravity now participates in multi-account failover, Auto primary provider selection, Settings Auto model defaults, and signed-out login recovery.
+
+## 2026-11-28 — Per-repository cap of 4 concurrent implementation threads across linked machines
+
+- Automated launches (`delegate_task`, `create_threads`, `t3_thread_launch`, and due scheduled tasks) now enforce a fleet-wide cap of 4 concurrent active or landing implementation threads per repository (overridable via `T3CODE_REPO_IMPLEMENTATION_CAP`), counting local and reachable linked environments without double-counting repository alias keys and failing open on unreachable or older peers.
+- User-requested chats, manual **Run now** triggers, `plan` mode, scratch launches, non-implementation roles (`review`, `research`, `design`), idempotent retries, and explicit `capExemption` (`"broken_main"` or `"incident"`) requests bypass the cap; deferred scheduled occurrences quietly retry once a slot opens.
+
+## 2026-11-28 — Use expiring Claude API credits
+
+- Claude accounts can spend subscriber API grants through the Agent SDK with a key kept in the secret store, linked to the plan that grants them.
+- Account routing spends plan windows and API credits in expiry order, before banked resets or extra usage. Spent credit waits for the next billing cycle or a successful credit check.
+- Usage shows each Claude plan's API grant, cycle spend, estimated remaining credit, expiry and claim steps for unlinked plans.
+
+## 2026-11-28 — One notice per cause when a machine, provider or usage limit stops several threads
+
+- When a machine goes offline, a provider is down, or a usage limit stops several threads, the web and desktop sidebar, the thread's notice and the pop-up name the cause once with the number of threads it holds, for example **VPS offline · 7 threads waiting**, with a link to Machines, Usage or Providers.
+- The incident clears by itself when the cause recovers, and **Background notices** notes **Recovered**.
+
 ## 2026-11-28 — Live machine capacity telemetry and least-loaded placement for worktree implementation delegates
 
 - `orchestrator_capabilities` now includes an optional `capacity` snapshot (`loadAverage1m`, `cpuCores`, `loadPerCore`, `activeThreads`, `activeLandingCommands`, `checkSlots`, `freeCheckSlots`, `availableMemoryBytes`, `totalMemoryBytes`, `memoryShort`, and `activeImplementationThreadsByRepo`), remaining backward- and forward-compatible with older linked peers.
@@ -62,6 +82,12 @@
 
 - **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
 - Applying the preset leaves notification settings untouched, lists each setting it changed, and offers **Undo** (inline in Settings, in the confirmation toast on web and desktop, and as **Undo Calm preset** in the mobile command palette) to restore your prior values.
+
+## 2026-11-27 — Update drain barrier, pre-staging, and clean turn-boundary updates
+
+- Automatic updates now download and preflight the new CodeShip release while chats continue running, then enter a drain barrier before activating so no new turns, scheduled runs, or idle wakes start during handoff.
+- Manual updates from the sidebar, Settings, and the outdated-host banner now drain active work and answering turns cleanly at a turn boundary before restarting, holding new starts until the restart finishes or the user cancels.
+- New turns, background completions, and asynchronous delegations that arrive during a drain stay queued and start automatically if the drain is canceled or right after the restarted server boots, while approvals and `wait` delegations on active turns continue uninterrupted.
 
 ## 2026-11-27 — Stalled threads stand out
 

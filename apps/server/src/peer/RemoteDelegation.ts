@@ -667,6 +667,8 @@ const make = Effect.gen(function* () {
                   message: task,
                   clientRequestId,
                   launchId: remoteThreadId,
+                  ...(input.capExemption === undefined ? {} : { capExemption: input.capExemption }),
+                  ...(input.role === undefined ? {} : { delegatedRole: input.role }),
                   // The thread there shows it is this thread's subagent, with a way back.
                   delegatedFrom: {
                     environmentId: hereId,
@@ -675,7 +677,7 @@ const make = Effect.gen(function* () {
                   },
                 },
                 // A peer that predates it checks no option, so it runs them all as before.
-                ["inheritedOptionIds", "matchedRemote"],
+                ["inheritedOptionIds", "matchedRemote", "capExemption", "delegatedRole"],
               );
             const launch = (
               staysAuto

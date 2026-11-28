@@ -108,6 +108,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.manualStepsReview]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverWatchRestartHold]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverDrainForUpdate]: AuthEnvironmentMaintainScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   // Names only, so a client that reads threads can open a linked environment's.
   [WS_METHODS.peerLinksNames]: AuthOrchestrationReadScope,
@@ -138,6 +139,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetResourceTelemetryHistory]: AuthDiagnosticsReadScope,
   [WS_METHODS.serverRetryResourceTelemetry]: AuthDiagnosticsReadScope,
   [WS_METHODS.serverGetUsageSummary]: AuthDiagnosticsReadScope,
+  [WS_METHODS.serverGetApiCreditUsage]: AuthDiagnosticsReadScope,
   [WS_METHODS.serverRefreshUsageRates]: AuthDiagnosticsReadScope,
   [WS_METHODS.serverSignalProcess]: AuthEnvironmentMaintainScope,
   [WS_METHODS.serverReportClientActivity]: AuthOrchestrationReadScope,

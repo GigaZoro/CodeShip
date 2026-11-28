@@ -105,6 +105,20 @@ describe("ProviderSettingsForm helpers", () => {
     ).toEqual({ launchArgs: "--x", autoCompactWindow: "300000" });
   });
 
+  it("stores numeric provider settings as numbers and clears them to their schema default", () => {
+    const claude = providerClients.get(ProviderDriverKind.make("claudeAgent"));
+    const grant = deriveProviderSettingsFields(claude!).find(
+      (field) => field.key === "apiCreditGrantUsd",
+    );
+    expect(grant?.control).toBe("number");
+    expect(nextProviderConfigWithFieldValue({}, grant!, "25.50")).toEqual({
+      apiCreditGrantUsd: 25.5,
+    });
+    expect(
+      nextProviderConfigWithFieldValue({ apiCreditGrantUsd: 25.5 }, grant!, ""),
+    ).toBeUndefined();
+  });
+
   it("stores false boolean fields when true is the default", () => {
     const next = nextProviderConfigWithFieldValue(
       undefined,

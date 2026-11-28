@@ -227,6 +227,7 @@ interface HarnessOptions {
   readonly settledOutcome?: ServerSelfUpdateOutcome;
   readonly desktop?: boolean;
   readonly answering?: boolean;
+  readonly failUpdates?: boolean;
   readonly notAppliedDesktopVersion?: string;
   /** The hold of another backend the desktop app runs beside this primary. */
   readonly otherBackend?: OrchestrationV2RestartHold;
@@ -238,6 +239,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
   options: HarnessOptions = {},
 ) {
   const events: Array<string> = [];
+  const prepareEvents: Array<{ readonly version: string; readonly draining: boolean }> = [];
   const newest = yield* Ref.make(NEWER);
   // A release published after the install time, listed above the newest due one.
   const undue = yield* Ref.make<string | undefined>(undefined);
@@ -245,7 +247,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
   // Runs inside each release lookup.
   const duringLookup = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   const failRead = yield* Ref.make(false);
-  const failUpdates = yield* Ref.make(false);
+  const failUpdates = yield* Ref.make(options.failUpdates ?? false);
   const settings = yield* Ref.make({
     ...DEFAULT_SERVER_SETTINGS,
     installUpdatesAutomatically: options.enabled ?? true,
@@ -310,6 +312,36 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
     }),
     Layer.mock(ServerSelfUpdate.ServerSelfUpdate)({
       notAppliedDesktopVersion: Effect.succeed(options.notAppliedDesktopVersion),
+      prepare: (input) =>
+        Effect.gen(function* () {
+          const isDrainingNow = (yield* SubscriptionRef.get(drain)).holders > 0;
+          prepareEvents.push({ version: input.targetVersion, draining: isDrainingNow });
+          if (yield* Ref.get(failUpdates)) {
+            events.push(`update ${input.targetVersion}`);
+            return yield* new ServerSelfUpdateError({
+              reason: "Could not prepare the update.",
+            });
+          }
+          return {
+            targetVersion: input.targetVersion,
+            runtimePath: `/tmp/t3-${input.targetVersion}`,
+            migratesDatabase: false,
+          };
+        }),
+      activatePrepared: (prepared, _reportProgress, _onHandoffAccepted, beforeHandoff) =>
+        Effect.gen(function* () {
+          events.push(`update ${prepared.targetVersion}`);
+          if (yield* Ref.get(failUpdates)) {
+            return yield* new ServerSelfUpdateError({
+              reason: "Could not prepare the update.",
+            });
+          }
+          yield* yield* Ref.get(whilePreparing);
+          if (beforeHandoff !== undefined) yield* beforeHandoff();
+          events.push(`handoff ${prepared.targetVersion}`);
+          yield* Deferred.succeed(handedOff, undefined);
+          return { targetVersion: prepared.targetVersion, method: "boot-service", updateId: "u1" };
+        }),
       update: (input, _reportProgress, _onHandoffAccepted, beforeHandoff) =>
         Effect.gen(function* () {
           events.push(`update ${input.targetVersion}`);
@@ -415,6 +447,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
   return {
     auto,
     events,
+    prepareEvents,
     newest,
     undue,
     lookups,
@@ -1110,5 +1143,45 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layerMac))(
       expect(Duration.toMinutes(AutoUpdate.autoUpdateRetryDelay(2))).toBe(30);
       expect(AutoUpdate.autoUpdateRetryDelay(50)).toEqual(AutoUpdate.AUTO_UPDATE_RETRY_MAX);
     });
+
+    it.effect("pre-stages boot-service releases before acquiring the update drain", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ answering: true });
+        const check = yield* Effect.forkChild(harness.auto.check());
+        yield* Deferred.await(harness.holdSeen);
+        expect(yield* harness.draining).toBe(false);
+
+        // Patience expires: pre-staging runs while still not draining, then drain begins.
+        yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+        expect(harness.prepareEvents).toEqual([{ version: NEWER, draining: false }]);
+        expect(yield* harness.draining).toBe(true);
+
+        // Once the chat finishes, activation hands off cleanly without re-preparing inside drain.
+        yield* SubscriptionRef.set(harness.hold, { work: [] });
+        yield* Fiber.join(check);
+        expect(harness.prepareEvents).toEqual([{ version: NEWER, draining: false }]);
+        expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
+      }),
+    );
+
+    it.effect("backs off without acquiring update drain when boot-service pre-staging fails", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ answering: true, failUpdates: true });
+        const check = yield* Effect.forkChild(harness.auto.check());
+        yield* Deferred.await(harness.holdSeen);
+        expect(yield* harness.draining).toBe(false);
+
+        // Patience expires: pre-staging fails before drain is acquired, so drain never turns on.
+        yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+        yield* Fiber.join(check);
+        expect(harness.prepareEvents).toEqual([{ version: NEWER, draining: false }]);
+        expect(harness.events).toEqual([`update ${NEWER}`]);
+        expect(yield* harness.draining).toBe(false);
+
+        // Backoff holds the next check without retrying prepare.
+        yield* harness.auto.check();
+        expect(harness.prepareEvents).toEqual([{ version: NEWER, draining: false }]);
+      }),
+    );
   },
 );

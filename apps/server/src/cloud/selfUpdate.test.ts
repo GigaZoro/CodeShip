@@ -14,8 +14,12 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as NodeSqlite from "node:sqlite";
+import * as Exit from "effect/Exit";
 import * as Path from "effect/Path";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -30,6 +34,7 @@ import { posixLauncherScript, readPosixLauncherTarget } from "./pinnedRuntime.ts
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
+import * as UpdateDrain from "./updateDrain.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
@@ -197,7 +202,12 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
   const config = yield* ServerConfig.ServerConfig.pipe(
     Effect.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
   );
+  const drainRef = yield* SubscriptionRef.make<UpdateDrain.DrainState>({
+    holders: 0,
+    admitting: 0,
+  });
   const selfUpdate = yield* ServerSelfUpdate.make().pipe(
+    Effect.provideService(UpdateDrain.UpdateDrain, drainRef),
     Effect.provideService(ProcessRunner.ProcessRunner, runner),
     Effect.provideService(ServiceLauncherClient.ServiceLauncherClient, launcher),
     Effect.provideService(
@@ -224,7 +234,7 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
       ),
     ),
   );
-  return { selfUpdate, order, urls, baseDir, preflightProtocols };
+  return { selfUpdate, order, urls, baseDir, dbPath: config.dbPath, preflightProtocols, drainRef };
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
@@ -474,7 +484,7 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       });
       expect(order).toEqual(["download", "extract", "preflight"]);
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" })).updateId).toBe("launcher-id");
-      expect(order).toEqual(["download", "extract", "preflight", "preflight", "accept"]);
+      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
     }),
   );
 
@@ -542,6 +552,228 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         "A server update is already in progress.",
       );
     }),
+  );
+
+  it.effect("pre-stages via prepare and activates without redownloading or re-preflighting", () =>
+    Effect.gen(function* () {
+      const stages: string[] = [];
+      const { selfUpdate, order } = yield* makeHarness();
+
+      const prepared = yield* selfUpdate.prepare({ targetVersion: "1.1.0" }, (stage) =>
+        Effect.sync(() => void stages.push(`prepare:${stage}`)),
+      );
+      expect(prepared.targetVersion).toBe("1.1.0");
+      expect(order).toEqual(["download", "extract", "preflight"]);
+      expect(stages).toEqual(["prepare:downloading"]);
+
+      // A second prepare for the same version hits the in-memory staged cache immediately.
+      const cached = yield* selfUpdate.prepare({ targetVersion: "1.1.0" });
+      expect(cached).toEqual(prepared);
+      expect(order).toEqual(["download", "extract", "preflight"]);
+
+      // Activating hands off directly without redownloading or rerunning preflight.
+      const result = yield* selfUpdate.activatePrepared(prepared, (stage) =>
+        Effect.sync(() => void stages.push(`activate:${stage}`)),
+      );
+      expect(result).toEqual({
+        targetVersion: "1.1.0",
+        method: "boot-service",
+        updateId: "launcher-id",
+      });
+      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      expect(stages).toEqual(["prepare:downloading", "activate:installing"]);
+    }),
+  );
+
+  it.effect(
+    "reuses a prepared runtime from update and resets inFlight when beforeHandoff fails",
+    () =>
+      Effect.gen(function* () {
+        const { selfUpdate, order } = yield* makeHarness();
+        const prepared = yield* selfUpdate.prepare({ targetVersion: "1.1.0" });
+        expect(order).toEqual(["download", "extract", "preflight"]);
+
+        const refused = yield* selfUpdate
+          .activatePrepared(prepared, undefined, undefined, () =>
+            Effect.fail(new ServerSelfUpdateError({ reason: "a chat is answering" })),
+          )
+          .pipe(Effect.flip);
+        expect(refused.reason).toBe("a chat is answering");
+        expect(order).toEqual(["download", "extract", "preflight"]);
+
+        // inFlight was reset, and update reuses the staged runtime without redownloading.
+        const result = yield* selfUpdate.update({ targetVersion: "1.1.0" });
+        expect(result.updateId).toBe("launcher-id");
+        expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      }),
+  );
+
+  it.effect(
+    "keeps UpdateDrain held server-side after boot-service handoff even after a client drain closes",
+    () =>
+      Effect.gen(function* () {
+        const { selfUpdate, drainRef } = yield* makeHarness();
+        const clientDrainScope = yield* Scope.make();
+        yield* UpdateDrain.drainUntilClosed.pipe(
+          Scope.provide(clientDrainScope),
+          Effect.provideService(UpdateDrain.UpdateDrain, drainRef),
+        );
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+
+        const result = yield* selfUpdate.update({ targetVersion: "1.1.0" });
+        expect(result.method).toBe("boot-service");
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(2);
+
+        // Closing the client drain stream after complete must leave UpdateDrain held.
+        yield* Scope.close(clientDrainScope, Exit.void);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+        expect(yield* UpdateDrain.isDrainingRef(drainRef)).toBe(true);
+
+        // Bounded release if the launcher never stops this process.
+        yield* TestClock.adjust(ServerSelfUpdate.SELF_UPDATE_HANDOFF_DRAIN_LIMIT);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(0);
+        expect(yield* UpdateDrain.isDrainingRef(drainRef)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "commitDesktopUpdate holds UpdateDrain even when onHandoffAccepted is omitted and commit blocks",
+    () =>
+      Effect.gen(function* () {
+        const handoffAccepted = yield* Deferred.make<void>();
+        const { selfUpdate, drainRef } = yield* makeHarness({
+          mode: "desktop",
+          desktopAppUpdate: {
+            available: true,
+            run: () => Effect.die("unexpected desktop run"),
+            notAppliedVersion: Effect.undefined,
+            cancel: () => Effect.void,
+            commit: (_requestId, onHandoffAccepted) =>
+              Effect.gen(function* () {
+                if (onHandoffAccepted !== undefined) {
+                  yield* onHandoffAccepted();
+                }
+                yield* Deferred.succeed(handoffAccepted, undefined);
+                // Matches DesktopAppUpdate.commit: waits until Electron exits the server or reports failure.
+                return yield* Effect.never;
+              }),
+          },
+        });
+        const clientDrainScope = yield* Scope.make();
+        yield* UpdateDrain.drainUntilClosed.pipe(
+          Scope.provide(clientDrainScope),
+          Effect.provideService(UpdateDrain.UpdateDrain, drainRef),
+        );
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+
+        // Mirrors ws.ts server.commitDesktopUpdate RPC (onHandoffAccepted === undefined).
+        const commitFiber = yield* selfUpdate.commitDesktopUpdate("req-1").pipe(Effect.forkChild);
+        yield* Deferred.await(handoffAccepted);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(2);
+
+        // Closing the client drain stream and disconnecting the RPC fiber must keep UpdateDrain held.
+        yield* Scope.close(clientDrainScope, Exit.void);
+        yield* Fiber.interrupt(commitFiber);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+        expect(yield* UpdateDrain.isDrainingRef(drainRef)).toBe(true);
+
+        // Bounded release if Electron never exits the server.
+        yield* TestClock.adjust(ServerSelfUpdate.SELF_UPDATE_HANDOFF_DRAIN_LIMIT);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(0);
+        expect(yield* UpdateDrain.isDrainingRef(drainRef)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "commitDesktopUpdate releases the post-handoff drain hold immediately when desktop install fails",
+    () =>
+      Effect.gen(function* () {
+        const handoffAccepted = yield* Deferred.make<void>();
+        const failInstall = yield* Deferred.make<void>();
+        const { selfUpdate, drainRef } = yield* makeHarness({
+          mode: "desktop",
+          desktopAppUpdate: {
+            available: true,
+            run: () => Effect.die("unexpected desktop run"),
+            notAppliedVersion: Effect.undefined,
+            cancel: () => Effect.void,
+            commit: (_requestId, onHandoffAccepted) =>
+              Effect.gen(function* () {
+                if (onHandoffAccepted !== undefined) {
+                  yield* onHandoffAccepted();
+                }
+                yield* Deferred.succeed(handoffAccepted, undefined);
+                yield* Deferred.await(failInstall);
+                return yield* new ServerSelfUpdateError({ reason: "install failed" });
+              }),
+          },
+        });
+
+        const commitFiber = yield* selfUpdate
+          .commitDesktopUpdate("req-fail")
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(handoffAccepted);
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(1);
+
+        yield* Deferred.succeed(failInstall, undefined);
+        const error = yield* Fiber.join(commitFiber);
+        expect(error.reason).toBe("install failed");
+        expect((yield* SubscriptionRef.get(drainRef)).holders).toBe(0);
+        expect(yield* UpdateDrain.isDrainingRef(drainRef)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "prepare rejects while an update is already inFlight even when targetVersion is cached",
+    () =>
+      Effect.gen(function* () {
+        const { selfUpdate, order } = yield* makeHarness();
+        yield* selfUpdate.prepare({ targetVersion: "1.1.0" });
+        expect(order).toEqual(["download", "extract", "preflight"]);
+
+        // Accept an update so inFlight remains true until shutdown.
+        yield* selfUpdate.update({ targetVersion: "1.1.0" });
+        expect(
+          (yield* selfUpdate.prepare({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason,
+        ).toBe("A server update is already in progress.");
+      }),
+  );
+
+  it.effect(
+    "invalidates the cached prepared runtime when its binary disappears or database migrations advance",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { selfUpdate, order, dbPath } = yield* makeHarness();
+        const prepared = yield* selfUpdate.prepare({ targetVersion: "1.1.0" });
+        expect(order).toEqual(["download", "extract", "preflight"]);
+
+        // Removing the staged runtime directory invalidates the cache and forces re-staging.
+        yield* fs.remove(path.dirname(prepared.runtimePath), { recursive: true });
+        yield* selfUpdate.prepare({ targetVersion: "1.1.0" });
+        expect(order).toEqual([
+          "download",
+          "extract",
+          "preflight",
+          "download",
+          "extract",
+          "preflight",
+        ]);
+
+        // Advancing databaseMigrationHead invalidates the cached preflight result.
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        try {
+          db.exec(
+            "CREATE TABLE IF NOT EXISTS effect_sql_migrations (migration_id INTEGER PRIMARY KEY);",
+          );
+          db.exec("INSERT INTO effect_sql_migrations (migration_id) VALUES (999);");
+        } finally {
+          db.close();
+        }
+        yield* selfUpdate.prepare({ targetVersion: "1.1.0" });
+        expect(order.filter((step) => step === "preflight")).toHaveLength(3);
+      }),
   );
 });
 

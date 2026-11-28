@@ -121,6 +121,11 @@ const makeCodexConfig = (overrides: Partial<CodexSettings>): CodexSettings => ({
 const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings => ({
   enabled: false,
   binaryPath: "claude",
+  billingKind: "plan",
+  apiKey: "",
+  linkedPlanInstanceId: "",
+  apiCreditGrantUsd: 0,
+  apiCreditCycleEnd: "",
   homePath: "",
   customModels: [],
   launchArgs: "",

@@ -436,6 +436,12 @@ export const AntigravityDriver: ProviderDriver<
         }
         return yield* runtime.start();
       });
+      const notifyAuthRequired = (cause: unknown): Effect.Effect<void> =>
+        !quotaOnly &&
+        runtimeInput.onAuthorizationUrl === undefined &&
+        isAntigravitySignInRequiredError(cause)
+          ? provider.onAuthRequired
+          : Effect.void;
       return {
         ...runtime,
         setMode: (modeId: string) =>
@@ -444,16 +450,8 @@ export const AntigravityDriver: ProviderDriver<
               runtime.setMode(antigravitySessionMode(modeId, modeState)),
             ),
           ),
-        start: () =>
-          startCompatible().pipe(
-            Effect.tapError((cause): Effect.Effect<void> =>
-              !quotaOnly &&
-              runtimeInput.onAuthorizationUrl === undefined &&
-              isAntigravitySignInRequiredError(cause)
-                ? provider.onAuthRequired
-                : Effect.void,
-            ),
-          ),
+        start: () => startCompatible().pipe(Effect.tapError(notifyAuthRequired)),
+        prompt: (...args) => runtime.prompt(...args).pipe(Effect.tapError(notifyAuthRequired)),
       };
     });
 

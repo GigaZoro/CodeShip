@@ -1,4 +1,6 @@
 import {
+  ClaudeSettings,
+  ProviderInstanceId as ProviderId,
   defaultInstanceIdForDriver,
   isProviderWorkspaceSnapshotCurrent,
   isProviderWorkspaceSnapshotPending,
@@ -30,6 +32,8 @@ import * as Semaphore from "effect/Semaphore";
 import { isAccountReady } from "@t3tools/shared/serverSettings";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Schema from "effect/Schema";
+import * as ServerSettings from "../serverSettings.ts";
 
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -47,6 +51,7 @@ import {
   writeProviderStatusCache,
 } from "./providerStatusCache.ts";
 import { withSameAccountMarks } from "./providerAccounts.ts";
+import * as ApiCreditBalance from "./ApiCreditBalance.ts";
 import type {
   ProviderInstance,
   ProviderWorkspaceSnapshot,
@@ -537,6 +542,8 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
   sharesAddedAccounts: instance.sharesAddedAccounts === true,
 });
 
+const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
+
 export const layer = Layer.effect(
   ProviderRegistry,
   Effect.gen(function* () {
@@ -549,6 +556,91 @@ export const layer = Layer.effect(
     const config = yield* ServerConfig.ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const apiCredit = yield* Effect.serviceOption(ApiCreditBalance.ApiCreditBalance);
+    const settingsService = yield* ServerSettings.ServerSettingsService;
+    const withBilling = Effect.fn("ProviderRegistry.withBilling")(function* (
+      providers: ReadonlyArray<ServerProvider>,
+    ) {
+      const settings = yield* settingsService.getSettings.pipe(Effect.option);
+      return yield* Effect.forEach(providers, (provider) =>
+        Effect.gen(function* () {
+          if (provider.driver !== "claudeAgent" || provider.billingKind !== "payPerUse")
+            return provider;
+          const config = Option.isSome(settings)
+            ? decodeClaudeSettings(
+                settings.value.providerInstances[provider.instanceId]?.config ?? {},
+              )
+            : Option.none();
+          let reason: string | undefined;
+          if (Option.isNone(config))
+            reason = "Could not read this Claude API credit configuration.";
+          else {
+            const value = config.value;
+            const linked = providers.find(
+              (candidate) => candidate.instanceId === value.linkedPlanInstanceId,
+            );
+            const hasKey =
+              typeof value.apiKey === "string"
+                ? value.apiKey.trim().length > 0
+                : value.apiKey.reference.trim().length > 0;
+            if (!hasKey) reason = "Configure an API key for this Claude API credit account.";
+            else if (
+              !linked ||
+              linked.instanceId === provider.instanceId ||
+              linked.driver !== "claudeAgent" ||
+              linked.billingKind === "payPerUse"
+            )
+              reason = "Link this API credit account to a different Claude subscription account.";
+            else if (
+              providers.some((candidate) => {
+                if (
+                  candidate.instanceId === provider.instanceId ||
+                  candidate.driver !== "claudeAgent" ||
+                  candidate.billingKind !== "payPerUse" ||
+                  Option.isNone(settings)
+                )
+                  return false;
+                const other = decodeClaudeSettings(
+                  settings.value.providerInstances[candidate.instanceId]?.config ?? {},
+                );
+                return (
+                  Option.isSome(other) &&
+                  other.value.linkedPlanInstanceId === value.linkedPlanInstanceId
+                );
+              })
+            )
+              reason =
+                "Only one Claude API credit account may be linked to each subscription account.";
+            else if (
+              !(value.apiCreditGrantUsd > 0) ||
+              !/^\d{4}-\d{2}-\d{2}T/.test(value.apiCreditCycleEnd) ||
+              !Number.isFinite(Date.parse(value.apiCreditCycleEnd))
+            )
+              reason = "Set a positive API credit grant and a valid cycle end date.";
+            else if (Option.isNone(apiCredit))
+              reason = "API credit balance tracking is unavailable.";
+            else {
+              yield* apiCredit.value.configure(provider.instanceId, {
+                linkedPlanInstanceId: ProviderId.make(value.linkedPlanInstanceId),
+                grantUsd: value.apiCreditGrantUsd,
+                cycleEnd: value.apiCreditCycleEnd,
+              });
+              const payPerUse = yield* apiCredit.value.snapshot(provider.instanceId);
+              return { ...provider, ...(payPerUse ? { payPerUse } : {}) };
+            }
+          }
+          const { payPerUse: _payPerUse, ...withoutCredit } = provider;
+          return {
+            ...withoutCredit,
+            status: "error" as const,
+            availability: "unavailable" as const,
+            auth: { ...provider.auth, status: "unauthenticated" as const },
+            message: reason,
+            unavailableReason: reason,
+          };
+        }),
+      );
+    });
 
     const changesPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<ReadonlyArray<ServerProvider>>(),
@@ -1621,7 +1713,7 @@ export const layer = Layer.effect(
     });
 
     return {
-      getProviders: Ref.get(providersRef),
+      getProviders: Ref.get(providersRef).pipe(Effect.flatMap(withBilling)),
       fundingForWorkspace: Effect.fn("ProviderRegistry.fundingForWorkspace")(function* (input) {
         const instance = yield* instanceRegistry.getInstance(input.provider.instanceId);
         if (!instance?.enabled || !instance.fundingForWorkspace) return "unknown";
@@ -1645,20 +1737,37 @@ export const layer = Layer.effect(
           : "unknown";
       }),
       refresh: (provider?: ProviderDriverKind) =>
-        refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
+        refresh(provider).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(withBilling),
+        ),
       refreshInstance: (instanceId: ProviderInstanceId) =>
-        refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+        refreshInstance(instanceId).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(withBilling),
+        ),
       refreshUsageIfStale,
       reloadSecretsAndRefresh: (instanceId?: ProviderInstanceId) =>
-        reloadSecretsAndRefresh(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+        reloadSecretsAndRefresh(instanceId).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(withBilling),
+        ),
       rebuildMissingAndRefresh: rebuildMissingAndRefresh().pipe(
         Effect.catchCause(recoverRefreshFailure),
+        Effect.flatMap(withBilling),
       ),
       applySecretAndRefresh: (reference: SecretReference, value: string) =>
-        applySecretAndRefresh(reference, value).pipe(Effect.catchCause(recoverRefreshFailure)),
+        applySecretAndRefresh(reference, value).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(withBilling),
+        ),
       refreshWorkspaceSnapshot: (input) =>
-        refreshWorkspaceSnapshot(input).pipe(Effect.catchCause(recoverRefreshFailure)),
-      refreshAfterUpdate,
+        refreshWorkspaceSnapshot(input).pipe(
+          Effect.catchCause(recoverRefreshFailure),
+          Effect.flatMap(withBilling),
+        ),
+      refreshAfterUpdate: (...args) =>
+        refreshAfterUpdate(...args).pipe(Effect.flatMap(withBilling)),
       runtimeModeLimits,
       invalidateModelCaches,
       refreshModelCatalog: refreshModelCatalog().pipe(
@@ -1668,7 +1777,15 @@ export const layer = Layer.effect(
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
       get streamChanges() {
-        return Stream.fromPubSub(changesPubSub);
+        const snapshots = Stream.fromPubSub(changesPubSub);
+        return (
+          Option.isSome(apiCredit)
+            ? Stream.merge(
+                snapshots,
+                apiCredit.value.changes.pipe(Stream.mapEffect(() => Ref.get(providersRef))),
+              )
+            : snapshots
+        ).pipe(Stream.mapEffect(withBilling));
       },
     } satisfies ProviderRegistry["Service"];
   }),

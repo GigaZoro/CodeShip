@@ -482,6 +482,12 @@ it reported, dimmed, for example **Offline · Working**. That status cannot chan
 is back, so the time stops counting and Settle and Snooze wait too; hover a thread to see when the
 machine was last seen.
 
+When one cause holds two or more threads at once (a machine offline, a provider that is down, or a
+usage limit that stopped several threads until the same reset), the bottom of the web and desktop
+sidebar shows it once, for example **VPS offline · 7 threads waiting**, and the thread's notice and
+pop-up say the same instead of one per thread. Click it to open Machines, Usage or Providers. It
+goes away by itself when the cause clears, and **Background notices** notes **Recovered**.
+
 With more than one machine, the bottom of the web and desktop sidebar lists them by initial. Click
 it to see each machine's connection, when it was last seen, how many threads are working or need
 you, its tightest usage limit, and **Reconnect**. On mobile, the title at the top names a machine

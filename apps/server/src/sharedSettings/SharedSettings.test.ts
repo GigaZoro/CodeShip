@@ -1294,7 +1294,8 @@ it.effect(
   "an agent sets the fields an account shares as its form would, and the group takes them",
   () =>
     Effect.gen(function* () {
-      const local = workAccount("a");
+      const base = workAccount("a");
+      const local = { ...base, config: { ...base.config, apiKey: "synthetic-private-key" } };
       const { versions, accounts } = yield* run(
         (shared, settings) =>
           Effect.gen(function* () {
@@ -1327,6 +1328,10 @@ it.effect(
           displayName: "Claude - Work",
           sharedWithMachines: true,
           config: {
+            billingKind: "plan",
+            linkedPlanInstanceId: "",
+            apiCreditGrantUsd: 0,
+            apiCreditCycleEnd: "",
             customModels: ["claude-opus-5-5"],
             autoCompactWindow: "400000",
             idleCompaction: "off",
@@ -1335,7 +1340,15 @@ it.effect(
         [CLAUDE_BUILT_IN]: {
           driver: CLAUDE,
           sharedWithMachines: false,
-          config: { customModels: [], autoCompactWindow: "250000", idleCompaction: "default" },
+          config: {
+            billingKind: "plan",
+            linkedPlanInstanceId: "",
+            apiCreditGrantUsd: 0,
+            apiCreditCycleEnd: "",
+            customModels: [],
+            autoCompactWindow: "250000",
+            idleCompaction: "default",
+          },
         },
         codex: { driver: CODEX, sharedWithMachines: false, config: { customModels: [] } },
         cursor: { driver: "cursor", sharedWithMachines: false, config: { customModels: [] } },

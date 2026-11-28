@@ -22,6 +22,7 @@ import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration
 import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
 import * as MemoryAdmission from "../../../resourceTelemetry/MemoryAdmission.ts";
 import { outputRequestProblem } from "../../../orchestration-v2/runOutput.ts";
+import * as RepoConcurrencyAdmission from "../../../peer/RepoConcurrencyAdmission.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -594,103 +595,130 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           yield* OrchestrationMcp.requireMemoryForDelegation(
             yield* MemoryAdmission.MemoryAdmission,
           );
-        let startedRuntimeMode =
-          projectDefaults !== undefined && input.runtimeMode === undefined
-            ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
-                Effect.orElseSucceed(() => runtimeMode),
-              )
-            : runtimeMode;
-        if (!replaying) {
-          const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
-          if (input.modelSelection === undefined) {
-            const cwd =
-              workspaceStrategy?.type === "existing_worktree"
-                ? workspaceStrategy.worktreePath
-                : project?.workspaceRoot;
-            yield* refuseAgentModePick({
-              callerRuntimeMode: context.limits.runtimeMode,
-              picked: modelSelection.options,
-              descriptors: providerOptionDescriptors(
-                OrchestrationMcp.withWorkspaceModels(providers, cwd).find(
-                  (candidate) => candidate.instanceId === modelSelection.instanceId,
+        const nonImplementationDelegatedRole =
+          delegatedFrom !== undefined &&
+          RepoConcurrencyAdmission.isNonImplementationRole(input.delegatedRole)
+            ? input.delegatedRole
+            : undefined;
+        const needsRepoSlot =
+          !replaying &&
+          input.scratch !== true &&
+          interactionMode !== "plan" &&
+          input.capExemption === undefined &&
+          nonImplementationDelegatedRole === undefined;
+        const performLaunch = Effect.gen(function* () {
+          let startedRuntimeMode =
+            projectDefaults !== undefined && input.runtimeMode === undefined
+              ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
+                  Effect.orElseSucceed(() => runtimeMode),
+                )
+              : runtimeMode;
+          if (!replaying) {
+            const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
+            if (input.modelSelection === undefined) {
+              const cwd =
+                workspaceStrategy?.type === "existing_worktree"
+                  ? workspaceStrategy.worktreePath
+                  : project?.workspaceRoot;
+              yield* refuseAgentModePick({
+                callerRuntimeMode: context.limits.runtimeMode,
+                picked: modelSelection.options,
+                descriptors: providerOptionDescriptors(
+                  OrchestrationMcp.withWorkspaceModels(providers, cwd).find(
+                    (candidate) => candidate.instanceId === modelSelection.instanceId,
+                  ),
                 ),
-              ),
-              held:
-                caller?.modelSelection.instanceId === modelSelection.instanceId
-                  ? caller.modelSelection.options
-                  : undefined,
+                held:
+                  caller?.modelSelection.instanceId === modelSelection.instanceId
+                    ? caller.modelSelection.options
+                    : undefined,
+              });
+            }
+            startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
+              modelSelection,
+              supportedRuntimeModes: providers.find(
+                (provider) => provider.instanceId === modelSelection.instanceId,
+              )?.supportedRuntimeModes,
             });
           }
-          startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
-            modelSelection,
-            supportedRuntimeModes: providers.find(
-              (provider) => provider.instanceId === modelSelection.instanceId,
-            )?.supportedRuntimeModes,
-          });
-        }
-        // A new thread owns no attachments yet, even on a replay: a replay claims again and
-        // keeps the copies its first launch accepted.
-        const result = yield* withResolvedAttachments(
-          { requested: attachments, owned: [], context },
-          (attachments) =>
-            ThreadMessageIntake.launchThread({
-              commandId,
-              threadId,
+          // A new thread owns no attachments yet, even on a replay: a replay claims again and
+          // keeps the copies its first launch accepted.
+          return yield* withResolvedAttachments(
+            { requested: attachments, owned: [], context },
+            (attachments) =>
+              ThreadMessageIntake.launchThread({
+                commandId,
+                threadId,
+                projectId,
+                title: input.title,
+                ...(input.generateTitle === undefined
+                  ? {}
+                  : { generateTitle: input.generateTitle }),
+                ...(input.generateTitle === true ? {} : { titleRenamed: true }),
+                modelSelection,
+                runtimeMode: startedRuntimeMode,
+                interactionMode,
+                workspaceStrategy: strategy ?? { type: "root" },
+                ...(input.message === undefined && attachments.length === 0
+                  ? {}
+                  : {
+                      initialMessage: {
+                        messageId,
+                        ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                        text: input.message ?? "",
+                        attachments,
+                        ...(input.outputSchema === undefined
+                          ? {}
+                          : { outputSchema: input.outputSchema }),
+                      },
+                    }),
+                createdBy: "agent",
+                creationSource: "mcp",
+                ...(linkOrigin === undefined ? {} : { linkOrigin }),
+                ...(delegatedFrom === undefined ? {} : { delegatedFrom }),
+                ...(caller !== undefined ||
+                linkOrigin === undefined ||
+                input.workflowRun === undefined
+                  ? {}
+                  : { workflowRun: input.workflowRun }),
+                ...(nonImplementationDelegatedRole === undefined
+                  ? {}
+                  : { tags: [nonImplementationDelegatedRole] }),
+              }).pipe(
+                Effect.mapError((error) => {
+                  if (error._tag === "AttachmentClaimError") {
+                    return new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: error.message,
+                    });
+                  }
+                  if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
+                    return new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: error.message,
+                    });
+                  }
+                  // The administrator's ceiling refuses the mode; say so rather than "unavailable".
+                  if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
+                    return new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: error.cause.message,
+                    });
+                  }
+                  return unavailable();
+                }),
+              ),
+          );
+        });
+        const result = needsRepoSlot
+          ? yield* RepoConcurrencyAdmission.withRepoConcurrencySlot({
+              admission: yield* Effect.serviceOption(
+                RepoConcurrencyAdmission.RepoConcurrencyAdmission,
+              ),
               projectId,
-              title: input.title,
-              ...(input.generateTitle === undefined ? {} : { generateTitle: input.generateTitle }),
-              ...(input.generateTitle === true ? {} : { titleRenamed: true }),
-              modelSelection,
-              runtimeMode: startedRuntimeMode,
-              interactionMode,
-              workspaceStrategy: strategy ?? { type: "root" },
-              ...(input.message === undefined && attachments.length === 0
-                ? {}
-                : {
-                    initialMessage: {
-                      messageId,
-                      ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                      text: input.message ?? "",
-                      attachments,
-                      ...(input.outputSchema === undefined
-                        ? {}
-                        : { outputSchema: input.outputSchema }),
-                    },
-                  }),
-              createdBy: "agent",
-              creationSource: "mcp",
-              ...(linkOrigin === undefined ? {} : { linkOrigin }),
-              ...(delegatedFrom === undefined ? {} : { delegatedFrom }),
-              ...(caller !== undefined ||
-              linkOrigin === undefined ||
-              input.workflowRun === undefined
-                ? {}
-                : { workflowRun: input.workflowRun }),
-            }).pipe(
-              Effect.mapError((error) => {
-                if (error._tag === "AttachmentClaimError") {
-                  return new OrchestratorMcpFailure({
-                    code: "orchestration_error",
-                    message: error.message,
-                  });
-                }
-                if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
-                  return new OrchestratorMcpFailure({
-                    code: "invalid_request",
-                    message: error.message,
-                  });
-                }
-                // The administrator's ceiling refuses the mode; say so rather than "unavailable".
-                if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
-                  return new OrchestratorMcpFailure({
-                    code: "invalid_request",
-                    message: error.cause.message,
-                  });
-                }
-                return unavailable();
-              }),
-            ),
-        );
+              use: () => performLaunch,
+            })
+          : yield* performLaunch;
         const thread = result.projection.thread;
         // A concurrent request can accept the key after the shell lookup.
         if (input.clientRequestId !== undefined)

@@ -6,11 +6,16 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { t, tn } from "../../lib/i18n";
 import { appAtomRegistry } from "../../state/atom-registry";
 
-/** The status line of an update that waits for chats' tool calls and background work. */
-export function waitingOnWorkText(work: ReadonlyArray<unknown> | undefined) {
+/** The status line of an update that waits for chats' active turns, tool calls, and background work. */
+export function waitingOnWorkText(
+  work: ReadonlyArray<unknown> | undefined,
+  runningTurns?: ReadonlyArray<unknown> | undefined,
+) {
   const count = work?.length ?? 0;
-  return count > 0
-    ? tn(count, "Waiting for {count} task", "Waiting for {count} tasks")
+  if (count > 0) return tn(count, "Waiting for {count} task", "Waiting for {count} tasks");
+  const turnCount = runningTurns?.length ?? 0;
+  return turnCount > 0
+    ? tn(turnCount, "Waiting for {count} chat to finish", "Waiting for {count} chats to finish")
     : t("Waiting for background work…");
 }
 

@@ -1,3 +1,4 @@
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -6,23 +7,29 @@ import { expect, it } from "@effect/vitest";
 import {
   type MemoryShortage,
   type ModelSelection,
+  type OrchestrationV2AppThread,
+  type Project,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ScheduledTask,
-  ScheduledTaskUpsertInput,
   type ServerProvider,
+  ScheduledTaskUpsertInput,
   ThreadId,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
   MessageId,
   RunId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -31,6 +38,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -44,6 +52,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as RepoConcurrencyAdmission from "../peer/RepoConcurrencyAdmission.ts";
 import { UpdateDrain } from "../cloud/updateDrain.ts";
 
 const decodeUpsertInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
@@ -651,6 +660,7 @@ const runHistoryLayer = (
     typeof layerSharedTaskDependencies
   > = layerSharedTaskDependencies(),
   threads = Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+  repoAdmission: Layer.Layer<RepoConcurrencyAdmission.RepoConcurrencyAdmission> = RepoConcurrencyAdmission.layerTest(),
 ) =>
   ScheduledTaskService.layer.pipe(
     Layer.provide(
@@ -669,6 +679,7 @@ const runHistoryLayer = (
         sharedDependencies,
         Layer.mock(SecretRequests.SecretRequests)({}),
         accountRouting,
+        repoAdmission,
       ),
     ),
   );
@@ -902,14 +913,14 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
       expect(runs[1]?.error).toContain("Claude is out of usage until Friday.");
 
       // Each task keeps its latest 50 runs, and older ones from the last 90 days; the list shows
-      // the newest 90, room for 50 runs and the four quiet skip buckets.
+      // the newest 100, room for 50 runs and the five quiet skip buckets.
       const sql = yield* SqlClient.SqlClient;
       const insertRun = (runId: string, startedAt: string) =>
         sql`INSERT INTO scheduled_task_runs (run_id, task_id, trigger, started_at, outcome)
           VALUES (${runId}, ${task.id}, 'scheduled', ${startedAt}, 'succeeded')`;
       yield* insertRun("expired", "2026-08-01T00:00:00.000Z");
       yield* insertRun("in-window", "2026-08-13T00:00:00.000Z");
-      for (let index = 0; index < 90; index += 1) {
+      for (let index = 0; index < 100; index += 1) {
         yield* insertRun(
           `recent-${index}`,
           DateTime.formatIso(
@@ -920,14 +931,14 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
       yield* TestClock.adjust("1 minute");
       yield* service.runNow({ id: task.id });
       const kept = (yield* service.listRuns({ id: task.id })).runs;
-      expect(kept).toHaveLength(90);
+      expect(kept).toHaveLength(100);
       expect(kept[0]?.threadId).toBe("thread-second");
       const stored = yield* sql<{ run_id: string }>`
         SELECT run_id FROM scheduled_task_runs WHERE run_id IN ('expired', 'in-window')`;
       expect(stored).toEqual([{ run_id: "in-window" }]);
       const counted = yield* sql<{ count: number }>`
         SELECT COUNT(*) AS count FROM scheduled_task_runs WHERE task_id = ${task.id}`;
-      expect(counted).toEqual([{ count: 94 }]);
+      expect(counted).toEqual([{ count: 104 }]);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -1218,6 +1229,7 @@ it.effect.each([
 it.effect.each([
   { why: "returns before its next time", untilAt: [10, 12], nextAt: [10, 12] },
   { why: "returns after its next time", untilAt: [11, 9], nextAt: [11, 7] },
+  { why: "has no known reset time", untilAt: null, nextAt: [11, 7] },
 ] as const)(
   "a fixed-time run skipped for usage waits once for the room when it $why",
   ({ untilAt, nextAt }) =>
@@ -1231,7 +1243,7 @@ it.effect.each([
         DateTime.formatIso(DateTime.toUtc(at(day, hour)));
       yield* TestClock.setTime(DateTime.toEpochMillis(at(10, 6, 59)));
       const launched = yield* Ref.make<ReadonlyArray<string>>([]);
-      const until = isoAt(untilAt[0], untilAt[1]);
+      const until = untilAt === null ? null : isoAt(untilAt[0], untilAt[1]);
       const block = yield* Ref.make<AccountRouting.UsageBlock | null>({
         driver: ProviderDriverKind.make("claude"),
         until,
@@ -1267,9 +1279,16 @@ it.effect.each([
         );
 
         yield* Ref.set(block, null);
+        const ran = yield* service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some((entry) => entry.id === task.id && entry.lastRunStatus === "succeeded"),
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
         yield* TestClock.setTime(Date.parse(isoAt(nextAt[0], nextAt[1])) + 5_000);
         yield* TestClock.adjust("6 seconds");
-        yield* Effect.yieldNow;
+        yield* Fiber.join(ran);
         expect(yield* Ref.get(launched)).toEqual(["Daily"]);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
@@ -1530,6 +1549,154 @@ it.effect("separates bound fixed-time runs of tasks recreated in the same clock 
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect.each([
+  { restart: false, until: null },
+  { restart: true, until: null },
+  { restart: false, until: "2026-12-01T00:00:00.000Z" },
+  { restart: true, until: "2026-12-01T00:00:00.000Z" },
+])(
+  "readmits a once usage wait when capacity returns (restart: $restart, until: $until)",
+  ({ restart, until }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-10T12:00:00.000Z"));
+      const snapshots = yield* Queue.unbounded<ReadonlyArray<ServerProvider>>();
+      const account = (
+        balanceState: "available" | "exhausted",
+        auth: "authenticated" | "unauthenticated" = "authenticated",
+      ): ServerProvider => ({
+        instanceId: ProviderInstanceId.make("claude_api"),
+        driver: ProviderDriverKind.make("claudeAgent"),
+        billingKind: until === null ? "plan" : "payPerUse",
+        enabled: true,
+        installed: true,
+        version: null,
+        status: "ready",
+        auth: { status: auth },
+        checkedAt: "2026-11-10T12:00:00.000Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+        usageLimits: {
+          checkedAt: "2026-11-10T12:00:00.000Z",
+          windows: [],
+          usageAllowed: balanceState === "available",
+        },
+        payPerUse:
+          until === null
+            ? undefined
+            : {
+                linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+                grantUsd: 50,
+                meteringStartedAt: "2026-09-01T00:00:00.000Z",
+                unpricedUsage: false,
+                cycleStart: "2026-09-01T00:00:00.000Z",
+                cycleEnd: "2026-12-01T00:00:00.000Z",
+                estimatedRemainingUsd: 48,
+                balanceState,
+                checkedAt: "2026-11-10T12:00:00.000Z",
+                spendSource: "metered",
+                spendUsd: null,
+              },
+      });
+      const provider = yield* Ref.make(account("exhausted"));
+      const launches = yield* Ref.make<ReadonlyArray<string>>([]);
+      const dependencies = Layer.mergeAll(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Ref.get(provider).pipe(Effect.map((value) => [value])),
+          streamChanges: Stream.fromQueue(snapshots),
+        }),
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: () =>
+            Ref.get(provider).pipe(
+              Effect.map((value) =>
+                value.usageLimits?.usageAllowed === true ||
+                value.payPerUse?.balanceState === "available"
+                  ? null
+                  : {
+                      driver: value.driver,
+                      until,
+                      accounts: [value.instanceId],
+                    },
+              ),
+            ),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+      );
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launches, (titles) => [...titles, input.title]).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-recredited"), resumed: false } as never),
+          ),
+        dependencies,
+      );
+      const awaitTask = (
+        service: ScheduledTaskService.ScheduledTaskService["Service"],
+        title: string,
+        done: (task: ScheduledTask) => boolean,
+      ) =>
+        service.subscribeList().pipe(
+          Stream.filter(({ tasks }) => tasks.some((task) => task.title === title && done(task))),
+          Stream.runHead,
+        );
+      const resumed = Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const ran = yield* awaitTask(
+          service,
+          "Waiting",
+          (task) => task.lastRunStatus === "succeeded",
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("6 seconds");
+        yield* Fiber.join(ran);
+        expect(yield* Ref.get(launches)).toEqual(["Waiting"]);
+        expect((yield* service.list()).tasks.find((task) => task.title === "Paused")?.enabled).toBe(
+          false,
+        );
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const waiting = yield* service.upsert(
+          yield* historyTask("Waiting", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const paused = yield* service.upsert(
+          yield* historyTask("Paused", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const skipped = yield* awaitTask(
+          service,
+          "Waiting",
+          (task) => task.nextRunAt === until,
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("35 seconds");
+        yield* Fiber.join(skipped);
+        yield* service.setEnabled(
+          { id: paused.task.id, enabled: false },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        expect((yield* service.listRuns({ id: waiting.task.id })).runs[0]).toMatchObject({
+          skipReason: "usage_limited",
+          usageLimit: { until },
+        });
+        yield* Queue.offer(snapshots, [account("exhausted", "unauthenticated")]);
+        yield* Queue.offer(snapshots, [account("exhausted")]);
+        expect(yield* Ref.get(launches)).toEqual([]);
+        if (!restart) {
+          yield* Ref.set(provider, account("available"));
+          yield* Queue.offer(snapshots, [account("available")]);
+          yield* resumed;
+        }
+      }).pipe(Effect.provide(layer));
+      if (restart) {
+        yield* Ref.set(provider, account("available"));
+        yield* resumed.pipe(Effect.provide(layer));
+      }
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect(
   "skips a scheduled run while memory is short, names the reading, and runs the next once it frees",
   () =>
@@ -1779,5 +1946,340 @@ it.effect(
         error: null,
       });
       expect(morning?.nextRunAt).toBe(DateTime.formatIso(DateTime.toUtc(at(8, 0, 2))));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "defers scheduled implementation runs when the repo is at cap, honors exemptions and manual runNow, and runs once a slot frees",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-10T12:00:00.000Z"));
+      const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+      const blocked = yield* Ref.make(true);
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launched, (titles) => [...titles, input.title]).pipe(
+            Effect.as({
+              threadId: ThreadId.make(`thread-${input.title}`),
+              resumed: false,
+            } as never),
+          ),
+        Layer.empty,
+        MemoryAdmission.layerTest(),
+        layerSharedTaskDependencies(),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        RepoConcurrencyAdmission.layerTest(({ requestedCount }) =>
+          Ref.get(blocked).pipe(
+            Effect.map((isBlocked) => ({
+              allowed: !isBlocked,
+              activeCount: isBlocked ? 4 : 3,
+              requestedCount: requestedCount ?? 1,
+              limit: 4,
+              repoKey: "github.com/pingdotgg/t3code",
+              breakdown: [
+                { environmentId: "local" as const, label: "local", count: isBlocked ? 4 : 3 },
+              ],
+            })),
+          ),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task: autopilot } = yield* service.upsert(
+          yield* historyTask("Autopilot", { schedule: { type: "interval", everyMs: 600_000 } }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const { task: once } = yield* service.upsert(
+          yield* historyTask("Once", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const { task: planTask } = yield* service.upsert(
+          yield* historyTask("Plan", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+            interactionMode: "plan",
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const { task: brokenMainTask } = yield* service.upsert(
+          yield* historyTask("BrokenMain", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+            capExemption: "broken_main",
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const { task: incidentTask } = yield* service.upsert(
+          yield* historyTask("Incident", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+            capExemption: "incident",
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+
+        const listed = (yield* service.list()).tasks;
+        const byId = (tasks: ReadonlyArray<ScheduledTask>, id: string) =>
+          tasks.find((entry) => entry.id === id);
+        expect(byId(listed, autopilot.id)?.capExemption).toBeNull();
+        expect(byId(listed, brokenMainTask.id)?.capExemption).toBe("broken_main");
+        expect(byId(listed, incidentTask.id)?.capExemption).toBe("incident");
+
+        const settled = (done: (tasks: ReadonlyArray<ScheduledTask>) => boolean) =>
+          service.subscribeList().pipe(
+            Stream.filter(({ tasks }) => done(tasks)),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+
+        const firstTick = yield* settled(
+          (tasks) =>
+            byId(tasks, once.id)?.nextRunAt !== once.nextRunAt &&
+            byId(tasks, planTask.id)?.lastRunStatus === "succeeded" &&
+            byId(tasks, brokenMainTask.id)?.lastRunStatus === "succeeded" &&
+            byId(tasks, incidentTask.id)?.lastRunStatus === "succeeded",
+        );
+        yield* TestClock.adjust("35 seconds");
+        yield* Fiber.join(firstTick);
+
+        expect(yield* Ref.get(launched)).toEqual(
+          expect.arrayContaining(["Plan", "BrokenMain", "Incident"]),
+        );
+        expect(yield* Ref.get(launched)).not.toContain("Once");
+        expect((yield* service.listRuns({ id: once.id })).runs).toEqual([
+          expect.objectContaining({
+            trigger: "scheduled",
+            outcome: "skipped",
+            skipReason: "repo_capacity",
+            threadId: null,
+          }),
+        ]);
+        const postponedOnce = byId((yield* service.list()).tasks, once.id);
+        expect(postponedOnce).toMatchObject({ enabled: true, runCount: 0 });
+        expect(Date.parse(postponedOnce!.nextRunAt!)).toBeGreaterThanOrEqual(
+          Date.parse("2026-11-10T12:02:30.000Z"),
+        );
+
+        // Manual runNow bypasses the repo concurrency cap even while at 4/4.
+        yield* service.runNow({ id: autopilot.id });
+        expect(yield* Ref.get(launched)).toContain("Autopilot");
+
+        // Free a slot and verify the postponed one-time task runs on its 2-minute retry.
+        yield* Ref.set(blocked, false);
+        const onceRan = yield* settled(
+          (tasks) => byId(tasks, once.id)?.lastRunStatus === "succeeded",
+        );
+        yield* TestClock.adjust("130 seconds");
+        yield* Fiber.join(onceRan);
+        expect(yield* Ref.get(launched)).toContain("Once");
+
+        // Clearing capExemption: null re-enables cap enforcement on a previously exempted task.
+        yield* Ref.set(blocked, true);
+        const { task: unexempted } = yield* service.upsert(
+          yield* historyTask("BrokenMain", {
+            id: brokenMainTask.id,
+            schedule: { type: "once", runAt: "2026-11-10T12:03:30.000Z" },
+            capExemption: null,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        expect(unexempted.capExemption).toBeNull();
+        const unexemptedDeferred = yield* settled(
+          (tasks) => byId(tasks, brokenMainTask.id)?.nextRunAt !== unexempted.nextRunAt,
+        );
+        yield* TestClock.adjust("60 seconds");
+        yield* Fiber.join(unexemptedDeferred);
+        expect((yield* service.listRuns({ id: brokenMainTask.id })).runs[0]).toMatchObject({
+          trigger: "scheduled",
+          outcome: "skipped",
+          skipReason: "repo_capacity",
+          threadId: null,
+        });
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "defers in checkThenRun if repo hits cap during runCondition and reserves a repo slot across scheduled launches",
+  () =>
+    Effect.gen(function* () {
+      const start = Date.parse("2026-11-10T12:00:00.000Z");
+      yield* TestClock.setTime(start);
+
+      const projectId = ProjectId.make("project-run-history");
+      const activeCount = yield* Ref.make(3);
+      const checkEntered = yield* Deferred.make<void>();
+      const releaseCheck = yield* Deferred.make<void>();
+      const launchEntered = yield* Deferred.make<void>();
+      const releaseLaunch = yield* Deferred.make<void>();
+      const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+
+      const existingThreads = new Map<ThreadId, OrchestrationV2AppThread>(
+        (["thread:sched-1", "thread:sched-2", "thread:sched-3", "thread:sched-4"] as const).map(
+          (id) => [
+            ThreadId.make(id),
+            {
+              projectId,
+              interactionMode: "default",
+              archivedAt: null,
+            } as unknown as OrchestrationV2AppThread,
+          ],
+        ),
+      );
+      const allThreadIds = [...existingThreads.keys()];
+      const admissionDeps = Layer.mergeAll(
+        Layer.succeed(HostProcess.Platform, "linux" as NodeJS.Platform),
+        MemoryAdmission.layerTest(),
+        Layer.succeed(HostResources.HostResources, {
+          read: Effect.succeed({
+            sampledAt: 1_000,
+            cpuUtilization: 0.1,
+            cpuCount: 8,
+            availableMemoryBytes: 24 * 1024 ** 3,
+            totalMemoryBytes: 32 * 1024 ** 3,
+            loadAverage: [1, 1, 1] as const,
+          }),
+        }),
+        Layer.mock(ProjectService.ProjectService)({
+          getWithRepositoryIdentity: (id) =>
+            Effect.succeed(
+              id === projectId
+                ? Option.some({
+                    id,
+                    workspaceRoot: "/work/run-history",
+                    repositoryIdentity: {
+                      canonicalKey: "github.com/pingdotgg/t3code",
+                      locator: {
+                        source: "git-remote",
+                        remoteName: "origin",
+                        remoteUrl: "https://github.com/pingdotgg/t3code.git",
+                      },
+                    },
+                  } as unknown as Project)
+                : Option.none(),
+            ),
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getActiveTurnWorkspaces: () =>
+            Ref.get(activeCount).pipe(
+              Effect.map((count) =>
+                allThreadIds.slice(0, count).map((threadId) => ({
+                  threadId,
+                  projectId,
+                  worktreePath: null,
+                })),
+              ),
+            ),
+          getOpenCommandTasks: Effect.succeed([]),
+          getThread: (threadId) => {
+            const found = existingThreads.get(threadId);
+            return found === undefined
+              ? Effect.fail(new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }))
+              : Effect.succeed(found);
+          },
+        }),
+      );
+
+      const liveAdmissionLayer = RepoConcurrencyAdmission.layerLive().pipe(
+        Layer.provide(admissionDeps),
+      );
+      const serviceLayer = runHistoryLayer(
+        (input) =>
+          Effect.gen(function* () {
+            yield* Ref.update(launched, (titles) => [...titles, input.title]);
+            yield* Deferred.succeed(launchEntered, undefined);
+            yield* Deferred.await(releaseLaunch);
+            return { threadId: ThreadId.make(`thread:${input.title}`), resumed: false } as never;
+          }),
+        Layer.empty,
+        MemoryAdmission.layerTest(),
+        layerSharedTaskDependencies(
+          [
+            {
+              id: "project-run-history",
+              title: "Run history",
+              workspaceRoot: "/work/run-history",
+              canonicalKey: null,
+            },
+          ],
+          undefined,
+          Layer.mock(RunConditionCheck.RunConditionCheck)({
+            run: () =>
+              Deferred.succeed(checkEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseCheck)),
+                Effect.as({ outcome: "run" as const, failure: null, exitCode: 0, detail: null }),
+              ),
+          }),
+        ),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        liveAdmissionLayer,
+      );
+      const combinedLayer = Layer.merge(serviceLayer, liveAdmissionLayer);
+
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const admission = yield* RepoConcurrencyAdmission.RepoConcurrencyAdmission;
+
+        // 1. Task with runCondition starts checking at 3/4, repo hits 4/4 before check finishes ->
+        // checkThenRun defers with skipReason:"repo_capacity" and preserves the check answer.
+        const { task: checkedTask } = yield* service.upsert(
+          yield* historyTask("Checked", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:20.000Z" },
+            runCondition: { command: "node ~/check.mjs" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const checkedDeferred = yield* service.subscribeList().pipe(
+          Stream.filter(({ tasks }) => {
+            const current = tasks.find((entry) => entry.id === checkedTask.id);
+            return current !== undefined && current.nextRunAt !== checkedTask.nextRunAt;
+          }),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("25 seconds");
+        yield* Deferred.await(checkEntered);
+        // Repo fills to 4/4 while runCondition is running.
+        yield* Ref.set(activeCount, 4);
+        yield* Deferred.succeed(releaseCheck, undefined);
+        yield* Fiber.join(checkedDeferred);
+
+        expect(yield* Ref.get(launched)).not.toContain("Checked");
+        expect((yield* service.listRuns({ id: checkedTask.id })).runs).toEqual([
+          expect.objectContaining({
+            trigger: "scheduled",
+            outcome: "skipped",
+            skipReason: "repo_capacity",
+            check: expect.objectContaining({ outcome: "run", exitCode: 0 }),
+            threadId: null,
+          }),
+        ]);
+
+        // 2. Drop back to 3/4 and trigger a scheduled launch: while launch is in flight,
+        // a concurrent admission on the same repo sees 4/4 and is rejected.
+        yield* Ref.set(activeCount, 3);
+        const { task: reservedTask } = yield* service.upsert(
+          yield* historyTask("Reserved", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:50.000Z" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const tickFiber = yield* TestClock.adjust("30 seconds").pipe(Effect.forkChild);
+        yield* Deferred.await(launchEntered);
+
+        const concurrentCheck = yield* admission.withReservation({ projectId }, () =>
+          Effect.succeed("should-not-admit"),
+        );
+        expect(concurrentCheck.admitted).toBe(false);
+        expect(concurrentCheck.decision.activeCount).toBe(4);
+
+        yield* Deferred.succeed(releaseLaunch, undefined);
+        yield* Fiber.join(tickFiber);
+        expect(yield* Ref.get(launched)).toContain("Reserved");
+        expect(
+          (yield* service.list()).tasks.find((entry) => entry.id === reservedTask.id)
+            ?.lastRunStatus,
+        ).toBe("succeeded");
+      }).pipe(Effect.provide(combinedLayer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

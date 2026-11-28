@@ -164,6 +164,9 @@ import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegi
 import * as ProviderAutoUpdate from "./provider/ProviderAutoUpdate.ts";
 import * as ClaudeAccountFolders from "./provider/ClaudeAccountFolders.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
+import * as ApiCreditBalance from "./provider/ApiCreditBalance.ts";
+import * as ApiCreditRecovery from "./provider/ApiCreditRecovery.ts";
+import * as ApiCreditUsage from "./provider/ApiCreditUsage.ts";
 import * as ProviderPlugins from "./provider/ProviderPlugins.ts";
 import * as ProviderSkills from "./provider/ProviderSkills.ts";
 import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
@@ -250,6 +253,7 @@ import {
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as CloudCliState from "./cloud/CliState.ts";
 import * as ServerAutoUpdate from "./cloud/autoUpdate.ts";
+import * as UpdateDrain from "./cloud/updateDrain.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as DesktopAppUpdate from "./desktopUpdate/DesktopAppUpdate.ts";
 import * as DesktopUpdateResume from "./desktopUpdate/DesktopUpdateResume.ts";
@@ -258,6 +262,7 @@ import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as CpuAdmission from "./resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "./resourceTelemetry/MemoryAdmission.ts";
+import * as RepoConcurrencyAdmission from "./peer/RepoConcurrencyAdmission.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as TriageService from "./triage/TriageService.ts";
@@ -770,14 +775,19 @@ const layerTaskFolders = TaskFolders.layer.pipe(
   Layer.provide(layerGitWorkflow),
 );
 
+const layerPeerMcpClient = PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer));
+
+const layerRepoConcurrencyAdmission = RepoConcurrencyAdmission.layer.pipe(
+  Layer.provide(RuntimeLayer.layerProjectService),
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provide(layerPeerMcpClient),
+);
+
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   Layer.provide(DesktopUpdateResume.layer),
   // Memoized with the links the rest of the server shares.
-  Layer.provide(
-    SharedTaskPeerCheck.layer.pipe(
-      Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer))),
-    ),
-  ),
+  Layer.provide(SharedTaskPeerCheck.layer.pipe(Layer.provide(layerPeerMcpClient))),
+  Layer.provideMerge(layerRepoConcurrencyAdmission),
   Layer.provide(
     WorkflowForge.layer.pipe(
       Layer.provide(layerIssueService),
@@ -985,6 +995,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     Layer.provideMerge(ProviderMcp.layer),
     // One runner for the server, so every client and the launch job share its update locks.
     Layer.provideMerge(ProviderMaintenanceRunner.layer),
+    Layer.provideMerge(
+      ApiCreditRecovery.layer.pipe(
+        Layer.provide(layerServerSettings),
+        Layer.provide(SecretResolver.layer),
+      ),
+    ),
     Layer.provideMerge(ProviderRegistry.layer),
     Layer.provideMerge(
       ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(SqlitePersistence.layerConfig)),
@@ -1006,6 +1022,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+  Layer.provideMerge(ApiCreditUsage.layer),
+  Layer.provideMerge(ApiCreditBalance.layer.pipe(Layer.provide(layerPersistence))),
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provideMerge(
@@ -1664,6 +1682,7 @@ const layerMakeServer = Layer.unwrap(
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),
       Layer.provideMerge(AgentScopeLive.layer),
+      Layer.provide(UpdateDrain.layer),
       Layer.provideMerge(layerPlatformServices),
       Layer.provideMerge(FeatureFlags.layer),
       Layer.provide(Layer.succeed(HostProcess.InvokedAs, invokedAs)),

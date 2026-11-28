@@ -1,3 +1,9 @@
+import { TokenPricing } from "../usage/TokenPricing.ts";
+import {
+  claudeProjectConfigRoot,
+  claudeSettingSources,
+  readClaudeSettingsCascade,
+} from "../provider/Drivers/ClaudeSettingsCascade.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -12,6 +18,7 @@ import { type ClaudeSettings, TextGenerationError } from "@t3tools/contracts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { deepMerge } from "@t3tools/shared/Struct";
 
+import { ApiCreditBalance } from "../provider/ApiCreditBalance.ts";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import {
   normalizeCliError,
@@ -27,6 +34,8 @@ import {
 import {
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
+  resolveClaudeHomePath,
+  validateClaudeBillingSettings,
 } from "../provider/Drivers/ClaudeHome.ts";
 import { readClaudeUserSettings } from "../provider/Drivers/ClaudeSkills.ts";
 import { readClaudeLaunchArgSettings } from "../provider/Drivers/ClaudeSettingsCascade.ts";
@@ -95,6 +104,16 @@ const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
 
+const ClaudeModelUsage = Schema.Record(
+  Schema.String,
+  Schema.Struct({
+    inputTokens: Schema.Number,
+    outputTokens: Schema.Number,
+    cacheReadInputTokens: Schema.Number,
+    cacheCreationInputTokens: Schema.Number,
+  }),
+);
+const decodeModelUsage = Schema.decodeUnknownOption(ClaudeModelUsage);
 // Only `success` results carry `result`; error subtypes such as
 // error_max_structured_output_retries report through `errors` instead.
 const ClaudeErrorResult = Schema.Struct({
@@ -308,6 +327,22 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     S["DecodingServices"] | Scope.Scope
   > {
     const reportUsage = yield* TextGenerationUsageSink;
+    const balances = yield* Effect.serviceOption(ApiCreditBalance);
+    const pricing = yield* Effect.serviceOption(TokenPricing);
+    const paid = claudeSettings.billingKind === "payPerUse";
+    if (paid && Option.isNone(balances))
+      return yield* new TextGenerationError({
+        operation,
+        detail: "API balance tracking is unavailable.",
+      });
+    if (paid && Option.isSome(balances))
+      yield* balances.value
+        .assertAvailable(modelSelection.instanceId)
+        .pipe(
+          Effect.mapError(
+            (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+          ),
+        );
     const workingDirectory =
       operation === "generateThreadTitle"
         ? yield* fileSystem
@@ -399,6 +434,34 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     ) {
       const streamJson = withImages && imageStdin !== undefined;
       const stdin = streamJson ? imageStdin : prompt;
+      const cascade = yield* readClaudeSettingsCascade({
+        homePath: yield* resolveClaudeHomePath(claudeSettings, claudeEnvironment),
+        environment: claudeEnvironment,
+        cwd: workingDirectory,
+        settingSources: claudeSettingSources(claudeSettings),
+        projectConfigRoot: claudeProjectConfigRoot(claudeSettings),
+        flagSettings: settings,
+        fileSystem,
+        path,
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: "Could not validate Claude billing settings.",
+              cause,
+            }),
+        ),
+      );
+      yield* validateClaudeBillingSettings(
+        claudeSettings,
+        cascade.tiers.map((tier) => tier.settings),
+        claudeEnvironment,
+      ).pipe(
+        Effect.mapError(
+          (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+        ),
+      );
       const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
       const spawnCommand = yield* resolveSpawnCommand(
         claudeSettings.binaryPath || "claude",
@@ -467,8 +530,55 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       );
 
       // stream-json prints one message per line and ends with the result message.
+      const normalizedStdout = streamJson ? (stdout.trim().split("\n").at(-1) ?? "") : stdout;
+      if (paid && Option.isSome(balances)) {
+        const output = Option.getOrUndefined(decodeJsonOption(normalizedStdout));
+        const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
+        const result = messages.findLast(
+          (entry) => entry !== null && typeof entry === "object" && "is_error" in entry,
+        );
+        const modelUsage =
+          result !== null && typeof result === "object" && "modelUsage" in result
+            ? Option.getOrUndefined(decodeModelUsage(result.modelUsage))
+            : undefined;
+        const costs =
+          modelUsage && Option.isSome(pricing)
+            ? yield* pricing.value
+                .priceTokens(
+                  Object.entries(modelUsage).map(([model, tokens]) => ({
+                    model,
+                    totals: {
+                      uncachedInputTokens: tokens.inputTokens,
+                      outputTokens: tokens.outputTokens,
+                      cachedInputTokens: tokens.cacheReadInputTokens,
+                      cacheCreationTokens: tokens.cacheCreationInputTokens,
+                      reasoningTokens: 0,
+                    },
+                  })),
+                )
+                .pipe(Effect.orElseSucceed(() => []))
+            : [];
+        const cost =
+          costs.length > 0 && costs.every((value) => value !== null)
+            ? costs.reduce<number>((sum, value) => sum + (value ?? 0), 0)
+            : null;
+        yield* balances.value.recordCheckSpend(modelSelection.instanceId, cost);
+        if (
+          exitCode === 0 &&
+          result !== null &&
+          typeof result === "object" &&
+          "is_error" in result &&
+          result.is_error === false
+        )
+          yield* balances.value.recordSuccess(modelSelection.instanceId);
+        else
+          yield* balances.value.recordFailure(modelSelection.instanceId, "claudeAgent", {
+            stdout: normalizedStdout,
+            stderr,
+          });
+      }
       return {
-        stdout: streamJson ? (stdout.trim().split("\n").at(-1) ?? "") : stdout,
+        stdout: normalizedStdout,
         stderr,
         exitCode,
       };
@@ -507,6 +617,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
               }),
             ),
           ),
+      ),
+      Effect.onInterrupt(() =>
+        paid && Option.isSome(balances)
+          ? balances.value.recordCheckSpend(modelSelection.instanceId, null)
+          : Effect.void,
       ),
       Effect.scoped,
       Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),

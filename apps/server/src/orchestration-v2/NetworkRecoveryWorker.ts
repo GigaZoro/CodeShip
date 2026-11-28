@@ -10,9 +10,11 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { canOpenTcp } from "../cloud/ConnectReachability.ts";
+import * as UpdateDrain from "../cloud/updateDrain.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -215,12 +217,23 @@ const makeSweep = Effect.gen(function* () {
     ),
   );
   yield* forkParked(Stream.runForEach(settings.streamChanges, () => due.invalidate));
+  yield* forkParked(
+    UpdateDrain.watchDraining.pipe(
+      Stream.zipWithPrevious,
+      Stream.filter(([previous, current]) => Option.isSome(previous) && previous.value && !current),
+      Stream.runForEach(() => due.invalidate),
+    ),
+  );
   return Effect.fn("NetworkRecoveryWorker.sweep")(function* () {
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
     if (yield* due.isIdle(nowMs)) return;
     const readVersion = yield* due.version;
     if (!(yield* settings.getSettings).retryThreadsAfterNetworkErrors) {
+      yield* due.record(readVersion, Infinity, nowMs);
+      return;
+    }
+    if (yield* UpdateDrain.isDraining()) {
       yield* due.record(readVersion, Infinity, nowMs);
       return;
     }
@@ -246,15 +259,13 @@ const makeSweep = Effect.gen(function* () {
           const { command } = plan;
           const dispatch =
             command.type === "prepared-run.retry"
-              ? launches
-                  .retryPreparation(command)
-                  .pipe(
-                    Effect.tap(() =>
-                      Effect.sync(() =>
-                        runRetries.set(command.runId, (runRetries.get(command.runId) ?? 0) + 1),
-                      ),
-                    ),
-                  )
+              ? Effect.scoped(
+                  Effect.gen(function* () {
+                    if (!(yield* UpdateDrain.tryAdmitStart)) return;
+                    yield* launches.retryPreparation(command);
+                    runRetries.set(command.runId, (runRetries.get(command.runId) ?? 0) + 1);
+                  }),
+                )
               : threads.dispatch(command);
           yield* dispatch.pipe(
             // The thread moved on since this tick read it: a person resumed it, or another run started.

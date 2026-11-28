@@ -329,6 +329,7 @@ export const make = Effect.gen(function* () {
         : {}),
       restartHold: true,
       ...(serverSelfUpdate === "boot-service" ? { serverUpdateStaging: true } : {}),
+      updateDrain: true,
       ...(desktopAppUpdate ? { desktopAppUpdate: true, desktopAppChannelSwitch: true } : {}),
       serverBrowser: true,
       peerLinks: true,

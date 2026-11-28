@@ -16761,7 +16761,9 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
               Layer.provide(
                 Layer.mergeAll(
                   CommandReceiptStore.layer,
-                  Layer.mock(AccountRouting)({}),
+                  Layer.mock(AccountRouting)({
+                    route: (input) => Effect.succeed(input.selection),
+                  }),
                   ServerSettings.layerTest({
                     providerInstances: { [alternateInstanceId]: { driver, enabled: true } },
                   }),

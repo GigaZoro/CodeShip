@@ -155,12 +155,16 @@ function EnvironmentProviders({
   // Codex accounts show their sign-in choice even when the app cannot sign them in itself.
   const accounts = providers.filter(
     (provider) =>
-      (canManageProvider(provider) || provider.driver === "codex") && focusedProvider(provider),
+      (canManageProvider(provider) ||
+        provider.driver === "codex" ||
+        provider.billingKind === "payPerUse") &&
+      focusedProvider(provider),
   );
   // Claude has no in-app sign-in; each account is its own instance on a signed-in config folder.
   const claudeAccounts = providers.filter(
     (provider) =>
       provider.driver === CLAUDE_DRIVER &&
+      provider.billingKind !== "payPerUse" &&
       !canManageProvider(provider) &&
       focusedProvider(provider),
   );
@@ -178,6 +182,18 @@ function EnvironmentProviders({
               sharedFrom={sharedFrom(environment, provider)}
               divider={index > 0}
             />
+          ) : null}
+          {provider.driver === "claudeAgent" && provider.billingKind === "payPerUse" ? (
+            <View className="gap-1 p-4">
+              <Text className="text-foreground">
+                {provider.displayName ?? t("Claude API account")}
+              </Text>
+              <Text className="text-foreground-muted">
+                {t(
+                  "Configure this account's API key, linked plan, and monthly credit grant in Providers & models on web or desktop.",
+                )}
+              </Text>
+            </View>
           ) : null}
           {provider.driver === "codex" ? (
             <CodexSignInRows

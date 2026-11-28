@@ -1,3 +1,4 @@
+import * as ServerSettings from "../serverSettings.ts";
 import { assert, describe, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -329,6 +330,7 @@ it.effect("a remote policy refresh preserves a newer health result on the regist
         streamChanges: Stream.empty,
         subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
       }),
+      ServerSettings.layerTest(),
       ServerConfig.layerTest(process.cwd(), { prefix: "compatibility-registry-test" }).pipe(
         Layer.provideMerge(NodeServices.layer),
       ),

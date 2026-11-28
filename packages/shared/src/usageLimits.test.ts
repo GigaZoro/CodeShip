@@ -101,6 +101,61 @@ describe("new thread model fallback", () => {
     providers: [limited, available],
     now,
   };
+  it.each(["available", "exhausted"] as const)(
+    "uses cross-provider fallback only after API credit is %s",
+    (balanceState) => {
+      const claudePlan = {
+        ...limited,
+        instanceId: fallback.instanceId,
+        driver: available.driver,
+        models: listing(fallback.model),
+      };
+      const codexFallback = { ...limited, usageLimits: undefined };
+      const api = provider({
+        driver: available.driver,
+        instanceId: ProviderInstanceId.make("claude-api"),
+        billingKind: "payPerUse",
+        models: listing(fallback.model),
+        auth: { status: "authenticated", type: "apiKey" },
+        payPerUse: {
+          linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+          grantUsd: 50,
+          meteringStartedAt: "2026-09-01T00:00:00.000Z",
+          unpricedUsage: false,
+          cycleStart: "2026-09-01T00:00:00.000Z",
+          cycleEnd: "2026-12-01T00:00:00.000Z",
+          estimatedRemainingUsd: 48,
+          balanceState,
+          checkedAt: "2026-09-03T11:00:00.000Z",
+          spendUsd: 2,
+          spendSource: "metered",
+        },
+      });
+      for (const autoAccount of [false, true]) {
+        for (const failoverLimitedThreads of [false, true]) {
+          const defaultSelection = { ...fallback, autoAccount };
+          expect(
+            resolveNewThreadModelSelection({
+              ...defaults,
+              defaultSelection,
+              fallbackSelection: selection,
+              settings: {
+                ...DEFAULT_SERVER_SETTINGS,
+                failoverLimitedThreads,
+                providerInstances: Object.fromEntries(
+                  [claudePlan, api, codexFallback].map((entry) => [
+                    entry.instanceId,
+                    { driver: entry.driver, enabled: true, config: {} },
+                  ]),
+                ),
+              },
+              providers: [claudePlan, api, codexFallback],
+            }).selection,
+          ).toEqual(balanceState === "available" ? defaultSelection : selection);
+        }
+      }
+    },
+  );
   it.each([
     ["exhausted default", {}, fallback],
     [
@@ -2949,7 +3004,7 @@ describe("accountFailoverStatus", () => {
     settings: { failoverLimitedThreads?: boolean; order?: readonly string[] } = {},
   ) =>
     accountFailoverStatus({
-      driver: codex,
+      driver: providers[0]?.driver ?? codex,
       providers,
       settings: {
         failoverLimitedThreads: settings.failoverLimitedThreads ?? true,
@@ -2972,12 +3027,70 @@ describe("accountFailoverStatus", () => {
         };
 
   it.each([
+    ["2026-09-03T13:00:00.000Z", "api"],
+    ["2026-09-03T14:00:00.000Z", "plan"],
+    ["2026-09-03T15:00:00.000Z", "plan"],
+  ])("reports the account whose capacity expires first (API cycle %s)", (cycleEnd, active) => {
+    const driver = ProviderDriverKind.make("claudeAgent");
+    const api = account("api", {
+      driver,
+      billingKind: "payPerUse",
+      auth: { status: "authenticated", type: "apiKey" },
+      payPerUse: {
+        linkedPlanInstanceId: ProviderInstanceId.make("plan"),
+        grantUsd: 50,
+        meteringStartedAt: "2026-09-01T00:00:00.000Z",
+        unpricedUsage: false,
+        cycleStart: "2026-09-01T00:00:00.000Z",
+        cycleEnd,
+        estimatedRemainingUsd: 48,
+        balanceState: "available",
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        spendUsd: 2,
+        spendSource: "metered",
+      },
+    });
+    expect(
+      status([api, account("plan", { driver })], { failoverLimitedThreads: false }),
+    ).toMatchObject({
+      kind: "ready",
+      active: { instanceId: active },
+    });
+  });
+
+  it.each([
     ["one account has nothing to switch to", [account("a")], {}, null],
     [
       "an API-key account never takes over",
       [account("a"), account("b", { auth: { status: "authenticated", type: "apiKey" } })],
       {},
       null,
+    ],
+    [
+      "billing priority remains active with switching off",
+      [
+        account("a", {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          billingKind: "payPerUse",
+          auth: { status: "authenticated", type: "apiKey" },
+          payPerUse: {
+            linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+            grantUsd: 50,
+            meteringStartedAt: "2026-09-01T00:00:00.000Z",
+            unpricedUsage: false,
+            cycleStart: "2026-09-01T00:00:00.000Z",
+            cycleEnd: "2026-12-01T00:00:00.000Z",
+            estimatedRemainingUsd: 48,
+            balanceState: "available",
+            checkedAt: "2026-09-03T11:00:00.000Z",
+            spendUsd: 0,
+            spendSource: "metered",
+          },
+        }),
+        account("b", { driver: ProviderDriverKind.make("claudeAgent") }),
+      ],
+      { failoverLimitedThreads: false },
+      { kind: "ready", active: "b" },
     ],
     [
       "switching off",
@@ -3058,6 +3171,54 @@ describe("accountFailoverStatus", () => {
         }),
       ),
     ).toEqual({ kind: "ready", active: "a" });
+  });
+
+  it("treats an Antigravity account as ready while any quota pool has room, and switches once all live pools are exhausted", () => {
+    const ag = (
+      id: string,
+      windows: ReadonlyArray<{ id: string; usedPercent: number; resetsAt: string }>,
+    ) =>
+      account(id, {
+        driver: ProviderDriverKind.make("antigravity"),
+        usageLimits: {
+          checkedAt: "2026-09-03T11:00:00.000Z",
+          windows: windows.map((entry) => ({
+            ...window,
+            ...entry,
+          })),
+        },
+      });
+    const check = (providers: readonly ServerProvider[]) =>
+      ids(
+        accountFailoverStatus({
+          driver: ProviderDriverKind.make("antigravity"),
+          providers,
+          settings: { failoverLimitedThreads: true, providerInstanceFailoverOrder: [] },
+          now,
+        }),
+      );
+
+    // Third-party pool exhausted, Gemini pool still has room -> account remains ready.
+    expect(
+      check([
+        ag("a", [
+          { id: "gemini-5h", usedPercent: 10, resetsAt: "2026-09-03T14:00:00.000Z" },
+          { id: "3p-5h", usedPercent: 100, resetsAt: "2026-09-03T16:00:00.000Z" },
+        ]),
+        ag("b", [{ id: "gemini-5h", usedPercent: 0, resetsAt: "2026-09-03T14:00:00.000Z" }]),
+      ]),
+    ).toEqual({ kind: "ready", active: "a" });
+
+    // Every live pool on `a` exhausted -> switches to `b`, reporting earliest pool reset.
+    expect(
+      check([
+        ag("a", [
+          { id: "gemini-5h", usedPercent: 100, resetsAt: "2026-09-03T14:00:00.000Z" },
+          { id: "3p-5h", usedPercent: 100, resetsAt: "2026-09-03T16:00:00.000Z" },
+        ]),
+        ag("b", [{ id: "gemini-5h", usedPercent: 0, resetsAt: "2026-09-03T14:00:00.000Z" }]),
+      ]),
+    ).toEqual({ kind: "switched", active: "b", limited: ["a"], until: "2026-09-03T14:00:00.000Z" });
   });
 });
 

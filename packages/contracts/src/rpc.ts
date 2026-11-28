@@ -1,3 +1,4 @@
+import { ApiCreditUsageRow } from "./apiCreditUsage.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -728,6 +729,7 @@ export const WS_METHODS = {
   manualStepsStartChat: "manualSteps.startChat",
   serverWatchRestartHold: "server.watchRestartHold",
   serverReclaimDatabaseSpace: "server.reclaimDatabaseSpace",
+  serverDrainForUpdate: "server.drainForUpdate",
   peerLinksList: "peerLinks.list",
   peerLinksNames: "peerLinks.names",
   peerLinksLink: "peerLinks.link",
@@ -767,6 +769,7 @@ export const WS_METHODS = {
   serverSignalProcess: "server.signalProcess",
   serverReportClientActivity: "server.reportClientActivity",
   serverGetUsageSummary: "server.getUsageSummary",
+  serverGetApiCreditUsage: "server.getApiCreditUsage",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
   workflowsSubscribe: "workflows.subscribe",
@@ -1221,6 +1224,13 @@ const WsServerWatchRestartHoldRpc = Rpc.make(WS_METHODS.serverWatchRestartHold, 
   error: Schema.Union([OrchestrationV2RestartHoldError, EnvironmentAuthorizationError]),
 });
 
+const WsServerDrainForUpdateRpc = Rpc.make(WS_METHODS.serverDrainForUpdate, {
+  payload: Schema.Struct({}),
+  success: OrchestrationV2RestartHold,
+  stream: true,
+  error: Schema.Union([OrchestrationV2RestartHoldError, EnvironmentAuthorizationError]),
+});
+
 const WsServerRunStorageCleanupRpc = Rpc.make(WS_METHODS.serverRunStorageCleanup, {
   payload: Schema.Struct({}),
   success: StorageCleanupReport,
@@ -1536,6 +1546,12 @@ const WsServerPrepareTriageRpc = Rpc.make(WS_METHODS.serverPrepareTriage, {
   payload: ServerPrepareTriageInput,
   success: ServerPrepareTriageResult,
   error: Schema.Union([ServerPrepareTriageError, EnvironmentAuthorizationError]),
+});
+
+const WsServerGetApiCreditUsageRpc = Rpc.make(WS_METHODS.serverGetApiCreditUsage, {
+  payload: Schema.Struct({}),
+  success: Schema.Array(ApiCreditUsageRow),
+  error: EnvironmentAuthorizationError,
 });
 
 const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
@@ -3035,6 +3051,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerWatchRestartHoldRpc,
   WsServerGetSettingsRpc,
   WsServerReclaimDatabaseSpaceRpc,
+  WsServerDrainForUpdateRpc,
   WsServerUpdateSettingsRpc,
   WsServerShareSettingsRpc,
   WsServerUpdateProjectScriptsRpc,
@@ -3077,6 +3094,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerListTextGeneratorModelsRpc,
   WsServerPrepareTriageRpc,
   WsServerGetUsageSummaryRpc,
+  WsServerGetApiCreditUsageRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsWorkflowsSubscribeRpc,

@@ -33,7 +33,12 @@ import type * as PeerLinks from "./PeerLinks.ts";
 const GIB = 1024 ** 3;
 const CHECK_SLOT_MEMORY_GIB = 6;
 const LANDING_OR_CHECK_COMMAND_PATTERN = /landing-turn\.cjs|check:changed/i;
-const READ_ONLY_THREAD_TAGS: ReadonlySet<string> = new Set(["plan", "review", "research"]);
+const READ_ONLY_THREAD_TAGS: ReadonlySet<string> = new Set([
+  "plan",
+  "review",
+  "research",
+  "design",
+]);
 const PEER_PLACEMENT_PROBE_TIMEOUT = Duration.seconds(5);
 
 export interface MachinePlacementCandidate {

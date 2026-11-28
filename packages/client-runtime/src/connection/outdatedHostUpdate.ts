@@ -1,4 +1,3 @@
-import type { RestartHoldDecision } from "../state/server.ts";
 import { markMessage } from "@t3tools/shared/markedMessage";
 import { msg } from "@t3tools/shared/i18n";
 
@@ -6,6 +5,7 @@ import { MarkedText, translatableMessage } from "../errors/translatable.ts";
 import {
   ORCHESTRATION_PROTOCOL_VERSION,
   type EnvironmentId,
+  type OrchestrationV2RestartHoldTurn,
   type OrchestrationV2RestartHoldWork,
   type ExecutionEnvironmentDescriptor,
   type ServerSelfUpdateInput,
@@ -31,6 +31,8 @@ import { makeWsRpcProtocolClient, PING_TIMEOUT } from "../rpc/protocol.ts";
 import {
   isLegacyUpdateHandoffLoss,
   localizeServerSelfUpdateError,
+  openScopedDrainHoldStream,
+  type RestartHoldDecision,
   resolveServerUpdateProgressResult,
 } from "../state/server.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
@@ -43,8 +45,10 @@ import {
   routeHttpBaseUrl,
   usableRoutes,
 } from "./routes.ts";
-
-import { untilListedRestartHoldWorkEnds } from "@t3tools/shared/restartHold";
+import {
+  untilListedRestartHoldWorkEnds,
+  untilRestartHoldIsEmpty,
+} from "@t3tools/shared/restartHold";
 
 // A v1 host restarting into v2 runs migrations before its descriptor answers again.
 const OUTDATED_HOST_RESTART_TIMEOUT = Duration.minutes(4);
@@ -92,6 +96,8 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
     onStage: (
       stage: OutdatedHostUpdateStage,
       waitingOn?: ReadonlyArray<OrchestrationV2RestartHoldWork>,
+      waitingOnTurns?: ReadonlyArray<OrchestrationV2RestartHoldTurn>,
+      draining?: boolean,
     ) => Effect.Effect<void>,
     restartHoldDecisions: Stream.Stream<RestartHoldDecision>,
   ) {
@@ -157,7 +163,19 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
           ),
         );
         const client = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
-        if (capabilities.restartHold === true) {
+        if (capabilities.updateDrain === true) {
+          const drain = yield* openScopedDrainHoldStream(
+            client[WS_METHODS.serverDrainForUpdate]({}),
+          );
+          const decision = yield* Stream.merge(
+            untilRestartHoldIsEmpty(drain.holds, (hold) =>
+              onStage("waiting", hold.work, hold.runningTurns ?? [], hold.draining ?? true),
+            ),
+            restartHoldDecisions,
+          ).pipe(Stream.runHead, Effect.ensuring(drain.stopForwarding));
+          if (Option.contains(decision, "cancel")) return yield* Effect.interrupt;
+          yield* onStage("downloading");
+        } else if (capabilities.restartHold === true) {
           const decision = yield* Stream.merge(
             untilListedRestartHoldWorkEnds(client[WS_METHODS.serverWatchRestartHold]({}), (work) =>
               onStage("waiting", work),

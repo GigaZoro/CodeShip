@@ -134,6 +134,9 @@ import { ComposerBanner } from "./ComposerBanner";
 import { ComposerSurface } from "./ComposerSurface";
 import { CollapsedComposerPromptPreview } from "./CollapsedComposerPromptPreview";
 import { ThreadNoticeSlot, ThreadNoticeStatus, useThreadNoticeSlot } from "./ThreadNoticeSlot";
+import { withThreadIncidentNotice } from "./threadIncidentNotice";
+import { useThreadIncidentPresentation } from "../incidents/threadIncidentPresentation";
+import { useThreadIncident } from "../../state/threadIncidents";
 import type { ThreadNotice } from "./threadNoticeSlot.logic";
 import {
   attachmentsToReleaseOnUploadCapabilityLoss,
@@ -2914,7 +2917,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             (item.variant === "error" || item.variant === "warning")),
       )
     : bannerItems;
-  const noticeSlot = useThreadNoticeSlot(shelfItems);
+  const threadIncident = useThreadIncident(routeThreadRef);
+  const threadIncidentView = useThreadIncidentPresentation(threadIncident);
+  const noticeSlot = useThreadNoticeSlot(
+    withThreadIncidentNotice(
+      shelfItems,
+      threadIncident === null || threadIncidentView === null
+        ? null
+        : { cause: threadIncident.cause, view: threadIncidentView },
+    ),
+  );
   const focusComposerAtEnd = () => composerEditorRef.current?.focusAtEnd();
   const noticeSlotView = (
     <ThreadNoticeSlot

@@ -323,7 +323,7 @@ export type ProviderCreditGrant = typeof ProviderCreditGrant.Type;
 /** Whether new work can start on an account once Try again has lifted its holds. */
 export const ProviderRetryUsageLimitResult = Schema.Struct({
   /** When new work can start on it again; absent when it can start now, and from older servers. */
-  limitedUntil: Schema.optional(IsoDateTime),
+  limitedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** `limitedUntil` is CodeShip's guess, not a reset the provider reported. */
   estimated: Schema.optional(Schema.Literal(true)),
   /** Absent for an account without prepaid credits CodeShip could spend. */
@@ -334,6 +334,7 @@ export type ProviderRetryUsageLimitResult = typeof ProviderRetryUsageLimitResult
 /** An account CodeShip skips after a usage refusal until the hold ends or Try again lifts it. */
 export const ProviderUsageHold = Schema.Struct({
   instanceId: ProviderInstanceId,
+  apiCredit: Schema.optional(Schema.Literal(true)),
   /** When the hold ends by itself; absent when only the next turn shows whether the cap is gone. */
   heldUntil: Schema.optional(IsoDateTime),
   /** `heldUntil` is CodeShip's guess, not a reset the provider reported. */

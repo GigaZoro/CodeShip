@@ -1706,6 +1706,12 @@ const catalog: MessageCatalog = {
     "{machine} залишає запуски для {other}, де працює інша версія T3.CodeShip. Оновіть T3.CodeShip на обох комп’ютерах.",
   "{machine} left it to {other}, which runs another version of T3.CodeShip: on different versions both could run it. Update T3.CodeShip on both machines.":
     "{machine} залишив його для {other}, де працює інша версія T3.CodeShip: на різних версіях його могли б запустити обидва. Оновіть T3.CodeShip на обох комп’ютерах.",
+  "{machine} offline · {count} threads waiting": {
+    one: "{machine} офлайн · {count} чат чекає",
+    few: "{machine} офлайн · {count} чати чекають",
+    many: "{machine} офлайн · {count} чатів чекають",
+    other: "{machine} офлайн · {count} чату чекають",
+  },
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
   "{machine} ran it last, at {time}": "Востаннє запущено на {machine} о {time}",
   "{machine} ran it.": "Його виконав {machine}.",
@@ -1938,6 +1944,18 @@ const catalog: MessageCatalog = {
   "{provider} updated": "{provider} оновлено",
   "{provider} updated: {version}": "{provider} оновлено: {version}",
   "{provider} via {environment}": "{provider} через {environment}",
+  "{provider} unavailable · {count} threads failed": {
+    one: "{provider} недоступний · {count} чат завершився помилкою",
+    few: "{provider} недоступний · {count} чати завершилися помилкою",
+    many: "{provider} недоступний · {count} чатів завершилися помилкою",
+    other: "{provider} недоступний · {count} чату завершилися помилкою",
+  },
+  "{provider} usage limit · {count} threads stopped": {
+    one: "Ліміт використання {provider} · {count} чат зупинено",
+    few: "Ліміт використання {provider} · {count} чати зупинено",
+    many: "Ліміт використання {provider} · {count} чатів зупинено",
+    other: "Ліміт використання {provider} · {count} чату зупинено",
+  },
   "{provider} Workspace": "Робочий простір {provider}",
   "{provider} write-only headers JSON": "JSON заголовків {provider} лише для запису",
   "{provider}, {count} models": {
@@ -2510,6 +2528,8 @@ const catalog: MessageCatalog = {
     "Додайте провайдера 1Password, а потім виберіть його як джерело значення змінної провайдера.",
   "Add a Bitbucket token in Settings → Source control & issues.":
     "Додайте токен Bitbucket у розділі «Налаштування → Контроль версій і задачі».",
+  "Add a Claude subscription account in Settings → Providers & models to track its API credits.":
+    "Додайте обліковий запис із підпискою Claude в Налаштування → Провайдери й моделі, щоб відстежувати його кредити API.",
   "Add a CLIProxyAPI hub": "Додати хаб CLIProxyAPI",
   "Add a comment": "Додати коментар",
   "Add a comment…": "Додати коментар…",
@@ -3039,6 +3059,10 @@ const catalog: MessageCatalog = {
     "Будь-хто з доступом до диктування в {environment} може витрачати кошти з цього ключа.",
   "Anyone with dictation access to {environment} can use this API key.":
     "Будь-хто з доступом до диктування в {environment} може використовувати цей ключ API.",
+  "API credit available": "Кредити API доступні",
+  "API credit exhausted": "Кредити API вичерпано",
+  "API credit spent; waits for the next billing cycle or a successful credit check":
+    "Кредити API вичерпано; очікування наступного платіжного циклу або успішної перевірки кредитів",
   "Anything annoy you today?": "Щось сьогодні дратувало?",
   "API estimate": "Оцінка за API",
   "API estimate excludes {percent} unpriced records.":
@@ -3952,6 +3976,7 @@ const catalog: MessageCatalog = {
   "Check access before saving": "Перевірте доступ перед збереженням",
   "Check account": "Перевірити обліковий запис",
   "Check again": "Перевірити знову",
+  "Check API credit": "Перевірити кредити API",
   "Check before running": "Перевірка перед запуском",
   "Check capture access": "Перевірити доступ до захоплення",
   "Check capture access in setup": "Перевірте доступ до захоплення в налаштуванні",
@@ -4180,6 +4205,8 @@ const catalog: MessageCatalog = {
     "Варіанти в кожному меню відкладення, від найближчого. Дні тижня означають найближчий після сьогодні.",
   Choose: "Вибрати",
   "Choose {label} color": "Вибрати колір: {label}",
+  "Choose “Update when it finishes” to let these chats finish cleanly while new turns wait for the update.":
+    "Виберіть «Оновити після завершення», щоб ці чати спокійно завершилися, а нові ходи зачекали на оновлення.",
   "Choose a .kdl Niri config or a .conf/.lua Hyprland config.":
     "Виберіть конфігурацію Niri .kdl або конфігурацію Hyprland .conf/.lua.",
   "Choose a base branch before creating a worktree.":
@@ -4335,10 +4362,14 @@ const catalog: MessageCatalog = {
   "Chosen environment (unavailable)": "Обране середовище (недоступне)",
   Cite: "Цитувати",
   "Cite selection in composer": "Цитувати виділене в полі повідомлення",
+  "Claim and link API credits": "Отримати й прив’язати кредити API",
   claude: "claude",
   "Claude account": "Обліковий запис Claude",
   "Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers and sign in to them here.":
     "Claude і Codex мають власні сервери MCP. Увімкніть одного з них у Налаштуваннях, щоб додавати сервери та входити в них тут.",
+  "Claude API account": "Обліковий запис Claude API",
+  "Claude API credits": "Кредити Claude API",
+  "Claude API credits on {environment}": "Кредити Claude API у середовищі {environment}",
   "Claude Code and Codex": "Claude Code і Codex",
   "claude code history": "історія claude code",
   "Claude config folder": "Тека конфігурації Claude",
@@ -4878,6 +4909,8 @@ const catalog: MessageCatalog = {
   "Configure relay (admin)": "Налаштувати ретранслятор (адміністратор)",
   "Configure the capture shortcut in your Niri config, not in T3.CodeShip.":
     "Налаштуйте скорочення захоплення в конфігурації Niri, а не в T3.CodeShip.",
+  "Configure this account's API key, linked plan, and monthly credit grant in Providers & models on web or desktop.":
+    "Налаштуйте ключ API, прив’язаний план і щомісячні кредити цього облікового запису в розділі Провайдери й моделі у вебверсії або настільному застосунку.",
   "Configure, install, sign in to, and update providers and usage sources.":
     "Налаштування, встановлення, вхід і оновлення провайдерів та джерел використання.",
   Configured: "Налаштовано",
@@ -5332,6 +5365,7 @@ const catalog: MessageCatalog = {
   "Could not configure environment relay access.":
     "Не вдалося налаштувати доступ середовища до ретранслятора.",
   "Could not confirm fork": "Не вдалося підтвердити розгалуження",
+  "Could not confirm API credit": "Не вдалося підтвердити наявність кредитів API",
   "Could not confirm relay client installation.":
     "Не вдалося підтвердити встановлення клієнта ретранслятора.",
   "Could not confirm signal": "Не вдалося підтвердити сигнал",
@@ -5533,6 +5567,8 @@ const catalog: MessageCatalog = {
   "Could not list relay-managed environments.":
     "Не вдалося отримати список середовищ під керуванням ретранслятора.",
   "Could not list targets: {cause}": "Не вдалося отримати список цілей: {cause}",
+  "Could not load API credits. Try refreshing.":
+    "Не вдалося завантажити кредити API. Спробуйте оновити.",
   "Could not load archived threads": "Не вдалося завантажити архівні чати",
   "Could not load automations: {error}": "Не вдалося завантажити автоматизації: {error}",
   "Could not load change request activity": "Не вдалося завантажити активність запиту на зміни",
@@ -6204,6 +6240,8 @@ const catalog: MessageCatalog = {
   "Create a task to start a new coding session.":
     "Створіть завдання, щоб почати новий сеанс кодування.",
   "Create a token": "Створити токен",
+  "Create an API key in that organization. In Settings → Providers & models, add a Claude account with Billing set to Pay per use, save the API key, and link this plan.":
+    "Створіть ключ API в цій організації. У Налаштування → Провайдери й моделі додайте обліковий запис Claude з оплатою за використання, збережіть ключ API та прив’яжіть цей план.",
   "Create and checkout a ref before pushing or opening a {kind}.":
     "Створіть посилання та перейдіть на нього, перш ніж надсилати або відкривати {kind}.",
   "Create command": "Команда створення",
@@ -7304,6 +7342,8 @@ const catalog: MessageCatalog = {
   "Enter the full owner/repository name.": "Введіть повну назву у форматі власник/репозиторій.",
   "Enter the gateway's origin, such as https://gateway.example.ts.net:4700.":
     "Введіть origin шлюзу, наприклад https://gateway.example.ts.net:4700.",
+  "Enter the grant amount and cycle end shown in Billing. Set Linked plan account to {instanceId}.":
+    "Введіть суму кредитів і кінець циклу з розділу оплати. У полі прив’язаного облікового запису плану вкажіть {instanceId}.",
   "Enter the password or verification code required by {target}. T3.CodeShip passes your response to the local SSH process and keeps it in memory to reuse for this host. T3.CodeShip does not write it to disk.":
     "Введіть пароль або код підтвердження, який вимагає {target}. T3.CodeShip передає вашу відповідь локальному процесу SSH і зберігає її в пам’яті для повторного використання з цим хостом. T3.CodeShip не записує її на диск.",
   "Enter the path of the checkout to run in.":
@@ -7365,6 +7405,7 @@ const catalog: MessageCatalog = {
   "Evaluated script in the preview browser": "Виконано скрипт у браузері попереднього перегляду",
   "Evaluating an expression in Visual Studio": "Обчислення виразу у Visual Studio",
   "Evaluating script in the preview browser": "Виконання скрипту в браузері попереднього перегляду",
+  "Estimated remaining": "Орієнтовний залишок",
   "Even pace": "Рівномірний темп",
   "Even pace: {percent}% left by now": "Рівномірний темп: до цього часу залишилось би {percent}%",
   "Evening reminder": "Вечірнє нагадування",
@@ -7375,6 +7416,8 @@ const catalog: MessageCatalog = {
   "Every {provider} account this task can use was out of usage until {time}.":
     "В усіх облікових записах {provider}, які може використати це завдання, ліміт використання було вичерпано до {time}.",
   "Every {provider} host is turned off.": "Усі хости {provider} вимкнено.",
+  "Every {provider} account this task can use was out of usage. It will wait until an account reports available usage again.":
+    "Усі доступні цьому завданню облікові записи {provider} вичерпали ліміти. Воно чекатиме, доки обліковий запис знову повідомить про доступне використання.",
   "Every {seconds} sec": "Кожні {seconds} с",
   "Every account is at its limit, and the first resets {time}.":
     "Усі облікові записи досягли ліміту, перший скинеться {time}.",
@@ -7484,7 +7527,7 @@ const catalog: MessageCatalog = {
   },
   "Expired. Link it again with a new pairing code.":
     "Термін дії минув. Пов’яжіть знову за допомогою нового коду сполучення.",
-  Expires: "Термін дії спливає",
+  Expires: "Діє до",
   "Expires {date}": "Термін дії спливає {date}",
   "Expires {time} · one use": "Спливає {time} · одноразовий",
   "Expires in {count} days": {
@@ -8410,6 +8453,7 @@ const catalog: MessageCatalog = {
   "Hard reload": "Жорстке перезавантаження",
   Hardware: "Обладнання",
   "hardware keyboard": "апаратна клавіатура",
+  "Has balance": "Є залишок",
   "Has conflicts": "Має конфлікти",
   "Has not run yet.": "Ще не запускався.",
   "Having trouble signing in?": "Проблеми з входом?",
@@ -8745,6 +8789,7 @@ const catalog: MessageCatalog = {
   "Inactive days": "Днів неактивності",
   "Inactivity does not settle threads with a pull request. Merge and close still do.":
     "Бездіяльність не завершує чати з пул-реквестом. Злиття та закриття завершують.",
+  Incidents: "Інциденти",
   "incl. {tokens} reasoning": "зокрема міркування: {tokens}",
   "Include {file}": "Включити {file}",
   "Include all files": "Включити всі файли",
@@ -9359,6 +9404,8 @@ const catalog: MessageCatalog = {
   "Link a pull request": "Прив’язати пул-реквест",
   "Link a server from its local Settings to reach it through T3 Connect.":
     "Прив’яжіть сервер у його локальних налаштуваннях, щоб підключатися до нього через T3 Connect.",
+  "Link an Anthropic Console organization and turn off automatic reload in Console billing.":
+    "Прив’яжіть організацію Anthropic Console і вимкніть автоматичне поповнення в розділі оплати Console.",
   "Link an environment": "Пов’язати середовище",
   "Link an environment from its local Settings to make it available through T3 Connect.":
     "Зв’яжіть середовище в його локальних налаштуваннях, щоб зробити його доступним через T3 Connect.",
@@ -9642,6 +9689,7 @@ const catalog: MessageCatalog = {
   "Loading {provider} rules and skills": "Завантаження правил і навичок {provider}",
   "Loading {provider}'s MCP servers": "Завантаження MCP-серверів {provider}",
   "Loading agents…": "Завантаження агентів…",
+  "Loading API credits": "Завантаження кредитів API",
   "Loading archive...": "Завантаження архіву...",
   "Loading archived threads": "Завантаження архівних чатів",
   "Loading artifacts...": "Завантаження артефактів...",
@@ -11323,6 +11371,8 @@ const catalog: MessageCatalog = {
   "Open checks on provider": "Відкрити перевірки у провайдера",
   "Open checks: {summary}": "Відкрити перевірки: {summary}",
   "Open comment on host": "Відкрити коментар на хості",
+  "Open claude.ai → Settings → Billing → API credits and claim the grant for this plan.":
+    "Відкрийте claude.ai → Settings → Billing → API credits і отримайте кредити для цього плану.",
   "Open commit {sha}": "Відкрити коміт {sha}",
   "Open composer to compact and send": "Відкрийте поле повідомлення, щоб стиснути й надіслати",
   "Open context": "Відкрити контекст",
@@ -11432,6 +11482,7 @@ const catalog: MessageCatalog = {
   "Open provider setup to sign in.": "Відкрийте налаштування провайдера, щоб увійти.",
   "Open pull request": "Відкритий пул-реквест",
   "Open pull request #{number} on host": "Відкрити пул-реквест №{number} на хості",
+  "Open providers": "Відкрити провайдерів",
   "Open pull request #{number}, {state}: {title}":
     "Відкрити пул-реквест #{number}, {state}: {title}",
   "Open pull requests": "Відкрити пул-реквести",
@@ -12787,6 +12838,7 @@ const catalog: MessageCatalog = {
   "Recording saved": "Запис збережено",
   "Recording time": "Тривалість запису",
   Recordings: "Записи",
+  Recovered: "Відновлено",
   "Recovered ({count})": "Відновилися ({count})",
   Recovery: "Відновлення",
   recurring: "повторювані",
@@ -12816,6 +12868,7 @@ const catalog: MessageCatalog = {
   "Refresh archived threads": "Оновити архівні чати",
   "Refresh artifacts": "Оновити артефакти",
   "Refresh cloud environments": "Оновити хмарні середовища",
+  "Refresh credits": "Оновити кредити",
   "Refresh current diff": "Оновити поточні зміни",
   "Refresh devices": "Оновити пристрої",
   "Refresh diff": "Оновити зміни",
@@ -13901,6 +13954,8 @@ const catalog: MessageCatalog = {
   "Runs {run}": "Виконує запуск {run}",
   "runs a preview build": "використовує попередню збірку",
   "Runs as part of other workflows": "Виконується в складі інших робочих процесів",
+  "Runs a tiny billable check when API credits are next in expiry order. The account stays blocked until the next cycle or the API confirms available credit.":
+    "Виконує коротку платну перевірку, коли черга кредитів API настає за строком дії. Обліковий запис залишається заблокованим до наступного циклу або підтвердження доступних кредитів через API.",
   "Runs before each scheduled run, in the project folder, as one program with its arguments (no shell; ~/ is your home folder). Exit code 0 starts the chat, 10 skips the run, anything else starts the chat anyway. Run now skips the check.":
     "Виконується перед кожним запланованим запуском у теці проєкту як одна програма з аргументами (без оболонки; ~/ це ваша домашня тека). Код завершення 0 запускає чат, 10 пропускає запуск, будь-який інший усе одно запускає чат. «Запустити зараз» пропускає перевірку.",
   "Runs commands and edits files without asking": "Виконує команди та редагує файли без запиту",
@@ -15166,6 +15221,8 @@ const catalog: MessageCatalog = {
   "Some totals may be out of date": "Деякі підсумки можуть бути застарілими",
   "Some trace files could not be read, so diagnostics may be incomplete. {message}":
     "Деякі файли трасування не вдалося прочитати, тож діагностика може бути неповною. {message}",
+  "Some usage could not be priced; remaining credit is unknown.":
+    "Частину використання не вдалося оцінити; залишок кредитів невідомий.",
   "Some workspace entries are not shown.": "Деякі елементи робочого простору не показано.",
   Someone: "Хтось",
   "Something else…": "Щось інше…",
@@ -15221,7 +15278,11 @@ const catalog: MessageCatalog = {
   "Speed: not benchmarked": "Швидкість: не оцінено",
   "Speed: update server for this benchmark":
     "Швидкість: оновіть сервер для цього тесту продуктивності",
+  "Spend is estimated from this environment’s recorded usage. Check Anthropic Console for the authoritative balance. CodeShip does not impose a spending cap; keep automatic reload off.":
+    "Витрати оцінено за використанням, записаним у цьому середовищі. Точний залишок перевіряйте в Anthropic Console. CodeShip не обмежує витрати; залишайте автоматичне поповнення вимкненим.",
   "Spend prepaid credits": "Витрачати передплачені кредити",
+  "Spend this cycle": "Витрати за цей цикл",
+  Spent: "Вичерпано",
   Split: "Розділений",
   "Split diff view": "Розділений вигляд змін",
   "Split long work into new chats or hand it off.":
@@ -16186,6 +16247,8 @@ const catalog: MessageCatalog = {
   "The {term} changed. Refresh before merging.": "{term} змінено. Оновіть перед злиттям.",
   "The {term} could not be opened.": "Не вдалося відкрити {term}.",
   "the access token saved here": "токен доступу, збережений тут",
+  "The account is waiting for available usage.":
+    "Обліковий запис очікує на доступний ліміт використання.",
   "The account shorthand, sign-in address without https://, or ID that op account list shows.":
     "Скорочена назва облікового запису, адреса входу без https:// або ID, який показує op account list.",
   "The ACP could not be prepared.": "Не вдалося підготувати ACP.",
@@ -16712,6 +16775,8 @@ const catalog: MessageCatalog = {
   "The rendered document is too large to preview.":
     "Після обробки документ завеликий для попереднього перегляду.",
   "The repository stays tracked by the project": "Проєкт і далі відстежуватиме цей репозиторій",
+  "The repository already reached its limit of concurrent active or landing implementation threads.":
+    "Репозиторій уже досяг ліміту одночасних активних чатів реалізації або чатів на злитті.",
   "The request failed.": "Запит не вдався.",
   "The request is still waiting. Try again.": "Запит усе ще очікує. Спробуйте ще раз.",
   "The request timed out.": "Час очікування відповіді минув.",
@@ -16867,12 +16932,16 @@ const catalog: MessageCatalog = {
   "The unsent message could not be restored.": "Не вдалося відновити ненадіслане повідомлення.",
   "The update download failed. Try Download update again.":
     "Не вдалося завантажити оновлення. Спробуйте «Завантажити оновлення» ще раз.",
+  "The update drains new work and installs once running chats and this work finish. Restarting now stops it.":
+    "Оновлення призупиняє нові запуски й встановлюється, коли активні чати та ці завдання завершаться. Перезапуск зараз зупинить їх.",
   "The update install failed. Try Restart to update again.":
     "Не вдалося встановити оновлення. Спробуйте «Перезапустити для оновлення» ще раз.",
   "The update installs once each of these chats has no tool call running, so none is cut halfway. Restarting now stops them.":
     "Оновлення встановиться, коли в жодному з цих чатів не виконуватиметься виклик інструмента, тож жоден не обірветься на півдорозі. Перезапуск зараз зупинить їх.",
   "The update installs once nothing listed here is running. Restarting now stops it.":
     "Оновлення встановиться, коли ніщо з переліченого тут не виконуватиметься. Перезапуск зараз зупинить це.",
+  "The update installs once running chats and background work finish. New turns wait until after the update. Restarting now stops them.":
+    "Оновлення встановиться, коли активні чати й фонові завдання завершаться. Нові ходи зачекають до завершення оновлення. Перезапуск зараз зупинить їх.",
   "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.":
     "Оновлення встановиться, коли ці завдання завершаться, навіть якщо чати тим часом почнуть нові. Перезапуск зараз зупинить їх.",
   "The update track did not change.": "Канал оновлень не змінився.",
@@ -19898,6 +19967,7 @@ const catalog: MessageCatalog = {
   "Waiting to sync": "Очікування синхронізації",
   "Waiting to sync with its environment": "Очікування синхронізації із середовищем",
   "Waits for background work": "Очікує фонові завдання",
+  "Waits for running chats": "Очікує активні чати",
   "Waits for running tool calls": "Очікує виклики інструментів, що виконуються",
   "waits for you to resume it": "очікує, доки ви продовжите запуск",
   "waits for your approval": "очікує вашого схвалення",

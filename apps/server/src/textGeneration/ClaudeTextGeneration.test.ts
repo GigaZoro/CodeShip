@@ -1,3 +1,6 @@
+import * as ApiCreditBalance from "../provider/ApiCreditBalance.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { TokenPricing } from "../usage/TokenPricing.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
@@ -232,6 +235,62 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
         disableAllHooks: true,
       });
     }),
+  );
+
+  it.effect("meters auxiliary tokens using configured rates rather than CLI reported dollars", () =>
+    Effect.gen(function* () {
+      const balance = yield* ApiCreditBalance.make;
+      const instanceId = ProviderInstanceId.make("claudeAgent");
+      yield* balance.configure(instanceId, {
+        linkedPlanInstanceId: ProviderInstanceId.make("plan"),
+        grantUsd: 100,
+        cycleEnd: "2026-12-01T00:00:00.000Z",
+      });
+      yield* withFakeClaudeEnv(
+        {
+          claudeConfig: { billingKind: "payPerUse", apiKey: "test-only-key" },
+          output: JSON.stringify({
+            is_error: false,
+            total_cost_usd: 999,
+            modelUsage: {
+              "priced-model": {
+                inputTokens: 10,
+                outputTokens: 3,
+                cacheReadInputTokens: 2,
+                cacheCreationInputTokens: 1,
+              },
+            },
+            structured_output: { title: "Meter tokens" },
+          }),
+        },
+        (service) =>
+          service.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Meter tokens",
+            modelSelection: { instanceId, model: SYNTHETIC_CLAUDE_STANDARD_MODEL },
+          }),
+      ).pipe(
+        Effect.provideService(ApiCreditBalance.ApiCreditBalance, balance),
+        Effect.provideService(TokenPricing, {
+          priceTokens: (items) => {
+            expect(items).toEqual([
+              {
+                model: "priced-model",
+                totals: {
+                  uncachedInputTokens: 10,
+                  outputTokens: 3,
+                  cachedInputTokens: 2,
+                  cacheCreationTokens: 1,
+                  reasoningTokens: 0,
+                },
+              },
+            ]);
+            return Effect.succeed([0.25]);
+          },
+        }),
+      );
+      expect((yield* balance.snapshot(instanceId))?.spendUsd).toBe(0.25);
+    }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
   );
 
   it.effect(

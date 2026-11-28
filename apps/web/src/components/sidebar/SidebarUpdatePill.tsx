@@ -44,9 +44,11 @@ import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
 import { SafeUpdateDialog, useThisAppRunningThreads } from "./SafeUpdateDialog";
 import {
   pendingLocalInstallAtom,
+  readHostedSupportsUpdateDrain,
+  runWithHostedUpdateDrain,
   usePendingLocalInstall,
+  usePendingLocalInstallTurns,
   usePendingLocalInstallWork,
-  waitForHostedBackgroundWork,
 } from "./localInstallWait";
 import { PendingLocalInstallDialog } from "./PendingLocalInstallDialog";
 import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule";
@@ -206,21 +208,28 @@ export async function installLocalUpdateWhenIdle(
   expectedVersion?: string,
 ): Promise<boolean> {
   if (appAtomRegistry.get(pendingLocalInstallAtom) !== null) return false;
-  appAtomRegistry.set(pendingLocalInstallAtom, { version: expectedVersion ?? null });
+  const draining = readHostedSupportsUpdateDrain();
+  appAtomRegistry.set(pendingLocalInstallAtom, {
+    version: expectedVersion ?? null,
+    ...(draining ? { draining: true as const } : {}),
+  });
   try {
-    const wait = await waitForHostedBackgroundWork();
-    if (wait.status === "cancelled") return false;
-    if (wait.status === "failed") {
+    const result = await runWithHostedUpdateDrain(async () => {
+      appAtomRegistry.set(pendingLocalInstallAtom, null);
+      return installLocalUpdate(bridge, reportError, expectedVersion);
+    });
+    if (result.status === "cancelled") return false;
+    if (result.status === "failed") {
       reportError(
         t("Could not wait for background work"),
-        wait.error instanceof Error ? wait.error.message : t("An unexpected error occurred."),
+        result.error instanceof Error ? result.error.message : t("An unexpected error occurred."),
       );
       return false;
     }
+    return result.value;
   } finally {
     appAtomRegistry.set(pendingLocalInstallAtom, null);
   }
-  return installLocalUpdate(bridge, reportError, expectedVersion);
 }
 
 export function SidebarUpdatePill() {
@@ -253,6 +262,7 @@ function SidebarUpdateControl() {
   const run = useUpdateEverythingRun();
   const pendingInstall = usePendingLocalInstall();
   const pendingWork = usePendingLocalInstallWork();
+  const pendingTurns = usePendingLocalInstallTurns();
   const isRunningEverything = run !== null;
   const { iconStatus, showUpdateDetails } = resolveSidebarUpdatePresentation({
     action: pendingAction,
@@ -262,7 +272,7 @@ function SidebarUpdateControl() {
   });
   const tooltip =
     pendingInstall !== null
-      ? restartHoldTooltip(pendingWork)
+      ? restartHoldTooltip(pendingWork, pendingTurns)
       : runsEverything && !isWaitingOnRecheck
         ? everything.summary
         : state &&

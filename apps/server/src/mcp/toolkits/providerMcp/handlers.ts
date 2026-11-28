@@ -101,8 +101,12 @@ export const layer = McpToolAccess.toLayer(ProviderMcpToolkit, {
       const admission = yield* routing
         .retryAccount(instanceId, { requesterThreadId: scope.thread?.threadId })
         .pipe(
-          Effect.mapError(() =>
-            invalid(`No provider account ${instanceId} on this machine; list accounts first.`),
+          Effect.mapError((error) =>
+            invalid(
+              error._tag === "ApiCreditRecoveryError"
+                ? error.detail
+                : `No provider account ${instanceId} on this machine; list accounts first.`,
+            ),
           ),
         );
       return releaseReport(instanceId, admission);

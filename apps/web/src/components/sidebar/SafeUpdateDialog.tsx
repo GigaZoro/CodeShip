@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   OrchestrationV2RestartHoldCommand,
+  OrchestrationV2RestartHoldTurn,
   OrchestrationV2RestartHoldWork,
 } from "@t3tools/contracts";
 import { commandDisplayText } from "@t3tools/client-runtime/work-log/command-label";
@@ -27,6 +28,7 @@ import {
 } from "./runningThreads";
 import {
   useHostedRestartHoldKey,
+  useHostedSupportsUpdateDrain,
   useRestartHoldCommandCount,
   useRestartHoldCommands,
   useRestartHoldWork,
@@ -72,7 +74,7 @@ export function SafeUpdateDialog({
   readonly environmentIds: string;
   /** Installs now, stopping any background work. */
   readonly onConfirm: () => void;
-  /** Installs once no chat waits on background work. */
+  /** Installs once active turns and background work finish. */
   readonly onConfirmWhenIdle: () => void;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -112,9 +114,11 @@ function SafeUpdateDialogContent({
     useAtomValue(runningThreadsAtom(environmentIds)),
   );
   const holdKey = useHostedRestartHoldKey();
+  const supportsDrain = useHostedSupportsUpdateDrain();
   const commands = useRestartHoldCommands(holdKey);
   const work = useRestartHoldWork(holdKey);
   const { background, turnCalls } = splitRestartHoldWork(work);
+  const canWaitForFinish = work.length > 0 || (supportsDrain && resuming.length > 0);
   return (
     <>
       <AlertDialogHeader className="shrink-0">
@@ -135,9 +139,15 @@ function SafeUpdateDialogContent({
         <div className="flex flex-col gap-4 px-6 pb-4 text-sm">
           <BackgroundWorkGroup
             title={t("Waits for background work")}
-            note={t(
-              "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.",
-            )}
+            note={
+              supportsDrain
+                ? t(
+                    "The update drains new work and installs once running chats and this work finish. Restarting now stops it.",
+                  )
+                : t(
+                    "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.",
+                  )
+            }
             work={background}
           />
           <BackgroundWorkGroup
@@ -148,7 +158,17 @@ function SafeUpdateDialogContent({
             work={turnCalls}
           />
           <CommandGroup commands={commands} />
-          <ThreadGroup title={t("Resume after the restart")} threads={resuming} />
+          <ThreadGroup
+            title={t("Resume after the restart")}
+            {...(supportsDrain
+              ? {
+                  note: t(
+                    "Choose “Update when it finishes” to let these chats finish cleanly while new turns wait for the update.",
+                  ),
+                }
+              : {})}
+            threads={resuming}
+          />
           <ThreadGroup
             title={t("Waiting for your answer")}
             note={t("These stop, and need a reply after the restart.")}
@@ -160,7 +180,7 @@ function SafeUpdateDialogContent({
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" />}>
           {t("Cancel")}
         </AlertDialogClose>
-        {work.length > 0 ? (
+        {canWaitForFinish ? (
           <>
             <Button variant="outline" onClick={onConfirm}>
               {t("Update now")}
@@ -247,6 +267,28 @@ function CommandGroup({
             <span className="text-muted-foreground">{entry.threadTitle}</span>
           </>
         ),
+      }))}
+    />
+  );
+}
+
+/** Chats whose active turns the update is waiting to finish. */
+export function RunningTurnsGroup({
+  title,
+  note,
+  turns,
+}: {
+  readonly title: string;
+  readonly note?: string;
+  readonly turns: ReadonlyArray<OrchestrationV2RestartHoldTurn>;
+}) {
+  return (
+    <EntryGroup
+      title={title}
+      {...(note !== undefined ? { note } : {})}
+      entries={turns.map((turn) => ({
+        key: turn.threadId,
+        content: turn.threadTitle,
       }))}
     />
   );

@@ -54,6 +54,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import { isExecutionTurnItemType } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { sameRestartHoldWork } from "@t3tools/shared/restartHold";
+import { isDrainingRef, UpdateDrain, watchDrainingRef } from "../cloud/updateDrain.ts";
 import {
   awaitingProviderThreadId,
   backgroundWorkStoppedNotice,
@@ -333,6 +334,9 @@ function restartCancelledBackgroundWork(
   }
   const skippedRunIds = new Set([
     ...cutRuns.map((run) => run.id),
+    // A run still waiting for memory has not started its workspace setup or turn yet; keep its
+    // records out of cancelled background work and restartHold (matches keptRunIds below).
+    ...projection.runs.filter(orchestrationV2RunAwaitsMemory).map((run) => run.id),
     // A rollback closed the process that ran these turns' work, and the rewound chat no longer
     // knows it, so a note would have the agent start it again.
     ...projection.runs.flatMap((run) => (run.status === "rolled_back" ? [run.id] : [])),
@@ -447,7 +451,8 @@ function sameRestartHold(left: OrchestrationV2RestartHold, right: OrchestrationV
         turn.threadId === rightTurns[index]!.threadId &&
         turn.threadTitle === rightTurns[index]!.threadTitle,
     ) &&
-    sameRestartHoldWork(left.work, right.work)
+    sameRestartHoldWork(left.work, right.work) &&
+    Boolean(left.draining) === Boolean(right.draining)
   );
 }
 
@@ -475,6 +480,7 @@ const cancelledItem = (
 export const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const restartResumeRequest = yield* RestartResumeRequest;
+  const updateDrain = yield* UpdateDrain;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
@@ -1007,6 +1013,9 @@ export const make = Effect.gen(function* () {
         if (!requeued) {
           // A hold from before the restart (a Stop, a failure) stays the person's to release.
           if (run.queueHeld === true) continue;
+          // A run queued solely for update drain when no active run was cut starts right after restart.
+          if (run.queueHeldByUpdateDrain === true && runs.every((cut) => cut.status === "queued"))
+            continue;
           // A person reviews what they queued, but nobody reviews a message an agent, the server or
           // a scheduled task queued, and no continuation is scheduled to lift its hold: it just
           // starts. So does a message queued behind a run whose turn had already finished: the
@@ -1863,7 +1872,13 @@ export const make = Effect.gen(function* () {
           ]
         : [],
     );
-    return { work, runningTurns, commands } satisfies OrchestrationV2RestartHold;
+    const draining = yield* isDrainingRef(updateDrain);
+    return {
+      work,
+      runningTurns,
+      commands,
+      ...(draining ? { draining: true } : {}),
+    } satisfies OrchestrationV2RestartHold;
   }).pipe(Effect.withSpan("ProviderRuntimeRecoveryService.restartHold"));
 
   // Watchers read the hold one at a time, in numbered order, so a read with a higher number
@@ -1885,14 +1900,17 @@ export const make = Effect.gen(function* () {
       Effect.map((afterSequence) =>
         Stream.concat(
           Stream.fromEffect(numberedRestartHold),
-          eventSink.stream({ afterSequence, bounded: true }).pipe(
-            Stream.mapError(
-              (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
+          Stream.merge(
+            eventSink.stream({ afterSequence, bounded: true }).pipe(
+              Stream.mapError(
+                (cause) =>
+                  new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
+              ),
+              Stream.filter(({ event }) => changesRestartHold(event)),
+              Stream.groupedWithin(RESTART_HOLD_MAX_EVENTS, RESTART_HOLD_SETTLE),
             ),
-            Stream.filter(({ event }) => changesRestartHold(event)),
-            Stream.groupedWithin(RESTART_HOLD_MAX_EVENTS, RESTART_HOLD_SETTLE),
-            Stream.mapEffect(() => numberedRestartHold),
-          ),
+            watchDrainingRef(updateDrain),
+          ).pipe(Stream.mapEffect(() => numberedRestartHold)),
         ),
       ),
     ),

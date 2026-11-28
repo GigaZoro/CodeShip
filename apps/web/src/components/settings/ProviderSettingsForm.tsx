@@ -43,8 +43,8 @@ export interface ProviderSettingsFieldModel {
   /** Typed `SettingsSecretValue`: may name a secret provider reference instead of a value. */
   readonly acceptsSecretReference?: boolean | undefined;
   readonly defaultBooleanValue?: boolean | undefined;
-  /** Whether the field's schema decodes a typed string; one it rejects is never stored. */
-  readonly accepts?: ((value: string) => boolean) | undefined;
+  /** Whether the field's schema decodes a typed value; one it rejects is never stored. */
+  readonly accepts?: ((value: string | number) => boolean) | undefined;
 
   readonly options?: ReadonlyArray<ProviderSettingsFormOption> | undefined;
 }
@@ -92,11 +92,22 @@ function readFieldBooleanDefault(
   return Option.isSome(decoded) && typeof decoded.value === "boolean" ? decoded.value : undefined;
 }
 
-function fieldAcceptsString(
+function fieldAcceptsValue(
   fieldSchema: ProviderClientDefinition["settingsSchema"]["fields"][string],
-): (value: string) => boolean {
+): (value: string | number) => boolean {
   const decode = Schema.decodeUnknownOption(fieldSchema as Schema.Decoder<unknown>);
   return (value) => Option.isSome(decode(value));
+}
+
+function coerceProviderFieldInputValue(
+  field: ProviderSettingsFieldModel,
+  value: string,
+): string | number {
+  const trimmed = value.trim();
+  if (field.control === "number" && trimmed !== "" && Number.isFinite(Number(trimmed))) {
+    return Number(trimmed);
+  }
+  return value;
 }
 
 /** An unset select shows, and acts as, its first option. */
@@ -188,7 +199,7 @@ export function deriveProviderSettingsFields(
           ...(formAnnotation.control === "switch"
             ? { defaultBooleanValue: readFieldBooleanDefault(fieldSchema) }
             : {}),
-          accepts: fieldAcceptsString(fieldSchema),
+          accepts: fieldAcceptsValue(fieldSchema),
           ...(formAnnotation.control === "select" && formAnnotation.options
             ? { options: formAnnotation.options }
             : {}),
@@ -334,7 +345,7 @@ function ProviderCommandArguments({
 function readProviderConfigString(config: unknown, key: string): string {
   if (config === null || typeof config !== "object") return "";
   const value = (config as Record<string, unknown>)[key];
-  return typeof value === "string" ? value : "";
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }
 
 function readProviderConfigBoolean(config: unknown, key: string, defaultValue = false): boolean {
@@ -369,8 +380,11 @@ export function nextProviderConfigWithFieldValue(
   const trimmed = value.trim();
   if (field.clearWhenEmpty === "omit" && trimmed.length === 0) {
     delete base[field.key];
-  } else if (field.accepts?.(value) !== false) {
-    base[field.key] = value;
+  } else {
+    const nextValue = coerceProviderFieldInputValue(field, value);
+    if (field.accepts?.(nextValue) !== false) {
+      base[field.key] = nextValue;
+    }
   }
   return Object.keys(base).length > 0 ? base : undefined;
 }
@@ -503,13 +517,20 @@ function ProviderSettingsTextInput({
         aria-describedby={descriptionId}
         size="sm"
         className="w-full max-w-full"
-        type={field.control === "password" ? "password" : undefined}
+        type={
+          field.control === "password"
+            ? "password"
+            : field.control === "number"
+              ? "number"
+              : undefined
+        }
+        step={field.control === "number" ? "any" : undefined}
         autoComplete={field.control === "password" ? "off" : undefined}
         value={rejected ?? readProviderConfigString(value, field.key)}
         placeholder={field.placeholder}
         onCommit={(next) => {
           const clears = field.clearWhenEmpty === "omit" && next.trim().length === 0;
-          if (!clears && field.accepts?.(next) === false) {
+          if (!clears && field.accepts?.(coerceProviderFieldInputValue(field, next)) === false) {
             setRejected(next);
             return;
           }
@@ -716,7 +737,8 @@ function ProviderSettingsFieldRow({
     );
   }
 
-  const type = field.control === "password" ? "password" : undefined;
+  const type =
+    field.control === "password" ? "password" : field.control === "number" ? "number" : undefined;
   const BufferedInput = field.secret ? SecretInput : DraftInput;
   const ControlledInput = field.secret ? SecretInput : Input;
   return (
@@ -729,6 +751,7 @@ function ProviderSettingsFieldRow({
             size="sm"
             className="mt-1.5"
             type={field.secret ? undefined : type}
+            step={field.control === "number" ? "any" : undefined}
             autoComplete={!field.secret && field.control === "password" ? "off" : undefined}
             value={readProviderConfigString(value, field.key)}
             onCommit={(next) => onChange(nextProviderConfigWithFieldValue(value, field, next))}
@@ -739,6 +762,7 @@ function ProviderSettingsFieldRow({
           <ControlledInput
             id={inputId}
             type={field.secret ? undefined : type}
+            step={field.control === "number" ? "any" : undefined}
             autoComplete={!field.secret && field.control === "password" ? "off" : undefined}
             value={readProviderConfigString(value, field.key)}
             onChange={(event) =>
