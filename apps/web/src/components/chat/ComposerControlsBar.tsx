@@ -3,16 +3,9 @@ import type { ChatComposerProps } from "./ChatComposer";
 import type { PromptUltrathink } from "./TraitsPicker";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { type AppModelOption } from "../../modelSelection";
-
-import { CircleAlertIcon } from "lucide-react";
-import type { ReactNode } from "react";
-import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
+import { CircleAlertIcon, ServerIcon } from "lucide-react";
 import { ComposerControl } from "./ComposerControl";
-import {
-  ComposerFooterModeControls,
-  ComposerModelPicker,
-  type RuntimeModeOption,
-} from "./ComposerFooterControls";
+import { ComposerModelPicker, type RuntimeModeOption } from "./ComposerFooterControls";
 import {
   type EnvironmentId,
   type ModelSelection,
@@ -33,15 +26,16 @@ import {
   describeComposerEffort,
 } from "./ComposerModelEffort";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
-import {
-  type ComposerRestingControlId,
-  resolveComposerControlsOwnership,
-} from "./composerControlsOwnership";
+import { ComposerRunPermissions } from "./ComposerRunPermissions";
+import { type ComposerRunChipSegment, resolveComposerRunChip } from "./composerRunChip";
+import { runtimeModeConfig } from "./runtimeModeConfig";
+import { usePrimaryEnvironmentId } from "../../state/environments";
+import { useSidebarMachines } from "../sidebar/useSidebarMachines";
 
 /**
- * The composer footer controls: the model picker (which also holds effort and speed), the
- * permissions chip and the overflow menu for blocks that do not fit. Rendered in the
- * expanded footer or the resting controls host.
+ * The composer footer controls: one run chip that names the model and effort, plus permissions
+ * and machine only when they differ from the defaults or run with more reach. Its popover holds
+ * model, effort, speed and permissions. Rendered in the expanded footer or the resting host.
  */
 // Model and effort share one trigger; it stays filled while its popup is open.
 const MODEL_TRIGGER_STATES = "data-popup-open:bg-accent data-popup-open:text-foreground";
@@ -66,9 +60,6 @@ export function ComposerControlsBar(props: {
   compatibleRuntimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
   composerControlsCollapsed: boolean;
-  composerControlsHidden: boolean;
-  restingHiddenBlockCount: number;
-  iconOnlyBlockCount: number;
   showProviderUnavailable: boolean;
   providerSetupInstanceId: ProviderInstanceId | undefined;
   providerUnavailableLabel: string;
@@ -113,9 +104,6 @@ export function ComposerControlsBar(props: {
     compatibleRuntimeModeOptions,
     handleRuntimeModeChange,
     composerControlsCollapsed,
-    composerControlsHidden,
-    restingHiddenBlockCount: measuredHiddenBlockCount,
-    iconOnlyBlockCount,
     showProviderUnavailable,
     providerSetupInstanceId,
     providerUnavailableLabel,
@@ -141,14 +129,10 @@ export function ComposerControlsBar(props: {
     modelPickerIconClassName,
     getModelDisabledReason,
   } = props;
-  const accessMatchesDefault = compatibleRuntimeMode === defaultRuntimeMode;
-  const {
-    accessDisplay,
-    hiddenBlockCount: restingHiddenBlockCount,
-    hiddenBlockIds: hiddenRestingBlockIds,
-  } = resolveComposerControlsOwnership({
-    collapsed: composerControlsCollapsed,
-    measuredHiddenBlockCount,
+  const runChip = resolveComposerRunChip({
+    runtimeMode: compatibleRuntimeMode,
+    defaultRuntimeMode,
+    nonPrimaryMachineLabel: useNonPrimaryMachineLabel(environmentId),
   });
   const controlSize = composerControlsCollapsed ? "xs" : "sm";
   // Auto takes its model and options from Settings, including when the chat still reports an older pick.
@@ -180,22 +164,6 @@ export function ComposerControlsBar(props: {
     onPromptEdit,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize);
-  const restingBlockDefs: ReadonlyArray<{ id: ComposerRestingControlId; content: ReactNode }> = [
-    {
-      id: "mode",
-      content: (
-        <ComposerFooterModeControls
-          runtimeMode={compatibleRuntimeMode}
-          runtimeModeOptions={compatibleRuntimeModeOptions}
-          size={controlSize}
-          hidden={composerControlsHidden || restingHiddenBlockCount > 0}
-          accessDisplay={accessDisplay}
-          emphasized={!accessMatchesDefault}
-          onRuntimeModeChange={handleRuntimeModeChange}
-        />
-      ),
-    },
-  ];
   // Its own element, so typing (which rebuilds the controls around it) leaves it cached.
   const composerModelPicker = (
     <ComposerModelPicker
@@ -235,13 +203,31 @@ export function ComposerControlsBar(props: {
         MODEL_TRIGGER_STATES,
         composerControlsCollapsed ? "min-w-13 shrink text-xs!" : "min-w-13",
       )}
-      triggerSuffix={effort.suffix}
-      triggerDetail={effort.detail}
-      triggerShortcuts="composer.effort"
+      triggerSuffix={
+        <>
+          {effort.suffix}
+          {runChip.segments.map((segment) => (
+            <RunChipSegment key={segment.kind} segment={segment} />
+          ))}
+        </>
+      }
+      triggerDetail={[effort.detail, runChip.accessibleDetail].filter(Boolean).join(", ")}
+      triggerShortcuts="composer.effort composer.mode"
       effortColumn={
         autoOn ? <ComposerAutoEffortColumn /> : <ComposerEffortColumn traits={traitsInput} />
       }
-      footer={autoOn ? undefined : <ComposerPickerFooter traits={traitsInput} />}
+      footer={
+        <>
+          {autoOn ? null : <ComposerPickerFooter traits={traitsInput} />}
+          {compatibleRuntimeModeOptions.length > 0 ? (
+            <ComposerRunPermissions
+              runtimeMode={compatibleRuntimeMode}
+              runtimeModeOptions={compatibleRuntimeModeOptions}
+              onRuntimeModeChange={handleRuntimeModeChange}
+            />
+          ) : null}
+        </>
+      }
       terminalOpen={terminalOpen}
       open={modelPickerOpen}
       instanceIndicatorBackground={
@@ -279,50 +265,39 @@ export function ComposerControlsBar(props: {
       </ComposerControl>
     </>
   ) : (
-    <>
-      {composerModelPicker}
+    composerModelPicker
+  );
+}
 
-      <>
-        {restingBlockDefs.map((def, index) => {
-          const hidden = index >= restingBlockDefs.length - restingHiddenBlockCount;
-          return (
-            <div
-              key={def.id}
-              data-resting-block={def.id}
-              data-composer-block-icon-only={
-                index >= restingBlockDefs.length - iconOnlyBlockCount ? "true" : "false"
-              }
-              aria-hidden={hidden || undefined}
-              inert={hidden || undefined}
-              className={cn(
-                "flex w-max min-w-max shrink-0 items-center gap-1",
-                hidden && "pointer-events-none invisible absolute",
-                index >= restingBlockDefs.length - iconOnlyBlockCount &&
-                  "[&_[data-composer-control-label]]:pointer-events-none [&_[data-composer-control-label]]:invisible [&_[data-composer-control-label]]:absolute [&_[data-composer-control-label]]:w-max [&_[data-composer-control-label]]:max-w-none [&_[data-composer-control-compact-icon]]:[visibility:inherit] [&_[data-composer-control-compact-icon]]:relative",
-              )}
-            >
-              {def.content}
-            </div>
-          );
-        })}
-        <div
-          data-resting-controls-overflow
-          aria-hidden={hiddenRestingBlockIds.length === 0 || undefined}
-          inert={hiddenRestingBlockIds.length === 0 || undefined}
-          className={cn(
-            "min-w-0 shrink-0",
-            hiddenRestingBlockIds.length === 0 && "pointer-events-none invisible absolute",
-          )}
-        >
-          <CompactComposerControlsMenu
-            runtimeMode={compatibleRuntimeMode}
-            runtimeModeOptions={compatibleRuntimeModeOptions}
-            size={controlSize}
-            hidden={composerControlsHidden || hiddenRestingBlockIds.length === 0}
-            onRuntimeModeChange={handleRuntimeModeChange}
-          />
-        </div>
-      </>
-    </>
+/** The machine a turn here runs on, when it is not this app's primary machine. */
+function useNonPrimaryMachineLabel(environmentId: EnvironmentId): string | null {
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const machines = useSidebarMachines();
+  if (primaryEnvironmentId === null || environmentId === primaryEnvironmentId) return null;
+  return machines.find((machine) => machine.environmentId === environmentId)?.label ?? null;
+}
+
+/** A run chip part after model and effort; risky ones carry an icon and the warning color. */
+function RunChipSegment({ segment }: { segment: ComposerRunChipSegment }) {
+  const Icon = segment.kind === "mode" ? runtimeModeConfig[segment.mode].icon : ServerIcon;
+  const label = segment.kind === "mode" ? t(runtimeModeConfig[segment.mode].label) : segment.label;
+  return (
+    <span
+      data-run-chip-segment={segment.kind}
+      className={cn(
+        "flex min-w-0 shrink items-center gap-1",
+        segment.risky ? "font-medium text-warning-foreground" : "text-muted-foreground",
+      )}
+    >
+      <span aria-hidden="true" className="shrink-0 text-muted-foreground">
+        ·
+      </span>
+      {segment.risky ? (
+        <Icon aria-hidden="true" className="size-3.5 shrink-0 text-current" />
+      ) : null}
+      <span data-run-chip-label className="min-w-0 max-w-32 truncate">
+        {label}
+      </span>
+    </span>
   );
 }

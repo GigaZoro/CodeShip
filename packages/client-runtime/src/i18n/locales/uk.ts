@@ -258,7 +258,6 @@ const catalog: MessageCatalog = {
     many: "{count} змінених файлів",
     other: "{count} зміненого файлу",
   },
-  "{count} changes requested": "{count}: запрошено зміни",
   "{count} chats": {
     one: "{count} чат",
     few: "{count} чати",
@@ -792,6 +791,12 @@ const catalog: MessageCatalog = {
     few: "Ширина: {count} пункти",
     many: "Ширина: {count} пунктів",
     other: "Ширина: {count} пункта",
+  },
+  "{count} problems need attention": {
+    one: "{count} проблема потребує уваги",
+    few: "{count} проблеми потребують уваги",
+    many: "{count} проблем потребують уваги",
+    other: "{count} проблеми потребують уваги",
   },
   "{count} processes": {
     one: "{count} процес",
@@ -9870,8 +9875,6 @@ const catalog: MessageCatalog = {
   "Manual steps": "Ручні кроки",
   "Manual steps ({count})": "Ручні кроки ({count})",
   "Manual steps breadcrumb": "Навігація ручних кроків",
-  "Manual steps: {count}": "Ручні кроки: {count}",
-  "Manual steps: {count}, {money}": "Ручні кроки: {count}, {money}",
   "Manual steps: {reason}": "Ручні кроки: {reason}",
   "Manual update required": "Потрібне ручне оновлення",
   Map: "Мапа",
@@ -10226,7 +10229,6 @@ const catalog: MessageCatalog = {
   "More approval options": "Більше варіантів схвалення",
   "More change request actions": "Інші дії із запитом на зміни",
   "More comments could not be loaded": "Не вдалося завантажити інші коментарі",
-  "More composer controls": "Більше елементів керування",
   "More device actions": "Більше дій з пристроєм",
   "More filters": "Більше фільтрів",
   "More info": "Докладніше",
@@ -11843,7 +11845,6 @@ const catalog: MessageCatalog = {
   "Permissions have changed for {machine}": "Дозволи для {machine} змінилися",
   "Permissions have changed for {name}": "Дозволи змінилися для {name}",
   "Permissions: {mode}": "Дозволи: {mode}",
-  "Permissions: {mode}. {description}": "Дозволи: {mode}. {description}",
   Personal: "Особиста",
   "Personal Skill": "Особиста навичка",
   "Phase {number}": "Фаза {number}",
@@ -12114,6 +12115,7 @@ const catalog: MessageCatalog = {
   "Pro · up to {pro} tunnels. {upgradeLink} to Premier for {premier}.":
     "Pro · до {pro} тунелів. {upgradeLink} до Premier, щоб отримати до {premier}.",
   "proactive panels": "автоматичні панелі",
+  Problems: "Проблеми",
   process: "процес",
   Process: "Процес",
   "Process already exited": "Процес уже завершився",

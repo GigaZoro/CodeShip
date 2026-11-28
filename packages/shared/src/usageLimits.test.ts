@@ -40,6 +40,7 @@ import {
   poolResetSummary,
   formatDuration,
   formatResetsIn,
+  nearLimitWindow,
   tightestLimitWindow,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
@@ -2079,6 +2080,18 @@ describe("pooled account columns", () => {
       expect(`${tightest?.pool.accounts[0]?.key}:${tightest?.window.label}`).toBe(expected);
     },
   );
+
+  it.each([
+    [74, null],
+    [75, "a:Session"],
+    [95, "a:Session"],
+  ])("shows a quota meter only near its limit (%i%% used)", (used, expected) => {
+    const near = nearLimitWindow(
+      collectLimitPools([account("a", [{ ...window, usedPercent: used }])], now),
+      now,
+    );
+    expect(near && `${near.pool.accounts[0]?.key}:${near.window.label}`).toBe(expected);
+  });
 
   it("keeps weekly-only accounts in name order, with reset times still chronological", () => {
     const [pool] = collectLimitPools(

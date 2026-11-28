@@ -18,16 +18,21 @@ function signalGroup(group, name) {
   }
 }
 
-/** True while `group` has a process, also one this process may not signal. */
-function groupAlive(group) {
+/** Whether `group` has a process we can signal ("alive"), only ones we cannot ("eperm"), or none ("gone"). */
+function probeGroup(group) {
   try {
     process.kill(-group, 0);
-    return true;
+    return "alive";
   } catch (error) {
-    if (error.code === "ESRCH") return false;
-    if (error.code === "EPERM") return true;
+    if (error.code === "ESRCH") return "gone";
+    if (error.code === "EPERM") return "eperm";
     throw error;
   }
+}
+
+/** True while `group` has a process, also one this process may not signal. */
+function groupAlive(group) {
+  return probeGroup(group) !== "gone";
 }
 
 /** Every process as `pid -> { ppid, pgid }`, listed within what is left until `deadline`. */
@@ -100,7 +105,9 @@ async function endGroup(group) {
       failure ??= error;
     }
   }
-  while (groups.some(groupAlive)) {
+  // Only wait on groups we still have permission to signal; EPERM means only another user's processes remain
+  // (e.g. a recycled PGID), which will never respond to our SIGKILL.
+  while (groups.some((each) => probeGroup(each) === "alive")) {
     if (performance.now() > deadline) {
       failure ??= new Error(
         `the processes of ${group} did not end within ${STOP_TREE_MS / 1000} seconds.`,
@@ -155,7 +162,7 @@ function spawnWindowsTree(command, args, options) {
     const stopped = stopping !== null;
     (stopping ?? Promise.resolve()).then(() => resolve({ code, signal, stopped }), reject);
   });
-  return { child, stop, done };
+  return { child, stop, done, group: null };
 }
 
 /**
@@ -208,7 +215,7 @@ function spawnTree(command, args, { stdio, shell = false, ...options } = {}) {
     stopRequested = true;
     void end();
   };
-  return { child, stop, done };
+  return { child, stop, done, group: child.pid ?? null };
 }
 
 /** A child nothing stops, in the shape spawnTree returns: `done` settles once its output closed. */
@@ -218,7 +225,7 @@ function spawnChild(command, args, options) {
     child.on("error", reject);
     child.on("close", (code, signal) => resolve({ code, signal, stopped: false }));
   });
-  return { child, stop: () => {}, done };
+  return { child, stop: () => {}, done, group: null };
 }
 
 /** The anchor: runs the command in its group, reports how it ended, and lives on until the tree ends. */
@@ -258,4 +265,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { STOP_TREE_MS, spawnChild, spawnTree };
+module.exports = { STOP_TREE_MS, endGroup, groupAlive, probeGroup, spawnChild, spawnTree };

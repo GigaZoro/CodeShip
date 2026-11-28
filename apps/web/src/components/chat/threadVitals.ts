@@ -1,5 +1,5 @@
 /** Context use the strip shows at all; below it the number is noise. */
-const CONTEXT_VITAL_PERCENT = 60;
+const CONTEXT_VITAL_PERCENT = 75;
 /** Context use the strip marks as needing attention. */
 const CONTEXT_ATTENTION_PERCENT = 80;
 

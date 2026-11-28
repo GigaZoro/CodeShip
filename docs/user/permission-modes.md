@@ -1,9 +1,10 @@
 # Permission modes
 
 Permission modes control when an agent needs your approval to act. Choose a mode in the message
-composer; it applies to that thread. A new thread names its mode under the composer. In a thread
-on your default mode, open the model picker and choose **Permissions** at its bottom, or press
-`mod+shift+a`. A thread on another mode shows the mode next to the model.
+composer; it applies to that thread. A new thread names its mode under the composer. Open the model
+picker and choose a mode under **Permissions** at its bottom, or press `mod+shift+a`. The picker
+names the mode next to the model only when it differs from your default; **Full access** and a
+thread that runs on another machine always show there, with an icon.
 
 Set the default for new threads in **Settings → Threads → New threads → Permissions**.
 Projects can override the environment default. New threads use this setting rather than the

@@ -1409,15 +1409,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const {
     controlsRef: restingComposerControlsRef,
     attachControls: attachRestingComposerControls,
-    hiddenBlockCount: restingControlsHiddenBlockCount,
-    iconOnlyBlockCount: restingControlsIconOnlyBlockCount,
     controlsVisible: restingControlsVisible,
   } = useRestingComposerControlsLayout(inlineRestingControlsHost);
-  const {
-    attachControls: attachExpandedComposerControls,
-    hiddenBlockCount: expandedControlsHiddenBlockCount,
-    iconOnlyBlockCount: expandedControlsIconOnlyBlockCount,
-  } = useRestingComposerControlsLayout(null, true);
   const pendingPrimaryAction = activePendingProgress
     ? {
         questionIndex: activePendingProgress.questionIndex,
@@ -2785,16 +2778,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     panelAnimationsActive,
     panelAnimationDurationMs,
   );
-  const restingHiddenBlockCount = showInlineRestingControls
-    ? restingControlsHiddenBlockCount
-    : composerControlsCollapsed
-      ? 0
-      : expandedControlsHiddenBlockCount;
-  const iconOnlyBlockCount = showInlineRestingControls
-    ? restingControlsIconOnlyBlockCount
-    : composerControlsCollapsed
-      ? 0
-      : expandedControlsIconOnlyBlockCount;
   const composerControls = (
     <RuntimeModeLimitsTargetContext value={runtimeModeLimitsFor}>
       <ComposerControlsBar
@@ -2817,9 +2800,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         handleRuntimeModeChange={handleRuntimeModeChange}
         composerControlsCollapsed={composerControlsCollapsed}
         effortDisplay={settings.effortDisplay}
-        composerControlsHidden={composerMenusClosed}
-        restingHiddenBlockCount={restingHiddenBlockCount}
-        iconOnlyBlockCount={iconOnlyBlockCount}
         showProviderUnavailable={showProviderUnavailable}
         providerSetupInstanceId={providerSetupInstanceId}
         providerUnavailableLabel={providerUnavailableLabel}
@@ -4218,7 +4198,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   className="flex min-w-0 flex-1 flex-nowrap items-center justify-end gap-2"
                 >
                   <div
-                    ref={attachExpandedComposerControls}
                     data-chat-composer-controls="footer"
                     data-chat-composer-footer-controls="true"
                     className={cn(

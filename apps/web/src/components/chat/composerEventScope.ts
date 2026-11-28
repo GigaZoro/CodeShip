@@ -53,20 +53,23 @@ export function isInsideRestingComposerControlScope(target: EventTarget | null):
 }
 
 /**
- * composer.mode marks the trigger it opens; the menu's onOpenChangeComplete then moves focus
- * to the checked permission in that menu's own popup, after the menu placed its own focus.
+ * composer.mode marks the run chip it opens; the popover's onOpenChangeComplete then moves focus
+ * to the checked permission in its own popup, after the popover placed its own focus.
  */
 export function markOpenToPermissions(trigger: HTMLElement): void {
+  delete trigger.dataset.openToEffort;
   trigger.dataset.openToPermissions = "true";
 }
 
-export function focusRequestedPermission(open: boolean, trigger: HTMLElement | null): void {
-  if (!trigger?.dataset.openToPermissions) return;
+/** Reads and clears the mark; true when composer.mode had asked for the permissions. */
+export function focusRequestedPermission(open: boolean, trigger: HTMLElement | null): boolean {
+  if (!trigger?.dataset.openToPermissions) return false;
   delete trigger.dataset.openToPermissions;
   if (open) focusCheckedPermission(trigger);
+  return true;
 }
 
-/** Focuses the checked permission in the menu this trigger opened. */
+/** Focuses the checked permission in the popup this trigger opened. */
 function focusCheckedPermission(trigger: HTMLElement | null): void {
   const popupId = trigger?.getAttribute("aria-controls");
   const popup = popupId ? document.getElementById(popupId) : null;
@@ -80,6 +83,7 @@ function focusCheckedPermission(trigger: HTMLElement | null): void {
  * selected effort level once its popup is open.
  */
 export function markOpenToEffort(trigger: HTMLElement): void {
+  delete trigger.dataset.openToPermissions;
   trigger.dataset.openToEffort = "true";
 }
 

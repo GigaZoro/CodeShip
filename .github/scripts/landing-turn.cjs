@@ -3,7 +3,7 @@
 // LEASE_TTL_MS; under the turn it checks again only if main moved. Main moves only in the atomic push that gives back
 // the lander's lease commit. Others wait in a first-come, first-served queue; the pre-push hook (`verify`) checks too.
 const { spawn, spawnSync } = require("node:child_process");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -11,7 +11,7 @@ const { TIMED_OUT_STATUS } = require("./bounded-git.cjs");
 const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 const { startLandingRecord } = require("./landing-record.cjs");
 const { QUEUE_STALE_MS, createQueueWaiter, machineTag } = require("./lease-queue.cjs");
-const { STOP_TREE_MS, spawnChild, spawnTree } = require("./process-tree.cjs");
+const { STOP_TREE_MS, endGroup, probeGroup, spawnChild, spawnTree } = require("./process-tree.cjs");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
@@ -107,11 +107,24 @@ function runAfter(ms, run) {
 async function gitAsync(
   cwd,
   args,
-  { allowFailure = false, timeoutMs, after = runAfter, ...options } = {},
+  { allowFailure = false, timeoutMs, after = runAfter, trackChild, signal, ...options } = {},
 ) {
+  if (signal?.aborted) {
+    if (allowFailure) {
+      return { ok: false, timedOut: false, status: null, stdout: "", stderr: "aborted" };
+    }
+    throw new Error(`git ${args[0]} aborted`);
+  }
   const [argv, spawnOptions] = gitCommand(cwd, args, options);
   const limited = timeoutMs !== undefined;
-  const { child, stop, done } = (limited ? spawnTree : spawnChild)("git", argv, spawnOptions);
+  const { child, stop, done, group } = (limited || trackChild || signal ? spawnTree : spawnChild)(
+    "git",
+    argv,
+    spawnOptions,
+  );
+  const untrack = trackChild ? trackChild({ stop, done, group }) : () => {};
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
   const output = { stdout: [], stderr: [] };
   let bytes = 0;
   const collect = (chunks) => (chunk) => {
@@ -130,10 +143,24 @@ async function gitAsync(
     const [stdout, stderr] = [output.stdout, output.stderr].map((chunks) =>
       Buffer.concat(chunks).toString("utf8"),
     );
+    if (stopped && signal?.aborted) {
+      if (allowFailure) {
+        return {
+          ok: false,
+          timedOut: false,
+          status: code,
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+        };
+      }
+      throw new Error(`git ${args[0]} aborted`);
+    }
     const ranOut = stopped ? timeoutMs : undefined;
     return gitResult(args, { status: code, stdout, stderr, timeoutMs: ranOut, allowFailure });
   } finally {
     cancel();
+    signal?.removeEventListener("abort", stop);
+    untrack();
   }
 }
 
@@ -1040,7 +1067,7 @@ function overlappingWorktrees({ cwd, base }) {
     if (!fields.worktree || fields.bare !== undefined || fields.prunable !== undefined) continue;
     // Git for Windows lists `C:/…`: the lander reads the path as this system writes it.
     const worktree = path.resolve(fields.worktree);
-    if (worktree === self) continue;
+    if (worktree === self || landingCheckout(worktree)) continue;
     if (!fields.HEAD) continue;
     const shared = changed(fields.HEAD).filter((file) => mine.has(file));
     if (shared.length > 0) {
@@ -1067,21 +1094,891 @@ function formatOverlaps(overlaps) {
   return lines.join("\n");
 }
 
+const GiB = 1024 ** 3;
+// Maximum warm checkouts a clone keeps between landings, so their node_modules, Vite+ task cache and Vitest module
+// cache outlive a check; bounded further by the machine's check budget so low-memory/core hosts do not thrash.
+const KEPT_CHECKOUTS = 2;
+const WARM_CHECKOUTS_ENV = "T3_LANDING_WARM_CHECKOUTS";
+const LOCAL_SLOT_POLL_MS = 250;
+const CLEANUP_GIT_TIMEOUT_MS = 15 * 1000;
+const RM_OPTIONS = { recursive: true, force: true, maxRetries: 3, retryDelay: 100 };
+const CHECKOUTS_FOLDER = "t3-landing-checkouts";
+const QUEUE_FOLDER = "queue";
+const QUEUE_TICKET = /^wait-(\d+)-[0-9a-f-]+\.lock$/;
+// Unique name for transient under-turn overflow slots so unlinked lockfiles never collide on inode reuse.
+const EXTRA_SLOT_NAME = /^extra-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// A temp-folder checkout of a landing from before the pool; a killed one stayed on disk and in `git worktree list`.
+const OLD_CHECKOUT = /^t3-landing-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SQLITE_BUSY = 5;
+const SQLITE_CANTOPEN = 14;
+// Node exits on these without running `finally`.
+const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
+
+function warnLanding(what, error) {
+  const [reason] = String(error?.message ?? error).split("\n");
+  process.stderr.write(`landing: could not ${what}: ${reason}\n`);
+}
+
+function isSqliteCode(error, code) {
+  return typeof error?.errcode === "number" && (error.errcode & 0xff) === code;
+}
+
+function isSqliteBusy(error) {
+  return isSqliteCode(error, SQLITE_BUSY);
+}
+
+function isTransientWin32CantOpen(
+  error,
+  file,
+  {
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass platform.
+    platform = process.platform,
+    existsSync = fs.existsSync,
+  } = {},
+) {
+  return (
+    platform === "win32" && isSqliteCode(error, SQLITE_CANTOPEN) && existsSync(path.dirname(file))
+  );
+}
+
+/** Matches scripts/check-changed.ts's defaultConcurrency(cores, totalMemBytes). */
+function machineBudgetSlots(cores = os.availableParallelism(), totalMemBytes = os.totalmem()) {
+  return Math.max(1, Math.min(Math.floor(cores / 2), Math.floor(totalMemBytes / (6 * GiB))));
+}
+
+function resolveWarmLimit(warmLimit) {
+  if (Number.isInteger(warmLimit) && warmLimit >= 1) return warmLimit;
+  const fromEnv = Number(process.env[WARM_CHECKOUTS_ENV]);
+  if (Number.isInteger(fromEnv) && fromEnv >= 1) return fromEnv;
+  return Math.max(1, Math.min(KEPT_CHECKOUTS, machineBudgetSlots()));
+}
+
 /**
- * Runs `run(directory)` in a private detached checkout of `commit`. The lander's own worktree stays writable by
- * editors and other agents while the checks run, and an edit made and undone in it would leave no trace; nothing
- * outside the landing knows this directory, so the checks read exactly the commit. Its git calls leave the event loop
- * free, so the lease's renewals go on meanwhile.
+ * Takes an exclusive SQLite transaction on `file` when no other process holds it, returning the open connection or
+ * null when busy. The OS releases the lock when its process exits, killed or not. Open the file only through SQLite:
+ * closing any other handle to it drops this process's lock.
  */
-async function withPrivateCheckout({ cwd, commit }, run) {
-  const directory = path.join(os.tmpdir(), `t3-landing-${randomUUID()}`);
-  await gitAsync(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit]);
+const MAX_UNIQUE_LOCK_ATTEMPTS = 16;
+
+function lockFile(file, { openDatabase, platform, existsSync, tolerateCantOpen = true } = {}) {
+  const open = openDatabase ?? ((target) => new (require("node:sqlite").DatabaseSync)(target));
+  let db = null;
   try {
-    return await run(directory);
+    db = open(file);
+    db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+    return db;
+  } catch (error) {
+    if (db !== null) {
+      try {
+        db.close();
+      } catch {
+        // Already closed.
+      }
+    }
+    if (
+      isSqliteBusy(error) ||
+      (tolerateCantOpen && isTransientWin32CantOpen(error, file, { platform, existsSync }))
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Removes a SQLite lock file whose exclusive transaction `db` holds, safely on POSIX and Windows (same pattern as
+ * scripts/check-changed.ts). Returns false on Windows when another process opened the file between close and unlink.
+ */
+function removeLockFile(file, db) {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
+  const win32 = process.platform === "win32";
+  let removed = true;
+  if (!win32) {
+    try {
+      fs.rmSync(file, { force: true });
+    } finally {
+      db.close();
+    }
+  } else {
+    db.close();
+    try {
+      fs.rmSync(file, { force: true });
+    } catch (error) {
+      if (error?.code === "EBUSY" || error?.code === "EPERM") return false;
+      throw error;
+    }
+  }
+  try {
+    fs.rmSync(`${file}-journal`, { force: true });
+  } catch {
+    // Best-effort cleanup of any leftover SQLite journal beside the removed lock.
+  }
+  return removed;
+}
+
+/** Takes checkout `slotName` when no other process holds it, returning the connection that holds it, else null. */
+function lockCheckout(folder, slotName, options) {
+  const file = path.join(folder, `${slotName}.lock`);
+  const db = lockFile(file, options);
+  if (!db) return null;
+  // A legacy numeric overflow lock may have been unlinked by a concurrent sweeper right before BEGIN EXCLUSIVE.
+  if (!fs.existsSync(file)) {
+    db.close();
+    return null;
+  }
+  return db;
+}
+
+/**
+ * Where the clone whose Git folder is `common` keeps its checkouts: the user's cache folder, outside the clone, since
+ * Node and TypeScript look for packages in every parent folder's node_modules, and the clone's own would hide a
+ * dependency the commit lacks.
+ */
+function checkoutsFolder(common) {
+  const home = os.homedir();
+  const platformCache = {
+    darwin: path.join(home, "Library", "Caches"),
+    win32: process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"),
+  };
+  const cache =
+    process.env.XDG_CACHE_HOME ||
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests set XDG_CACHE_HOME.
+    platformCache[process.platform] ||
+    path.join(home, ".cache");
+  const clone = createHash("sha256").update(common).digest("hex").slice(0, 16);
+  return path.join(cache, CHECKOUTS_FOLDER, clone);
+}
+
+/** Whether `worktree` is a checkout a landing checks a commit in, not one holding work. */
+function landingCheckout(worktree) {
+  const cloneDir = path.dirname(worktree);
+  const base = path.basename(worktree);
+  const pooled =
+    path.basename(path.dirname(cloneDir)) === CHECKOUTS_FOLDER &&
+    /^[0-9a-f]{16}$/.test(path.basename(cloneDir)) &&
+    (/^\d+$/.test(base) || EXTRA_SLOT_NAME.test(base));
+  return pooled || OLD_CHECKOUT.test(base);
+}
+
+function listQueueTickets(queueDir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(queueDir);
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  return entries.filter((name) => QUEUE_TICKET.test(name)).sort();
+}
+
+/** True when `name` is still held by a live waiter; removes a dead/abandoned ticket and returns false otherwise. */
+function probeQueueTicket(queueDir, name) {
+  const file = path.join(queueDir, name);
+  if (!fs.existsSync(file)) return false;
+  const db = lockFile(file);
+  if (!db) return true;
+  return !removeLockFile(file, db);
+}
+
+function hasLiveWaiter(queueDir) {
+  for (const name of listQueueTickets(queueDir)) {
+    if (probeQueueTicket(queueDir, name)) return true;
+  }
+  return false;
+}
+
+function joinLocalQueue(queueDir) {
+  fs.mkdirSync(queueDir, { recursive: true });
+  for (let attempt = 0; attempt < MAX_UNIQUE_LOCK_ATTEMPTS; attempt += 1) {
+    let maxSeq = 0;
+    for (const name of listQueueTickets(queueDir)) {
+      const seq = Number(QUEUE_TICKET.exec(name)[1]);
+      if (seq > maxSeq) maxSeq = seq;
+    }
+    const name = `wait-${String(maxSeq + 1).padStart(12, "0")}-${randomUUID()}.lock`;
+    const file = path.join(queueDir, name);
+    const db = lockFile(file, { tolerateCantOpen: false });
+    if (!db) continue;
+    if (!fs.existsSync(file)) {
+      db.close();
+      continue;
+    }
+    let left = false;
+    return {
+      name,
+      file,
+      leave() {
+        if (left) return;
+        left = true;
+        try {
+          removeLockFile(file, db);
+        } catch (error) {
+          warnLanding(`remove local slot queue ticket ${name}`, error);
+          try {
+            db.close();
+          } catch {
+            // Already closed.
+          }
+        }
+      },
+    };
+  }
+  throw new Error(`landing: could not create local queue lock in ${queueDir}`);
+}
+
+function isFirstWaiter(queueDir, myName) {
+  for (const name of listQueueTickets(queueDir)) {
+    if (name >= myName) break;
+    if (probeQueueTicket(queueDir, name)) return false;
+  }
+  return true;
+}
+
+function defaultWaitSlot(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function ownPgid() {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync("/proc/self/stat", "utf8");
+      const close = stat.lastIndexOf(")");
+      if (close >= 0) {
+        const pgid = Number(
+          stat
+            .slice(close + 1)
+            .trim()
+            .split(/\s+/)[2],
+        );
+        if (Number.isInteger(pgid) && pgid > 0) return pgid;
+      }
+    } catch {
+      // Fall back to ps below.
+    }
+  }
+  const listing = spawnSync("ps", ["-o", "pgid=", "-p", String(process.pid)], {
+    encoding: "utf8",
+    timeout: 5000,
+    windowsHide: true,
+  });
+  const pgid = Number(listing.stdout?.trim());
+  return listing.status === 0 && Number.isInteger(pgid) && pgid > 0 ? pgid : null;
+}
+
+/**
+ * Boot-scoped host identity for dirty checkout markers, or null when the OS cannot provide one.
+ * Never falls back to bare hostname so a reboot or another host never passes as this boot.
+ */
+function dirtyMarkerHost({
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass platform.
+  platform = process.platform,
+  hostname = os.hostname,
+  readLinuxHost = processHost,
+  spawn = spawnSync,
+} = {}) {
+  if (platform === "linux") return readLinuxHost();
+  if (platform === "darwin") {
+    const result = spawn("sysctl", ["-n", "kern.boottime"], {
+      encoding: "utf8",
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0) return null;
+    const match = /\bsec\s*=\s*(\d+)/.exec(result.stdout ?? "");
+    return match ? `darwin:${hostname()}:${match[1]}` : null;
+  }
+  return null;
+}
+
+/** OS-level start-time token for `pid` (Linux /proc/<pid>/stat field 22; macOS ps lstart in UTC), or null. */
+function readProcessStarted(
+  pid,
+  {
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass platform.
+    platform = process.platform,
+    readFileSync = fs.readFileSync,
+    spawn = spawnSync,
+  } = {},
+) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const close = stat.lastIndexOf(")");
+      if (close < 0) return null;
+      const fields = stat
+        .slice(close + 1)
+        .trim()
+        .split(/\s+/);
+      const started = fields[19];
+      return started && /^\d+$/.test(started) ? started : null;
+    } catch (error) {
+      if (NO_PROC.has(error?.code) || error?.code === "ESRCH") return null;
+      throw error;
+    }
+  }
+  if (platform === "darwin") {
+    const result = spawn("ps", ["-p", String(pid), "-o", "lstart="], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0) return null;
+    const started = (result.stdout ?? "").trim();
+    return started.length > 0 ? started : null;
+  }
+  return null;
+}
+
+function readDirtyMarker(dirtyPath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(dirtyPath, "utf8"));
+    return parsed !== null && typeof parsed === "object" ? parsed : { corrupt: true };
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    return { corrupt: true };
+  }
+}
+
+function writeDirtyMarker(dirtyPath, data) {
+  const tmpPath = `${dirtyPath}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(data));
+  fs.renameSync(tmpPath, dirtyPath);
+}
+
+function removeDirtyMarker(dirtyPath) {
+  for (const file of [dirtyPath, `${dirtyPath}.tmp`]) {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch (error) {
+      warnLanding(`remove dirty marker ${file}`, error);
+    }
+  }
+}
+
+/**
+ * Checks whether `dirtyPath` was left behind by a crashed/killed holder. On POSIX, stops any lingering process group
+ * recorded in `childGroups` when on the same boot-scoped host, not our own process group, killable without EPERM, and
+ * matching the group leader's recorded start time. Returns true when a dirty marker was present, telling the caller to
+ * rebuild the checkout cleanly.
+ */
+async function stopDirtyGroup(
+  dirtyPath,
+  {
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime; tests pass platform.
+    platform = process.platform,
+    currentHost = dirtyMarkerHost,
+    readStarted = readProcessStarted,
+    probe = probeGroup,
+    end = endGroup,
+    getOwnPgid = ownPgid,
+  } = {},
+) {
+  const marker = readDirtyMarker(dirtyPath);
+  if (marker === null) return false;
+  if (platform !== "win32") {
+    const here = currentHost();
+    if (
+      here !== null &&
+      typeof marker.host === "string" &&
+      marker.host === here &&
+      Array.isArray(marker.childGroups)
+    ) {
+      const seen = new Set();
+      let selfGroup;
+      for (const entry of marker.childGroups) {
+        if (
+          entry === null ||
+          typeof entry !== "object" ||
+          !Number.isInteger(entry.group) ||
+          entry.group <= 1 ||
+          typeof entry.started !== "string" ||
+          entry.started.length === 0 ||
+          seen.has(entry.group)
+        ) {
+          continue;
+        }
+        seen.add(entry.group);
+        if (selfGroup === undefined) selfGroup = getOwnPgid();
+        if (selfGroup === null || entry.group === selfGroup) continue;
+        if (probe(entry.group) !== "alive") continue;
+        if (readStarted(entry.group) !== entry.started) continue;
+        if (probe(entry.group) !== "alive") continue;
+        try {
+          await end(entry.group);
+        } catch (error) {
+          warnLanding(`stop lingering process group ${entry.group}`, error);
+        }
+      }
+    }
+  }
+  return true;
+}
+
+async function removeCheckout(cwd, directory, { timeoutMs, trackChild, signal, isStopping } = {}) {
+  if (isStopping?.() || signal?.aborted) return;
+  await fs.promises.rm(directory, RM_OPTIONS);
+  if (isStopping?.() || signal?.aborted) return;
+  await gitAsync(cwd, ["worktree", "prune"], {
+    allowFailure: true,
+    timeoutMs,
+    trackChild,
+    signal,
+  });
+}
+
+/** Whether `directory` is a working checkout of the clone whose Git folder is `common`. */
+async function checkoutOf(directory, common, { trackChild } = {}) {
+  if (!fs.existsSync(path.join(directory, ".git"))) return false;
+  const args = ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"];
+  const shown = await gitAsync(directory, args, { allowFailure: true, trackChild });
+  if (!shown.ok) return false;
+  const [top, own] = shown.stdout.split("\n").map((entry) => fs.realpathSync.native(entry));
+  return top === fs.realpathSync.native(directory) && own === common;
+}
+
+/**
+ * Moves a kept checkout to `commit` and deletes every file the commit lacks but each package's node_modules. A holder
+ * killed in a git call leaves git's lock files; holding the slot, this landing is the only one using them.
+ */
+async function resetCheckout(directory, commit, { trackChild, isStopping } = {}) {
+  if (isStopping?.()) return;
+  const lockFiles = ["--git-path", "index.lock", "--git-path", "HEAD.lock"];
+  const locks = await gitAsync(directory, ["rev-parse", "--path-format=absolute", ...lockFiles], {
+    trackChild,
+  });
+  if (isStopping?.()) return;
+  for (const file of locks.stdout.split("\n")) await fs.promises.rm(file, { force: true });
+  if (isStopping?.()) return;
+  await gitAsync(directory, ["checkout", "--quiet", "--detach", "--force", commit], { trackChild });
+  if (isStopping?.()) return;
+  // A package the commit removed leaves its node_modules alone in its folder; that goes too.
+  // Force C locale so git's "Would remove " prefix is never translated.
+  const listed = await gitAsync(directory, ["-c", "core.quotePath=false", "clean", "-ffdxn"], {
+    env: { LC_ALL: "C", LANG: "C", LANGUAGE: "" },
+    trackChild,
+  });
+  if (isStopping?.()) return;
+  const kept = listed.stdout
+    .split("\n")
+    .filter((line) => line.startsWith("Would remove "))
+    .map((line) => line.slice("Would remove ".length).replace(/\/$/, ""))
+    .filter(
+      (entry) =>
+        path.posix.basename(entry) === "node_modules" &&
+        fs.existsSync(path.join(directory, path.posix.dirname(entry), "package.json")),
+    );
+  await gitAsync(directory, ["clean", "-ffdxq", ...kept.flatMap((entry) => ["-e", `/${entry}/`])], {
+    trackChild,
+  });
+}
+
+async function rebuildCheckout(cwd, directory, commit, { trackChild, signal, isStopping } = {}) {
+  if (isStopping?.() || signal?.aborted) return;
+  await removeCheckout(cwd, directory, { trackChild, signal, isStopping });
+  if (isStopping?.() || signal?.aborted) return;
+  const added = await gitAsync(cwd, ["worktree", "add", "--quiet", "--detach", directory, commit], {
+    trackChild,
+    signal,
+    allowFailure: true,
+  });
+  if (isStopping?.() || signal?.aborted) return;
+  if (!added.ok) throw new Error(`git worktree failed: ${added.stderr}`);
+}
+
+async function prepareCheckout(
+  cwd,
+  directory,
+  commit,
+  common,
+  { forceRebuild = false, trackChild, isStopping } = {},
+) {
+  if (isStopping?.()) return { reused: false };
+  if (!forceRebuild && (await checkoutOf(directory, common, { trackChild }))) {
+    if (isStopping?.()) return { reused: false };
+    try {
+      await resetCheckout(directory, commit, { trackChild, isStopping });
+      return { reused: !isStopping?.() };
+    } catch (error) {
+      if (isStopping?.()) return { reused: false };
+      console.error(`landing: rebuilding ${directory}, which did not reset: ${error.message}`);
+    }
+  }
+  if (isStopping?.()) return { reused: false };
+  await rebuildCheckout(cwd, directory, commit, { trackChild, isStopping });
+  return { reused: false };
+}
+
+/**
+ * Best-effort sweep of extra checkouts whose landing is gone, dead local-queue tickets, and old temp-folder checkouts
+ * older than any turn. Never throws so a sweep failure cannot abort a new landing.
+ */
+async function sweepCheckouts(cwd, folder, now, warmLimit = resolveWarmLimit()) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(folder);
+  } catch (error) {
+    if (error?.code !== "ENOENT") warnLanding(`list landing checkouts in ${folder}`, error);
+    entries = [];
+  }
+  const extraSlots = new Set();
+  for (const name of entries) {
+    const extraMatch =
+      /^(extra-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.(?:lock|dirty(?:\.tmp)?))?$/.exec(
+        name,
+      );
+    if (extraMatch) {
+      extraSlots.add(extraMatch[1]);
+      continue;
+    }
+    // Also sweep any legacy numeric overflow slots (>= warmLimit) left by earlier versions.
+    const numMatch = /^(\d+)(?:\.(?:lock|dirty(?:\.tmp)?))?$/.exec(name);
+    if (numMatch && Number(numMatch[1]) >= warmLimit) extraSlots.add(numMatch[1]);
+  }
+  for (const slotName of extraSlots) {
+    try {
+      const lockPath = path.join(folder, `${slotName}.lock`);
+      const slot = lockCheckout(folder, slotName);
+      if (!slot) continue;
+      let cleaned = false;
+      try {
+        const dirtyPath = path.join(folder, `${slotName}.dirty`);
+        await stopDirtyGroup(dirtyPath);
+        await removeCheckout(cwd, path.join(folder, slotName));
+        removeDirtyMarker(dirtyPath);
+        cleaned = true;
+      } finally {
+        if (cleaned) removeLockFile(lockPath, slot);
+        else slot.close();
+      }
+    } catch (error) {
+      warnLanding(`sweep extra landing checkout ${slotName}`, error);
+    }
+  }
+  const queueDir = path.join(folder, QUEUE_FOLDER);
+  try {
+    for (const name of listQueueTickets(queueDir)) {
+      try {
+        probeQueueTicket(queueDir, name);
+      } catch (error) {
+        warnLanding(`sweep local slot queue ticket ${name}`, error);
+      }
+    }
+  } catch (error) {
+    warnLanding(`list local slot queue in ${queueDir}`, error);
+  }
+  let listed;
+  try {
+    listed = await gitAsync(cwd, ["worktree", "list", "--porcelain"], { allowFailure: true });
+  } catch (error) {
+    warnLanding("list git worktrees for sweep", error);
+    return;
+  }
+  if (!listed.ok) return;
+  for (const block of listed.stdout.split("\n\n")) {
+    const worktree = block.match(/^worktree (.+)$/m)?.[1];
+    if (!worktree || !OLD_CHECKOUT.test(path.basename(worktree))) continue;
+    try {
+      const added = fs.statSync(path.join(worktree, ".git"), { throwIfNoEntry: false });
+      if (!added || added.mtimeMs < now() - TURN_MAX_MS) {
+        await removeCheckout(cwd, worktree);
+      }
+    } catch (error) {
+      warnLanding(`sweep old temp checkout ${worktree}`, error);
+    }
+  }
+}
+
+/**
+ * Acquires a checkout slot: `preWait` sweeps and waits FIFO for `0..warmLimit - 1` (no overflow); `underTurn` skips
+ * sweeping and falls back to a unique transient `extra-<uuid>` slot so the turn holder never stalls behind pre-turn
+ * landers and unlinked overflow locks never collide on inode reuse.
+ */
+async function acquireCheckoutSlot({
+  cwd,
+  role = "preWait",
+  warmLimit,
+  now = Date.now,
+  waitSlot = defaultWaitSlot,
+  localSlotPollMs = LOCAL_SLOT_POLL_MS,
+  onWaitStart = () => {},
+}) {
+  if (role !== "preWait" && role !== "underTurn") {
+    throw new Error(`landing: unknown checkout slot role "${role}"`);
+  }
+  const common = fs.realpathSync.native(commonGitDir(cwd));
+  const folder = checkoutsFolder(common);
+  fs.mkdirSync(folder, { recursive: true });
+  const limit = resolveWarmLimit(warmLimit);
+
+  const tryLockWarm = () => {
+    for (let index = 0; index < limit; index += 1) {
+      const db = lockCheckout(folder, index);
+      if (db) return { index, db };
+    }
+    return null;
+  };
+
+  const makeSlot = (slotId, db, waited, { extra }) => {
+    const slotName = String(slotId);
+    const directory = path.join(folder, slotName);
+    const lockPath = path.join(folder, `${slotName}.lock`);
+    let released = false;
+    let stopOwned = false;
+    let removed = false;
+    return {
+      cwd,
+      common,
+      folder,
+      index: slotId,
+      directory,
+      extra,
+      waited,
+      lockPath,
+      claimStop() {
+        stopOwned = true;
+      },
+      markRemoved() {
+        removed = true;
+      },
+      release({ force = false } = {}) {
+        if (released || (stopOwned && !force)) return;
+        released = true;
+        if (extra && removed) {
+          try {
+            removeLockFile(lockPath, db);
+          } catch (error) {
+            warnLanding(`remove extra checkout lock ${lockPath}`, error);
+            try {
+              db.close();
+            } catch {
+              // Already closed.
+            }
+          }
+          return;
+        }
+        db.close();
+      },
+    };
+  };
+
+  if (role === "underTurn") {
+    const warm = tryLockWarm();
+    if (warm) return makeSlot(warm.index, warm.db, false, { extra: false });
+    for (let attempt = 0; attempt < MAX_UNIQUE_LOCK_ATTEMPTS; attempt += 1) {
+      const slotName = `extra-${randomUUID()}`;
+      const db = lockCheckout(folder, slotName, { tolerateCantOpen: false });
+      if (db) return makeSlot(slotName, db, false, { extra: true });
+    }
+    throw new Error(`landing: could not create overflow checkout lock in ${folder}`);
+  }
+
+  await sweepCheckouts(cwd, folder, now, limit);
+  const queueDir = path.join(folder, QUEUE_FOLDER);
+  if (!hasLiveWaiter(queueDir)) {
+    const warm = tryLockWarm();
+    if (warm) return makeSlot(warm.index, warm.db, false, { extra: false });
+  }
+
+  onWaitStart();
+  const ticket = joinLocalQueue(queueDir);
+  try {
+    for (;;) {
+      if (isFirstWaiter(queueDir, ticket.name)) {
+        const warm = tryLockWarm();
+        if (warm) return makeSlot(warm.index, warm.db, true, { extra: false });
+      }
+      await waitSlot(localSlotPollMs);
+    }
   } finally {
-    await gitAsync(cwd, ["worktree", "remove", "--force", directory], { allowFailure: true });
-    await fs.promises.rm(directory, { recursive: true, force: true });
-    await gitAsync(cwd, ["worktree", "prune"], { allowFailure: true });
+    ticket.leave();
+  }
+}
+
+/**
+ * Prepares `slot` at `commit`, tracks its dirty marker and active child processes, and runs `run(directory, context)`.
+ * Caller owns calling `slot.release()` in a `finally` block.
+ */
+async function runInCheckoutSlot(slot, commit, run) {
+  const { cwd, common, folder, index, directory, extra } = slot;
+  const dirtyPath = path.join(folder, `${index}.dirty`);
+  const host = dirtyMarkerHost();
+  const activeChildren = new Set();
+  let stopping = false;
+  let teardownPromise = null;
+  let dirtyOnExit = false;
+
+  const currentChildGroups = () => {
+    const seen = new Set();
+    const groups = [];
+    for (const child of activeChildren) {
+      if (
+        Number.isInteger(child.group) &&
+        child.group > 1 &&
+        typeof child.started === "string" &&
+        child.started.length > 0 &&
+        !seen.has(child.group)
+      ) {
+        seen.add(child.group);
+        groups.push({ group: child.group, started: child.started });
+      }
+    }
+    return groups;
+  };
+  const writeDirty = () => {
+    try {
+      writeDirtyMarker(dirtyPath, { pid: process.pid, host, childGroups: currentChildGroups() });
+    } catch (error) {
+      warnLanding(`write dirty marker ${dirtyPath}`, error);
+    }
+  };
+  const trackChild = (entry) => {
+    const started =
+      Number.isInteger(entry.group) && entry.group > 1 ? readProcessStarted(entry.group) : null;
+    const tracked = { ...entry, started };
+    activeChildren.add(tracked);
+    if (stopping) {
+      try {
+        tracked.stop();
+      } catch (error) {
+        warnLanding(`stop active child in ${directory}`, error);
+      }
+    } else {
+      writeDirty();
+    }
+    let untracked = false;
+    return () => {
+      if (untracked) return;
+      untracked = true;
+      activeChildren.delete(tracked);
+      if (!stopping) writeDirty();
+    };
+  };
+  const stopActiveChildren = async () => {
+    while (activeChildren.size > 0) {
+      const tracked = [...activeChildren];
+      for (const child of tracked) {
+        try {
+          child.stop();
+        } catch (error) {
+          warnLanding(`stop active child in ${directory}`, error);
+        }
+      }
+      await Promise.allSettled(tracked.map((child) => child.done));
+      for (const child of tracked) activeChildren.delete(child);
+    }
+  };
+  const stopListening = () => {
+    for (const signal of STOP_SIGNALS) process.removeListener(signal, onStop);
+  };
+  const teardownExtra = () => {
+    if (teardownPromise !== null) return teardownPromise;
+    stopListening();
+    teardownPromise = (async () => {
+      try {
+        await stopActiveChildren();
+        await removeCheckout(cwd, directory, { timeoutMs: CLEANUP_GIT_TIMEOUT_MS });
+        removeDirtyMarker(dirtyPath);
+        slot.markRemoved();
+      } catch (error) {
+        warnLanding(`remove extra landing checkout ${directory}`, error);
+      }
+    })();
+    return teardownPromise;
+  };
+  function onStop(signal) {
+    if (stopping) return;
+    stopping = true;
+    slot.claimStop();
+    void (async () => {
+      try {
+        await teardownExtra();
+      } finally {
+        slot.release({ force: true });
+      }
+      try {
+        process.kill(process.pid, signal);
+      } catch {
+        process.exit(signal === "SIGHUP" ? 129 : signal === "SIGINT" ? 130 : 143);
+      }
+    })();
+  }
+  const waitIfStopping = () => (stopping ? new Promise(() => {}) : Promise.resolve());
+  if (extra) for (const signal of STOP_SIGNALS) process.on(signal, onStop);
+  try {
+    const wasDirty = await stopDirtyGroup(dirtyPath);
+    await waitIfStopping();
+    writeDirty();
+    await waitIfStopping();
+    const { reused } = await prepareCheckout(cwd, directory, commit, common, {
+      forceRebuild: wasDirty,
+      trackChild,
+      isStopping: () => stopping,
+    });
+    await waitIfStopping();
+    const rebuild = async (signal) => {
+      await rebuildCheckout(cwd, directory, commit, {
+        trackChild,
+        signal,
+        isStopping: () => stopping,
+      });
+      if (signal?.aborted) dirtyOnExit = true;
+    };
+    const result = await run(directory, {
+      reused,
+      rebuild,
+      trackChild,
+      isStopping: () => stopping,
+    });
+    await waitIfStopping();
+    if (!extra && !dirtyOnExit) removeDirtyMarker(dirtyPath);
+    return result;
+  } finally {
+    if (stopping) {
+      await new Promise(() => {});
+    }
+    if (extra) {
+      await teardownExtra();
+    } else {
+      stopListening();
+    }
+  }
+}
+
+/**
+ * Runs `run(directory, context)` in a private detached checkout of `commit`, so the checks read exactly the commit
+ * while editors and agents go on writing to the lander's worktree. Pre-turn runs (`role: "preWait"`) share the bounded
+ * warm pool in FIFO order; under-turn runs (`role: "underTurn"`) may use a transient overflow checkout removed after
+ * the run or on stop. Its git calls leave the event loop free, so the lease's renewals go on meanwhile.
+ */
+async function withPrivateCheckout(
+  {
+    cwd,
+    commit,
+    role = "preWait",
+    warmLimit,
+    now = Date.now,
+    waitSlot,
+    localSlotPollMs,
+    onWaitStart,
+  },
+  run,
+) {
+  const slot = await acquireCheckoutSlot({
+    cwd,
+    role,
+    warmLimit,
+    now,
+    waitSlot,
+    localSlotPollMs,
+    onWaitStart,
+  });
+  try {
+    return await runInCheckoutSlot(slot, commit, run);
+  } finally {
+    slot.release();
   }
 }
 
@@ -1126,6 +2023,9 @@ async function runLanding(
     now,
     awakeClock = awakeNow,
     report = (text) => console.error(text),
+    warmLimit,
+    waitSlot,
+    localSlotPollMs,
     ...rest
   },
   record,
@@ -1149,7 +2049,7 @@ async function runLanding(
   if (problem) throw new Error(problem);
   // Before the wait, so a conflict stops the landing with no turn held. The CLI then lands the rebased commit again
   // from its tree, so the wait runs that tree's copy of this script, checking against the base it rebased onto.
-  const checked = rebased?.base ?? (await fetchMain(cwd, remote, branch, randomUUID(), mainCall));
+  let checked = rebased?.base ?? (await fetchMain(cwd, remote, branch, randomUUID(), mainCall));
   record.note({ base: checked });
   // Before the rebase, so a conflict still shows it; the relaunch after a rebase listed it already.
   if (!rebased) {
@@ -1164,13 +2064,72 @@ async function runLanding(
     return { status: "rebased", base: checked, head: git(cwd, ["rev-parse", "HEAD"]).stdout };
   }
   // Before the wait too, so a failure holds no turn and the turn lasts for the push alone while main stays still.
-  const checkTip = (turn, base, budgetSeconds, signal) =>
-    withPrivateCheckout({ cwd, commit: tip }, (directory) =>
-      check(turn, base, budgetSeconds, directory, signal),
-    );
-  if (!(await record.time("preWaitCheck", () => checkTip(null, checked)))) {
-    return { status: "check-failed" };
+  let endSlotWait = null;
+  let preSlot;
+  try {
+    preSlot = await acquireCheckoutSlot({
+      cwd,
+      role: "preWait",
+      warmLimit,
+      now,
+      waitSlot,
+      localSlotPollMs,
+      onWaitStart: () => {
+        endSlotWait = record.begin("localSlotWait");
+      },
+    });
+  } finally {
+    endSlotWait?.();
   }
+  try {
+    if (preSlot.waited) {
+      if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+      if (stoppedRebase(cwd)) return { status: "rebase-in-progress" };
+      const uncommittedAfterWait = git(cwd, ["status", "--porcelain"]).stdout;
+      if (uncommittedAfterWait) {
+        return { status: "uncommitted", files: uncommittedAfterWait.split("\n") };
+      }
+      const markedAfterWait = markedFiles(cwd);
+      if (markedAfterWait.length > 0) return { status: "marked-files", files: markedAfterWait };
+      const latestBase = await fetchMain(cwd, remote, branch, randomUUID(), mainCall);
+      if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+      if (latestBase !== checked) {
+        record.note({ base: latestBase });
+        if (!holds(cwd, latestBase)) {
+          await record.time("rebase", () => rebaseOnto(cwd, latestBase));
+          tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+          record.note({ head: tip });
+          const problemAfterRebase = notesMergeProblem(cwd);
+          if (problemAfterRebase) throw new Error(problemAfterRebase);
+          const scriptsChanged = git(cwd, [
+            "diff",
+            "--name-only",
+            `${checked}..${latestBase}`,
+            "--",
+            ".github/scripts/",
+          ]).stdout;
+          if (scriptsChanged) {
+            return { status: "rebased", base: latestBase, head: tip };
+          }
+        }
+        checked = latestBase;
+      }
+    }
+    const preWaitPassed = await record.time("preWaitCheck", () =>
+      runInCheckoutSlot(preSlot, tip, (directory, checkoutContext) =>
+        check(null, checked, undefined, directory, undefined, checkoutContext),
+      ),
+    );
+    if (!preWaitPassed) return { status: "check-failed" };
+  } finally {
+    preSlot.release();
+  }
+  const checkUnderTurn = (turn, base, budgetSeconds, signal) =>
+    withPrivateCheckout(
+      { cwd, commit: tip, role: "underTurn", warmLimit, now },
+      (directory, checkoutContext) =>
+        check(turn, base, budgetSeconds, directory, signal, checkoutContext),
+    );
   record.note({ stage: "waiting" });
   const waited = record.begin("waitForTurn");
   const { result, releaseConfirmed } = await runWithTurn(
@@ -1212,16 +2171,20 @@ async function runLanding(
         const finalizedBase = base;
         const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
         const approved = await record.time("finalize", () =>
-          withPrivateCheckout({ cwd, commit: finalizedTip }, (directory) =>
-            finalize({
-              turn,
-              commit: finalizedTip,
-              base: finalizedBase,
-              rebased: rebasedUnderTurn,
-              budgetSeconds: budget,
-              directory,
-              signal,
-            }),
+          withPrivateCheckout(
+            { cwd, commit: finalizedTip, role: "underTurn", warmLimit, now },
+            (directory, checkoutContext) =>
+              finalize({
+                turn,
+                commit: finalizedTip,
+                base: finalizedBase,
+                rebased: rebasedUnderTurn,
+                budgetSeconds: budget,
+                directory,
+                signal,
+                trackChild: checkoutContext.trackChild,
+                isStopping: checkoutContext.isStopping,
+              }),
           ),
         );
         if (signal.aborted) return lostTurn();
@@ -1234,7 +2197,7 @@ async function runLanding(
       if (rebasedUnderTurn) {
         const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
         const passed = await record.time("underTurnCheck", () =>
-          checkTip(turn, base, budget, signal),
+          checkUnderTurn(turn, base, budget, signal),
         );
         if (signal.aborted) return lostTurn();
         if (!passed) return { status: "check-failed" };
@@ -1252,12 +2215,37 @@ async function runLanding(
 const FINAL_COMMIT_ENV = "T3_LANDING_FINAL_COMMIT";
 const FINAL_BASE_ENV = "T3_LANDING_FINAL_BASE";
 const FINAL_REBASED_ENV = "T3_LANDING_REBASED";
+const INSTALL_COMMAND = "vp i --frozen-lockfile --prefer-offline";
+
+async function runTreeCommand(
+  command,
+  { cwd, stdio, env, signal, onSpawn, trackChild, isStopping },
+) {
+  if (signal?.aborted || isStopping?.()) return { ok: false, stopped: true };
+  const { child, stop, done, group } = spawnTree(command, [], {
+    cwd,
+    shell: true,
+    stdio,
+    env,
+  });
+  const untrack = trackChild ? trackChild({ stop, done, group }) : () => {};
+  onSpawn(child);
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
+  try {
+    const { code, stopped } = await done;
+    return { ok: !stopped && code === 0, stopped };
+  } finally {
+    signal?.removeEventListener("abort", stop);
+    untrack();
+  }
+}
 
 /**
  * Installs and runs `vp run check:changed` against `base` in the private checkout `directory`, under the turn when
- * `turn` is one. A lost turn stops them and every process they started, since their pass could no longer be pushed,
- * and resolves to false once those are gone; a lander that dies ends them too. `command`, `stdio` and `onSpawn` are
- * for tests.
+ * `turn` is one. If install fails in a reused warm checkout, rebuilds cleanly once and retries install so a poisoned
+ * `node_modules` auto-recovers. A lost turn stops them and every process they started, since their pass could no
+ * longer be pushed, and resolves to false once those are gone; a lander that dies ends them too.
  */
 async function runCheck(
   directory,
@@ -1266,32 +2254,46 @@ async function runCheck(
   budgetSeconds,
   signal,
   {
-    // The private checkout has no node_modules; the store's hardlinks make this install cheap.
-    command = `vp i --frozen-lockfile --offline && vp run check:changed ${base}`,
+    command,
+    // A kept checkout's node_modules needs only what the commit changed, and the store's hardlinks make a new one
+    // cheap. A package the store lacks, as after a rebase across a lockfile change, is fetched.
+    installCommand = INSTALL_COMMAND,
+    checkCommand = `vp run check:changed ${base}`,
     stdio = "inherit",
     onSpawn = () => {},
+    reused = false,
+    rebuild,
+    trackChild,
+    isStopping,
   } = {},
 ) {
-  const { child, stop, done } = spawnTree(command, [], {
-    cwd: directory,
-    shell: true,
-    stdio,
-    env: {
-      ...process.env,
-      // Unset before the wait: only the holder's checks take slots ahead of other runs.
-      [TURN_ENV]: turn ?? undefined,
-      [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
-    },
-  });
-  onSpawn(child);
-  signal?.addEventListener("abort", stop, { once: true });
-  if (signal?.aborted) stop();
-  try {
-    const { code, stopped } = await done;
-    return !stopped && code === 0;
-  } finally {
-    signal?.removeEventListener("abort", stop);
+  const env = {
+    ...process.env,
+    // Unset before the wait: only the holder's checks take slots ahead of other runs.
+    [TURN_ENV]: turn ?? undefined,
+    [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
+  };
+  const runStep = (step) =>
+    runTreeCommand(step, { cwd: directory, stdio, env, signal, onSpawn, trackChild, isStopping });
+  if (command !== undefined) return (await runStep(command)).ok;
+  let installed = await runStep(installCommand);
+  if (
+    !installed.ok &&
+    !installed.stopped &&
+    !signal?.aborted &&
+    !isStopping?.() &&
+    reused &&
+    rebuild
+  ) {
+    process.stderr.write(
+      `landing: install failed in reused checkout ${directory}; rebuilding cleanly and retrying.\n`,
+    );
+    await rebuild(signal);
+    if (signal?.aborted || isStopping?.()) return false;
+    installed = await runStep(installCommand);
   }
+  if (!installed.ok || signal?.aborted || isStopping?.()) return false;
+  return (await runStep(checkCommand)).ok;
 }
 
 /**
@@ -1301,30 +2303,27 @@ async function runCheck(
 async function runFinalize(
   directory,
   { turn, commit, base, rebased, budgetSeconds, signal },
-  { command, stdio = "inherit", onSpawn = () => {} },
+  { command, stdio = "inherit", onSpawn = () => {}, trackChild, isStopping },
 ) {
-  const { child, stop, done } = spawnTree(command, [], {
-    cwd: directory,
-    shell: true,
-    stdio,
-    env: {
-      ...process.env,
-      [TURN_ENV]: turn,
-      [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
-      [FINAL_COMMIT_ENV]: commit,
-      [FINAL_BASE_ENV]: base,
-      [FINAL_REBASED_ENV]: rebased ? "1" : "0",
-    },
-  });
-  onSpawn(child);
-  signal?.addEventListener("abort", stop, { once: true });
-  if (signal?.aborted) stop();
-  try {
-    const { code, stopped } = await done;
-    return !stopped && code === 0;
-  } finally {
-    signal?.removeEventListener("abort", stop);
-  }
+  const env = {
+    ...process.env,
+    [TURN_ENV]: turn,
+    [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
+    [FINAL_COMMIT_ENV]: commit,
+    [FINAL_BASE_ENV]: base,
+    [FINAL_REBASED_ENV]: rebased ? "1" : "0",
+  };
+  return (
+    await runTreeCommand(command, {
+      cwd: directory,
+      stdio,
+      env,
+      signal,
+      onSpawn,
+      trackChild,
+      isStopping,
+    })
+  ).ok;
 }
 
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
@@ -1385,12 +2384,17 @@ async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = 
       finalize:
         finalize ??
         (finalizeCommand
-          ? (details) => runFinalize(details.directory, details, { command: finalizeCommand })
+          ? (details) =>
+              runFinalize(details.directory, details, {
+                command: finalizeCommand,
+                trackChild: details.trackChild,
+                isStopping: details.isStopping,
+              })
           : undefined),
       check:
         check ??
-        ((turn, base, budgetSeconds, directory, signal) =>
-          runCheck(directory, turn, base, budgetSeconds, signal)),
+        ((turn, base, budgetSeconds, directory, signal, checkoutContext) =>
+          runCheck(directory, turn, base, budgetSeconds, signal, checkoutContext)),
     });
     if (result.status === "rebased") {
       return (
@@ -1503,5 +2507,25 @@ module.exports = {
   main,
   processHost,
   // For tests alone: a turn taken outside withTurn is never renewed, and outlives a process that leaves it held.
-  testing: { tryAcquire, acquire, release, runCheck, runFinalize },
+  testing: {
+    tryAcquire,
+    acquire,
+    release,
+    runCheck,
+    runFinalize,
+    withPrivateCheckout,
+    acquireCheckoutSlot,
+    sweepCheckouts,
+    checkoutsFolder,
+    dirtyMarkerHost,
+    landingCheckout,
+    lockFile,
+    isSqliteBusy,
+    machineBudgetSlots,
+    readProcessStarted,
+    resolveWarmLimit,
+    stopDirtyGroup,
+    KEPT_CHECKOUTS,
+    WARM_CHECKOUTS_ENV,
+  },
 };

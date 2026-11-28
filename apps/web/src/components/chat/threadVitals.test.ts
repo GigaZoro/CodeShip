@@ -22,12 +22,13 @@ describe("resolveThreadVitals", () => {
   });
 
   it.each([
-    { used: 60, context: undefined },
-    { used: 60.6, context: { kind: "context", percent: 61, attention: false } },
+    { used: 74, context: undefined },
+    { used: 75, context: undefined },
+    { used: 75.6, context: { kind: "context", percent: 76, attention: false } },
     { used: 80, context: { kind: "context", percent: 80, attention: false } },
     { used: 81, context: { kind: "context", percent: 81, attention: true } },
     { used: 130, context: { kind: "context", percent: 100, attention: true } },
-  ])("shows context only above 60% and marks it above 80%: $used", ({ used, context }) => {
+  ])("shows context only above 75% and marks it above 80%: $used", ({ used, context }) => {
     const vitals = resolveThreadVitals({ ...base, contextUsedPercentage: used });
     expect(vitals.find((vital) => vital.kind === "context")).toEqual(context);
   });
