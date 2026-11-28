@@ -1177,7 +1177,7 @@ const removeTempDirectory = (directory: string, platform: NodeJS.Platform): Effe
 const SHM_TEMP_BASE = "/dev/shm";
 const POSIX_SHORT_TEMP_BASE = "/tmp";
 const MIN_SHM_AVAILABLE_BYTES = 2 * GiB;
-// Keep `${base}/t3-cct-XXXXXX/g-YYYYYY` (25 bytes beyond `base`) well below Unix socket `sun_path`
+// Keep `${base}/t3-cct-XXXXXX/g-YYYYYY` (23 bytes beyond `base`) well below Unix socket `sun_path`
 // limits (103 bytes on macOS, 107 on Linux) by falling back to `/tmp` when `os.tmpdir()` is long.
 const MAX_POSIX_TEMP_BASE_BYTES = 32;
 
@@ -1234,6 +1234,7 @@ interface TestTempBaseProbes {
   readonly shmRealpath?: () => string;
   readonly readMountInfo?: () => string;
   readonly isShortTmpWritable?: () => boolean;
+  readonly shortTmpRealpath?: () => string;
 }
 
 const defaultShmStatFs = (): { readonly bavail: number; readonly bsize: number } =>
@@ -1248,6 +1249,18 @@ export const selectTestTempBase = (
   probes: TestTempBaseProbes = {},
   fallback: string = NodeOS.tmpdir(),
 ): string => {
+  let cachedMountInfo: string | null | undefined;
+  const readMountInfoOnce = (): string | null => {
+    if (cachedMountInfo !== undefined) return cachedMountInfo;
+    try {
+      cachedMountInfo = probes.readMountInfo
+        ? probes.readMountInfo()
+        : NodeFS.readFileSync("/proc/self/mountinfo", "utf8");
+    } catch {
+      cachedMountInfo = null;
+    }
+    return cachedMountInfo;
+  };
   if (platform === "linux") {
     try {
       const shmDirOk = probes.isShmDir ? probes.isShmDir() : isWritableDirectory(SHM_TEMP_BASE);
@@ -1255,10 +1268,8 @@ export const selectTestTempBase = (
         const realShmPath = probes.shmRealpath
           ? probes.shmRealpath()
           : NodeFS.realpathSync(SHM_TEMP_BASE);
-        const mountinfo = probes.readMountInfo
-          ? probes.readMountInfo()
-          : NodeFS.readFileSync("/proc/self/mountinfo", "utf8");
-        if (isMountExecutable(mountinfo, realShmPath)) {
+        const mountinfo = readMountInfoOnce();
+        if (mountinfo !== null && isMountExecutable(mountinfo, realShmPath)) {
           const { bavail, bsize } = (probes.shmStatFs ?? defaultShmStatFs)();
           if (
             Number.isFinite(bavail) &&
@@ -1280,9 +1291,18 @@ export const selectTestTempBase = (
       const shortTmpOk = probes.isShortTmpWritable
         ? probes.isShortTmpWritable()
         : isWritableDirectory(POSIX_SHORT_TEMP_BASE);
-      if (shortTmpOk) return POSIX_SHORT_TEMP_BASE;
+      if (shortTmpOk) {
+        if (platform !== "linux") return POSIX_SHORT_TEMP_BASE;
+        const realTmpPath = probes.shortTmpRealpath
+          ? probes.shortTmpRealpath()
+          : NodeFS.realpathSync(POSIX_SHORT_TEMP_BASE);
+        const mountinfo = readMountInfoOnce();
+        if (mountinfo !== null && isMountExecutable(mountinfo, realTmpPath)) {
+          return POSIX_SHORT_TEMP_BASE;
+        }
+      }
     } catch {
-      // Fall back to `fallback` when /tmp is absent or unwritable.
+      // Fall back to `fallback` when /tmp is absent, unwritable, or mounted noexec.
     }
   }
   return fallback;

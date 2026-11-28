@@ -613,6 +613,26 @@ describe("cachedTestTasks", () => {
       }
       expect(visited.size).toBe(serverKeys.length);
       expect(chainFileTotals.reduce((a, b) => a + b, 0)).toBe(serverFiles.length);
+
+      // Trailing-slash root must omit cwd for root-level tests (never emit cwd: "").
+      await NodeFSP.writeFile(
+        request,
+        JSON.stringify({
+          files: ["root.test.ts", "apps/server/b0.test.ts"],
+          groupSize,
+        }),
+      );
+      const trailingRootTasks = cachedTestTasks(undefined, repoRootWithTrailingSlash, "linux");
+      const trailingKeys = trailingRootTasks["test-cache"]!.dependsOn!;
+      const rootTask = trailingKeys
+        .map((key) => trailingRootTasks[key]!)
+        .find((task) => task.command.includes("./root.test.ts"));
+      expect(rootTask).toBeDefined();
+      expect("cwd" in rootTask!).toBe(false);
+      const serverTask = trailingKeys
+        .map((key) => trailingRootTasks[key]!)
+        .find((task) => task.command.includes("./b0.test.ts"));
+      expect(serverTask?.cwd).toBe("apps/server");
       expect(Math.max(...chainFileTotals) - Math.min(...chainFileTotals)).toBeLessThanOrEqual(
         Math.max(...groupSizes),
       );

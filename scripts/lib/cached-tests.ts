@@ -686,7 +686,9 @@ export function cachedTestTasks(
       const prefix = changed ? `${uncachedGroup ? `${requestFile}= ` : ""}VITE_CACHE_PATH= ` : "";
       tasks[task] = {
         command: `${prefix}${program} ${group.map(argument).join(" ")} --${options}`,
-        ...(directory === root ? {} : { cwd: relativeTestPath(root, directory) }),
+        ...(directory === normalizedRoot
+          ? {}
+          : { cwd: relativeTestPath(normalizedRoot, directory) }),
         ...(dependsOn ? { dependsOn } : {}),
         cache: uncachedGroup
           ? false

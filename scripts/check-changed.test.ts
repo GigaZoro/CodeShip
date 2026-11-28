@@ -3126,17 +3126,34 @@ it("selectTestTempBase checks /dev/shm directory, mountinfo noexec, free space, 
     ),
   ).toBe(shortFallback);
 
-  // Linux also uses /tmp when /dev/shm is rejected and fallback is long.
+  // Linux also uses /tmp when /dev/shm is rejected, /tmp is executable, and fallback is long,
+  // but keeps fallback when /tmp itself is mounted noexec.
   expect(
     selectTestTempBase(
       "linux",
       linuxProbes({
         readMountInfo: () => vfsNoexecMountInfo,
         isShortTmpWritable: () => true,
+        shortTmpRealpath: () => "/tmp",
       }),
       longMacFallback,
     ),
   ).toBe("/tmp");
+  const bothNoexecMountInfo = [
+    vfsNoexecMountInfo,
+    "45 20 0:46 / /tmp rw,nosuid,nodev,noexec - tmpfs tmpfs rw",
+  ].join("\n");
+  expect(
+    selectTestTempBase(
+      "linux",
+      linuxProbes({
+        readMountInfo: () => bothNoexecMountInfo,
+        isShortTmpWritable: () => true,
+        shortTmpRealpath: () => "/tmp",
+      }),
+      longMacFallback,
+    ),
+  ).toBe(longMacFallback);
 
   // Windows never probes /dev/shm or /tmp even for long paths.
   const shortTmpProbe = vi.fn(() => true);
