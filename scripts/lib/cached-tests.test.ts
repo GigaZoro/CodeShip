@@ -62,13 +62,14 @@ describe("cachedTestTasks", () => {
       const runs = tasks["test-cache"]!.dependsOn!.map((key) => tasks[key]!);
 
       expect(runs.filter(({ cache }) => cache === false)).toHaveLength(
-        platform === "darwin" ? 10 : 0,
+        platform === "darwin" ? 10 : platform === "linux" ? 1 : 0,
       );
       for (const file of files) {
         const run = runs.find(({ command }) => command.includes(NodePath.basename(file)));
         expect(run, file).toBeDefined();
         expect(run?.cache === false).toBe(
-          platform === "darwin" && !file.endsWith("update.test.ts"),
+          (platform === "darwin" && !file.endsWith("update.test.ts")) ||
+            (platform === "linux" && file.endsWith("processGroup.test.ts")),
         );
       }
     },

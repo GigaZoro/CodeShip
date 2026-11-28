@@ -29,6 +29,10 @@ const darwinNativeProcessTests = [
   "scripts/release-desktop-workflow.test.ts",
 ];
 
+// On Linux Vite+'s fspy file tracker intercepts execvp and stops with ENOENT on a missing
+// shebang interpreter instead of continuing PATH search.
+const linuxNativeProcessTests = ["packages/shared/src/processGroup.test.ts"];
+
 export function missingVitePlusTestEnv() {
   return Object.entries(vitePlusTestDefaults).filter(([name]) => process.env[name] === undefined);
 }
@@ -456,7 +460,12 @@ function resolveTestPackages(
   // test, and each uncached test, goes by that spelling. A deleted test keeps its own.
   const resolve = testPathResolver(root);
   const onDisk = (file: string) => resolve(file) ?? file;
-  const hostUncached = platform === "darwin" ? darwinNativeProcessTests : [];
+  const hostUncached =
+    platform === "darwin"
+      ? darwinNativeProcessTests
+      : platform === "linux"
+        ? linuxNativeProcessTests
+        : [];
   const uncachedFiles = new Set([...hostUncached, ...uncached].map(onDisk));
   const sorted = [...new Set(files.map(onDisk))].sort();
   const testScripts = new Map<string, string | undefined>();
