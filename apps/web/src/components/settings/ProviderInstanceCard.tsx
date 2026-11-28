@@ -19,6 +19,7 @@ import * as Result from "effect/Result";
 import { Fragment, useState, type ReactElement, type ReactNode } from "react";
 import {
   isProviderDriverKind,
+  resolveProviderInstanceAllowBackground,
   resolveProviderInstanceEnabled,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
@@ -282,6 +283,16 @@ export function nextProviderEnvironmentWithFieldSecret(
   return secret === undefined
     ? others
     : [...others, { name: field.name, value: secret, sensitive: true }];
+}
+
+export function withProviderInstanceAllowBackground(
+  instance: ProviderInstanceConfig,
+  allowBackground: boolean,
+): ProviderInstanceConfig {
+  const { allowBackground: _omit, ...rest } = instance;
+  return allowBackground
+    ? (rest as ProviderInstanceConfig)
+    : ({ ...rest, allowBackground: false } as ProviderInstanceConfig);
 }
 
 function ProviderEnvironmentFieldRow(props: {
@@ -896,6 +907,11 @@ export function ProviderInstanceCard({
     );
   };
 
+  const allowBackground = resolveProviderInstanceAllowBackground(instance);
+  const updateAllowBackground = (value: boolean) => {
+    onUpdate(withProviderInstanceAllowBackground(instance, value));
+  };
+
   const updateEnabled = (value: boolean) => {
     if (projectOverride) {
       projectOverride.onChange(value);
@@ -1205,6 +1221,11 @@ export function ProviderInstanceCard({
                   {sharedFrom === null ? t("Shared") : t("From {machine}", { machine: sharedFrom })}
                 </Badge>
               )}
+              {allowBackground ? null : (
+                <Badge variant="outline" size="sm">
+                  {t("Interactive only")}
+                </Badge>
+              )}
               {versionLabel ? (
                 <code className="max-w-24 shrink-0 truncate text-xs text-muted-foreground">
                   {versionLabel}
@@ -1393,6 +1414,20 @@ export function ProviderInstanceCard({
                 spellCheck={false}
               />
             </div>
+          }
+        />
+        <SettingsRow
+          title={t("Allow background runs")}
+          description={t(
+            "When off, scheduled tasks, Auto background runs, delegated subtasks, and failover never use this account, keeping its quota reserved for interactive chats.",
+          )}
+          control={
+            <Switch
+              checked={allowBackground}
+              disabled={readOnly}
+              onCheckedChange={(checked) => updateAllowBackground(Boolean(checked))}
+              aria-label={t("Allow background runs for {name}", { name: displayName })}
+            />
           }
         />
         {instance.driver === "codex" ? (

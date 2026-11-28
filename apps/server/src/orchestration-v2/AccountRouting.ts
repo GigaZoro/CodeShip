@@ -1,5 +1,6 @@
 import {
   CodexSettings,
+  isProviderInstanceBackgroundAllowed,
   type ModelSelection,
   type OrchestrationV2Run,
   type ProjectId,
@@ -26,6 +27,7 @@ import {
   resolveSelectableModel,
 } from "@t3tools/shared/model";
 import {
+  activeAutoModeProvider,
   autoModeModelFor,
   canAccountRun,
   orderProviderInstancesForFailover,
@@ -353,14 +355,23 @@ export function modelScopeHolds(
   return refusalEnds(provider, scoped, input.nowMs, canonicalModel(provider, model)).length > 0;
 }
 
+const isBackgroundContext = (input: {
+  readonly background?: boolean | undefined;
+  readonly scheduled?: boolean | undefined;
+}): boolean => input.background === true || input.scheduled === true;
+
 /** The model this account would run for `model`, usage limits aside, or null when it cannot. */
 type ModelAdmissionInput = Pick<AccountRoutingContext, "settings"> & {
   readonly projectId: ProjectId;
   readonly model: string;
+  readonly background?: boolean | undefined;
+  readonly scheduled?: boolean | undefined;
 };
 
 function runnableModel(provider: ServerProvider, input: ModelAdmissionInput): string | null {
-  return canAccountRun(provider, input.settings, input.projectId)
+  return canAccountRun(provider, input.settings, input.projectId, {
+    background: isBackgroundContext(input),
+  })
     ? resolveSelectableModel(provider.driver, input.model, provider.models)
     : null;
 }
@@ -451,6 +462,7 @@ interface AccountSearch extends AccountRoutingContext {
   readonly preferEarliestReset?: boolean;
   /** Automatic picks require a payer declaration. Explicit account routing retains its policy. */
   readonly funding?: "verified";
+  readonly background?: boolean | undefined;
 }
 
 export type ObserveAccount = (id: ProviderInstanceId, reason: AccountEligibility) => void;
@@ -590,6 +602,8 @@ export function resolveAutoRoute(
     readonly selection: ModelSelection;
     readonly projectId: ProjectId;
     readonly started: boolean;
+    readonly background?: boolean | undefined;
+    readonly scheduled?: boolean | undefined;
   },
 ) {
   const selection = resolveAutoModelSelection({
@@ -598,6 +612,7 @@ export function resolveAutoRoute(
     accounts: input.providers,
     projectId: input.projectId,
     started: input.started,
+    background: isBackgroundContext(input),
   });
   const driver = input.providers.find(
     (provider) => provider.instanceId === selection.instanceId,
@@ -610,7 +625,11 @@ export function resolveAutoRoute(
 }
 
 function applyRequestComplexity(input: {
-  readonly context: AccountRoutingContext & { readonly projectId: ProjectId };
+  readonly context: AccountRoutingContext & {
+    readonly projectId: ProjectId;
+    readonly background?: boolean | undefined;
+    readonly scheduled?: boolean | undefined;
+  };
   readonly selection: ModelSelection;
   readonly requestPrompt: AutoRequestPrompt | undefined;
   readonly started: boolean;
@@ -675,7 +694,9 @@ export interface AutoRouteInput extends AccountRoutingContext, McpSignIns {
   /** A thread that already ran keeps its provider. */
   readonly started: boolean;
   /** A scheduled task's run, which spends the room that would be lost first. */
-  readonly scheduled?: boolean;
+  readonly scheduled?: boolean | undefined;
+  /** A background/automated/delegated run, which must never consume interactive-only accounts. */
+  readonly background?: boolean | undefined;
   readonly observe?: ObserveAccount;
   /** Optional prompt context for deterministic Auto-mode complexity routing. */
   readonly requestPrompt?: AutoRequestPrompt | undefined;
@@ -730,6 +751,7 @@ function resolveCandidateModelForProvider(
  */
 export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteResult {
   if (input.selection.autoAccount !== true) return { selection: input.selection };
+  const background = isBackgroundContext(input);
   const excludedFamilies = excludedVendorFamilies(input.routingConstraints);
   const { selection, driver, searchModel } = resolveAutoRoute(input);
   if (selection === input.selection || driver === undefined) {
@@ -738,17 +760,22 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
 
   if (excludedFamilies.size === 0 || input.started) {
     const current = input.providers.find(
-      (provider) => provider.instanceId === input.currentInstanceId && provider.driver === driver,
+      (provider) =>
+        provider.instanceId === input.currentInstanceId &&
+        provider.driver === driver &&
+        (!background || isProviderInstanceBackgroundAllowed(input.settings, provider.instanceId)),
     );
     const search = {
       ...input,
+      background,
       driver,
       model: searchModel,
       preferEarliestReset: input.scheduled === true,
     };
+    const backgroundSearch = { ...search, background: true };
     const observed =
       input.observe && input.settings.failoverLimitedThreads
-        ? accountsWithRoom(search, input.observe)
+        ? accountsWithRoom(backgroundSearch, input.observe)
         : undefined;
     const pickTarget = () => {
       if (current !== undefined) {
@@ -759,7 +786,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
           const signedIn = pendingSignIns(input, current.instanceId).length === 0;
           if (!onCredits && signedIn) return keep;
           // Plan usage comes first, then no sign-in, so the top one is the move or there is none.
-          const top = (observed ?? accountsWithRoom(search))[0];
+          const top = (observed ?? accountsWithRoom(backgroundSearch))[0];
           if (top === undefined || top.instanceId === current.instanceId) return keep;
           if (onCredits && !top.onCredits) return top;
           return !signedIn &&
@@ -769,7 +796,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
             : keep;
         }
       }
-      const withRoom = (observed ?? accountsWithRoom(search))[0];
+      const withRoom = (observed ?? accountsWithRoom(backgroundSearch))[0];
       if (withRoom !== undefined) return withRoom;
       // No subscription account has room. A thread keeps an account that can still run, and a new
       // one starts on its named account when that has no usage limits (an API key).
@@ -777,10 +804,18 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
         (provider) => provider.instanceId === selection.instanceId,
       );
       const keep =
-        current ?? (named !== undefined && !isSubscriptionAccount(named) ? named : undefined);
-      const kept = keep === undefined ? null : runnableModel(keep, search);
+        current ??
+        (named !== undefined &&
+        !isSubscriptionAccount(named) &&
+        isProviderInstanceBackgroundAllowed(input.settings, named.instanceId)
+          ? named
+          : undefined);
+      const kept =
+        keep === undefined
+          ? null
+          : runnableModel(keep, keep === current ? search : backgroundSearch);
       if (keep !== undefined && kept !== null) return { instanceId: keep.instanceId, model: kept };
-      const waitOn = firstAccountWithRoomAgain(search);
+      const waitOn = firstAccountWithRoomAgain(backgroundSearch);
       return waitOn !== undefined || current === undefined
         ? waitOn
         : { instanceId: current.instanceId, model: selection.model };
@@ -832,6 +867,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
         ? accountsWithRoom(
             {
               ...input,
+              background,
               driver: candidateDriver,
               model: preferredModel,
               preferEarliestReset: input.scheduled === true,
@@ -864,7 +900,7 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
     );
     for (const provider of orderedProviders) {
       if (
-        !canAccountRun(provider, input.settings, input.projectId) ||
+        !canAccountRun(provider, input.settings, input.projectId, { background }) ||
         (provider.auth.loginExpiresAt && Date.parse(provider.auth.loginExpiresAt) <= input.nowMs)
       ) {
         continue;
@@ -965,7 +1001,8 @@ export type LaunchFailover =
 interface LaunchInput {
   readonly selection: ModelSelection;
   readonly projectId: ProjectId;
-  readonly scheduled?: boolean;
+  readonly scheduled?: boolean | undefined;
+  readonly background?: boolean | undefined;
   readonly fallbackModelSelections?: ReadonlyArray<ModelSelection>;
   readonly requestPrompt?: AutoRequestPrompt | undefined;
   readonly routingConstraints?: AutoRoutingConstraints | undefined;
@@ -983,21 +1020,29 @@ export interface LaunchRoute {
  */
 function routeNamedLaunch(input: AccountRoutingContext & McpSignIns & LaunchInput): LaunchRoute {
   const stay: LaunchRoute = { selection: input.selection, failover: null };
-  if (!input.settings.failoverLimitedThreads || input.selection.autoAccount === true) {
+  if (input.selection.autoAccount === true) {
     return stay;
   }
   const current = input.providers.find(
     (provider) => provider.instanceId === input.selection.instanceId,
   );
   if (current === undefined) return stay;
+  const disallowedForBackground =
+    isBackgroundContext(input) &&
+    !isProviderInstanceBackgroundAllowed(input.settings, current.instanceId);
+  if (!input.settings.failoverLimitedThreads && !disallowedForBackground) {
+    return stay;
+  }
   const signedOut = current.enabled && current.auth.status === "unauthenticated";
   const limited = accountLimitEnd(current, input, input.selection.model) !== null;
   const onCredits =
     !limited && runsOnCredits(current, input, canonicalModel(current, input.selection.model));
   const mcpServers = pendingSignIns(input, current.instanceId);
-  if (!signedOut && !limited && !onCredits && mcpServers.length === 0) return stay;
+  if (!disallowedForBackground && !signedOut && !limited && !onCredits && mcpServers.length === 0)
+    return stay;
   const others = accountsWithRoom({
     ...input,
+    background: true,
     driver: current.driver,
     model: input.selection.model,
     preferEarliestReset: input.scheduled === true,
@@ -1006,7 +1051,7 @@ function routeNamedLaunch(input: AccountRoutingContext & McpSignIns & LaunchInpu
   const signedIn = (account: (typeof others)[number]) =>
     pendingSignIns(input, account.instanceId).length === 0;
   const target =
-    signedOut || limited
+    disallowedForBackground || signedOut || limited
       ? others[0]
       : onCredits
         ? (others.find(onPlan) ?? (mcpServers.length > 0 ? others.find(signedIn) : undefined))
@@ -1016,13 +1061,18 @@ function routeNamedLaunch(input: AccountRoutingContext & McpSignIns & LaunchInpu
       selection: { ...input.selection, instanceId: target.instanceId, model: target.model },
       failover: signedOut
         ? { reason: "signedOut" }
-        : limited || (onCredits && onPlan(target))
+        : disallowedForBackground || limited || (onCredits && onPlan(target))
           ? { reason: "usageLimit" }
           : { reason: "mcpSignIn", mcpServers },
     };
   }
-  const fallback = signedOut ? fallbackLaunch(input, current) : null;
-  return fallback === null ? stay : { selection: fallback, failover: { reason: "signedOut" } };
+  const fallback =
+    signedOut || disallowedForBackground
+      ? fallbackLaunch({ ...input, background: true }, current)
+      : null;
+  return fallback === null
+    ? stay
+    : { selection: fallback, failover: { reason: signedOut ? "signedOut" : "usageLimit" } };
 }
 
 function primaryLaunch(input: AccountRoutingContext & McpSignIns & LaunchInput): LaunchRoute {
@@ -1044,11 +1094,13 @@ function primaryLaunch(input: AccountRoutingContext & McpSignIns & LaunchInput):
 function alternateLaunches(
   input: AccountRoutingContext & LaunchInput,
   primaryDriver: ProviderDriverKind,
+  options?: { readonly allowWhenFailoverOff?: boolean },
 ) {
-  if (!input.settings.failoverLimitedThreads) return [];
+  if (!input.settings.failoverLimitedThreads && options?.allowWhenFailoverOff !== true) return [];
   const eligible = input.providers.filter(
     (provider) =>
-      provider.driver !== primaryDriver && canAccountRun(provider, input.settings, input.projectId),
+      provider.driver !== primaryDriver &&
+      canAccountRun(provider, input.settings, input.projectId, { background: true }),
   );
   const searches = (input.fallbackModelSelections ?? []).flatMap((selection) => {
     const named = eligible.find((provider) => provider.instanceId === selection.instanceId);
@@ -1100,15 +1152,28 @@ export function failoverLimitedLaunch(
         : { selection: input.selection, failover: null }
       : primary;
   const wait = selectionWait(input, primary.selection);
-  if (wait === null) return unchanged;
+  const backgroundDisallowed =
+    isBackgroundContext(input) &&
+    !isProviderInstanceBackgroundAllowed(input.settings, primary.selection.instanceId);
+  const primaryDriver =
+    wait?.driver ??
+    (backgroundDisallowed
+      ? (input.providers.find((provider) => provider.instanceId === primary.selection.instanceId)
+          ?.driver ??
+        (input.selection.autoAccount === true ? activeAutoModeProvider(input.settings) : null))
+      : null);
+  if (primaryDriver === null) return unchanged;
   const matches: Array<{
     readonly selection: ModelSelection;
     readonly driver: ProviderDriverKind;
     readonly instanceId: ProviderInstanceId;
   }> = [];
-  for (const { selection, driver, preferNamed } of alternateLaunches(input, wait.driver)) {
+  for (const { selection, driver, preferNamed } of alternateLaunches(input, primaryDriver, {
+    allowWhenFailoverOff: backgroundDisallowed,
+  })) {
     const accounts = accountsWithRoom({
       ...input,
+      background: true,
       driver,
       model: selection.model,
       preferEarliestReset: input.scheduled === true,
@@ -1170,7 +1235,7 @@ export function failoverLimitedLaunch(
 
 /** The fallback model selection, when it is another account that can take the launch now. */
 function fallbackLaunch(
-  input: AccountRoutingContext & { readonly projectId: ProjectId },
+  input: AccountRoutingContext & { readonly projectId: ProjectId; readonly background?: boolean },
   signedOut: ServerProvider,
 ): ModelSelection | null {
   const fallback = input.settings.fallbackModelSelection;
@@ -1232,7 +1297,7 @@ function selectionWait(
       provider.instanceId === own.instanceId
         ? runnableModel(provider, { ...input, model: selection.model })
         : switching && provider.driver === own.driver
-          ? usableModel(provider, { ...input, model: peerModel })
+          ? usableModel(provider, { ...input, background: true, model: peerModel })
           : null;
     return model === null
       ? []
@@ -1251,9 +1316,19 @@ function launchWait(input: AccountRoutingContext & LaunchInput): UsageWait | nul
   const primary = primaryLaunch({ ...input, mcpSignInsNeeded: new Map() });
   const blocked = selectionWait(input, primary.selection);
   if (blocked === null) return null;
+  const backgroundDisallowed =
+    isBackgroundContext(input) &&
+    !isProviderInstanceBackgroundAllowed(input.settings, primary.selection.instanceId);
   const waits = [blocked];
-  for (const { selection, driver } of alternateLaunches(input, blocked.driver)) {
-    const accounts = accountsByLimitEnd({ ...input, driver, model: selection.model });
+  for (const { selection, driver } of alternateLaunches(input, blocked.driver, {
+    allowWhenFailoverOff: backgroundDisallowed,
+  })) {
+    const accounts = accountsByLimitEnd({
+      ...input,
+      background: true,
+      driver,
+      model: selection.model,
+    });
     if (accounts.length === 0) continue;
     const wait = waitForRoom(driver, accounts);
     if (wait === null) return null;
@@ -1271,7 +1346,8 @@ function delegateWait(
   return waitForRoom(
     driver,
     input.providers.flatMap((provider) =>
-      provider.driver === driver && canAccountRun(provider, input.settings, input.projectId)
+      provider.driver === driver &&
+      canAccountRun(provider, input.settings, input.projectId, { background: true })
         ? [
             {
               instanceId: provider.instanceId,
@@ -1304,6 +1380,8 @@ export function usageBlock(
     readonly projectId: ProjectId;
     readonly delegates: ReadonlyArray<ProviderDriverKind>;
     readonly fallbackModelSelections?: ReadonlyArray<ModelSelection>;
+    readonly background?: boolean | undefined;
+    readonly scheduled?: boolean | undefined;
   },
 ): UsageBlock | null {
   const waits = [
@@ -1392,6 +1470,7 @@ export class AccountRouting extends Context.Service<
         readonly currentInstanceId: ProviderInstanceId | null;
         readonly started: boolean;
         readonly scheduled?: boolean;
+        readonly background?: boolean | undefined;
         readonly observe?: ObserveAccount;
         readonly requestPrompt?: AutoRequestPrompt | undefined;
         readonly previousSelection?: ModelSelection | undefined;
@@ -1424,6 +1503,7 @@ export class AccountRouting extends Context.Service<
         readonly driver: ProviderDriverKind;
         readonly projectId: ProjectId;
         readonly model: string;
+        readonly background?: boolean | undefined;
         readonly funding?: "verified";
         /** The destination directory of the actual launch, including a worktree. */
         readonly cwd?: string;
@@ -1485,6 +1565,7 @@ export class AccountRouting extends Context.Service<
         readonly selection: ModelSelection;
         readonly projectId: ProjectId;
         readonly allowFailover?: boolean;
+        readonly background?: boolean | undefined;
         readonly routingConstraints?: AutoRoutingConstraints | undefined;
       } & CreditRequest,
     ) => Effect.Effect<LaunchLimit | null>;
@@ -1749,6 +1830,8 @@ export const layer = Layer.effect(
       readonly projectId: ProjectId;
       readonly delegates: ReadonlyArray<ProviderDriverKind>;
       readonly fallbackModelSelections?: ReadonlyArray<ModelSelection>;
+      readonly background?: boolean | undefined;
+      readonly scheduled?: boolean | undefined;
     }) {
       const now = yield* DateTime.now;
       const providers = yield* providerRegistry.getProviders;
@@ -1924,7 +2007,8 @@ export const layer = Layer.effect(
       ),
       scheduledRunBlock: Effect.fn("AccountRouting.scheduledRunBlock")(
         function* (input) {
-          const read = yield* readUsageBlock(input);
+          const scheduledInput = { ...input, background: true, scheduled: true };
+          const read = yield* readUsageBlock(scheduledInput);
           if (read.block === null) return null;
           const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
           const probeable = read.block.accounts.filter((instanceId) => {
@@ -1958,7 +2042,7 @@ export const layer = Layer.effect(
               ),
             { concurrency: "unbounded" },
           );
-          return found.some(Boolean) ? (yield* readUsageBlock(input)).block : read.block;
+          return found.some(Boolean) ? (yield* readUsageBlock(scheduledInput)).block : read.block;
         },
         // Skipping only saves usage; without the check the task runs as it always did.
         (effect) =>
@@ -2197,7 +2281,6 @@ export const layer = Layer.effect(
           const stay: LaunchRoute = { selection: input.selection, failover: null };
           if (input.selection.quotaAwareAuto === true) return stay;
           const settings = yield* serverSettings.getSettings;
-          if (!settings.failoverLimitedThreads) return stay;
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
           const auto = input.selection.autoAccount === true;
@@ -2208,8 +2291,13 @@ export const layer = Layer.effect(
                 accounts: providers,
                 projectId: input.projectId,
                 started: false,
+                background: isBackgroundContext(input),
               })
             : input.selection;
+          const backgroundDisallowed =
+            isBackgroundContext(input) &&
+            !isProviderInstanceBackgroundAllowed(settings, named.instanceId);
+          if (!settings.failoverLimitedThreads && !backgroundDisallowed) return stay;
           const driver = providers.find(
             (provider) => provider.instanceId === named.instanceId,
           )?.driver;
@@ -2239,7 +2327,10 @@ export const layer = Layer.effect(
             mode: "discover",
             driver: destinationDriver,
           });
-          return auto && !crossProvider && input.routingConstraints === undefined
+          return auto &&
+            !crossProvider &&
+            input.routingConstraints === undefined &&
+            !backgroundDisallowed
             ? stay
             : failoverLimitedLaunch({ ...context, mcpSignInsNeeded });
         },

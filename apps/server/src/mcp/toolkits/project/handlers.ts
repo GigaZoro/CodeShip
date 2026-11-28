@@ -564,6 +564,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 settings: projectDefaults,
                 projectId,
                 now: DateTime.toEpochMillis(yield* DateTime.now),
+                background: true,
               }).selection
             : null) ??
           undefined;
@@ -584,6 +585,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               selection: modelSelection,
               projectId,
               allowFailover: delegatedFrom === undefined,
+              background: true,
             },
             yield* Effect.serviceOption(AccountRouting.AccountRouting),
           );

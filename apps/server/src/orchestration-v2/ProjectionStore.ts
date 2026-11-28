@@ -3,6 +3,7 @@ import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
   countOlderSettledFolders,
   isReadOnlyGuestShare,
+  orchestrationV2RuntimeRequestUpdateApplies,
   pendingGuestMessageCount,
   threadFolderKeyOf,
 } from "@t3tools/contracts";
@@ -973,6 +974,14 @@ export interface ProjectionStoreV2Shape {
     threadId: ThreadId,
     providerTurnId: ProviderTurnId,
   ) => Effect.Effect<ProjectionPendingUserInputs, ProjectionStoreV2Error>;
+  /** The provider turn's requests still waiting for an answer, oldest first. */
+  readonly getPendingProviderTurnRequests: (
+    threadId: ThreadId,
+    providerTurnId: ProviderTurnId,
+  ) => Effect.Effect<
+    ReadonlyArray<OrchestrationV2ThreadProjection["runtimeRequests"][number]>,
+    ProjectionStoreV2Error
+  >;
   readonly getPlan: (
     threadId: ThreadId,
     planId: PlanId,
@@ -1504,10 +1513,12 @@ export function applyToProjection(
         providerTurns: upsertProviderTurn(base.providerTurns, event.payload),
       };
     case "runtime-request.updated":
-      return {
-        ...base,
-        runtimeRequests: upsertById(base.runtimeRequests, event.payload),
-      };
+      return orchestrationV2RuntimeRequestUpdateApplies(
+        base.runtimeRequests.find((request) => request.id === event.payload.id),
+        event.payload,
+      )
+        ? { ...base, runtimeRequests: upsertById(base.runtimeRequests, event.payload) }
+        : base;
     case "message.updated":
       return {
         ...base,
@@ -3589,6 +3600,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 created_at = excluded.created_at,
                 resolved_at = excluded.resolved_at,
                 payload_json = excluded.payload_json
+              -- An answered or ended request stays so when its question is asked again.
+              WHERE excluded.status <> 'pending'
+                OR orchestration_v2_projection_runtime_requests.status = 'pending'
             `;
               break;
             }
@@ -7241,6 +7255,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       isProjectionStoreThreadNotFoundError(cause)
         ? cause
         : new ProjectionStoreReadError({ threadId, cause });
+
+    const getPendingProviderTurnRequests: ProjectionStoreV2Shape["getPendingProviderTurnRequests"] =
+      (threadId, providerTurnId) =>
+        sql<PayloadRow>`
+          SELECT payload_json FROM orchestration_v2_projection_runtime_requests
+          WHERE thread_id = ${threadId} AND provider_turn_id = ${providerTurnId}
+            AND status = 'pending'
+          ORDER BY created_at ASC, runtime_request_id ASC
+        `.pipe(
+          Effect.flatMap(decodeRows(decodeRuntimeRequestPayload, threadId)),
+          Effect.mapError(controlReadError(threadId)),
+        );
 
     const getPendingNativeUserInputs: ProjectionStoreV2Shape["getPendingNativeUserInputs"] = (
       threadId,
@@ -11658,6 +11684,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getMemoryAdmissionQueue: readOnReader(getMemoryAdmissionQueue),
       getRunsUnderwayOn: readOnReader(getRunsUnderwayOn),
       getPendingNativeUserInputs: readOnReader(getPendingNativeUserInputs),
+      getPendingProviderTurnRequests: readOnReader(getPendingProviderTurnRequests),
       hasUnpairedRunInterruptRequest: readOnReader(hasUnpairedRunInterruptRequest),
       getRunTurnItemIdentities: readOnReader(getRunTurnItemIdentities),
       getRunsWithLostBackgroundWork: readOnReader(getRunsWithLostBackgroundWork),

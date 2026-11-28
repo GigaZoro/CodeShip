@@ -97,6 +97,7 @@ import type {
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexSchema from "effect-codex-app-server/schema";
+import type { CodexRequestHandlerWaitpoint } from "effect-codex-app-server/protocol";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
@@ -109,10 +110,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Function from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Random from "effect/Random";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Clock from "effect/Clock";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -181,6 +184,7 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { buildWorkspaceInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import * as SessionHostService from "../../sessionHost/SessionHostService.ts";
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 const CODEX_CAPACITY_MAX_RETRIES = 5;
@@ -327,6 +331,18 @@ export function codexProviderTurnTokenUsage(
   };
 }
 const CODEX_ASSISTANT_DELTA_FLUSH_INTERVAL_MS = 50;
+/** A line only T3 writes into a kept app server's output, after the lines its reader already got. */
+const CODEX_OUTPUT_BARRIER_METHOD = "t3/outputBarrier";
+const CodexOutputBarrierParams = Schema.Struct({ id: Schema.String });
+const decodeCodexOutputBarrierParams = Schema.decodeUnknownOption(CodexOutputBarrierParams);
+const encodeCodexOutputBarrierLine = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      method: Schema.Literal(CODEX_OUTPUT_BARRIER_METHOD),
+      params: CodexOutputBarrierParams,
+    }),
+  ),
+);
 // Plan flushes store three copies; use the client's assistant-text cadence.
 const CODEX_PLAN_DELTA_FLUSH_INTERVAL_MS = 400;
 const CodexBackgroundTerminalTerminateResponse = Schema.Struct({
@@ -673,6 +689,9 @@ class CodexAppServerRetiredError extends Schema.TaggedError<CodexAppServerRetire
   }
 }
 
+// Startup waits this long for a taken-over process's replay before it gives the process up.
+const ADOPTED_REPLAY_TIMEOUT = "10 seconds";
+
 function codexMcpAppResourceUri(item: CodexDynamicToolItem): string | undefined {
   if (item.type !== "mcpToolCall") return undefined;
   const uri = item.mcpAppUi?.resourceUri ?? item.mcpAppResourceUri ?? item.appContext?.resourceUri;
@@ -732,6 +751,127 @@ function codexNativeItemRef(nativeItemId: string) {
     nativeId: nativeItemId,
     strength: "strong" as const,
   };
+}
+
+const codexReasoningPartKey = (
+  turnId: string,
+  nativeItemId: string,
+  stream: "summary" | "content",
+  index: number,
+) => JSON.stringify([turnId, nativeItemId, stream, index]);
+
+export interface CodexItemPosition {
+  readonly ordinal: number;
+  readonly startedAt: DateTime.Utc;
+}
+
+/** A turn's item positions, keyed as its output names items; ordinals are never reused. */
+export interface CodexItemPositions {
+  readonly itemPositions: Map<string, CodexItemPosition>;
+  nextItemOrdinal: number;
+}
+
+export const firstCodexItemOrdinal = (providerTurnOrdinal: number) => providerTurnOrdinal * 100 + 1;
+
+export function allocateCodexItemPosition(
+  positions: CodexItemPositions,
+  key: string,
+  startedAt: DateTime.Utc,
+): CodexItemPosition {
+  const existing = positions.itemPositions.get(key);
+  if (existing !== undefined) return existing;
+  const position = { ordinal: positions.nextItemOrdinal, startedAt };
+  positions.nextItemOrdinal += 1;
+  positions.itemPositions.set(key, position);
+  return position;
+}
+
+export const codexApprovalItemKey = (nativeItemId: string, nativeRequestId: string) =>
+  `${nativeItemId}:approval:${nativeRequestId}`;
+
+type AdoptedCodexRequest = Pick<
+  OrchestrationV2RuntimeRequest,
+  "id" | "providerTurnId" | "nativeRequestRef" | "status"
+>;
+
+/** A taken-over turn's pending requests by Codex request id; the broker asks them again. */
+export function adoptedCodexRequestIds(
+  requests: ReadonlyArray<AdoptedCodexRequest>,
+): Map<string, AdoptedCodexRequest> {
+  return new Map(
+    requests.flatMap((request) =>
+      request.status === "pending" &&
+      request.nativeRequestRef?.driver === CODEX_PROVIDER &&
+      request.nativeRequestRef.nativeId !== null
+        ? [[request.nativeRequestRef.nativeId, request] as const]
+        : [],
+    ),
+  );
+}
+
+/**
+ * Gives a taken-over turn's stored items back the keys its output uses for them, so continued
+ * items keep their ordinals; new items are numbered after every stored one.
+ */
+export function seedAdoptedCodexItemPositions(
+  positions: CodexItemPositions,
+  input: {
+    readonly nativeTurnId: string;
+    readonly items: ReadonlyArray<
+      Pick<
+        OrchestrationV2TurnItem,
+        "id" | "type" | "ordinal" | "nativeItemRef" | "startedAt" | "updatedAt"
+      > & { readonly requestId?: OrchestrationV2RuntimeRequest["id"] }
+    >;
+    readonly requests?: ReadonlyArray<AdoptedCodexRequest>;
+    readonly turnItemIdFor: (key: string) => string;
+  },
+): void {
+  const nativeRequestIds = new Map(
+    (input.requests ?? []).flatMap((request) =>
+      request.nativeRequestRef?.nativeId == null
+        ? []
+        : [[request.id, request.nativeRequestRef.nativeId] as const],
+    ),
+  );
+  const sharingNativeId = new Map<string, number>();
+  for (const item of input.items) {
+    const nativeItemId = item.nativeItemRef?.nativeId;
+    if (nativeItemId != null) {
+      sharingNativeId.set(nativeItemId, (sharingNativeId.get(nativeItemId) ?? 0) + 1);
+    }
+  }
+  for (const item of input.items) {
+    const nativeItemId = item.nativeItemRef?.nativeId;
+    const nativeRequestId =
+      item.requestId === undefined ? undefined : nativeRequestIds.get(item.requestId);
+    const candidates =
+      nativeItemId == null
+        ? []
+        : item.type === "approval_request"
+          ? nativeRequestId === undefined
+            ? []
+            : [codexApprovalItemKey(nativeItemId, nativeRequestId)]
+          : item.type === "reasoning"
+            ? (["summary", "content"] as const).flatMap((stream) =>
+                Array.from({ length: sharingNativeId.get(nativeItemId) ?? 0 }, (_unused, index) =>
+                  codexReasoningPartKey(input.nativeTurnId, nativeItemId, stream, index),
+                ),
+              )
+            : [nativeItemId];
+    const key =
+      (item.type === "approval_request"
+        ? candidates[0]
+        : candidates.find((candidate) => input.turnItemIdFor(candidate) === item.id)) ??
+      `t3-adopted:${item.id}`;
+    if (!positions.itemPositions.has(key)) {
+      positions.itemPositions.set(key, {
+        ordinal: item.ordinal,
+        startedAt: item.startedAt ?? item.updatedAt,
+      });
+    }
+    positions.nextItemOrdinal = Math.max(positions.nextItemOrdinal, item.ordinal + 1);
+  }
 }
 
 function trimText(value: string | null | undefined): string | undefined {
@@ -1551,7 +1691,7 @@ function failureResetAt(
 const isChatGptSharingLimit = (failure: OrchestrationV2ProviderFailure) =>
   classifyCodexManagedError(failure.code)?.code === "subscription_sharing_usage_limit_exceeded";
 
-interface ActiveCodexTurnContext {
+interface ActiveCodexTurnContext extends CodexItemPositions {
   promptPending?: boolean;
   hookStopReason?: string;
   appliedServiceTier?: string;
@@ -1586,10 +1726,6 @@ interface ActiveCodexTurnContext {
   readonly fileChangeKindsByItem: Map<string, CodexFileChangeKinds>;
   readonly messagePhases: Map<string, "commentary" | "partial_answer" | "final_answer">;
   readonly asyncMessageIds: Set<string>;
-  readonly itemPositions: Map<
-    string,
-    { readonly ordinal: number; readonly startedAt: DateTime.Utc }
-  >;
 }
 
 interface ActiveCodexProviderRetry {
@@ -1727,7 +1863,10 @@ interface PendingCodexSubagentTurnStarted {
   readonly startedAt: DateTime.Utc;
 }
 
-type PendingCodexRuntimeRequest =
+/** The waitpoint is answered before the answer is handed over, so a detach drain waits for it. */
+type PendingCodexRuntimeRequest = {
+  readonly waitpoint: CodexRequestHandlerWaitpoint;
+} & (
   | {
       readonly type: "approval";
       readonly requestKind: ProviderRequestKind;
@@ -1736,7 +1875,8 @@ type PendingCodexRuntimeRequest =
   | {
       readonly type: "user_input";
       readonly answers: Deferred.Deferred<ProviderUserInputAnswers, never>;
-    };
+    }
+);
 
 type CodexWebSearchItem = {
   readonly id: string;
@@ -1774,6 +1914,15 @@ export interface CodexAppServerClientFactoryShape {
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly privateMcpSignIns?: boolean;
+    /**
+     * Take over the app server a session host kept through a planned update instead of starting
+     * one. Its output waits for `outputReady`, so the adopted turn is registered first.
+     * `replayComplete` becomes true once the broker replayed what it kept, false if it cannot.
+     */
+    readonly adoptRunningProcess?: {
+      readonly outputReady: Effect.Effect<void>;
+      readonly replayComplete: Deferred.Deferred<boolean>;
+    };
   }) => Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
     ProviderAdapter.ProviderAdapterOpenSessionError,
@@ -1906,16 +2055,18 @@ const decodeCodexChildThread = Schema.decodeUnknownEffect(
 // Without a deadline the spawner waits indefinitely for a process that ignores SIGTERM.
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds";
 
-export const makeCodexAppServerSpawnCommand = Effect.fn(
-  "CodexAdapterV2.makeCodexAppServerSpawnCommand",
-)(function* (input: {
+interface CodexAppServerLaunchInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
   readonly extendEnv?: boolean | undefined;
   readonly threadId?: string | undefined;
-}) {
+}
+
+export const makeCodexAppServerSpawnCommand = Effect.fn(
+  "CodexAdapterV2.makeCodexAppServerSpawnCommand",
+)(function* (input: CodexAppServerLaunchInput) {
   const launch = yield* (yield* AgentScope).wrap({
     command: input.command,
     args: input.args,
@@ -2105,6 +2256,8 @@ export const layerAppServerClientFactory: Layer.Layer<
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
     const agentScope = yield* AgentScope;
     const portDiscovery = yield* PortScanner.PortDiscovery;
+    const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
+    const workingDirectory = yield* HostProcess.WorkingDirectory;
 
     return CodexAppServerClientFactory.of({
       open: Effect.fn("CodexAdapterV2.open")(function* (input) {
@@ -2113,44 +2266,130 @@ export const layerAppServerClientFactory: Layer.Layer<
           ...codexAppServerEnvironment(input.environment),
           ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
         };
-        const command = yield* makeCodexAppServerSpawnCommand({
-          command: input.settings.binaryPath || "codex",
-          args: codexAppServerArgs(
-            withPrivateMcpSignIns(
-              resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
-              input.privateMcpSignIns === true,
-            ),
-          ),
-          env: environment,
-          threadId: input.threadId,
-        }).pipe(Effect.provideService(AgentScope, agentScope));
-        const handle = yield* spawner.spawn(command).pipe(
-          Effect.provideService(Scope.Scope, scope),
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapter.ProviderAdapterOpenSessionError({
-                driver: CODEX_PROVIDER,
-                providerSessionId: input.providerSessionId,
-                cause,
-              }),
+        const launchArgs = codexAppServerArgs(
+          withPrivateMcpSignIns(
+            resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+            input.privateMcpSignIns === true,
           ),
         );
         // Its shells carry each thread's T3CODE_THREAD_ID, so port discovery reads listeners' threads.
         yield* Effect.acquireRelease(Effect.sync(portDiscovery.trackAgent), (release) =>
           Effect.sync(release),
         );
+        const binaryCommand = input.settings.binaryPath || "codex";
+        let handle: ChildProcessSpawner.ChildProcessHandle;
+        let requestIdPrefix: string | undefined;
+        if (input.adoptRunningProcess !== undefined) {
+          const { outputReady, replayComplete } = input.adoptRunningProcess;
+          const adoptable = Option.isSome(sessionHostOption)
+            ? yield* sessionHostOption.value.takeAdoptable(input.providerSessionId)
+            : Option.none();
+          if (Option.isNone(adoptable) || Option.isNone(sessionHostOption)) {
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: CODEX_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "No running Codex app server is left to take over for this session.",
+            });
+          }
+          const sessionHost = sessionHostOption.value;
+          const adopted = adoptable.value;
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.gen(function* () {
+              if (adopted.handle.detachingForUpdate) {
+                yield* Effect.promise(() => adopted.handle.detach());
+                return;
+              }
+              yield* sessionHost.terminate(adopted.handle.sessionHostId);
+            }),
+          );
+          yield* outputReady.pipe(
+            Effect.andThen(Effect.sync(() => adopted.handle.releaseOutput())),
+            Effect.andThen(
+              Effect.tryPromise({
+                try: () => adopted.handle.waitForReplayComplete(),
+                catch: () => "replay_failed" as const,
+              }).pipe(Effect.exit),
+            ),
+            Effect.flatMap((replayed) =>
+              Deferred.succeed(replayComplete, Exit.isSuccess(replayed)),
+            ),
+            Effect.ensuring(Deferred.succeed(replayComplete, false)),
+            Effect.forkIn(scope),
+          );
+          // Replies to what the previous server asked must not resolve this client's requests.
+          const startedAt = yield* Clock.currentTimeMillis;
+          const salt = yield* Random.nextInt;
+          requestIdPrefix = `t3-${startedAt.toString(36)}-${Math.abs(salt).toString(36)}:`;
+          handle = adopted.childProcess;
+        } else if (Option.isSome(sessionHostOption)) {
+          const sessionHost = sessionHostOption.value;
+          // Unwrapped: the broker's agent scope already holds the app server.
+          const launch = yield* resolveSpawnCommand(binaryCommand, launchArgs, {
+            cwd: workingDirectory,
+            env: environment,
+          });
+          const detached = yield* sessionHost
+            .spawnChildProcessHandle({
+              providerSessionId: input.providerSessionId,
+              threadId: input.threadId,
+              driver: "codex",
+              command: launch.command,
+              args: launch.args,
+              shell: launch.shell,
+              cwd: workingDirectory,
+              env: environment,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterOpenSessionError({
+                    driver: CODEX_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    cause,
+                  }),
+              ),
+            );
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.gen(function* () {
+              if (detached.handle.detachingForUpdate) {
+                yield* Effect.promise(() => detached.handle.detach());
+                return;
+              }
+              yield* sessionHost.terminate(detached.handle.sessionHostId);
+            }),
+          );
+          handle = detached.childProcess;
+        } else {
+          const command = yield* makeCodexAppServerSpawnCommand({
+            command: binaryCommand,
+            args: launchArgs,
+            env: environment,
+            threadId: input.threadId,
+          }).pipe(Effect.provideService(AgentScope, agentScope));
+          handle = yield* spawner.spawn(command).pipe(
+            Effect.provideService(Scope.Scope, scope),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: CODEX_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
+            ),
+          );
+        }
         const protocolLogger = makeCodexAppServerProtocolLogger({
           nativeEventLogger,
           providerSessionId: input.providerSessionId,
         });
-        const clientOptions: CodexClient.CodexAppServerClientOptions =
-          protocolLogger === undefined
+        const clientOptions: CodexClient.CodexAppServerClientOptions = {
+          ...(protocolLogger === undefined
             ? {}
-            : {
-                logIncoming: true,
-                logOutgoing: true,
-                logger: protocolLogger,
-              };
+            : { logIncoming: true, logOutgoing: true, logger: protocolLogger }),
+          ...(requestIdPrefix === undefined ? {} : { requestIdPrefix }),
+        };
         const context = yield* Layer.build(CodexClient.layerChildProcess(handle, clientOptions));
         return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
           Effect.provide(context),
@@ -2272,6 +2511,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   // The elicitation handler shows T3 Code's own requests and passes on the person's answer to each.
   yield* mcpSessions.showsApprovalRequests(adapterOptions.instanceId);
+  const sessionHostOption = yield* Effect.serviceOption(SessionHostService.SessionHostService);
   const readMcpSession = (threadId: ThreadId | null) =>
     threadId === null ? Effect.undefined : mcpSessions.read(threadId);
   const { clientFactory, digest, fileSystem, idAllocator, serverConfig } = adapterOptions;
@@ -2403,7 +2643,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        // A taken-over app server's buffered output waits until adoptTurn has registered every
+        // running turn: notifications for a turn this adapter does not know are dropped.
+        const adoptedOutput =
+          input.adoptRunningProcess === true
+            ? {
+                ready: yield* Deferred.make<void>(),
+                replayComplete: yield* Deferred.make<boolean>(),
+              }
+            : undefined;
+        const adoptedRequests = new Map<string, AdoptedCodexRequest>();
+        const takeAdoptedRequestId = (providerTurnId: ProviderTurnId, nativeRequestId: string) => {
+          const adopted = adoptedRequests.get(nativeRequestId);
+          if (adopted === undefined || adopted.providerTurnId !== providerTurnId) return undefined;
+          adoptedRequests.delete(nativeRequestId);
+          return adopted.id;
+        };
         const client = yield* clientFactory.open({
+          ...(adoptedOutput === undefined
+            ? {}
+            : {
+                adoptRunningProcess: {
+                  outputReady: Deferred.await(adoptedOutput.ready),
+                  replayComplete: adoptedOutput.replayComplete,
+                },
+              }),
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
@@ -2466,7 +2730,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ProviderAdapter.ProviderAdapterV2Event,
           ProviderAdapter.ProviderAdapterEventStreamError
         >();
-        const initialized = yield* Ref.make(false);
+        // A taken-over app server was initialized by the server that started it.
+        const initialized = yield* Ref.make(adoptedOutput !== undefined);
         // After a timeout the session is retiring; waiters must not re-send to the hung app-server.
         const initializeTimeout = yield* Ref.make<
           ProviderAdapter.ProviderAdapterEventStreamError | undefined
@@ -2792,8 +3057,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             isDescendantCodexTurn(candidate, ancestor),
           );
 
+        let emittedEvents = 0;
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+          Queue.offer(events, event).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                emittedEvents += 1;
+              }),
+            ),
+          );
 
         // Every Codex thread shares this session, so a phase names the one thread it describes.
         // Once a turn opens Codex may answer without its servers, so only a thread still
@@ -3062,6 +3334,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             subagent: null,
             startedAt: input.startedAt,
             itemPositions: new Map(),
+            nextItemOrdinal: firstCodexItemOrdinal(input.turnInput.providerTurnOrdinal),
             fileChangeKindsByItem: new Map(),
             messagePhases: new Map(),
             asyncMessageIds: new Set(),
@@ -3573,16 +3846,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             // Read the clock first so the lookup and the insert run without yielding.
             const now = startedAt ?? (yield* DateTime.now);
-            const existing = context.itemPositions.get(nativeItemId);
-            if (existing !== undefined) {
-              return existing;
-            }
-            const position = {
-              ordinal: context.providerTurnOrdinal * 100 + context.itemPositions.size + 1,
-              startedAt: now,
-            };
-            context.itemPositions.set(nativeItemId, position);
-            return position;
+            return allocateCodexItemPosition(context, nativeItemId, now);
           });
 
         const resolveItemOrdinal = (context: ActiveCodexTurnContext, nativeItemId: string) =>
@@ -3774,6 +4038,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               subagent,
               startedAt: turn.startedAt,
               itemPositions: new Map(),
+              nextItemOrdinal: firstCodexItemOrdinal(providerTurnOrdinal),
               fileChangeKindsByItem: new Map(),
               messagePhases: new Map(),
               asyncMessageIds: new Set(),
@@ -4518,7 +4783,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           stream: "summary" | "content",
           index: number,
         ) => {
-          const key = JSON.stringify([turnId, nativeItemId, stream, index]);
+          const key = codexReasoningPartKey(turnId, nativeItemId, stream, index);
           reasoningParts.set(key, { turnId, nativeItemId, stream, index });
           return key;
         };
@@ -5331,11 +5596,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             owner,
             `${input.nativeItemId}:approval:${input.nativeRequestId}`,
           );
-          const requestId = yield* idAllocator.allocate.runtimeRequest({
-            driver: CODEX_PROVIDER,
-            providerTurnId: owner.providerTurnId,
-            nativeRequestId: input.nativeRequestId,
-          });
+          const requestId =
+            takeAdoptedRequestId(owner.providerTurnId, input.nativeRequestId) ??
+            (yield* idAllocator.allocate.runtimeRequest({
+              driver: CODEX_PROVIDER,
+              providerTurnId: owner.providerTurnId,
+              nativeRequestId: input.nativeRequestId,
+            }));
           const nodeId = idAllocator.derive.approvalNode({ requestId });
           const providerSessionId = owner.input.providerThread.providerSessionId;
           if (providerSessionId === null) {
@@ -5417,11 +5684,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly responseMode?: "message";
         }) {
           const createdAt = yield* DateTime.now;
-          const requestId = yield* idAllocator.allocate.runtimeRequest({
-            driver: CODEX_PROVIDER,
-            providerTurnId: input.context.providerTurnId,
-            nativeRequestId: input.nativeRequestId,
-          });
+          const requestId =
+            takeAdoptedRequestId(input.context.providerTurnId, input.nativeRequestId) ??
+            (yield* idAllocator.allocate.runtimeRequest({
+              driver: CODEX_PROVIDER,
+              providerTurnId: input.context.providerTurnId,
+              nativeRequestId: input.nativeRequestId,
+            }));
           const providerSessionId = input.context.input.providerThread.providerSessionId;
           if (providerSessionId === null) {
             return yield* toProtocolError(
@@ -5509,6 +5778,73 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ...(input.responseMode === undefined ? {} : { responseMode: input.responseMode }),
           };
           return { node, request, turnItem, nativeQuestionIds };
+        });
+
+        // The reader handles lines in order, so a barrier's handler runs after every earlier line's.
+        const outputBarriers = new Map<string, Deferred.Deferred<void>>();
+        yield* client.handleUnknownServerNotification((method, params) => {
+          if (method !== CODEX_OUTPUT_BARRIER_METHOD) return Effect.void;
+          const barrier = Option.flatMapNullishOr(
+            decodeCodexOutputBarrierParams(params),
+            ({ id }) => outputBarriers.get(id),
+          );
+          return Option.isNone(barrier) ? Effect.void : Deferred.succeed(barrier.value, undefined);
+        });
+        const passOutputBarrier = Effect.fn("CodexAdapterV2.passOutputBarrier")(function* (
+          sessionHost: SessionHostService.SessionHostServiceShape,
+        ) {
+          const id = `${input.providerSessionId}:${outputBarriers.size}:${yield* Random.nextInt}`;
+          const barrier = yield* Deferred.make<void>();
+          outputBarriers.set(id, barrier);
+          yield* Effect.gen(function* () {
+            const injected = yield* sessionHost.injectOutputLine(
+              input.providerSessionId,
+              encodeCodexOutputBarrierLine({ method: CODEX_OUTPUT_BARRIER_METHOD, params: { id } }),
+            );
+            if (!injected) {
+              return yield* Effect.die(
+                new Error("No session host serves this Codex session, so its output cannot drain."),
+              );
+            }
+            yield* Deferred.await(barrier);
+          }).pipe(Effect.ensuring(Effect.sync(() => outputBarriers.delete(id))));
+          // Each request read before the barrier has emitted its events, or its answer is queued.
+          yield* client.awaitRequestHandlersParked;
+        });
+        // Requests the broker replays are registered before startup lets answers be delivered.
+        const releaseAdoptedOutput = Effect.fn("CodexAdapterV2.releaseAdoptedOutput")(
+          function* (adopted: {
+            readonly ready: Deferred.Deferred<void>;
+            readonly replayComplete: Deferred.Deferred<boolean>;
+          }) {
+            yield* Deferred.succeed(adopted.ready, undefined);
+            if (Option.isNone(sessionHostOption)) return false;
+            const sessionHost = sessionHostOption.value;
+            const replayed = yield* Effect.gen(function* () {
+              if (!(yield* Deferred.await(adopted.replayComplete))) return false;
+              yield* passOutputBarrier(sessionHost);
+              return true;
+            }).pipe(
+              Effect.timeoutOption(ADOPTED_REPLAY_TIMEOUT),
+              Effect.map(Option.getOrElse(() => false)),
+              Effect.catchCause((cause) =>
+                Effect.logError("A taken-over Codex process's replay did not finish", cause).pipe(
+                  Effect.as(false),
+                ),
+              ),
+            );
+            return replayed;
+          },
+        );
+        const drainForDetach = Effect.fn("CodexAdapterV2.drainForDetach")(function* (
+          sessionHost: SessionHostService.SessionHostServiceShape,
+        ) {
+          yield* passOutputBarrier(sessionHost);
+          yield* client.flushOutgoing;
+          yield* agentMessageDeltas.flush;
+          yield* reasoningDeltas.flush;
+          yield* planDeltas.flush;
+          return emittedEvents;
         });
 
         yield* client.handleServerNotification("item/agentMessage/delta", (payload) =>
@@ -6592,10 +6928,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               reason: payload.reason,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "command",
                 decision,
               });
@@ -6618,6 +6956,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -6665,10 +7004,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               reason: payload.reason,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "file-change",
                 decision,
               });
@@ -6691,6 +7032,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -6729,10 +7071,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               reason: payload.reason,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind,
                 decision,
               });
@@ -6755,6 +7099,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -6829,10 +7174,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               options: described.options,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "mcp-elicitation",
                 decision,
               });
@@ -6855,6 +7202,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -6908,10 +7256,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               reason: payload.reason,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "command",
                 decision,
               });
@@ -6934,6 +7284,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -6977,10 +7328,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               reason: payload.reason,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "approval",
+                waitpoint,
                 requestKind: "file-change",
                 decision,
               });
@@ -7003,6 +7356,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(decision).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -7038,10 +7392,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               questions: payload.questions,
             });
             const answers = yield* Deferred.make<ProviderUserInputAnswers, never>();
+            const waitpoint = yield* client.requestHandlerWaitpoint;
             yield* Ref.update(pendingRuntimeRequests, (current) => {
               const updated = new Map(current);
               updated.set(String(artifacts.request.id), {
                 type: "user_input",
+                waitpoint,
                 answers,
               });
               return updated;
@@ -7063,6 +7419,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
+            yield* waitpoint.park;
             const resolved = yield* Deferred.await(answers).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
@@ -8171,6 +8528,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             subagent: null,
             startedAt: now,
             itemPositions: new Map(),
+            nextItemOrdinal: firstCodexItemOrdinal(turnInput.providerTurnOrdinal),
             fileChangeKindsByItem: new Map(),
             messagePhases: new Map(),
             asyncMessageIds: new Set(),
@@ -8991,6 +9349,93 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             );
           },
+          adoptTurn: Effect.fn("CodexAdapterV2.adoptTurn")(
+            function* (adoptInput) {
+              if (adoptedOutput === undefined) {
+                return yield* toProtocolError(
+                  "This Codex session started its own app server; there is no running turn to take over.",
+                );
+              }
+              const nativeTurnId = adoptInput.providerTurn.nativeTurnRef?.nativeId;
+              if (nativeTurnId == null) {
+                return yield* toProtocolError(
+                  `Provider turn ${adoptInput.providerTurn.id} has no Codex turn id to take over.`,
+                );
+              }
+              const context = yield* registerRootTurn({
+                turnInput: adoptInput.turnInput,
+                nativeTurnId,
+                startedAt: adoptInput.providerTurn.startedAt ?? (yield* DateTime.now),
+              });
+              if (context.providerTurnId !== adoptInput.providerTurn.id) {
+                return yield* toProtocolError(
+                  `Codex turn ${nativeTurnId} maps to provider turn ${context.providerTurnId}, not ${adoptInput.providerTurn.id}.`,
+                );
+              }
+              const items = adoptInput.turnItems
+                .filter((item) => item.providerTurnId === adoptInput.providerTurn.id)
+                .toSorted((left, right) => left.ordinal - right.ordinal);
+              const requests = adoptInput.runtimeRequests.filter(
+                (request) => request.providerTurnId === adoptInput.providerTurn.id,
+              );
+              for (const [nativeRequestId, request] of adoptedCodexRequestIds(requests)) {
+                adoptedRequests.set(nativeRequestId, request);
+              }
+              seedAdoptedCodexItemPositions(context, {
+                nativeTurnId,
+                items,
+                requests,
+                turnItemIdFor: (key) =>
+                  idAllocator.derive.turnItemFromProviderItem({
+                    driver: CODEX_PROVIDER,
+                    nativeItemId: key,
+                  }),
+              });
+              for (const item of items) {
+                const nativeItemId = item.nativeItemRef?.nativeId;
+                if (nativeItemId == null || !isOrchestrationV2WorkActive(item.status)) continue;
+                // Output after the update continues these items, so it extends what is persisted.
+                if (item.type === "assistant_message") {
+                  yield* agentMessageDeltas.seed({
+                    turnId: nativeTurnId,
+                    itemId: nativeItemId,
+                    text: item.text,
+                  });
+                } else if (item.type === "proposed_plan") {
+                  yield* planDeltas.seed({
+                    turnId: nativeTurnId,
+                    itemId: nativeItemId,
+                    text: item.markdown,
+                  });
+                } else if (item.type === "command_execution") {
+                  yield* trackRunningCommandItem(nativeTurnId, {
+                    id: nativeItemId,
+                    command: item.input,
+                    ...(item.output === undefined ? {} : { aggregatedOutput: item.output }),
+                  });
+                }
+              }
+            },
+            (effect, adoptInput) =>
+              effect.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterTurnStartError({
+                      driver: CODEX_PROVIDER,
+                      threadId: adoptInput.turnInput.threadId,
+                      providerThreadId: adoptInput.turnInput.providerThread.id,
+                      runId: adoptInput.turnInput.runId,
+                      cause,
+                    }),
+                ),
+              ),
+          ),
+          ...(Option.isNone(sessionHostOption)
+            ? {}
+            : { drainForDetach: drainForDetach(sessionHostOption.value) }),
+          ...(adoptedOutput === undefined
+            ? {}
+            : { releaseAdoptedOutput: releaseAdoptedOutput(adoptedOutput) }),
           steerTurn: Effect.fn("CodexAdapterV2.steerTurn")(
             function* (turnInput) {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -9626,6 +10071,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ),
                   });
                 }
+                yield* pending.waitpoint.answer;
                 yield* Deferred.succeed(pending.answers, requestInput.answers);
                 return;
               }
@@ -9638,6 +10084,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ),
                 });
               }
+              yield* pending.waitpoint.answer;
               yield* Deferred.succeed(pending.decision, requestInput.decision);
             },
             (effect, requestInput) =>

@@ -261,6 +261,64 @@ describe("new thread model fallback", () => {
       }).selection,
     ).toEqual(selection);
   });
+  it("excludes allowBackground: false instances for background thread launches while keeping them for interactive launches", () => {
+    const reservedSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [selection.instanceId]: {
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          allowBackground: false,
+        },
+        [fallback.instanceId]: {
+          driver: available.driver,
+          enabled: true,
+        },
+      },
+    };
+    const codexHealthy = provider({
+      instanceId: selection.instanceId,
+      models: listing(selection.model),
+    });
+
+    // Interactive keeps the reserved default selection.
+    expect(
+      resolveNewThreadModelSelection({
+        ...defaults,
+        settings: reservedSettings,
+        providers: [codexHealthy, available],
+      }).selection,
+    ).toEqual(selection);
+
+    // Background launch fails over off the reserved default to the background-allowed fallback.
+    expect(
+      resolveNewThreadModelSelection({
+        ...defaults,
+        settings: reservedSettings,
+        providers: [codexHealthy, available],
+        background: true,
+      }).selection,
+    ).toEqual(fallback);
+
+    // Background launch refuses to fall back onto a reserved fallback even when the default is limited.
+    expect(
+      resolveNewThreadModelSelection({
+        ...defaults,
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: {
+            [fallback.instanceId]: {
+              driver: available.driver,
+              enabled: true,
+              allowBackground: false,
+            },
+          },
+        },
+        providers: [limited, available],
+        background: true,
+      }).selection,
+    ).toEqual(selection);
+  });
   it.each([
     ["takes the default's effort", undefined, "xhigh", [{ id: "effort", value: "xhigh" }]],
     [

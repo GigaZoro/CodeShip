@@ -57,5 +57,6 @@ export function showDesktopUpdateDownloadedToast(
         {releaseUrl ? <ReleaseNotesLink releaseUrl={releaseUrl} shell={shell} /> : null}
       </>
     ),
+    data: { source: "desktop-update" },
   });
 }

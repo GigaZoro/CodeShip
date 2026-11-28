@@ -23,6 +23,7 @@ export function useThreadsRailBadge() {
   const parts = [
     breakdown.failed > 0 && tn(breakdown.failed, "{count} failed", "{count} failed"),
     breakdown.limited > 0 && tn(breakdown.limited, "{count} usage limit", "{count} usage limits"),
+    breakdown.stalled > 0 && tn(breakdown.stalled, "{count} stalled", "{count} stalled"),
     breakdown.approval > 0 && tn(breakdown.approval, "{count} approval", "{count} approvals"),
     breakdown.input > 0 && tn(breakdown.input, "{count} question", "{count} questions"),
     breakdown.request > 0 && tn(breakdown.request, "{count} request", "{count} requests"),

@@ -1577,6 +1577,25 @@ describe("signedOutFailoverCommand", () => {
   ] as const)("keeps the thread in place when %s", (_, overrides) => {
     assert.isNull(move(overrides));
   });
+
+  it("never moves onto an allowBackground: false account even when all background-eligible accounts are limited", () => {
+    const reservedSettings = {
+      ...settings,
+      providerInstances: {
+        ...settings.providerInstances,
+        [ProviderInstanceId.make("claude_second")]: {
+          driver: claude,
+          enabled: true,
+          allowBackground: false,
+        },
+      },
+    };
+    const limited = new Map([
+      [limitedAccount, refusal],
+      [ProviderInstanceId.make("claude_first"), refusal],
+    ]);
+    assert.isNull(move({ settings: reservedSettings, recordedLimits: limited }));
+  });
 });
 
 describe("signedInResumeCommand", () => {

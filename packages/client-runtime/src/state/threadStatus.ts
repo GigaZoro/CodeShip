@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 import { msg, type Message } from "@t3tools/shared/i18n";
+import { quietPastLimit } from "@t3tools/shared/orchestrationTiming";
 import {
   backgroundWorkHoldsCompletion,
   type PendingBackgroundWorkTask,
@@ -57,6 +58,63 @@ export function resolveThreadStatus(thread: ThreadStatusInput): ThreadStatus {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
   return thread.latestRun?.status === "failed" ? "failed" : "ready";
+}
+
+export type ThreadStallInput = ThreadStatusInput &
+  Pick<EnvironmentThreadShell, "updatedAt" | "stalledAfterMs">;
+
+export interface ThreadStall {
+  /** The thread's last event, in epoch milliseconds. */
+  readonly lastEventAt: number;
+  /** When the thread reads as Stalled if nothing else happens first. */
+  readonly stalledAt: number;
+}
+
+/**
+ * A working thread that emits nothing for `stalledAfterMs` reads as Stalled until its next event.
+ * A thread waiting on another thread or on its background work is not working, nor is a queued
+ * run: CodeShip holds those, not the agent. Tools that report progress emit events as they run.
+ */
+export function resolveThreadStall(thread: ThreadStallInput): ThreadStall | null {
+  if (
+    thread.stalledAfterMs === undefined ||
+    thread.runtime?.status === "queued" ||
+    resolveThreadStatus(thread) !== "working"
+  ) {
+    return null;
+  }
+  const lastEventAt = Date.parse(thread.updatedAt);
+  if (Number.isNaN(lastEventAt)) return null;
+  return { lastEventAt, stalledAt: lastEventAt + thread.stalledAfterMs };
+}
+
+/** A snooze-only stand-in (no stall limit) or a thread shell. */
+export type ThreadListDeadlineInput = { readonly snoozedUntil?: string | null | undefined } & (
+  | ThreadStallInput
+  | { readonly stalledAfterMs?: undefined }
+);
+
+/**
+ * When time alone moves the thread in a list, in epoch milliseconds: its snooze ends or it stalls.
+ * List clocks wake at these so a section changes on time rather than on the next minute tick.
+ */
+export function threadListDeadlines(thread: ThreadListDeadlineInput): ReadonlyArray<number> {
+  const deadlines: number[] = [];
+  const snoozeEndsAt = thread.snoozedUntil == null ? Number.NaN : Date.parse(thread.snoozedUntil);
+  if (Number.isFinite(snoozeEndsAt)) deadlines.push(snoozeEndsAt);
+  const stall = thread.stalledAfterMs === undefined ? null : resolveThreadStall(thread);
+  if (stall !== null) deadlines.push(stall.stalledAt);
+  return deadlines;
+}
+
+export function isThreadStalled(thread: ThreadStallInput, now: number): boolean {
+  const stall = resolveThreadStall(thread);
+  const limitMs = thread.stalledAfterMs;
+  return (
+    stall !== null &&
+    limitMs !== undefined &&
+    quietPastLimit({ lastEventAt: stall.lastEventAt, now, limitMs }) !== null
+  );
 }
 
 /**
@@ -126,6 +184,7 @@ export const THREAD_STATUS_DISPLAY = {
   starting: { label: msg("Starting"), tone: "active" },
   settingUp: { label: msg("Setting up"), tone: "active" },
   working: { label: msg("Working"), summary: msg("Working"), tone: "active" },
+  stalled: { label: msg("Stalled"), summary: msg("Thread stalled"), tone: "attention" },
   goal: { label: msg("Goal"), tone: "active" },
   waiting: { label: msg("Waiting"), tone: "muted" },
   paused: { label: msg("Paused"), tone: "muted" },
@@ -180,7 +239,12 @@ export function hasUnseenCompletion(thread: ThreadCompletionInput): boolean {
 function classifyThreadStatus(
   status: ThreadStatus,
   thread: ThreadCompletionInput,
-  flags: { readonly woke?: boolean; readonly locallyUnread?: boolean },
+  flags: {
+    readonly woke?: boolean;
+    readonly locallyUnread?: boolean;
+    /** `isThreadStalled` at the caller's clock: a stalled run waits on the user, not the agent. */
+    readonly stalled?: boolean;
+  },
 ): ProjectThreadState {
   switch (status) {
     case "approval":
@@ -190,7 +254,7 @@ function classifyThreadStatus(
     case "failed":
       return "attention";
     case "working":
-      return "working";
+      return flags.stalled ? "attention" : "working";
     case "ready":
       if (flags.woke) return "attention";
       return flags.locallyUnread || hasUnseenCompletion(thread) ? "done" : "quiet";

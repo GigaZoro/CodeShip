@@ -426,6 +426,8 @@ const layerProviderRuntimeRecoveryProvided = ProviderRuntimeRecoveryService.laye
   Layer.provide(
     Layer.mergeAll(
       layerEffectWorkerProvided,
+      // Startup recovery hands provider processes kept through a planned update to their runs.
+      layerProviderTurnStartServiceProvided,
       layerStores,
       layerEventSink,
       IdAllocator.layer,

@@ -27,6 +27,7 @@ export function startKeybindingsUpdateToasts(): () => void {
             availableEditors={serverConfig?.availableEditors ?? []}
           />
         ),
+        data: { source: "keybindings-update" },
       }),
     );
   });

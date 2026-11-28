@@ -166,7 +166,11 @@ export function makeAssistantStreamingFilter(
   let nextDueAt: number | null = null;
   const track = (key: string, value: StreamTrack) => {
     tracks.set(key, value);
-    if (value.held !== null && (nextDueAt === null || value.dueAt < nextDueAt))
+    if (
+      value.held !== null &&
+      Number.isFinite(value.dueAt) &&
+      (nextDueAt === null || value.dueAt < nextDueAt)
+    )
       nextDueAt = value.dueAt;
   };
   return {
@@ -187,7 +191,17 @@ export function makeAssistantStreamingFilter(
         tracks.delete(key);
         return event;
       }
-      if (mode === "turn") return null;
+      if (mode === "turn") {
+        const previous = tracks.get(key);
+        track(key, {
+          text: previous?.text ?? "",
+          at: previous?.at ?? Number.NEGATIVE_INFINITY,
+          held: event,
+          dueAt: Number.POSITIVE_INFINITY,
+          scan: previous?.scan ?? EMPTY_SCAN,
+        });
+        return null;
+      }
       const previous = tracks.get(key);
       const delivered = previous?.text ?? "";
       const hold = (scan = previous?.scan ?? EMPTY_SCAN) => {
@@ -225,7 +239,9 @@ export function makeAssistantStreamingFilter(
         const event = current.held;
         if (event === null) continue;
         if (current.dueAt > now) {
-          if (nextDueAt === null || current.dueAt < nextDueAt) nextDueAt = current.dueAt;
+          if (Number.isFinite(current.dueAt) && (nextDueAt === null || current.dueAt < nextDueAt)) {
+            nextDueAt = current.dueAt;
+          }
           continue;
         }
         due.push(event);
@@ -238,6 +254,24 @@ export function makeAssistantStreamingFilter(
         });
       }
       return due;
+    },
+    /** The latest streaming event of each message whose text the filter held back, in full. */
+    flushHeld(now: number): ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event> {
+      const flushed: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
+      nextDueAt = null;
+      for (const [key, current] of tracks) {
+        const event = current.held;
+        if (event === null) continue;
+        flushed.push(event);
+        tracks.set(key, {
+          text: streamedMessage(event)?.text ?? current.text,
+          at: now,
+          held: null,
+          dueAt: now,
+          scan: current.scan,
+        });
+      }
+      return flushed;
     },
   };
 }

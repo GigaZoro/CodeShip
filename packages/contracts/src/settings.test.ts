@@ -25,6 +25,8 @@ import {
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   requiredScopesForProjectMutation,
   resolveIdleCompaction,
+  isProviderInstanceBackgroundAllowed,
+  resolveProviderInstanceAllowBackground,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
   resolveSidebarGrouping,
@@ -657,6 +659,35 @@ describe("resolveProjectProviderInstanceEnabled", () => {
       },
     };
     expect(resolveProjectProviderInstanceEnabled(settings, projectId, instanceId)).toBe(false);
+  });
+});
+
+describe("resolveProviderInstanceAllowBackground", () => {
+  const reservedId = ProviderInstanceId.make("codex_interactive");
+  const defaultId = ProviderInstanceId.make("codex_default");
+
+  it("defaults omitted allowBackground to true and preserves allowBackground: false across persistence", () => {
+    const decoded = decodeServerSettings({
+      providerInstances: {
+        [reservedId]: { driver: "codex", allowBackground: false },
+        [defaultId]: { driver: "codex" },
+      },
+    });
+    expect(resolveProviderInstanceAllowBackground(decoded.providerInstances[defaultId])).toBe(true);
+    expect(resolveProviderInstanceAllowBackground(decoded.providerInstances[reservedId])).toBe(
+      false,
+    );
+    expect(isProviderInstanceBackgroundAllowed(decoded, defaultId)).toBe(true);
+    expect(isProviderInstanceBackgroundAllowed(decoded, reservedId)).toBe(false);
+    expect(
+      isProviderInstanceBackgroundAllowed(decoded, ProviderInstanceId.make("unconfigured")),
+    ).toBe(true);
+
+    const wire = encodeServerSettings(decoded);
+    expect(decodeServerSettings(wire).providerInstances[reservedId]?.allowBackground).toBe(false);
+    expect(
+      decodeServerSettings(wire).providerInstances[defaultId]?.allowBackground,
+    ).toBeUndefined();
   });
 });
 

@@ -95,6 +95,7 @@ import {
   ThreadId,
   isOrchestrationV2WorkActive,
   isProviderAvailable,
+  isProviderInstanceBackgroundAllowed,
   resolveProjectProviderInstanceEnabled,
   scheduledTaskSharedProjectKey,
   latestProviderTurnForAttempt,
@@ -215,6 +216,9 @@ import {
 
 import { WITHHELD, withoutWebhookUrlToken } from "../scheduledTasks/webhookUrlToken.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as MachinePlacement from "../peer/MachinePlacement.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
@@ -714,7 +718,7 @@ export const requireAutoModePick = (
   providers: ReadonlyArray<ServerProvider>,
   projectId: ProjectId,
 ) => {
-  const pick = autoModePick({ settings, accounts: providers, projectId });
+  const pick = autoModePick({ settings, accounts: providers, projectId, background: true });
   return pick === null
     ? Effect.fail(
         failure(
@@ -789,7 +793,7 @@ function pickAutoSelectionWithConstraintsFallback(input: {
     const addCandidate = (provider: ServerProvider, preferredModel: string | null) => {
       if (
         seen.has(provider.instanceId) ||
-        !canAccountRun(provider, input.settings, input.projectId)
+        !canAccountRun(provider, input.settings, input.projectId, { background: true })
       ) {
         return;
       }
@@ -884,6 +888,7 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
       readonly allowFailover?: boolean;
+      readonly background?: boolean;
       /** The thread a delegate is for, whose allowance of prepaid credits then applies. */
       readonly requesterThreadId?: ThreadId;
       readonly routingConstraints?: AutoRoutingConstraints | undefined;
@@ -1862,6 +1867,18 @@ const make = Effect.gen(function* () {
   const reviewAssignments = yield* Effect.serviceOption(
     ReviewAssignmentRegistry.ReviewAssignmentRegistry,
   );
+  // Optional so existing test runtimes stay unchanged; production server.ts provides all three.
+  const hostResources = yield* Effect.serviceOption(HostResources.HostResources);
+  const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
+  const peerForwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
+
+  const readCapacity = () =>
+    MachinePlacement.readLocalCapacity({
+      hostResources,
+      memoryAdmission,
+      projections,
+      projects,
+    });
 
   /** Everything a restricted review needs that the request alone can show, checked before any reuse or forwarding. */
   const requireRestrictableReview = Effect.fn("OrchestratorMcpService.requireRestrictableReview")(
@@ -2242,6 +2259,7 @@ const make = Effect.gen(function* () {
         projectId: parent.thread.projectId,
         commandId,
         instanceId: target.modelSelection.instanceId,
+        background: true,
       })
       .pipe(Effect.mapError(threadManagementFailure));
 
@@ -2444,6 +2462,7 @@ const make = Effect.gen(function* () {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
     const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+    const settings = yield* readSettings;
     let instanceId = requestedInstanceId;
     let driverModel: string | undefined;
 
@@ -2460,7 +2479,9 @@ const make = Effect.gen(function* () {
         );
       }
       const healthyCandidates = candidates.filter(
-        (candidate) => providerConstraints(candidate, true).length === 0,
+        (candidate) =>
+          providerConstraints(candidate, true).length === 0 &&
+          isProviderInstanceBackgroundAllowed(settings, candidate.instanceId),
       );
       const inheritedCandidate = healthyCandidates.find(
         (candidate) => candidate.instanceId === input.parent.thread.modelSelection.instanceId,
@@ -2502,12 +2523,14 @@ const make = Effect.gen(function* () {
           (yield* accountRouting.value.launchLimit({
             projectId: input.parent.thread.projectId,
             selection: { instanceId, model: driverModel },
+            background: true,
             requesterThreadId: input.parent.thread.id,
           })) === null;
         const withRoom = yield* accountRouting.value.accountsWithRoom({
           driver: requestedDriver,
           projectId: input.parent.thread.projectId,
           model: driverModel,
+          background: true,
           requesterThreadId: input.parent.thread.id,
         });
         // A parent account that would spend prepaid credits, or must sign in to an MCP server again
@@ -2551,10 +2574,12 @@ const make = Effect.gen(function* () {
         `Provider instance ${instanceId} uses driver ${provider.driver}, not ${requestedDriver}.`,
       );
     }
-    const constraints = providerConstraints(
-      provider,
-      orchestrationCapableInstanceIds.has(provider.instanceId),
-    );
+    const constraints = [
+      ...providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId)),
+      ...(isProviderInstanceBackgroundAllowed(settings, provider.instanceId)
+        ? []
+        : ["Reserved for interactive chats only (background runs disabled)."]),
+    ];
     if (constraints.length > 0) {
       return yield* failure(
         "provider_unavailable",
@@ -4152,45 +4177,81 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope, []);
-      const cwd = parent === undefined ? undefined : yield* parentWorkspaceCwd(parent);
-      const machineProviders = yield* loadProviders;
-      const unscanned =
-        cwd === undefined
-          ? []
-          : machineProviders.filter(
-              (provider) =>
-                provider.enabled &&
-                !provider.workspaceSnapshots?.some((snapshot) => snapshot.cwd === cwd),
+      const [
+        {
+          orchestrationCapableInstanceIds,
+          settings,
+          providers,
+          checking,
+          availability,
+          redemptions,
+          publishedAtMs,
+        },
+        capacity,
+      ] = yield* Effect.all(
+        [
+          Effect.gen(function* () {
+            const cwd = parent === undefined ? undefined : yield* parentWorkspaceCwd(parent);
+            const machineProviders = yield* loadProviders;
+            const unscanned =
+              cwd === undefined
+                ? []
+                : machineProviders.filter(
+                    (provider) =>
+                      provider.enabled &&
+                      !provider.workspaceSnapshots?.some((snapshot) => snapshot.cwd === cwd),
+                  );
+            if (cwd !== undefined && unscanned.length > 0) {
+              yield* Effect.forEach(
+                unscanned,
+                (provider) => scanWorkspace(provider.instanceId, cwd),
+                {
+                  concurrency: "unbounded",
+                  discard: true,
+                },
+              );
+            }
+            const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+            const settings = yield* readSettings;
+            const { providers: recheckedProviders, checking } = yield* loadProvidersRechecked(
+              input.usage
+                ? (provider) =>
+                    orchestrationCapableInstanceIds.has(provider.instanceId) &&
+                    canAccountRun(provider, settings, parent?.thread.projectId ?? null, {
+                      background: true,
+                    })
+                : undefined,
             );
-      if (cwd !== undefined && unscanned.length > 0) {
-        yield* Effect.forEach(unscanned, (provider) => scanWorkspace(provider.instanceId, cwd), {
-          concurrency: "unbounded",
-          discard: true,
-        });
-      }
-      const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-      const settings = yield* readSettings;
-      const { providers: recheckedProviders, checking } = yield* loadProvidersRechecked(
-        input.usage
-          ? (provider) =>
-              orchestrationCapableInstanceIds.has(provider.instanceId) &&
-              canAccountRun(provider, settings, parent?.thread.projectId ?? null)
-          : undefined,
+            const providers = withWorkspaceModels(recheckedProviders, cwd);
+            const availability = Option.isNone(accountRouting)
+              ? {
+                  accounts: new Map<ProviderInstanceId, string>(),
+                  estimated: new Set<ProviderInstanceId>(),
+                  models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
+                  credits: new Map<ProviderInstanceId, ProviderCreditUse>(),
+                  grants: new Map<ProviderInstanceId, ProviderCreditGrant>(),
+                }
+              : yield* accountRouting.value.limits({ requesterThreadId: parent?.thread.id });
+            const redemptions =
+              input.usage === true && Option.isSome(usageResetRedeemer)
+                ? yield* usageResetRedeemer.value.lastRedemptions
+                : new Map<string, OrchestratorMcpLastRedemption>();
+            // Read after the re-check, so no reading is newer than the time the reset rule decides at.
+            const publishedAtMs = yield* Clock.currentTimeMillis;
+            return {
+              orchestrationCapableInstanceIds,
+              settings,
+              providers,
+              checking,
+              availability,
+              redemptions,
+              publishedAtMs,
+            };
+          }),
+          readCapacity(),
+        ],
+        { concurrency: "unbounded" },
       );
-      const providers = withWorkspaceModels(recheckedProviders, cwd);
-      const availability = Option.isNone(accountRouting)
-        ? {
-            accounts: new Map<ProviderInstanceId, string>(),
-            estimated: new Set<ProviderInstanceId>(),
-            models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
-            credits: new Map<ProviderInstanceId, ProviderCreditUse>(),
-            grants: new Map<ProviderInstanceId, ProviderCreditGrant>(),
-          }
-        : yield* accountRouting.value.limits({ requesterThreadId: parent?.thread.id });
-      const redemptions =
-        input.usage === true && Option.isSome(usageResetRedeemer)
-          ? yield* usageResetRedeemer.value.lastRedemptions
-          : new Map<string, OrchestratorMcpLastRedemption>();
       const inherited = parent?.thread.modelSelection;
       const inheritedProvider = providers.find(
         (provider) => provider.instanceId === inherited?.instanceId,
@@ -4225,6 +4286,12 @@ const make = Effect.gen(function* () {
             )
           ) {
             constraints.push("Disabled for this project.");
+          }
+          if (
+            provider.enabled &&
+            !isProviderInstanceBackgroundAllowed(settings, provider.instanceId)
+          ) {
+            constraints.push("Reserved for interactive chats only (background runs disabled).");
           }
           // A usable provider whose usage reading is still being taken stays usable.
           if (constraints.length > 0 && checking.has(provider.instanceId)) {
@@ -4279,12 +4346,13 @@ const make = Effect.gen(function* () {
             ...(prepaidCredits === undefined ? {} : { prepaidCredits }),
             ...(prepaidCreditGrant === undefined ? {} : { prepaidCreditGrant }),
             ...(input.usage === true && publishesUsage(provider)
-              ? providerUsageFields(
-                  provider,
-                  limitedUntil !== undefined,
+              ? providerUsageFields(provider, {
+                  limited: limitedUntil !== undefined,
                   redemptions,
-                  prepaidCredits ?? null,
-                )
+                  credits: prepaidCredits ?? null,
+                  nowMs: publishedAtMs,
+                  maxWaitHours: settings.maxPlanResetWaitHours,
+                })
               : {}),
           };
         }),
@@ -4294,6 +4362,7 @@ const make = Effect.gen(function* () {
               redeemUsageResets: settings.redeemUsageResets,
             }
           : {}),
+        capacity,
         features: {
           appOwnedSubagents: true,
           asyncPolling: true,
@@ -4356,6 +4425,7 @@ const make = Effect.gen(function* () {
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
+      const parentRootNodeId = parentRun.rootNodeId;
       const [current, legacy] = taskIds.map((id) =>
         parent.subagents.find((task) => task.id === id && task.origin === "app_owned"),
       );
@@ -4398,20 +4468,27 @@ const make = Effect.gen(function* () {
           ? awaitTask(scope, original.id, input.timeoutMs)
           : readTask(scope, original.id, false, true);
       }
-      const environmentId =
+      const delegateToEnvironment = (environmentId: EnvironmentId) =>
+        remoteDelegation
+          .delegate(
+            scope,
+            { thread: parent.thread, runId: parentRun.id, nodeId: parentRootNodeId },
+            { ...input, target: { ...input.target, environmentId } },
+            { key, commandId },
+          )
+          .pipe(
+            Effect.flatMap(({ taskId }) =>
+              input.mode === "wait"
+                ? awaitTask(scope, taskId, input.timeoutMs)
+                : readTask(scope, taskId, false, true),
+            ),
+          );
+      const explicitEnvironmentId =
         original === undefined
           ? PeerForwarding.remoteTarget(scope, input.target?.environmentId)
           : undefined;
-      if (input.target !== undefined && environmentId !== undefined) {
-        const { taskId } = yield* remoteDelegation.delegate(
-          scope,
-          { thread: parent.thread, runId: parentRun.id, nodeId: parentRun.rootNodeId },
-          { ...input, target: { ...input.target, environmentId } },
-          { key, commandId },
-        );
-        return yield* input.mode === "wait"
-          ? awaitTask(scope, taskId, input.timeoutMs)
-          : readTask(scope, taskId, false, true);
+      if (explicitEnvironmentId !== undefined) {
+        return yield* delegateToEnvironment(explicitEnvironmentId);
       }
       const foreignProjectId =
         original === undefined &&
@@ -4443,6 +4520,41 @@ const make = Effect.gen(function* () {
           accepted: { childThreadId: committedThread?.id ?? null },
           requested: reviewAssignment,
         });
+      }
+      const currentSettings = yield* readSettings;
+      const roleSelection =
+        committedThread === null && input.auto !== true
+          ? yield* delegatedTaskRoleSelection(input)
+          : undefined;
+      const automaticEnvironmentId =
+        original === undefined &&
+        !isRetryOfAcceptedDelegation &&
+        input.target?.environmentId === undefined &&
+        Option.isSome(peerForwarding)
+          ? yield* MachinePlacement.resolveAutomaticPlacement({
+              scope,
+              parentProjectId: parent.thread.projectId,
+              parentWorktreePath: parent.thread.worktreePath,
+              parentLinkOrigin: parent.thread.linkOrigin,
+              inheritedInstanceId: parent.thread.modelSelection.instanceId,
+              inheritedParentModel: advertisedSlug(
+                providers.find(
+                  (provider) => provider.instanceId === parent.thread.modelSelection.instanceId,
+                ),
+                parent.thread.modelSelection.model,
+              ),
+              inheritedAutoAccount: parent.thread.modelSelection.autoAccount === true,
+              hasRoleSelection: roleSelection !== undefined,
+              input,
+              localCapacity: readCapacity,
+              peerLinks,
+              peerForwarding: peerForwarding.value,
+              projects,
+              git: gitDriver,
+            })
+          : undefined;
+      if (automaticEnvironmentId !== undefined) {
+        return yield* delegateToEnvironment(automaticEnvironmentId);
       }
       // The child runs in its own project, so that project's accounts and Auto settings apply.
       const projectId = foreignProjectId ?? parent.thread.projectId;
@@ -4480,11 +4592,6 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
-      const currentSettings = yield* readSettings;
-      const roleSelection =
-        committedThread === null && input.auto !== true
-          ? yield* delegatedTaskRoleSelection(input)
-          : undefined;
       // A role's model set to Auto runs where Auto mode starts a new chat, and on its saved model
       // while Auto mode cannot run, as the Settings picker shows it.
       const autoPick =
@@ -4493,8 +4600,12 @@ const make = Effect.gen(function* () {
           : input.auto === true
             ? yield* requireAutoModePick(currentSettings, providers, projectId)
             : input.auto === undefined && roleSelection?.autoAccount === true
-              ? (autoModePick({ settings: currentSettings, accounts: providers, projectId }) ??
-                undefined)
+              ? (autoModePick({
+                  settings: currentSettings,
+                  accounts: providers,
+                  projectId,
+                  background: true,
+                }) ?? undefined)
               : undefined;
       const targetPinsModel =
         input.target?.providerInstanceId !== undefined ||
@@ -4510,8 +4621,12 @@ const make = Effect.gen(function* () {
         !targetPinsModel
           ? (autoPick ??
             (roleSelection === undefined && parent.thread.modelSelection.autoAccount === true
-              ? (autoModePick({ settings: currentSettings, accounts: providers, projectId }) ??
-                parent.thread.modelSelection)
+              ? (autoModePick({
+                  settings: currentSettings,
+                  accounts: providers,
+                  projectId,
+                  background: true,
+                }) ?? parent.thread.modelSelection)
               : undefined))
           : undefined;
       const constrainedRoute =
@@ -4521,6 +4636,7 @@ const make = Effect.gen(function* () {
                 const launch = yield* accountRouting.value.failoverLaunch({
                   selection: autoRoutingBase,
                   projectId,
+                  background: true,
                   discoverMcpSignIns: false,
                   requesterThreadId: parent.thread.id,
                   requestPrompt: { text: input.task },
@@ -4538,6 +4654,7 @@ const make = Effect.gen(function* () {
                   projectId,
                   currentInstanceId: null,
                   started: false,
+                  background: true,
                   requesterThreadId: parent.thread.id,
                   requestPrompt: { text: input.task },
                   routingConstraints: input.routing,
@@ -4566,6 +4683,82 @@ const make = Effect.gen(function* () {
               }
           : undefined;
       const standIn = constrainedRoute?.selection ?? autoPick ?? roleSelection;
+      let prefailoverCrossProviderFrom: ProviderInstanceId | undefined;
+      const resolveParentDelegateTarget = Effect.gen(function* () {
+        const settings = yield* readSettings;
+        const inherited = parent.thread.modelSelection;
+        if (
+          input.target?.providerInstanceId === undefined &&
+          input.target?.driverKind === undefined &&
+          reviewAssignment === undefined &&
+          !isProviderInstanceBackgroundAllowed(settings, inherited.instanceId)
+        ) {
+          if (Option.isSome(accountRouting)) {
+            const routed = yield* accountRouting.value.failoverLaunch({
+              selection: {
+                ...inherited,
+                ...(input.target?.model === undefined ? {} : { model: input.target.model }),
+              },
+              projectId,
+              background: true,
+              discoverMcpSignIns: false,
+              requesterThreadId: parent.thread.id,
+            });
+            if (
+              routed.selection.instanceId !== inherited.instanceId &&
+              isProviderInstanceBackgroundAllowed(settings, routed.selection.instanceId)
+            ) {
+              if (routed.failover?.reason === "usageLimit") {
+                prefailoverCrossProviderFrom = routed.failover.crossProviderFrom;
+              }
+              return yield* resolveDelegateTarget(routed.selection);
+            }
+          } else {
+            const inheritedProvider = providers.find(
+              (provider) => provider.instanceId === inherited.instanceId,
+            );
+            if (inheritedProvider !== undefined) {
+              const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+              const ordered = orderProviderInstancesForFailover(
+                settings.providerInstanceFailoverOrder,
+                providers.filter(
+                  (candidate) =>
+                    candidate.instanceId !== inherited.instanceId &&
+                    candidate.driver === inheritedProvider.driver &&
+                    isProviderInstanceBackgroundAllowed(settings, candidate.instanceId) &&
+                    resolveProjectProviderInstanceEnabled(
+                      settings,
+                      projectId,
+                      candidate.instanceId,
+                    ) &&
+                    providerConstraints(
+                      candidate,
+                      orchestrationCapableInstanceIds.has(candidate.instanceId),
+                    ).length === 0,
+                ),
+              );
+              const targetModel = input.target?.model ?? inherited.model;
+              for (const candidate of ordered) {
+                const enabledForProject =
+                  yield* threadManagement.isProviderInstanceEnabledForProject({
+                    projectId,
+                    instanceId: candidate.instanceId,
+                  });
+                if (!enabledForProject) continue;
+                const model =
+                  input.target?.model !== undefined
+                    ? resolveSelectableModel(candidate.driver, input.target.model, candidate.models)
+                    : (resolveSelectableModel(candidate.driver, targetModel, candidate.models) ??
+                      candidate.models[0]?.slug);
+                if (model !== null && model !== undefined) {
+                  return yield* resolveDelegateTarget({ instanceId: candidate.instanceId, model });
+                }
+              }
+            }
+          }
+        }
+        return yield* resolveDelegateTarget(inherited);
+      });
       const resolved =
         committedThread !== null
           ? {
@@ -4575,7 +4768,7 @@ const make = Effect.gen(function* () {
               )?.supportedRuntimeModes,
             }
           : standIn === undefined
-            ? yield* resolveDelegateTarget(parent.thread.modelSelection)
+            ? yield* resolveParentDelegateTarget
             : input.auto === true || constrainedRoute !== undefined
               ? yield* resolveStandIn(standIn)
               : yield* resolveStandIn(standIn).pipe(
@@ -4588,7 +4781,7 @@ const make = Effect.gen(function* () {
                         role: input.role ?? "general",
                         instanceId: standIn.instanceId,
                         cause,
-                      }).pipe(Effect.andThen(resolveDelegateTarget(parent.thread.modelSelection))),
+                      }).pipe(Effect.andThen(resolveParentDelegateTarget)),
                   ),
                 );
       // The evidence binds one native account, so a restricted review never moves to another.
@@ -4617,17 +4810,19 @@ const make = Effect.gen(function* () {
           : yield* accountRouting.value.failoverLaunch({
               selection: primaryTarget.modelSelection,
               projectId,
+              background: true,
               discoverMcpSignIns: false,
               requesterThreadId: parent.thread.id,
             });
+      const routeCrossProviderFailoverFrom =
+        route?.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined;
       const crossProviderFailoverFrom =
         constrainedRoute?.crossProviderFailoverFrom ??
-        (route?.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined);
+        routeCrossProviderFailoverFrom ??
+        prefailoverCrossProviderFrom;
       const degradedReason = constrainedRoute?.degradedReason ?? route?.degradedReason;
       const target =
-        route !== null &&
-        route.failover?.reason === "usageLimit" &&
-        route.failover.crossProviderFrom !== undefined
+        route !== null && routeCrossProviderFailoverFrom !== undefined
           ? {
               modelSelection: route.selection,
               supportedRuntimeModes: providers.find(
@@ -4640,6 +4835,7 @@ const make = Effect.gen(function* () {
           {
             selection: target.modelSelection,
             projectId,
+            background: true,
             requesterThreadId: parent.thread.id,
             ...(input.routing === undefined ? {} : { routingConstraints: input.routing }),
           },
@@ -5165,6 +5361,7 @@ const make = Effect.gen(function* () {
                     selection: target.modelSelection,
                     projectId: parent.thread.projectId,
                     allowFailover: true,
+                    background: true,
                   },
                   accountRouting,
                 ).pipe(

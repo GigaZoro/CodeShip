@@ -8,18 +8,18 @@ import { registerModelPickerContent } from "../modelPickerVisibility";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import {
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
+  useListDeadlineClock,
   useSidebarClock,
-  useSnoozeWakeClock,
   useThreadJumpHintsVisible,
 } from "./Sidebar.logic";
 
 const MOUNTED_AT_MS = Date.parse("2026-10-24T08:00:00.000Z");
 
 function WakeClock(props: { readonly threads: ReadonlyArray<{ readonly snoozedUntil: string }> }) {
-  return <output>{useSnoozeWakeClock(props.threads)}</output>;
+  return <output>{useListDeadlineClock(props.threads)}</output>;
 }
 
-describe("useSnoozeWakeClock", () => {
+describe("useListDeadlineClock", () => {
   it("settles in one step when many distinct wakes passed during a sleep", async () => {
     using now = vi.spyOn(Date, "now").mockReturnValue(MOUNTED_AT_MS);
     // More distinct wakes than React's 25 render-phase re-render limit.

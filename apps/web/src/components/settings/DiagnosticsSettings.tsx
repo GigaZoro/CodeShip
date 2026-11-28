@@ -45,6 +45,7 @@ import {
   formatShortProcessName,
 } from "./DiagnosticsSettings.logic";
 import { ExpandableText } from "./ExpandableText";
+import { RecentNoticesDiagnostics } from "./RecentNoticesDiagnostics";
 import { ResourceTelemetryDiagnostics } from "./ResourceTelemetryDiagnostics";
 import { formatCpuTime } from "./ResourceTelemetryDiagnostics.logic";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
@@ -913,6 +914,7 @@ function DiagnosticsSettingsBody() {
       scopeLead={t("Showing diagnostics for")}
     >
       <ResourceTelemetryDiagnostics environmentId={environmentId} />
+      <RecentNoticesDiagnostics />
 
       <SettingsSection
         title={t("Live Processes")}

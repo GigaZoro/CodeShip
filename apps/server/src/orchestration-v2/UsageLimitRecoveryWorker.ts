@@ -1,6 +1,7 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   CommandId,
+  isProviderInstanceBackgroundAllowed,
   MessageId,
   type ModelSelection,
   type OrchestrationV2Command,
@@ -175,7 +176,8 @@ export function limitRecoveryTarget({
   // Another account is account switching's move, so a reset minutes away is waited out here too.
   if (
     selection.instanceId !== thread.latestRunProviderInstanceId &&
-    !(Date.parse(thread.usageLimitResetAt ?? "") > input.nowMs + MIN_FAILOVER_WAIT_MS)
+    (!isProviderInstanceBackgroundAllowed(input.settings, selection.instanceId) ||
+      !(Date.parse(thread.usageLimitResetAt ?? "") > input.nowMs + MIN_FAILOVER_WAIT_MS))
   )
     return null;
   const roomAtMs = recoveryRoomAt({
@@ -280,6 +282,7 @@ function otherAccountSearch<Input extends AccountRoutingContext & McpSignIns>(
 ) {
   return {
     ...input,
+    background: true,
     driver: current.driver,
     projectId: thread.projectId,
     model: nextTurnModel(input, thread),

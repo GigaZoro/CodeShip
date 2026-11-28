@@ -1069,6 +1069,12 @@ const catalog: MessageCatalog = {
     many: "{count} відкладених чатів",
     other: "{count} відкладеного чату",
   },
+  "{count} stalled": {
+    one: "{count} завис",
+    few: "{count} зависли",
+    many: "{count} зависли",
+    other: "{count} зависли",
+  },
   "{count} still need a sign-in": {
     one: "{count} ще потребує входу",
     few: "{count} ще потребують входу",
@@ -2854,6 +2860,8 @@ const catalog: MessageCatalog = {
     "Дозволити агентам використовувати вбудований браузер попереднього перегляду.",
   "Allow agents to use the shared browser. Projects can override it.":
     "Дозволити агентам користуватися спільним браузером. Проєкти можуть це змінити.",
+  "Allow background runs": "Дозволити фонові запуски",
+  "Allow background runs for {name}": "Дозволити фонові запуски для {name}",
   "Allow capture": "Дозволити захоплення",
   "Allow commands and edits without prompts.": "Дозволити команди та зміни без запитів.",
   "Allow each permission, then continue.": "Дозвольте кожен дозвіл, потім продовжуйте.",
@@ -3368,6 +3376,7 @@ const catalog: MessageCatalog = {
   "Auto-compacted before cache expiry":
     "Автоматично стиснуто контекст до закінчення строку дії кешу",
   "Auto-detect": "Визначати автоматично",
+  "Auto-dismissed": "Зникли самі",
   "Auto-merge": "Автозлиття",
   "Auto-merge (fast-forward merge)": "Автоматичне злиття (перемотування вперед)",
   "Auto-merge (merge)": "Автоматичне злиття (злиття)",
@@ -3497,6 +3506,8 @@ const catalog: MessageCatalog = {
   "Background activity": "Фонова активність",
   "Background Activity": "Фонова активність",
   "Background activity profile": "Профіль фонової активності",
+  "Background notices": "Фонові сповіщення",
+  "Background notices, {count} new": "Фонові сповіщення, нових: {count}",
   "Background policy details": "Докладно про фонову політику",
   "Background setup": "Фонове налаштування",
   "Background setup is still running: {name}. Show setup progress.":
@@ -3506,6 +3517,8 @@ const catalog: MessageCatalog = {
   "background task": "фонове завдання",
   "Background task": "Фонове завдання",
   "Background task failed": "Фонове завдання не вдалося",
+  "Background updates such as slow requests and clone progress show here.":
+    "Тут з’являються фонові оновлення, як-от повільні запити та перебіг клонування.",
   "Background work": "Фонова робота",
   "Backup: {path}": "Резервна копія: {path}",
   "Bad signature": "Хибний підпис",
@@ -4406,6 +4419,7 @@ const catalog: MessageCatalog = {
   "Click to zoom in or return to fit. Pinch or Ctrl+scroll to zoom, scroll or drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit.":
     "Натисніть, щоб збільшити або повернути за розміром вікна. Масштабуйте щипком або Ctrl+прокруткою, а для переміщення прокручуйте чи перетягуйте. Enter перемикає масштаб, плюс і мінус змінюють його, 0 вписує зображення у вікно.",
   "Clicked in the preview browser": "Виконано натискання в браузері попереднього перегляду",
+  Clicked: "Натиснуто",
   "Clicking a pull request link opens it in T3.CodeShip. Turn off to open pull request links like any other link, on your git host.":
     "Клік на посилання пул-реквесту відкриває його в T3.CodeShip. Вимкніть, щоб відкривати такі посилання як звичайні, на вашому git-хостингу.",
   "Clicking in the preview browser": "Натискання в браузері попереднього перегляду",
@@ -4632,6 +4646,7 @@ const catalog: MessageCatalog = {
   "Closes this issue": "Закриває цю задачу",
   "Closing a device": "Закриття пристрою",
   "Closing a preview tab": "Закриття вкладки попереднього перегляду",
+  "Closed by you": "Закрили ви",
   "Closing the window hides it in the notification area, so agents and scheduled tasks keep running. Quit from the tray icon or the File menu.":
     "Закрите вікно ховається в область сповіщень, тож агенти й заплановані завдання продовжують працювати. Вийти можна через значок у треї або меню «Файл».",
   "Closing...": "Закриття...",
@@ -8709,6 +8724,7 @@ const catalog: MessageCatalog = {
     "У Gemini відкрийте Settings, а потім Connected apps.",
   "In Instinct, open Settings, then MCP connections, if your account has it.":
     "В Instinct відкрийте Settings, а потім MCP connections, якщо ваш обліковий запис має цей пункт.",
+  "In background": "У фоні",
   "In messages": "У повідомленнях",
   "In progress": "Виконується",
   "In Settings": "У налаштуваннях",
@@ -8903,6 +8919,7 @@ const catalog: MessageCatalog = {
     "Інтерактивний 3D-пристрій. Перетягуйте екран, щоб взаємодіяти. Перетягуйте поза ним або проведіть двома пальцями, щоб повернути.",
   "Interactive 3D iPhone Duo. Drag the screen to interact. Drag outside it or swipe with two fingers to turn. Pinch over the device to open or close its hinge.":
     "Інтерактивний 3D iPhone Duo. Перетягуйте екран, щоб взаємодіяти. Перетягуйте поза ним або проведіть двома пальцями, щоб повернути. Зведіть чи розведіть пальці над пристроєм, щоб відкрити або закрити шарнір.",
+  "Interactive only": "Лише інтерактивно",
   Interface: "Інтерфейс",
   "interface density": "щільність інтерфейсу",
   "Interface density": "Щільність інтерфейсу",
@@ -9199,6 +9216,8 @@ const catalog: MessageCatalog = {
   "Large diffs are not rendered by default.": "Великі зміни за замовчуванням не відображаються.",
   "Large paste attached as {name}": "Великий фрагмент додано як {name}",
   "Largest shown": "Спочатку більші",
+  Last: "Останнє",
+  "Last {count} in this window": "Останні {count} у цьому вікні",
   "Last activity": "Остання активність",
   "Last connected at {time}": "Востаннє підключено {time}",
   "last project": "останній проєкт",
@@ -9899,6 +9918,8 @@ const catalog: MessageCatalog = {
   "Map of your machines": "Мапа ваших комп’ютерів",
   "Map to": "Зіставити з",
   "Map to a different model.": "Зіставте з іншою моделлю.",
+  "Mark a working thread Stalled when its agent sends nothing for this long. Stalled threads you started appear in Needs you.":
+    "Позначати робочий чат як завислий, коли його агент нічого не надсилає стільки часу. Завислі чати, які почали ви, з’являються в «Потрібні ви».",
   "Mark environment variable {name} as sensitive":
     "Позначити змінну середовища {name} як конфіденційну",
   "Mark every layer being merged ready for review.":
@@ -9906,6 +9927,7 @@ const catalog: MessageCatalog = {
   "Mark ready for review": "Позначити як готовий до рев’ю",
   "Mark servers another connected machine lacks or sets up differently":
     "Позначати сервери, яких немає на іншому підключеному комп’ютері або які там налаштовано інакше",
+  "Mark stalled threads": "Позначати завислі чати",
   "Mark this {term} as ready for review": "Позначити {term} як готовий до рев’ю",
   "Mark this draft ready for review before merging.":
     "Позначте цю чернетку готовою до рев’ю перед злиттям.",
@@ -10156,6 +10178,7 @@ const catalog: MessageCatalog = {
   minutes: "хвилин",
   Minutes: "Хвилини",
   "Minutes between runs": "Хвилин між запусками",
+  "Minutes without events before Stalled": "Хвилин без подій до стану «Завис»",
   "minutes, optional": "хвилин, необов’язково",
   Missing: "Відсутній",
   "Missing capability": "Бракує функції",
@@ -10622,6 +10645,7 @@ const catalog: MessageCatalog = {
     "Жодне середовище не відповідає поточним фільтрам. Змініть фільтри, щоб створити завдання.",
   "No environments match these filters. Change the filter above.":
     "Жодне середовище не відповідає цим фільтрам. Змініть фільтр вище.",
+  "no events for {elapsed}": "немає подій {elapsed}",
   "No events yet.": "Подій ще немає.",
   "No failed spans found.": "Невдалих спанів не знайдено.",
   "No favorite models": "Немає обраних моделей",
@@ -10737,6 +10761,7 @@ const catalog: MessageCatalog = {
   "No newer version is available yet.": "Новішої версії поки немає.",
   "No non-test files loaded yet": "Нетестові файли ще не завантажено",
   "No note": "Без нотатки",
+  "No notices since this window opened.": "Відколи це вікно відкрито, сповіщень не було.",
   "No open {label}": "Немає відкритого {label}",
   "No open threads": "Немає відкритих чатів",
   "No other environments are published to your account yet. Publish one from another device and it will show up here.":
@@ -11176,6 +11201,7 @@ const catalog: MessageCatalog = {
   "One thread, same conversation": "Один чат, та сама розмова",
   "One UI": "One UI",
   "One-year token": "Токен на один рік",
+  Ongoing: "Триває",
   "Ongoing activity enabled": "Поточну активність ввімкнено",
   "Ongoing activity unavailable": "Поточна активність недоступна",
   "Ongoing Agent Activity": "Поточна активність агента",
@@ -12658,6 +12684,7 @@ const catalog: MessageCatalog = {
   },
   "receives changes from": "отримує зміни з",
   "Receiving objects": "Отримання об’єктів",
+  "Recent notices": "Останні сповіщення",
   "Recent requests to this task's webhook URL.": "Останні запити до URL вебгука цього завдання.",
   "Recent threads": "Останні чати",
   "Recent Threads": "Нещодавні чати",
@@ -14865,6 +14892,7 @@ const catalog: MessageCatalog = {
   "Showing tracked changes. Untracked changes could not be loaded. Refresh to retry.":
     "Показано відстежувані зміни. Не вдалося завантажити невідстежувані зміни. Оновіть, щоб повторити.",
   "Showing what was read before.": "Показано раніше прочитані дані.",
+  Shown: "Показано",
   "Shown in picker": "Показується у виборі",
   "Shown in the provider list and model picker.":
     "Показується в списку провайдерів і виборі моделі.",
@@ -15244,6 +15272,8 @@ const catalog: MessageCatalog = {
   "Staged, unstaged, and untracked files":
     "Проіндексовані, непроіндексовані та невідстежувані файли",
   Stalled: "Немає прогресу",
+  "stalled threads": "завислі чати",
+  "Stalled: no events from the agent": "Завис: від агента немає подій",
   Standard: "Стандартний",
   "Standard Android navigation bar and side rail.":
     "Стандартна панель навігації Android і бічна панель.",
@@ -16576,6 +16606,8 @@ const catalog: MessageCatalog = {
   "The Office engine sent an unreadable reply": "Рушій Office надіслав нечитабельну відповідь",
   "The Office engine stopped": "Рушій Office зупинився",
   "The Office engine was closed": "Рушій Office закрито",
+  "The next event from the agent clears the Stalled state.":
+    "Наступна подія від агента знімає стан «Завис».",
   "The only comment is hidden by the filter.": "Єдиний коментар приховано фільтром.",
   "The open-source license manifest contains a duplicate entry: {key}":
     "Маніфест ліцензій відкритого коду містить повторюваний запис: {key}",
@@ -17841,6 +17873,7 @@ const catalog: MessageCatalog = {
   "Thread search is unavailable on this server.": "Пошук чатів недоступний на цьому сервері.",
   "Thread search results": "Результати пошуку чатів",
   "Thread settings": "Налаштування чату",
+  "Thread stalled": "Чат завис",
   "Thread title": "Назва чату",
   "Thread title cannot be empty": "Назва чату не може бути порожньою",
   "Thread title cannot be empty.": "Назва чату не може бути порожньою.",
@@ -17928,6 +17961,7 @@ const catalog: MessageCatalog = {
     "Щоб імпортувати cookie з {browser}, T3.CodeShip потрібен повний доступ до диска. Увімкніть його в Системних налаштуваннях, потім поверніться, щоб завершити імпорт. Після імпорту його можна знову відкликати.",
   "To link from {label}, turn on Linked environments in its Labs settings.":
     "Щоб установлювати зв’язки з {label}, увімкніть «Пов’язані середовища» в його експериментальних налаштуваннях.",
+  Toasts: "Сповіщення",
   today: "сьогодні",
   Today: "Сьогодні",
   Toggle: "Перемкнути",
@@ -19960,6 +19994,8 @@ const catalog: MessageCatalog = {
   "When I ask": "На моє прохання",
   "When the app connects to a computer through {product}, it sends the T3.CodeShip team how long each step took, any error type, an ID for this app session, and the app version. Traces never include your threads, prompts, or code.":
     "Коли застосунок підключається до комп’ютера через {product}, він надсилає команді T3.CodeShip тривалість кожного кроку, тип помилки за наявності, ID сеансу й версію застосунку. Записи ніколи не містять ваших чатів, запитів чи коду.",
+  "When off, scheduled tasks, Auto background runs, delegated subtasks, and failover never use this account, keeping its quota reserved for interactive chats.":
+    "Коли вимкнено, заплановані завдання, фонові запуски Auto, делеговані підзавдання та перемикання при лімітах ніколи не використовують цей обліковий запис, зберігаючи його квоту для інтерактивних чатів.",
   "When the app crashes or hits an error, it sends the error message, the stack trace, the app version, and the device model and OS version to the T3.CodeShip team. Each launch also sends startup timings. Reports carry a random ID for this install.":
     "Коли застосунок збоїть або натрапляє на помилку, він надсилає команді T3.CodeShip повідомлення про помилку, трасування стека, версію застосунку, модель пристрою та версію ОС. Кожен запуск також надсилає часові показники запуску. Звіти містять випадковий ID для цього встановлення.",
   "When the app opens the sign-in page, choose what it may do and approve with your T3 Connect account.":

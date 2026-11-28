@@ -1630,6 +1630,10 @@ const make = Effect.gen(function* () {
         projectId: input.projectId,
         commandId: input.commandId,
         instanceId: input.modelSelection.instanceId,
+        background:
+          input.createdBy === "agent" ||
+          input.initialMessage?.scheduledTaskId !== undefined ||
+          input.delegatedFrom !== undefined,
       });
       return yield* Effect.gen(function* () {
         // Recover ids from accepted launch receipts before allocating; retries have no client id and new ids collide with receipts.

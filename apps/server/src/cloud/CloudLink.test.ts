@@ -22,6 +22,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AgentAwarenessRelay from "../relay/AgentAwarenessRelay.ts";
 import * as CliTokenManager from "./CliTokenManager.ts";
 import * as CloudLink from "./CloudLink.ts";
+import { layerUpdateShutdownState } from "./updateHandoff.ts";
 import * as ConnectReachability from "./ConnectReachability.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import {
@@ -163,6 +164,7 @@ const withService = <A, E>(
               sign: () => Effect.succeed("environment-signed-proof"),
             }),
           ),
+          Layer.provide(layerUpdateShutdownState),
           Layer.provide(layerDependencies),
         ),
       ),
@@ -387,6 +389,7 @@ it.effect("unlinks on startup and refuses to link when the policy turns Connect 
         CloudLink.layer.pipe(
           // These tests never sign proofs; the mocked secret store cannot create a key pair.
           Layer.provide(Layer.mock(EnvironmentKeys.EnvironmentSigningKey)({ publicKey: "" })),
+          Layer.provide(layerUpdateShutdownState),
           Layer.provide(layerDependencies),
         ),
       ),

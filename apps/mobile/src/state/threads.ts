@@ -67,6 +67,7 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: threadEnvironment.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
+  stalledAfterMsAtom: serverEnvironment.stalledAfterMsAtom,
 });
 const steadyShells = createSteadyShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
@@ -84,6 +85,7 @@ const steadyThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: steadyShells.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
+  stalledAfterMsAtom: serverEnvironment.stalledAfterMsAtom,
 });
 export const steadyNavigationThreadShellsAtom = steadyThreadShells.navigationThreadShellsAtom;
 export const steadyListedThreadShellsAtom = steadyThreadShells.listedThreadShellsAtom;

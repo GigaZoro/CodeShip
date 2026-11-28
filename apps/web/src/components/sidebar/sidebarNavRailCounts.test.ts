@@ -38,8 +38,16 @@ const provider = (fields: Record<string, unknown>) =>
 describe("sidebar rail counts", () => {
   it("countNeedsYouReasons tallies each reason", () => {
     expect(
-      countNeedsYouReasons(["failed", "failed", "limited", "approval", "input", "request"]),
-    ).toEqual({ approval: 1, input: 1, request: 1, failed: 2, limited: 1 });
+      countNeedsYouReasons([
+        "failed",
+        "failed",
+        "limited",
+        "approval",
+        "input",
+        "request",
+        "stalled",
+      ]),
+    ).toEqual({ approval: 1, input: 1, request: 1, failed: 2, limited: 1, stalled: 1 });
   });
 
   it.each([
@@ -169,7 +177,14 @@ describe("sidebar rail counts", () => {
   });
 
   it("railNeedsYou adds money decisions from manual steps to the threads that need you", () => {
-    const breakdown = { approval: 1, input: 0, request: 0, failed: 2, limited: 0 };
+    const breakdown = {
+      approval: 1,
+      input: 0,
+      request: 0,
+      failed: 2,
+      limited: 0,
+      stalled: 0,
+    };
     expect(railNeedsYou(breakdown, { kind: "count", count: 4, moneyDecisions: 1 })).toEqual({
       count: 4,
       breakdown,

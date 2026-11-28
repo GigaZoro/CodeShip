@@ -86,6 +86,7 @@ import {
   ProviderInteractionMode,
   ProviderRequestKind,
   isOrchestrationV2TerminalRunStatus,
+  isProviderInstanceBackgroundAllowed,
   isReadOnlyGuestShare,
   isRuntimeModeAbove,
   resolveProviderInstanceEnabled,
@@ -8607,6 +8608,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandId: command.commandId,
           commandType: command.type,
           cause: "The provider for this project is disabled.",
+        });
+      }
+      const isBackgroundRun =
+        command.scheduledTaskId !== undefined ||
+        projection.thread.delegatedFrom !== undefined ||
+        projection.thread.lineage?.relationshipToParent === "subagent" ||
+        command.demandSourceRunId !== undefined ||
+        (command.createdBy === "agent" && command.creationSource !== "provider");
+      if (
+        isBackgroundRun &&
+        !isProviderInstanceBackgroundAllowed(settings, modelSelection.instanceId)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Provider instance "${modelSelection.instanceId}" is reserved for interactive chats only (background runs disabled).`,
         });
       }
     }

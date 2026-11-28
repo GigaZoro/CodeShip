@@ -897,8 +897,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             }),
           ),
         );
-        // Its wrapper names itself at once; a restart takes far longer.
-        yield* awaitFile(NodePath.join(NodePath.dirname(started.logPath), "pid"));
+        // Its wrapper writes pid before taking launch-started; wait for launch-started so the
+        // restart adopts the started wrapper rather than racing to cancel launch-pending.
+        yield* awaitFile(NodePath.join(NodePath.dirname(started.logPath), "launch-started"));
         yield* forgetPid(started.taskId);
         yield* withServer(() =>
           Effect.sync(() => NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "")).pipe(

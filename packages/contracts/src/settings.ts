@@ -119,6 +119,19 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
 const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 7;
 
+// Clients read a streaming thread's last event to the minute, so a 1-minute limit would flash Stalled.
+export const MIN_STALLED_THREAD_AFTER_MINUTES = 2;
+export const MAX_STALLED_THREAD_AFTER_MINUTES = 240;
+/** Minutes a working thread may go without an event before it reads as Stalled. */
+export const StalledThreadAfterMinutes = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_STALLED_THREAD_AFTER_MINUTES,
+    maximum: MAX_STALLED_THREAD_AFTER_MINUTES,
+  }),
+);
+export type StalledThreadAfterMinutes = typeof StalledThreadAfterMinutes.Type;
+const DEFAULT_STALLED_THREAD_AFTER_MINUTES: StalledThreadAfterMinutes = 10;
+
 export const MAX_PLAN_RESET_WAIT_HOURS = 168;
 const DEFAULT_MAX_PLAN_RESET_WAIT_HOURS = 48;
 export const MaxPlanResetWaitHours = Schema.Int.check(
@@ -1798,6 +1811,10 @@ export const ServerSettings = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
+  /** Null turns the Stalled state off. */
+  stalledThreadAfterMinutes: Schema.NullOr(StalledThreadAfterMinutes).pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_STALLED_THREAD_AFTER_MINUTES)),
+  ),
   scheduledTaskDefaultPlacement: ScheduledTaskPlacement.pipe(
     Schema.withDecodingDefault(Effect.succeed("pinned" as const)),
   ),
@@ -2064,6 +2081,20 @@ export const resolveProviderInstanceEnabled = (
     return false;
   }
   return instance.enabled ?? configEnabled ?? defaultEnabledForDriver(instance.driver);
+};
+
+export const resolveProviderInstanceAllowBackground = (
+  instance: Pick<ProviderInstanceConfig, "allowBackground"> | undefined,
+): boolean => instance?.allowBackground !== false;
+
+export const isProviderInstanceBackgroundAllowed = (
+  settings: Pick<ServerSettings, "providerInstances">,
+  instanceId: ProviderInstanceId,
+): boolean => {
+  const instanceConfig = Object.hasOwn(settings.providerInstances, instanceId)
+    ? settings.providerInstances[instanceId]
+    : undefined;
+  return resolveProviderInstanceAllowBackground(instanceConfig);
 };
 
 export const resolveProjectProviderInstanceEnabled = (
@@ -2360,6 +2391,7 @@ export const ServerSettingsPatch = Schema.Struct({
   /** A redaction marker keeps the saved token; an empty token removes it. */
   threadPage: Schema.optionalKey(Schema.Struct({ apiToken: Schema.optionalKey(TrimmedString) })),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
+  stalledThreadAfterMinutes: Schema.optionalKey(Schema.NullOr(StalledThreadAfterMinutes)),
   compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
   scheduledTaskDefaultPlacement: Schema.optionalKey(ScheduledTaskPlacement),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),

@@ -78,14 +78,31 @@ each opening on click: first the ones that need you, longest wait first, then ru
 latest started first, and the threads you last sent to. Recent threads follow the
 sidebar's project and machine scope. The list goes away once you start typing.
 
+## Background notices
+
+On web and desktop, notices that need nothing from you, such as a slow request, a machine that
+answered again or a clone in progress, go to **Background notices** at the top of the sidebar
+instead of popping up. A dot on its button marks notices you have not opened yet. A clone that
+stalls, finishes or fails still shows as a pop-up, and so does anything you can act on or undo.
+
+The same message from the same place within a minute updates the open pop-up with a count
+instead of stacking another one. **Settings > Diagnostics > Recent notices** lists which parts of
+the app raised the last 200 notices in this window, how many you clicked or closed yourself, and
+how many timed out.
+
 ## See what needs you
 
 Threads waiting on you sit together under **Needs you** on web and desktop, in a box at the
 bottom of the thread's **Details** column: an approval, an answer to a question, a subagent's
 request, a guest's message, or a run that failed or hit a usage limit in a thread you started.
 A question or failed run you snooze waits on the Snoozed shelf instead until its wake time.
-Failed runs in threads an agent started, scheduled task runs included, are left to agents: they
-show Failed in the thread list but don't wait in Needs you. The longest wait comes
+A working thread whose agent has sent nothing for 10 minutes reads **Stalled**, in its row, the
+thread's activity line and its **Details** status, with the time since its last event; a thread
+you started that stalls also waits in Needs you. A tool that reports progress, such as a long
+build, keeps it from stalling, and the next event clears it. Change the limit, or turn it off,
+in **Settings → Threads → Mark stalled threads**. Failed and stalled runs in threads an agent
+started, scheduled task runs included, are left to agents: they show in the thread list but don't
+wait in Needs you. The longest wait comes
 first, and each row shows how long it has waited and what the thread asks. Approve or decline an
 approval, pick an answer to a question that offers choices, or settle a failed run, right in the
 box; select a row to open its thread. When the chat is too narrow for the Details column, on pages

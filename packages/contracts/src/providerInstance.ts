@@ -78,6 +78,8 @@ export const ProviderInstanceConfig = Schema.Struct({
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
+  /** Whether scheduled, automated, failover, and Auto background runs may use this account (default true). */
+  allowBackground: Schema.optionalKey(Schema.Boolean),
   config: Schema.optionalKey(Schema.Unknown),
   /** The machine this account was first shared from, when it arrived here through shared settings. */
   sharedFrom: Schema.optionalKey(EnvironmentId),

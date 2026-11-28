@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import type { ModelSelection, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import {
   isProviderAvailable,
+  isProviderInstanceBackgroundAllowed,
   isProviderTextGenerationCapable,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
@@ -195,6 +196,7 @@ export const make = Effect.gen(function* () {
               (sameInstance ? model !== rejected.model : instanceId !== rejected.instanceId) &&
               provider?.enabled === true &&
               resolveProjectProviderInstanceEnabled(settings, projectId ?? null, instanceId) &&
+              isProviderInstanceBackgroundAllowed(settings, instanceId) &&
               provider.installed &&
               provider.auth.status !== "unauthenticated" &&
               provider.status !== "error" &&

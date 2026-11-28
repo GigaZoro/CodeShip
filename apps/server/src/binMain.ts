@@ -10,6 +10,11 @@ export async function runCliCommand() {
     await runPosixLogWriter(process.argv.slice(3));
     return;
   }
+  if (command === "__session-host") {
+    const { runSessionHostBroker } = await import("./sessionHost/broker.ts");
+    await runSessionHostBroker(process.argv.slice(3));
+    return;
+  }
   // Install the socket guard before importing code that can open outbound connections.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();

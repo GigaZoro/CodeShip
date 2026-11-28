@@ -48,7 +48,7 @@ import {
 import * as CloudLink from "./CloudLink.ts";
 import * as ConnectReachability from "./ConnectReachability.ts";
 import { consumeCloudReplayGuards } from "./CloudLink.ts";
-import { pendingServiceUpdateExists } from "./updateHandoff.ts";
+import { pendingServiceUpdateExists, layerUpdateShutdownState } from "./updateHandoff.ts";
 import { managedTunnelStartupAction } from "./managedTunnelStartup.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -173,7 +173,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
         Effect.provide(
           CloudLink.layer.pipe(
             Layer.provide(EnvironmentKeys.layer),
-            Layer.provide(ManagedPolicy.layerTest()),
+            Layer.provide([ManagedPolicy.layerTest(), layerUpdateShutdownState]),
             Layer.provide(ServerSettings.ServerSettingsService.layerTest()),
           ),
         ),

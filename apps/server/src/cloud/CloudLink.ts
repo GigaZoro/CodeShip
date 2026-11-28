@@ -48,10 +48,8 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -62,7 +60,6 @@ import * as HttpServer from "effect/http/HttpServer";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AgentAwarenessRelay from "../relay/AgentAwarenessRelay.ts";
 import { makeRelayEnvironmentClient } from "../relay/relayEnvironmentClient.ts";
@@ -114,7 +111,7 @@ import {
   managedEndpointRuntimeConfigsMatch,
   parseManagedEndpointLocalOrigin,
 } from "./linkChecks.ts";
-import { desktopUpdateRestartPending, pendingUpdateHandoffExists } from "./updateHandoff.ts";
+import { UpdateShutdownState } from "./updateHandoff.ts";
 
 const CLOUD_MINT_NONCE_PREFIX = "cloud-mint-nonce-";
 const CLOUD_MINT_JTI_PREFIX = "cloud-mint-jti-";
@@ -525,10 +522,8 @@ const make = Effect.gen(function* () {
   const digest = yield* Digest.Digest;
   const signature = yield* Signature.Signature;
   const signingKey = yield* EnvironmentSigningKey;
-  const config = yield* ServerConfig.ServerConfig;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
+  const updateShutdownState = yield* UpdateShutdownState;
 
   // Relay-signed text must not name a file directly; a digest is also a fixed, safe length.
   // Untraced: it runs twice per proof inside the health and mint spans.
@@ -538,14 +533,6 @@ const make = Effect.gen(function* () {
   });
 
   const withSecrets = Effect.provideService(ServerSecretStore.ServerSecretStore, secrets);
-  const withRuntimeFiles = <A, E>(
-    effect: Effect.Effect<A, E, ServerConfig.ServerConfig | FileSystem.FileSystem | Path.Path>,
-  ) =>
-    effect.pipe(
-      Effect.provideService(ServerConfig.ServerConfig, config),
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
 
   const validateLinkedCloudUser = (
     cloudUserId: string,
@@ -1244,10 +1231,7 @@ const make = Effect.gen(function* () {
       return false;
     }
     // Update handoffs reuse the tunnel: replacing it adds 1-2 minutes of hostname propagation.
-    if (
-      (yield* withRuntimeFiles(desktopUpdateRestartPending)) ||
-      (yield* withRuntimeFiles(pendingUpdateHandoffExists))
-    ) {
+    if (yield* updateShutdownState.isPlannedUpdateShutdown) {
       yield* Effect.logInfo("Keeping the managed tunnel across the update restart");
       return false;
     }

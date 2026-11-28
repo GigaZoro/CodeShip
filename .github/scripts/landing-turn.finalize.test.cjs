@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const {
+  CHECK_METRICS_FILE_ENV,
   land,
   main,
   testing: { release, tryAcquire },
@@ -420,17 +421,34 @@ test("AB#7486: CLI `land --finalize` passes final commit/base metadata and fails
     assert.equal(readMainPushes().length, 0);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
 
-    // Passing finalize command receives exact commit, base, and rebased metadata and lands.
-    const recordCmd = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
-      `require("node:fs").writeFileSync(${JSON.stringify(outFile)}, JSON.stringify({commit: process.env.T3_LANDING_FINAL_COMMIT, base: process.env.T3_LANDING_FINAL_BASE, rebased: process.env.T3_LANDING_REBASED, cwdHead: require("node:child_process").execFileSync("git", ["rev-parse", "HEAD"], {encoding: "utf8"}).trim()}))`,
-    )}`;
-    const okCode = await main(["land", "--finalize", recordCmd], {
-      cwd: dir,
-      check: (_turn, base, _budget, directory) => {
-        recordPass(directory, git(directory, "rev-parse", "HEAD^{tree}"), base);
-        return true;
-      },
-    });
+    // Passing finalize command receives exact commit, base, and rebased metadata, strips any outer
+    // CHECK_CHANGED_METRICS_FILE (including mixed-case variants), and lands.
+    const priorMetricsEnv = Object.entries(process.env).filter(
+      ([key]) => key.toUpperCase() === CHECK_METRICS_FILE_ENV,
+    );
+    for (const [key] of priorMetricsEnv) delete process.env[key];
+    process.env.Check_Changed_Metrics_File = "/outer/mixed.json";
+    process.env[CHECK_METRICS_FILE_ENV] = "/outer/upper.json";
+    let okCode;
+    try {
+      const recordCmd = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+        `require("node:fs").writeFileSync(${JSON.stringify(outFile)}, JSON.stringify({commit: process.env.T3_LANDING_FINAL_COMMIT, base: process.env.T3_LANDING_FINAL_BASE, rebased: process.env.T3_LANDING_REBASED, cwdHead: require("node:child_process").execFileSync("git", ["rev-parse", "HEAD"], {encoding: "utf8"}).trim(), metricsKeys: Object.keys(process.env).filter((k) => k.toUpperCase() === ${JSON.stringify(CHECK_METRICS_FILE_ENV)})}))`,
+      )}`;
+      okCode = await main(["land", "--finalize", recordCmd], {
+        cwd: dir,
+        check: (_turn, base, _budget, directory) => {
+          recordPass(directory, git(directory, "rev-parse", "HEAD^{tree}"), base);
+          return true;
+        },
+      });
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (key.toUpperCase() === CHECK_METRICS_FILE_ENV) delete process.env[key];
+      }
+      for (const [key, value] of priorMetricsEnv) {
+        if (value !== undefined) process.env[key] = value;
+      }
+    }
     assert.equal(okCode, 0);
     assert.deepEqual(JSON.parse(logs.at(-1)), { status: "landed", commit: head });
     assert.deepEqual(JSON.parse(fs.readFileSync(outFile, "utf8")), {
@@ -438,6 +456,7 @@ test("AB#7486: CLI `land --finalize` passes final commit/base metadata and fails
       base: mainBefore,
       rebased: "0",
       cwdHead: head,
+      metricsKeys: [],
     });
     assert.equal(git(origin, "rev-parse", "main"), head);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");

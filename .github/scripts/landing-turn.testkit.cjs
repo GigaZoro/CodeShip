@@ -10,6 +10,8 @@ const { LEASE_REF } = require("./landing-turn.cjs");
 // `land` runs git itself, so its rebase needs an identity on a runner without one. A hook exports GIT_DIR
 // and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
 for (const name of Object.keys(process.env)) if (/^GIT_/i.test(name)) delete process.env[name];
+delete process.env.T3_LANDING_REMOTE_HOST;
+delete process.env.T3_LANDING_REMOTE_DIR;
 // A landing keeps its checkouts in the user's cache folder; the tests' go to one of their own, gone with the process.
 const cache = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-cache-")));
 process.on("exit", () => {
@@ -125,21 +127,72 @@ function setup() {
 function loseNextAnswer(lander, origin, git, disconnect = false) {
   const marker = path.join(origin, "drop-ack");
   fs.writeFileSync(marker, "");
+  const wrapper = path.join(origin, "lose-next-answer.cjs");
+  // Drop git-receive-pack's post-advertisement status report on the first lease push so git push fails
+  // consistently (including --atomic on Apple Git 2.39, which ignores a non-zero exit after report-status).
+  fs.writeFileSync(
+    wrapper,
+    [
+      'const { spawn, spawnSync } = require("node:child_process");',
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      "const [disconnectFlag, repo] = process.argv.slice(2);",
+      "const disconnect = disconnectFlag === '1';",
+      'const marker = path.join(repo, "drop-ack");',
+      'const child = spawn("git-receive-pack", [repo], { stdio: ["pipe", "pipe", "inherit"] });',
+      "let sawLeaseRef = false;",
+      "let stdinText = '';",
+      "process.stdin.on('data', (chunk) => {",
+      "  if (!sawLeaseRef && stdinText.length < 65536) {",
+      "    stdinText += chunk.toString('latin1');",
+      "    if (stdinText.includes('refs/heads/landing-lease/main')) sawLeaseRef = true;",
+      "  }",
+      "  child.stdin.write(chunk);",
+      "});",
+      "process.stdin.on('end', () => child.stdin.end());",
+      "let advertised = false;",
+      "let stdoutTail = Buffer.alloc(0);",
+      "const buffered = [];",
+      "child.stdout.on('data', (chunk) => {",
+      "  if (!advertised) {",
+      "    const combined = Buffer.concat([stdoutTail, chunk]);",
+      "    const flushIndex = combined.indexOf(Buffer.from('0000'));",
+      "    if (flushIndex === -1) {",
+      "      process.stdout.write(chunk);",
+      "      stdoutTail = combined.subarray(Math.max(0, combined.length - 3));",
+      "      return;",
+      "    }",
+      "    const endOfAd = flushIndex + 4;",
+      "    const adChunkLen = endOfAd - stdoutTail.length;",
+      "    if (adChunkLen > 0) process.stdout.write(chunk.subarray(0, adChunkLen));",
+      "    advertised = true;",
+      "    if (adChunkLen < chunk.length) buffered.push(chunk.subarray(adChunkLen));",
+      "    return;",
+      "  }",
+      "  buffered.push(chunk);",
+      "});",
+      "child.on('close', (code) => {",
+      "  if (code !== 0) process.exit(code ?? 1);",
+      "  if (sawLeaseRef && fs.existsSync(marker)) {",
+      "    const hasLease = spawnSync('git', ['-C', repo, 'show-ref', '--verify', '--quiet', 'refs/heads/landing-lease/main']).status === 0;",
+      "    if (hasLease) {",
+      "      fs.rmSync(marker);",
+      "      if (disconnect) fs.renameSync(path.join(repo, 'HEAD'), path.join(repo, 'HEAD-away'));",
+      "      process.exit(1);",
+      "    }",
+      "  }",
+      "  for (const part of buffered) process.stdout.write(part);",
+      "  process.exit(0);",
+      "});",
+    ].join("\n"),
+  );
+  const execPath = process.execPath.replaceAll("\\", "/");
+  const wrapperPath = wrapper.replaceAll("\\", "/");
   git(
     lander,
     "config",
     "remote.origin.receivepack",
-    [
-      "receive() {",
-      '  git-receive-pack "$1" || return $?',
-      '  if [ -f "$1/drop-ack" ] && git -C "$1" show-ref --verify --quiet refs/heads/landing-lease/main; then',
-      '    rm "$1/drop-ack" || return 1',
-      disconnect ? '    mv "$1/HEAD" "$1/HEAD-away" || return 1' : "",
-      "    return 1",
-      "  fi",
-      "  return 0",
-      "}; receive",
-    ].join("\n"),
+    `"${execPath}" "${wrapperPath}" ${disconnect ? "1" : "0"}`,
   );
   return {
     marker,
@@ -156,6 +209,8 @@ async function signalServer(root, onSignal) {
   const sockets = new Set();
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    // The hook client exits immediately after reading "go\n", which can RST the socket on Node 26+.
+    socket.on("error", () => {});
     socket.on("close", () => sockets.delete(socket));
     socket.once("data", (data) => onSignal(String(data).trim(), () => socket.end("go\n")));
   });

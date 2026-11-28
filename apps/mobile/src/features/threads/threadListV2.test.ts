@@ -44,6 +44,7 @@ import {
   resolveThreadListV2SnoozePresets,
   resolveThreadListV2RowStatus,
   resolveThreadListV2WokeAt,
+  threadListV2LayoutTime,
   threadListV2ListItemsAreEqual,
   threadListV2RowAccessibilityLabel,
   threadHasUnseenCompletion,
@@ -435,6 +436,46 @@ describe("buildThreadListV2Items", () => {
 
     expect(layout.items.map((item) => item.thread.id)).toEqual(["active", "woken"]);
     expect(layout.snoozedCount).toBe(1);
+  });
+
+  it("lists a stalled thread the user started in Needs you once its stall time passes", () => {
+    const runId = RunId.make("run-stalled");
+    const stalled = {
+      ...presentThreadShell(
+        environmentId,
+        makeRawThreadShell({
+          id: ThreadId.make("stalled"),
+          title: "Stalled",
+          status: "running",
+          latestRunId: runId,
+          activeRunId: runId,
+          createdBy: "user",
+          updatedAt: DateTime.makeUnsafe("2026-06-01T23:40:00.000Z"),
+        }),
+        null,
+      ),
+      stalledAfterMs: 10 * 60_000,
+    };
+    const threads = [stalled];
+    const layoutAt = (now: string) =>
+      buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery: "",
+        now: threadListV2LayoutTime({ threads, now, searchQuery: "" }),
+      });
+    expect(layoutAt("2026-06-01T23:49:59.000Z").needsYouCount).toBe(0);
+    expect(layoutAt(NOW).needsYouCount).toBe(1);
+    expect(layoutAt(NOW).items[0]?.thread.id).toBe("stalled");
+    expect(
+      buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery: "",
+        statusFilter: "attention",
+        now: NOW,
+      }).needsYouCount,
+    ).toBe(1);
   });
 
   it("moves a settled pinned thread into the settled shelf — parity with web (#7969)", () => {

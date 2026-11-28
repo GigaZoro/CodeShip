@@ -1,5 +1,7 @@
 import {
   MAX_PLAN_RESET_WAIT_HOURS,
+  MAX_STALLED_THREAD_AFTER_MINUTES,
+  MIN_STALLED_THREAD_AFTER_MINUTES,
   UsageLimitRecoveryChoice,
   usageLimitRecoveryChoice,
   usageLimitRecoveryPatch,
@@ -61,6 +63,7 @@ const recoveryLabels = {
 };
 
 const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 7;
+const STALLED_THREAD_DEFAULT_MINUTES = DEFAULT_SERVER_SETTINGS.stalledThreadAfterMinutes ?? 10;
 
 /**
  * Usage-limit and auto-settle rows. The Threads page owns their writes, so they share its queue
@@ -104,6 +107,7 @@ export function AutoSettleSettingsRows(props: {
       maxPlanResetWaitHours?: number;
       continueThreadsAfterServerUpdate?: boolean;
       retryThreadsAfterNetworkErrors?: boolean;
+      stalledThreadAfterMinutes?: number | null;
     },
   ) => props.write(patch);
 
@@ -125,6 +129,7 @@ export function AutoSettleSettingsRows(props: {
   const disabledFor = (...keys: string[]) =>
     disabled || managedSettingReason(displayTargets, ...keys) !== undefined;
   const afterDays = referenceSettings.sidebarAutoSettleAfterDays;
+  const stalledAfterMinutes = referenceSettings.stalledThreadAfterMinutes;
   const recoveryChoice = usageLimitRecoveryChoice(referenceSettings);
   const recoveryMixed = (["autoResumeLimitedThreads", "failoverLimitedThreads"] as const).some(
     (key) => uniformMobileSetting(displayTargets, key) === null,
@@ -205,6 +210,40 @@ export function AutoSettleSettingsRows(props: {
               disabled={disabledFor("retryThreadsAfterNetworkErrors")}
               onValueChange={(value) => writeToAll({ retryThreadsAfterNetworkErrors: value })}
             />
+            <SettingsSwitchRow
+              icon="timer"
+              label={t("Mark stalled threads")}
+              subtitle={
+                managedSettingReason(displayTargets, "stalledThreadAfterMinutes") ??
+                t(
+                  "Mark a working thread Stalled when its agent sends nothing for this long. Stalled threads you started appear in Needs you.",
+                )
+              }
+              value={stalledAfterMinutes !== null}
+              disabled={disabledFor("stalledThreadAfterMinutes")}
+              onValueChange={(value) =>
+                writeToAll({
+                  stalledThreadAfterMinutes: value ? STALLED_THREAD_DEFAULT_MINUTES : null,
+                })
+              }
+            />
+            {stalledAfterMinutes !== null ? (
+              <View className="flex-row items-center gap-4 px-4 py-4 android:min-h-14 android:py-3">
+                <View className="w-[22px] android:w-6" />
+                <Text className="flex-1 text-foreground text-lg android:text-base">
+                  {t("Minutes without events before Stalled")}
+                </Text>
+                <NumberField
+                  label={t("Minutes without events before Stalled")}
+                  min={MIN_STALLED_THREAD_AFTER_MINUTES}
+                  max={MAX_STALLED_THREAD_AFTER_MINUTES}
+                  formatValue={(value) => tn(value, "{count} minute", "{count} minutes")}
+                  value={stalledAfterMinutes}
+                  disabled={disabledFor("stalledThreadAfterMinutes")}
+                  onValueChange={(value) => writeToAll({ stalledThreadAfterMinutes: value })}
+                />
+              </View>
+            ) : null}
           </>
         ) : null}
         <SettingsSwitchRow

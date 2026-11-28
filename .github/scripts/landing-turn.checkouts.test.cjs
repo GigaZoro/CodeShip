@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  CHECK_METRICS_FILE_ENV,
   TURN_MAX_MS,
   land,
   testing: {
@@ -1381,6 +1382,96 @@ test("runCheck skips spawning checkCommand when checkout teardown starts right a
     assert.equal(ok, false);
     assert.equal(spawns, 1);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runCheck isolates metrics in a private temp dir, sweeps *.tmp, guards callback errors, and strips mixed-case metrics env", async () => {
+  const { root, dir } = fixture();
+  const prior = Object.entries(process.env).filter(
+    ([key]) => key.toUpperCase() === CHECK_METRICS_FILE_ENV,
+  );
+  try {
+    for (const [key] of prior) delete process.env[key];
+    // Mixed-case first so Windows keeps the mixed-case key name; POSIX carries both keys.
+    process.env.Check_Changed_Metrics_File = "/outer/mixed.json";
+    process.env[CHECK_METRICS_FILE_ENV] = "/outer/upper.json";
+
+    const installLog = path.join(root, "install-env.log");
+    const checkLog = path.join(root, "check-env.log");
+    const helper = path.join(root, "emit-metrics.cjs");
+    fs.writeFileSync(
+      helper,
+      [
+        'const fs = require("node:fs");',
+        `const matching = Object.keys(process.env).filter((k) => k.toUpperCase() === ${JSON.stringify(CHECK_METRICS_FILE_ENV)});`,
+        `if (process.argv[2] === "install") { fs.appendFileSync(${JSON.stringify(installLog)}, JSON.stringify(matching) + "\\n"); process.exit(0); }`,
+        `const metricsPath = process.env[${JSON.stringify(CHECK_METRICS_FILE_ENV)}] ?? "";`,
+        `fs.appendFileSync(${JSON.stringify(checkLog)}, JSON.stringify({ matching, metricsPath }) + "\\n");`,
+        'if (metricsPath && process.argv[3] !== "NONE") {',
+        '  fs.writeFileSync(metricsPath, Buffer.from(process.argv[3], "base64").toString("utf8"));',
+        '  fs.writeFileSync(metricsPath + ".999.tmp", "partial");',
+        "}",
+        "process.exit(Number(process.argv[4] ?? 0));",
+      ].join("\n"),
+    );
+    const installCommand = `"${process.execPath}" "${helper}" install`;
+    const runCase = (payload, exitCode, onCheckMetrics) => {
+      const encoded = payload === "NONE" ? "NONE" : Buffer.from(payload, "utf8").toString("base64");
+      return runCheck(dir, null, "HEAD", undefined, undefined, {
+        installCommand,
+        checkCommand: `"${process.execPath}" "${helper}" check ${encoded} ${exitCode}`,
+        stdio: "pipe",
+        onCheckMetrics,
+      });
+    };
+
+    const seen = [];
+    const collect = (m) => seen.push(m);
+    assert.equal(await runCase(JSON.stringify({ schema: 1, slotWaitMs: 1250 }), 0, collect), true);
+    assert.equal(await runCase(JSON.stringify({ schema: 1, slotWaitMs: 750 }), 1, collect), false);
+    for (const bad of ["not-json", "NONE", JSON.stringify({ schema: 1, slotWaitMs: 0 })]) {
+      assert.equal(await runCase(bad, 0, collect), true);
+    }
+    assert.deepEqual(seen, [{ slotWaitMs: 1250 }, { slotWaitMs: 750 }]);
+    // Throwing callback must never mask the check result; omitted callback creates no temp metrics file.
+    assert.equal(
+      await runCase(JSON.stringify({ schema: 1, slotWaitMs: 300 }), 0, () => {
+        throw new Error("boom");
+      }),
+      true,
+    );
+    assert.equal(await runCase("NONE", 0, undefined), true);
+
+    const readLines = (file) =>
+      fs
+        .readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    const installRecords = readLines(installLog);
+    assert.equal(installRecords.length, 7);
+    assert.ok(installRecords.every((keys) => keys.length === 0));
+
+    const checkRecords = readLines(checkLog);
+    assert.equal(checkRecords.length, 7);
+    const tmpBase = fs.realpathSync(os.tmpdir());
+    for (const { matching, metricsPath } of checkRecords.slice(0, 6)) {
+      assert.deepEqual(matching, [CHECK_METRICS_FILE_ENV]);
+      assert.equal(path.basename(metricsPath), "metrics.json");
+      const metricsDir = path.dirname(metricsPath);
+      assert.ok(path.basename(metricsDir).startsWith("t3-check-metrics-"));
+      assert.equal(fs.realpathSync(path.dirname(metricsDir)), tmpBase);
+      assert.equal(fs.existsSync(metricsDir), false, `expected ${metricsDir} to be removed`);
+    }
+    assert.deepEqual(checkRecords[6], { matching: [], metricsPath: "" });
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (key.toUpperCase() === CHECK_METRICS_FILE_ENV) delete process.env[key];
+    }
+    for (const [key, value] of prior) {
+      if (value !== undefined) process.env[key] = value;
+    }
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

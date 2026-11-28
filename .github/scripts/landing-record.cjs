@@ -88,6 +88,7 @@ function startLandingRecord({ now, clock, carried }) {
     stage: "before-wait",
     releaseConfirmed: null,
     speculativeReused: null,
+    remote: null,
   };
 
   /** Starts timing the phase `name`; the function it returns ends it. A phase that runs twice adds up. */
@@ -100,8 +101,14 @@ function startLandingRecord({ now, clock, carried }) {
     return end;
   };
 
+  /** Adds a measured positive duration to phase `name`, ignoring zero, negative, or non-finite values. */
+  const add = (name, ms) => {
+    if (isTime(ms) && ms > 0) phases[name] = (phases[name] ?? 0) + ms;
+  };
+
   return {
     begin,
+    add,
     async time(name, run) {
       const end = begin(name);
       try {
@@ -111,8 +118,9 @@ function startLandingRecord({ now, clock, carried }) {
       }
     },
     /**
-     * `branch`, `base`, `head`, `stage` ("before-wait", "waiting" or "under-turn"), `releaseConfirmed` (null while
-     * no turn was taken), or `speculativeReused` (boolean when a speculative pre-check ran, null otherwise).
+     * `branch`, `base`, `head`, `stage` ("before-wait", "waiting", "under-turn" or "remote"), `releaseConfirmed`
+     * (null while no turn was taken), `speculativeReused` (boolean when a speculative pre-check ran, null otherwise),
+     * or `remote` (boolean when landing ran on a remote host, null otherwise — never a host name or path).
      */
     note: (values) => Object.assign(fields, values),
     carry: () => JSON.stringify({ startedAt, elapsedMs: elapsed(), phases }),
@@ -124,7 +132,7 @@ function startLandingRecord({ now, clock, carried }) {
       let file;
       try {
         for (const end of open) end();
-        const { branch, base, head, stage, releaseConfirmed, speculativeReused } = fields;
+        const { branch, base, head, stage, releaseConfirmed, speculativeReused, remote } = fields;
         const record = {
           schema: SCHEMA,
           startedAt,
@@ -135,6 +143,7 @@ function startLandingRecord({ now, clock, carried }) {
           stage,
           releaseConfirmed,
           ...(typeof speculativeReused === "boolean" ? { speculativeReused } : {}),
+          ...(typeof remote === "boolean" ? { remote } : {}),
           durationMs: Math.round(elapsed()),
           phases: Object.fromEntries(
             Object.entries(phases).map(([name, ms]) => [name, Math.round(ms)]),

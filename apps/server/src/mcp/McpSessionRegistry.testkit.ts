@@ -21,6 +21,8 @@ export const layer = Layer.succeed(
       }),
     resolve: () => Effect.undefined,
     touch: () => Effect.void,
+    restoredCredentialForThread: () => Effect.succeed({ _tag: "None" }),
+    pruneRestored: () => Effect.void,
     revokeProviderSession: () => Effect.void,
     revokeThread: () => Effect.void,
     revokeAll: Effect.void,

@@ -396,6 +396,66 @@ describe("Needs you", () => {
     }
   });
 
+  const STALL_LIMIT_MS = 10 * 60_000;
+  function quiet(id: string, lastEventAt: string, stalledAfterMs: number | null = STALL_LIMIT_MS) {
+    return {
+      ...thread(id, true),
+      updatedAt: lastEventAt,
+      settledOverride: null,
+      snoozedAt: null,
+      snoozedUntil: null,
+      ...(stalledAfterMs === null ? {} : { stalledAfterMs }),
+    };
+  }
+
+  it("lists a working thread the user started once it has been quiet for the stall limit", () => {
+    const justUnder = quiet("under", "2026-06-01T11:50:00.001Z");
+    expect(threadNeedsYouReason(justUnder, { now })).toBeNull();
+    const atLimit = quiet("at-limit", "2026-06-01T11:50:00.000Z");
+    expect(threadNeedsYouReason(atLimit, { now })).toBe("stalled");
+    // The next event clears it.
+    expect(
+      threadNeedsYouReason({ ...atLimit, updatedAt: "2026-06-01T11:59:00.000Z" }, { now }),
+    ).toBeNull();
+    // Off when the user turned the Stalled state off.
+    expect(
+      threadNeedsYouReason(quiet("off", "2026-06-01T08:00:00.000Z", null), { now }),
+    ).toBeNull();
+    const result = collectNeedsYouThreads([justUnder, atLimit], { now });
+    expect(result.threads.map((entry) => entry.id)).toEqual(["at-limit"]);
+    // A stalled thread has waited since its last event, which is the time its row shows.
+    expect(result.sinceOf(atLimit)).toBe(Date.parse("2026-06-01T11:50:00.000Z"));
+    expect(result.nextChangeAt).toBe(Date.parse("2026-06-01T12:00:00.001Z"));
+  });
+
+  it("never reads a waiting, queued, or snoozed thread as stalled", () => {
+    const stale = "2026-06-01T08:00:00.000Z";
+    const waiting = { ...quiet("waiting", stale), blockedOnThreadWait: true };
+    const base = quiet("queued", stale);
+    const queued = { ...base, runtime: { ...base.runtime!, status: "queued" as const } };
+    const snoozed = {
+      ...quiet("snoozed", stale),
+      snoozedAt: "2026-06-01T11:00:00.000Z",
+      snoozedUntil: "2026-06-01T13:00:00.000Z",
+    };
+    for (const entry of [waiting, queued, snoozed]) {
+      expect(threadNeedsYouReason(entry, { now })).toBeNull();
+    }
+    expect(collectNeedsYouThreads([snoozed], { now }).nextChangeAt).toBe(
+      Date.parse("2026-06-01T13:00:00.000Z"),
+    );
+  });
+
+  it("leaves stalls of agent-started and system threads to their agents", () => {
+    for (const createdBy of ["agent", "system"] as const) {
+      const stalled = { ...quiet(createdBy, "2026-06-01T08:00:00.000Z"), createdBy };
+      expect(threadNeedsYouReason(stalled, { now })).toBeNull();
+      const soon = { ...quiet(`${createdBy}-soon`, "2026-06-01T11:55:00.000Z"), createdBy };
+      const result = collectNeedsYouThreads([stalled, soon], { now });
+      expect([result.threads, result.later, result.nextChangeAt]).toEqual([[], [], null]);
+    }
+  });
+
   it("still lists an agent-started thread that asks the user something", () => {
     const asking = {
       ...failed("agent-asking", "2026-06-01T10:00:00.000Z"),

@@ -653,6 +653,8 @@ const SHARED_SETTING_EXCLUSIONS = {
   autoResumeLimitedThreads: "The tools read and update recovery modes through usageLimitRecovery.",
   failoverLimitedThreads: "The tools read and update recovery modes through usageLimitRecovery.",
   sidebarAutoSettleAfterDays: "The user decides how long idle threads remain in the sidebar.",
+  stalledThreadAfterMinutes:
+    "The user decides how long a quiet running thread takes to appear as Stalled.",
   sidebarAutoSettleOnMerge: "The user decides whether a merge automatically settles a thread.",
   sidebarAutoSettleScheduledThreads:
     "The user decides whether completed scheduled threads settle automatically.",

@@ -14,6 +14,7 @@ import {
   CommandId,
   isDelegatedAppThread,
   isListedThreadLineage,
+  isProviderInstanceBackgroundAllowed,
   MessageId,
   OrchestrationV2StopWorkflowError,
   type OrchestrationV2StopWorkflowInput,
@@ -30,6 +31,7 @@ import {
   type OrchestrationV2LinkedSender,
   type OrchestrationV2Run,
   isOrchestrationV2WorkActive,
+  type OrchestrationV2AppThread,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadTranscript,
@@ -54,6 +56,7 @@ import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2Pe
 
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
+import { quietPastLimit } from "@t3tools/shared/orchestrationTiming";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -389,10 +392,13 @@ export class ThreadManagementProviderInstanceDisabledError extends Schema.Tagged
   {
     projectId: ProjectId,
     instanceId: ProviderInstanceId,
+    reason: Schema.optionalKey(Schema.Literals(["disabled", "background_disallowed"])),
   },
 ) {
   override get message(): string {
-    return `Provider instance "${this.instanceId}" is disabled for project ${this.projectId}.`;
+    return this.reason === "background_disallowed"
+      ? `Provider instance "${this.instanceId}" is reserved for interactive chats only (background runs disabled).`
+      : `Provider instance "${this.instanceId}" is disabled for project ${this.projectId}.`;
   }
 }
 
@@ -523,6 +529,7 @@ export interface ThreadManagementServiceShape {
     readonly projectId: ProjectId;
     readonly commandId: CommandId;
     readonly instanceId: ProviderInstanceId;
+    readonly background?: boolean | undefined;
   }) => Effect.Effect<void, ThreadManagementProviderInstanceDisabledError>;
   readonly isProviderInstanceEnabledForProject: (input: {
     readonly projectId: ProjectId;
@@ -701,8 +708,12 @@ export const stalledWork = Effect.fnUntraced(function* (
       open.push(...openTasks(child));
     }
   }
-  const quietMs = DateTime.toEpochMillis(now) - DateTime.toEpochMillis(lastActivity);
-  return quietMs >= limitMs ? { quietMs, since: lastActivity, stoppable } : undefined;
+  const quietMs = quietPastLimit({
+    lastEventAt: DateTime.toEpochMillis(lastActivity),
+    now: DateTime.toEpochMillis(now),
+    limitMs,
+  });
+  return quietMs === null ? undefined : { quietMs, since: lastActivity, stoppable };
 });
 
 function latestRestartContinuation(
@@ -768,14 +779,31 @@ const make = Effect.gen(function* () {
             ? Effect.void
             : serverSettings.getSettings.pipe(
                 Effect.orDie,
-                Effect.flatMap((current) =>
-                  resolveProjectProviderInstanceEnabled(current, input.projectId, input.instanceId)
-                    ? Effect.void
-                    : new ThreadManagementProviderInstanceDisabledError({
-                        projectId: input.projectId,
-                        instanceId: input.instanceId,
-                      }),
-                ),
+                Effect.flatMap((current) => {
+                  if (
+                    !resolveProjectProviderInstanceEnabled(
+                      current,
+                      input.projectId,
+                      input.instanceId,
+                    )
+                  ) {
+                    return new ThreadManagementProviderInstanceDisabledError({
+                      projectId: input.projectId,
+                      instanceId: input.instanceId,
+                    });
+                  }
+                  if (
+                    input.background === true &&
+                    !isProviderInstanceBackgroundAllowed(current, input.instanceId)
+                  ) {
+                    return new ThreadManagementProviderInstanceDisabledError({
+                      projectId: input.projectId,
+                      instanceId: input.instanceId,
+                      reason: "background_disallowed",
+                    });
+                  }
+                  return Effect.void;
+                }),
               ),
         ),
       );
@@ -921,6 +949,16 @@ const make = Effect.gen(function* () {
       Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
     );
 
+  const isBackgroundMessageDispatch = (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
+    thread: Pick<OrchestrationV2AppThread, "delegatedFrom" | "lineage">,
+  ): boolean =>
+    command.scheduledTaskId !== undefined ||
+    thread.delegatedFrom !== undefined ||
+    thread.lineage?.relationshipToParent === "subagent" ||
+    command.demandSourceRunId !== undefined ||
+    (command.createdBy === "agent" && command.creationSource !== "provider");
+
   const assertDispatchTargetEnabled = (command: OrchestrationV2ServerCommand) => {
     switch (command.type) {
       case "thread.metadata.update":
@@ -942,6 +980,7 @@ const make = Effect.gen(function* () {
               projectId: projection.thread.projectId,
               commandId: command.commandId,
               instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
+              background: isBackgroundMessageDispatch(command, projection.thread),
             }),
           ),
         );
@@ -953,23 +992,33 @@ const make = Effect.gen(function* () {
               projectId: command.projectId ?? parent.thread.projectId,
               commandId: command.commandId,
               instanceId: command.modelSelection.instanceId,
+              background: true,
             }),
           ),
         );
       case "prepared-run.release":
       case "prepared-run.retry":
         return orchestrator
-          .getThreadRecords(command.threadId, ["runs"], { runIds: [command.runId] })
+          .getThreadRecords(command.threadId, ["runs", "messages"], { runIds: [command.runId] })
           .pipe(
             Effect.flatMap((projection) => {
               const run = projection.runs.find((candidate) => candidate.id === command.runId);
-              return run === undefined
-                ? Effect.void
-                : assertProviderInstanceEnabled({
-                    projectId: projection.thread.projectId,
-                    commandId: command.commandId,
-                    instanceId: run.providerInstanceId,
-                  });
+              if (run === undefined) return Effect.void;
+              const message = projection.messages.find(
+                (candidate) => candidate.id === run.userMessageId,
+              );
+              const background =
+                projection.thread.delegatedFrom !== undefined ||
+                projection.thread.lineage?.relationshipToParent === "subagent" ||
+                run.delegatedTaskId !== undefined ||
+                message?.scheduledTaskId !== undefined ||
+                (message?.createdBy === "agent" && message.creationSource !== "provider");
+              return assertProviderInstanceEnabled({
+                projectId: projection.thread.projectId,
+                commandId: command.commandId,
+                instanceId: run.providerInstanceId,
+                background,
+              });
             }),
           );
       default:
@@ -1046,6 +1095,7 @@ const make = Effect.gen(function* () {
       /** Where the turn runs when not in `threadId`'s project: a task in another project's worktree. */
       readonly projectId?: ProjectId | undefined;
       readonly scheduled: boolean;
+      readonly background: boolean;
       readonly requestPrompt?: AccountRouting.AutoRequestPrompt | undefined;
       readonly routingConstraints?: AccountRouting.AutoRoutingConstraints | undefined;
       readonly preservePreviousSelection?: boolean | undefined;
@@ -1056,6 +1106,10 @@ const make = Effect.gen(function* () {
       if (thread === null) return command;
       const selection = input.selection ?? thread.modelSelection;
       if (selection.quotaAwareAuto === true) return command;
+      const background =
+        input.background ||
+        thread.delegatedFrom !== undefined ||
+        thread.lineage?.relationshipToParent === "subagent";
       const fresh =
         !input.newThread &&
         command.launchAlreadyRouted !== true &&
@@ -1074,6 +1128,7 @@ const make = Effect.gen(function* () {
           selection,
           projectId,
           scheduled: input.scheduled,
+          ...(background && !input.scheduled ? { background: true } : {}),
           discoverMcpSignIns: false,
           // The thread itself, or the parent a delegated task is for.
           requesterThreadId: input.threadId,
@@ -1137,6 +1192,7 @@ const make = Effect.gen(function* () {
             : thread.providerInstanceId,
         started,
         scheduled: input.scheduled,
+        ...(background && !input.scheduled ? { background: true } : {}),
         requesterThreadId: input.threadId,
         ...(previousSelection !== undefined ? { previousSelection } : {}),
         ...(input.preservePreviousSelection === true ? { preservePreviousSelection: true } : {}),
@@ -1182,6 +1238,10 @@ const make = Effect.gen(function* () {
           selection: command.modelSelection,
           newThread: false,
           scheduled: command.scheduledTaskId !== undefined,
+          background:
+            command.scheduledTaskId !== undefined ||
+            command.demandSourceRunId !== undefined ||
+            command.createdBy === "agent",
           steersActiveRun:
             command.dispatchMode.type === "steer_active" ||
             command.dispatchMode.type === "restart_active" ||
@@ -1204,6 +1264,7 @@ const make = Effect.gen(function* () {
           newThread: true,
           projectId: command.projectId,
           scheduled: false,
+          background: true,
           ...(command.routingConstraints === undefined
             ? {}
             : { routingConstraints: command.routingConstraints }),

@@ -1,3 +1,40 @@
+## 2026-11-28 — Live machine capacity telemetry and least-loaded placement for worktree implementation delegates
+
+- `orchestrator_capabilities` now includes an optional `capacity` snapshot (`loadAverage1m`, `cpuCores`, `loadPerCore`, `activeThreads`, `activeLandingCommands`, `checkSlots`, `freeCheckSlots`, `availableMemoryBytes`, `totalMemoryBytes`, `memoryShort`, and `activeImplementationThreadsByRepo`), remaining backward- and forward-compatible with older linked peers.
+- Unpinned `delegate_task` calls with `isolation: "worktree"` and `role: "implementation"` now probe reachable full-access linked environments in parallel and place the child on the least-loaded eligible machine that has the repository and requested provider, while keeping explicit `target.environmentId`/`target.projectId` pins, shared-checkout work, unpushed local `HEAD` commits, non-implementation roles, and peer-originated work local.
+
+## 2026-11-28 — Optional remote landing over SSH with load-aware host selection
+
+- Maintainers: `landing-turn.cjs land` now supports `--remote <host[,host2,...]>` / `T3_LANDING_REMOTE_HOST` (plus `--remote-dir <path>` / `T3_LANDING_REMOTE_DIR` and `--local` to override) to offload landings to the least-loaded reachable SSH host (`load1 / cpus`) via a temporary staging ref (`refs/heads/landing-staging/<id>`) and temporary remote worktree without touching the remote host's main checkout. If no candidate host is reachable, it falls back cleanly to local landing; once remote execution starts, check failures, conflicts, and disconnects fail closed without launching a duplicate local lander, and the staging ref is always cleaned up.
+
+## 2026-11-28 — Agents check unmerged work before saying a chat can settle
+
+- Asked whether a chat can settle, agents now check the same thing the Settle button warns about: commits in the chat's worktree that are not on the default branch, and uncommitted files. Work that is only filed or scheduled no longer counts as done.
+
+## 2026-11-28 — Landing telemetry records inner `check:changed` slot-wait time
+
+- Maintainers: `vp run check:changed` now tracks cumulative time spent stalled with zero budget slots held while waiting on other runs (`slotWaitMs`), logs it in live summary output without baking it into the pass cache, and emits it to `CHECK_CHANGED_METRICS_FILE` when set (clearing the variable from child processes).
+- Maintainers: `landing-turn.cjs` passes a temporary metrics file to each `check:changed` run and accumulates reported wait times into `phases.checkSlotWait` in `t3-landing/landings.jsonl` alongside `localSlotWait`.
+
+## 2026-11-28 — Reserve accounts for interactive chats only
+
+- Added **Allow background runs** in **Settings → Providers** so you can mark a provider instance as **Interactive only** (`allowBackground: false`). Background work—scheduled tasks, Auto background routing, limit failover, idle compaction, final review, and delegated subagents—never consumes a reserved account, even when all other accounts hit usage limits, while interactive chats can still select and run on it normally.
+
+## 2026-11-28 — Agents see the usage reset decision for each limit
+
+- `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.
+- Each Claude and Codex account now also lists `resetDecisions`: what the usage reset rule calls for on each limit, first the account's own and then each model-scoped meter at 100%. Each says whether to run, wait or claim a banked reset, why, and until when. The rule decides with the server's maximum wait, as of the moment the answer is given, whether or not usage resets are redeemed automatically, so an agent no longer works the rule out itself.
+
+## 2026-11-28 — Background commands no longer stall or leak log writers on macOS
+
+- Background commands on macOS (`t3_command_run`) could deadlock when a single write exceeded 8 KiB and leave finished `__command-log` helper processes running because Node's `process.stdin` uses `kqueue` on the output FIFO. The log writer now reads its FIFO with blocking `readSync` on a dedicated file descriptor, so large outputs complete and helper processes exit cleanly.
+
+## 2026-11-28 — Fewer pop-ups: repeats count up and background notices wait in the sidebar
+
+- Slow requests, machines that answered again, legacy thread migration and clone progress now go to **Background notices** at the top of the sidebar on web and desktop instead of popping up.
+- A pop-up that repeats from the same place within a minute shows a count instead of stacking.
+- **Settings > Diagnostics > Recent notices** shows which parts of the app raised the most notices, and how many were clicked, closed or timed out.
+
 ## 2026-11-28 — `check:changed` runs server tests in parallel chains with RAM-backed temp dirs
 
 - Maintainers: `vp run check:changed` now splits `apps/server` test groups across up to four independent serial chains when the machine's concurrency budget allows, without invalidating cached test passes when the chain count changes.
@@ -25,6 +62,21 @@
 
 - **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
 - Applying the preset leaves notification settings untouched, lists each setting it changed, and offers **Undo** (inline in Settings, in the confirmation toast on web and desktop, and as **Undo Calm preset** in the mobile command palette) to restore your prior values.
+
+## 2026-11-27 — Stalled threads stand out
+
+- A working thread whose agent has sent nothing for 10 minutes reads **Stalled** in the thread list, its activity line and its Details status, with the time since its last event. The next event clears it, and Claude tools that report progress, such as a long build, keep it from stalling.
+- A stalled thread you started waits in **Needs you** and counts on the Threads badge; stalled agent-started and scheduled threads stay with their agents. The Needs you filter lists every stalled thread. Web, desktop, and mobile show the same state.
+- **Settings → Threads → Mark stalled threads** (under Recovery on mobile) changes the limit (2 to 240 minutes) or turns it off.
+
+## 2026-11-27 — Codex turns keep running through planned server updates
+
+- A running Codex turn keeps going in its app-server process during a planned update. The new server takes that process over and finishes the same run, with no continuation prompt and no lost context. An approval Codex asked while no server was attached can be answered.
+- Every thread whose turn shares that app server is taken over too. Output is neither repeated nor lost: the old server stores everything it read, including an unfinished paragraph, before it lets the process go, and the new server replays exactly the rest.
+- An answer given just before the update reaches Codex before the old server lets the process go, and is never asked again. An approval still waiting keeps its id, so it can be answered after the update.
+- If the process cannot be taken over (an answer could not be delivered or its output stored in time, a thread on it was not running a turn, it exited, its output was cut, or adoption failed), the old process is stopped and every thread on it continues as after any restart. Claude and ACP agents still restart and continue; they do not survive an update.
+- Each Codex session costs one extra background process, its session host.
+- MCP credentials survive only for threads whose process was taken over and stop working if the MCP endpoint moved.
 
 ## 2026-11-27 — Antigravity quota holds wait for their reset
 

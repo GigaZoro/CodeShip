@@ -18,7 +18,11 @@ import * as ResetCreditRedemption from "../orchestration-v2/ResetCreditRedemptio
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { decideUsageReset } from "./usageResetRule.ts";
+import {
+  providerResetDecisions,
+  type UsageResetClaim,
+  type UsageResetDecision,
+} from "./usageResetRule.ts";
 
 // A claim that used nothing is tried again no sooner than this, so a provider that keeps refusing
 // is not asked, and the account not read uncached, every tick.
@@ -30,19 +34,6 @@ const OUTCOMES = {
   nothingToReset: "not_limited",
   noCredit: "no_reset",
 } as const satisfies Record<ProviderConsumeResetCreditOutcome, OrchestratorMcpRedemptionOutcome>;
-
-/** The unscoped meters of an account share its driver's limit id; a scoped meter has its own. */
-const ACCOUNT_LIMIT_IDS: Readonly<Record<string, string>> = {
-  claudeAgent: "claude",
-  codex: "codex",
-};
-
-interface Claim {
-  readonly kind: ServerProviderResetKind;
-  readonly limitId: string;
-  readonly boundaryMs: number;
-  readonly reason: "reset-too-far" | "reset-expiring";
-}
 
 /** The last claim tried on an account, and whether another try of the same one is pointless. */
 interface Attempt {
@@ -74,23 +65,25 @@ const isRedeemable = (provider: ServerProvider) =>
   provider.auth.status === "authenticated" &&
   // An account another instance already uses is that instance's to redeem.
   provider.availability !== "unavailable" &&
-  provider.usageLimits?.accountKey !== undefined &&
-  ACCOUNT_LIMIT_IDS[provider.driver] !== undefined;
+  provider.usageLimits?.accountKey !== undefined;
 
-/** The claim the rule calls for on this reading, or null when the account runs, waits or has nothing to claim. */
-function claimFor(provider: ServerProvider, nowMs: number, maxWaitHours: number): Claim | null {
-  const limits = provider.usageLimits;
-  const accountLimitId = ACCOUNT_LIMIT_IDS[provider.driver];
-  if (limits === undefined || accountLimitId === undefined) return null;
-  const decision = decideUsageReset(limits, { nowMs, maxWaitHours, accountLimitId });
-  return decision.action === "claim" ? decision : null;
+const isClaim = (decision: UsageResetDecision): decision is UsageResetClaim =>
+  decision.action === "claim";
+
+/** The first claim the rule calls for on this reading, or null when no limit calls for one. */
+function claimFor(
+  provider: ServerProvider,
+  nowMs: number,
+  maxWaitHours: number,
+): UsageResetClaim | null {
+  return providerResetDecisions(provider, { nowMs, maxWaitHours }).find(isClaim) ?? null;
 }
 
 /** The same shape for both drivers, so one boundary of one limit is claimed once. */
-const attemptKey = (accountKey: string, claim: Claim) =>
+const attemptKey = (accountKey: string, claim: UsageResetClaim) =>
   `banked-reset:${accountKey}:${claim.limitId}:${Math.floor(claim.boundaryMs / 1000)}`;
 
-const sameClaim = (left: Claim, right: Claim | null) =>
+const sameClaim = (left: UsageResetClaim, right: UsageResetClaim | null) =>
   right !== null &&
   left.kind === right.kind &&
   left.limitId === right.limitId &&

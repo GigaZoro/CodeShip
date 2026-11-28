@@ -34,9 +34,11 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2AppThread,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
+  type RepositoryIdentity,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -83,10 +85,12 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as CommandRunner from "../commandRunner/CommandRunner.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
@@ -8968,6 +8972,140 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
+  it.effect(
+    "routes delegates off an interactive parent's allowBackground: false account and refuses if no background-allowed account exists",
+    () =>
+      Effect.gen(function* () {
+        const reservedId = ProviderInstanceId.make("claude_reserved");
+        const allowedId = ProviderInstanceId.make("claude_background");
+        const commands: Array<{ readonly modelSelection?: unknown }> = [];
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          origin: "app_owned",
+          childThreadId,
+          providerInstanceId: allowedId,
+          model: "claude-opus",
+          status: "running",
+          result: null,
+        };
+        const parentSelection = { instanceId: reservedId, model: "claude-opus" };
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            assertProviderInstanceEnabled: () => Effect.void,
+            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId
+                  ? parentProjection(commands.length > 0 ? [task] : [], parentSelection)
+                  : childProjection,
+              ),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command as { readonly modelSelection?: unknown });
+                return {
+                  sequence: 1,
+                  storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                } as never;
+              }),
+          }),
+          ServerSettings.layerTest({
+            providerInstances: {
+              [reservedId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                enabled: true,
+                allowBackground: false,
+              },
+              [allowedId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                enabled: true,
+              },
+            },
+            providerInstanceFailoverOrder: [reservedId, allowedId],
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: reservedId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+              model: "claude-opus",
+            }),
+            providerSnapshot({
+              instanceId: allowedId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+              model: "claude-opus",
+            }),
+          ]),
+          adapterRegistryLayer([reservedId, allowedId]),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () => Effect.succeedNone,
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const settings = yield* ServerSettings.ServerSettingsService;
+
+          // Interactive parent on reservedId omits target -> routed onto allowedId.
+          yield* service.delegateTask(scope, {
+            task: "Check implementation.",
+            role: "implementation",
+            mode: "async",
+            clientRequestId: "firewall:reroute",
+          });
+          assert.deepEqual(
+            commands.map((command) => command.modelSelection),
+            [{ instanceId: allowedId, model: "claude-opus" }],
+          );
+
+          // Explicit target naming the reserved account is refused.
+          const explicitRefused = yield* service
+            .delegateTask(scope, {
+              task: "Check implementation.",
+              role: "implementation",
+              target: yield* decodeTarget({
+                providerInstanceId: reservedId,
+                model: "claude-opus",
+              }),
+              mode: "async",
+              clientRequestId: "firewall:explicit",
+            })
+            .pipe(Effect.flip);
+          assert.equal(explicitRefused.code, "provider_unavailable");
+          assert.include(explicitRefused.message, "interactive chats only");
+
+          // With the only background account disabled, inherited delegation fails rather than touching reservedId.
+          yield* settings.updateSettings({
+            providerInstances: {
+              [reservedId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                enabled: true,
+                allowBackground: false,
+              },
+              [allowedId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                enabled: false,
+              },
+            },
+          });
+          const noBackground = yield* service
+            .delegateTask(scope, {
+              task: "Check implementation.",
+              role: "implementation",
+              mode: "async",
+              clientRequestId: "firewall:none",
+            })
+            .pipe(Effect.flip);
+          assert.equal(noBackground.code, "provider_unavailable");
+          assert.equal(commands.length, 1);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
+      }),
+  );
+
   it.effect("creates a thread in Auto mode on auto:true, and none while Auto is off", () =>
     Effect.gen(function* () {
       const claudeInstanceId = ProviderInstanceId.make("claude_work");
@@ -10183,5 +10321,427 @@ describe("OrchestratorMcpService thread stop", () => {
         assert.deepEqual(yield* interruptMessages(childThreadId), [stop.message]);
       }).pipe(Effect.provide(layerTest));
     }),
+  );
+});
+
+describe("OrchestratorMcpService capacity and automatic placement", () => {
+  const GIB = 1024 ** 3;
+  const localEnvId = EnvironmentId.make("env:local-mcp");
+  const peerEnvId = EnvironmentId.make("env:peer-mcp");
+  const projectId = ProjectId.make("project:placement");
+  const parentThreadId = ThreadId.make("thread:placement-parent");
+  const parentRunId = RunId.make("run:placement-parent");
+  const parentNodeId = NodeId.make("node:placement-parent");
+  const codexInstanceId = ProviderInstanceId.make("codex");
+  const repoIdentity: RepositoryIdentity = {
+    canonicalKey: "github.com/gigazoro/codeship",
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: "https://github.com/gigazoro/codeship.git",
+    },
+  };
+  const projectRecord: Project = {
+    id: projectId,
+    title: "CodeShip",
+    workspaceRoot: "/workspace/codeship",
+    repositoryIdentity: repoIdentity,
+    faviconPath: null,
+    defaultModelSelection: null,
+    defaultThreadEnvMode: null,
+    projectIcon: null,
+    scripts: [],
+    pinnedAt: null,
+    archivedAt: null,
+    createdAt: "2026-11-28T00:00:00Z",
+    updatedAt: "2026-11-28T00:00:00Z",
+    deletedAt: null,
+  };
+  const scope: McpInvocationScope = {
+    environmentId: localEnvId,
+    capabilities: new Set(["orchestration"]),
+    issuedAt: 0,
+    requestNamespace: "placement-test",
+    thread: {
+      threadId: parentThreadId,
+      providerSessionId: "session:placement",
+      providerInstanceId: codexInstanceId,
+    },
+    client: undefined,
+  };
+  const parentProjection = (subagents: OrchestrationV2ThreadProjection["subagents"] = []) =>
+    ({
+      thread: {
+        id: parentThreadId,
+        projectId,
+        title: "Parent",
+        providerInstanceId: codexInstanceId,
+        modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "main",
+        worktreePath: "/workspace/codeship",
+      },
+      runs: [
+        {
+          id: parentRunId,
+          ordinal: 1,
+          status: "running",
+          providerInstanceId: codexInstanceId,
+          rootNodeId: parentNodeId,
+        },
+      ],
+      subagents,
+      contextTransfers: [],
+    }) as unknown as OrchestrationV2ThreadProjection;
+
+  it.effect("reports live machine capacity telemetry in capabilities()", () =>
+    Effect.gen(function* () {
+      const implThread = ThreadId.make("thread:active-impl");
+      const planThread = ThreadId.make("thread:active-plan");
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed(parentProjection()),
+        }),
+        Layer.mock(ProjectService.ProjectService)({
+          getWithRepositoryIdentity: () => Effect.succeedSome(projectRecord),
+        }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        Layer.succeed(HostResources.HostResources, {
+          read: Effect.succeed({
+            sampledAt: 1_000,
+            cpuUtilization: 0.25,
+            cpuCount: 12,
+            availableMemoryBytes: 30 * GIB,
+            totalMemoryBytes: 64 * GIB,
+            loadAverage: [3.0, 2.5, 2.0] as const,
+          }),
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getActiveTurnWorkspaces: () =>
+            Effect.succeed([
+              { threadId: implThread, projectId, worktreePath: "/wt/impl" },
+              { threadId: planThread, projectId, worktreePath: "/wt/plan" },
+            ]),
+          getOpenCommandTasks: Effect.succeed([
+            {
+              parentThreadId: implThread,
+              taskId: NodeId.make("cmd:land"),
+              threadTitle: "Impl",
+              threadClosed: null,
+              label: "land",
+              command: "node .github/scripts/landing-turn.cjs land",
+            },
+          ]),
+          getThread: (threadId) =>
+            Effect.succeed({
+              projectId,
+              interactionMode: threadId === planThread ? "plan" : "default",
+            } as unknown as OrchestrationV2AppThread),
+        }),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const result = yield* service.capabilities(scope);
+        assert.isDefined(result.capacity);
+        assert.equal(result.capacity?.cpuCores, 12);
+        assert.equal(result.capacity?.loadAverage1m, 3.0);
+        assert.equal(result.capacity?.loadPerCore, 0.25);
+        assert.equal(result.capacity?.checkSlots, 5);
+        assert.equal(result.capacity?.freeCheckSlots, 4);
+        assert.equal(result.capacity?.activeLandingCommands, 1);
+        assert.equal(result.capacity?.activeThreads, 2);
+        assert.equal(result.capacity?.memoryShort, false);
+        assert.deepEqual(result.capacity?.activeImplementationThreadsByRepo, {
+          "github.com/gigazoro/codeship": 1,
+        });
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+    }),
+  );
+
+  it.effect(
+    "delegateTask routes unpinned worktree implementation to a less-loaded peer, and stays local for pinned, retry, role-selected, unpushed, or less-loaded cases",
+    () =>
+      Effect.gen(function* () {
+        const runScenario = (input: {
+          readonly localLoad1m: number;
+          readonly peerLoad1m: number;
+          readonly delegateTarget?: { readonly environmentId?: EnvironmentId };
+          readonly hasReceipt?: boolean;
+          readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
+          readonly headPushed?: boolean;
+        }) =>
+          Effect.gen(function* () {
+            const delegatedRemotely = yield* Ref.make<ReadonlyArray<EnvironmentId>>([]);
+            const dispatchedLocally = yield* Ref.make(0);
+            const peerProbes = yield* Ref.make(0);
+            const remoteTaskId = NodeId.make("node:remote-placed");
+            const peerLink: PeerLinkSummary = {
+              environmentId: peerEnvId,
+              label: "VPS",
+              urls: ["https://vps.example.test"],
+              access: "full-access",
+              status: "reachable",
+              lastReachedAt: DateTime.makeUnsafe("2026-11-28T00:00:00Z"),
+              lastError: null,
+              linkedAt: DateTime.makeUnsafe("2026-11-28T00:00:00Z"),
+              expiresAt: DateTime.makeUnsafe("2027-11-28T00:00:00Z"),
+            };
+            const codexProvider: ServerProvider = {
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              displayName: "Codex",
+              enabled: true,
+              status: "ready",
+              installed: true,
+              auth: { status: "authenticated" },
+              checkedAt: "2026-11-28T00:00:00Z",
+              version: "1.0.0",
+              slashCommands: [],
+              skills: [],
+              models: [
+                {
+                  slug: "gpt-5.4",
+                  name: "GPT 5.4",
+                  isCustom: false,
+                  capabilities: null,
+                },
+              ],
+            };
+            let createdRemoteSubagent: OrchestrationV2ThreadProjection["subagents"][number] | null =
+              null;
+
+            const dependencies = Layer.mergeAll(
+              NodeServices.layer,
+              ServerSettings.layerTest(input.serverSettings),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([codexProvider]),
+              }),
+              Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+                list: () => Effect.succeed([codexInstanceId]),
+              }),
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                getThreadRecords: () =>
+                  Effect.succeed(
+                    parentProjection(createdRemoteSubagent === null ? [] : [createdRemoteSubagent]),
+                  ),
+                hasReceipt: () => Effect.succeed(input.hasReceipt ?? false),
+                getThreadShell: () => Effect.succeed(null),
+                dispatch: () =>
+                  Ref.update(dispatchedLocally, (n) => n + 1).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestratorProjectionError({
+                          threadId: parentThreadId,
+                          cause: new Error("local-dispatch-sentinel"),
+                        }),
+                      ),
+                    ),
+                  ),
+              }),
+              Layer.mock(ProjectService.ProjectService)({
+                getById: () => Effect.succeedSome(projectRecord),
+                getWithRepositoryIdentity: () => Effect.succeedSome(projectRecord),
+              }),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(RemoteDelegation.RemoteDelegation)({
+                delegate: (_scope, _parent, delegateInput) =>
+                  Effect.gen(function* () {
+                    yield* Ref.update(delegatedRemotely, (envs) => [
+                      ...envs,
+                      delegateInput.target.environmentId,
+                    ]);
+                    createdRemoteSubagent = {
+                      id: remoteTaskId,
+                      threadId: parentThreadId,
+                      origin: "app_owned",
+                      childThreadId: null,
+                      remoteChild: {
+                        environmentId: delegateInput.target.environmentId,
+                        threadId: ThreadId.make("thread:remote-child"),
+                        label: "VPS",
+                      },
+                      driver: ProviderDriverKind.make("remote"),
+                      model: "gpt-5.4",
+                      modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+                      status: "running",
+                      result: null,
+                    } as unknown as OrchestrationV2ThreadProjection["subagents"][number];
+                    return { taskId: remoteTaskId };
+                  }),
+                runStatus: () => Effect.succeed(null),
+              }),
+              Layer.mock(CommandRunner.CommandRunner)({}),
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+              Layer.succeed(HostResources.HostResources, {
+                read: Effect.succeed({
+                  sampledAt: 1_000,
+                  cpuUtilization: 0.5,
+                  cpuCount: 8,
+                  availableMemoryBytes: 24 * GIB,
+                  totalMemoryBytes: 32 * GIB,
+                  loadAverage: [input.localLoad1m, input.localLoad1m, input.localLoad1m] as const,
+                }),
+              }),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getActiveTurnWorkspaces: () => Effect.succeed([]),
+                getOpenCommandTasks: Effect.succeed([]),
+              }),
+              Layer.mock(PeerForwarding.PeerForwarding)({
+                readCapabilities: () =>
+                  Ref.update(peerProbes, (n) => n + 1).pipe(
+                    Effect.as({
+                      parentThreadId: null,
+                      inheritedProviderInstanceId: null,
+                      inheritedModel: null,
+                      inheritedOptions: [],
+                      runtimeMode: "full-access" as const,
+                      interactionMode: "default" as const,
+                      providers: [
+                        {
+                          providerInstanceId: codexInstanceId,
+                          driverKind: ProviderDriverKind.make("codex"),
+                          displayName: "Codex",
+                          models: [{ id: "gpt-5.4" }],
+                          canRunChildTask: true,
+                          canRunCrossProviderChildTask: true,
+                          constraints: [],
+                        },
+                      ],
+                      capacity: {
+                        loadAverage1m: input.peerLoad1m,
+                        cpuCores: 8,
+                        loadPerCore: input.peerLoad1m / 8,
+                        activeThreads: 0,
+                        activeLandingCommands: 0,
+                        checkSlots: 4,
+                        freeCheckSlots: 4,
+                        availableMemoryBytes: 24 * GIB,
+                        totalMemoryBytes: 32 * GIB,
+                        memoryShort: false,
+                        activeImplementationThreadsByRepo: {},
+                      },
+                      features: {
+                        appOwnedSubagents: true,
+                        asyncPolling: true,
+                        cancellation: true,
+                        batchThreadCreation: true,
+                        threadManagement: true,
+                        incrementalThreadRead: true,
+                        scheduledTasks: true,
+                        maxBatchThreads: 20,
+                      },
+                    }),
+                  ),
+                call: () =>
+                  Effect.succeed({
+                    projects: [projectRecord],
+                    nextCursor: null,
+                    total: 1,
+                  }) as never,
+              }),
+            );
+
+            const layer = layerOrchestratorServiceWithGit(
+              {
+                resolveCommit: () => Effect.succeed({ commitSha: "abc123" }),
+                execute: ({ args }) =>
+                  args.join(" ") === "branch -r --contains HEAD"
+                    ? Effect.succeed({
+                        code: 0,
+                        stdout: input.headPushed === false ? "" : "  origin/main\n",
+                        stderr: "",
+                      } as never)
+                    : Effect.die(`Unexpected git args: ${args.join(" ")}`),
+              },
+              MemoryAdmission.layerTest(),
+              [peerLink],
+            ).pipe(Layer.provide(dependencies));
+
+            const outcome = yield* Effect.gen(function* () {
+              const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+              return yield* service
+                .delegateTask(scope, {
+                  task: "Implement feature",
+                  role: "implementation",
+                  isolation: "worktree",
+                  ...(input.delegateTarget === undefined ? {} : { target: input.delegateTarget }),
+                })
+                .pipe(Effect.result);
+            }).pipe(Effect.provide(layer));
+
+            return {
+              outcome,
+              remoteEnvs: yield* Ref.get(delegatedRemotely),
+              localDispatches: yield* Ref.get(dispatchedLocally),
+              peerProbes: yield* Ref.get(peerProbes),
+            };
+          });
+
+        // 1. Local overloaded, peer idle, unpinned -> routed to peer.
+        const offloaded = yield* runScenario({ localLoad1m: 12, peerLoad1m: 0.5 });
+        assert.equal(offloaded.outcome._tag, "Success");
+        assert.deepEqual(offloaded.remoteEnvs, [peerEnvId]);
+        assert.equal(offloaded.localDispatches, 0);
+
+        // 2. Local overloaded, peer idle, but target.environmentId explicitly pins local -> stays local.
+        const pinnedLocal = yield* runScenario({
+          localLoad1m: 12,
+          peerLoad1m: 0.5,
+          delegateTarget: { environmentId: localEnvId },
+        });
+        assert.deepEqual(pinnedLocal.remoteEnvs, []);
+        assert.equal(pinnedLocal.localDispatches, 1);
+        assert.equal(pinnedLocal.peerProbes, 0);
+
+        // 3. Local idle, peer overloaded, unpinned -> stays local.
+        const localWins = yield* runScenario({ localLoad1m: 0.5, peerLoad1m: 12 });
+        assert.deepEqual(localWins.remoteEnvs, []);
+        assert.equal(localWins.localDispatches, 1);
+
+        // 4. Retry of an already-accepted local delegation skips automatic placement.
+        const retryLocal = yield* runScenario({
+          localLoad1m: 12,
+          peerLoad1m: 0.5,
+          hasReceipt: true,
+        });
+        assert.deepEqual(retryLocal.remoteEnvs, []);
+        assert.equal(retryLocal.localDispatches, 1);
+        assert.equal(retryLocal.peerProbes, 0);
+
+        // 5. Configured local role model selection stays local without probing peers.
+        const roleSelectedLocal = yield* runScenario({
+          localLoad1m: 12,
+          peerLoad1m: 0.5,
+          serverSettings: {
+            delegatedTaskModelSelections: {
+              implementation: { instanceId: codexInstanceId, model: "gpt-5.4" },
+            },
+          },
+        });
+        assert.deepEqual(roleSelectedLocal.remoteEnvs, []);
+        assert.equal(roleSelectedLocal.localDispatches, 1);
+        assert.equal(roleSelectedLocal.peerProbes, 0);
+
+        // 6. Unpushed local HEAD stays local without probing peers.
+        const unpushedLocal = yield* runScenario({
+          localLoad1m: 12,
+          peerLoad1m: 0.5,
+          headPushed: false,
+        });
+        assert.deepEqual(unpushedLocal.remoteEnvs, []);
+        assert.equal(unpushedLocal.localDispatches, 1);
+        assert.equal(unpushedLocal.peerProbes, 0);
+      }),
   );
 });

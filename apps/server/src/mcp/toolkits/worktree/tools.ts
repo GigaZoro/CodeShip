@@ -43,7 +43,7 @@ const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
 
 const WorktreeStatusTool = Tool.make("t3_worktree_status", {
   description:
-    "Report this thread's worktree: attached or not, path, branch, project root, and the `startFromOrigin` default. Check before `t3_worktree_handoff`.",
+    "Report this thread's worktree: attached or not, path, branch, project root, the `startFromOrigin` default, and its work not yet on the default branch. Check before `t3_worktree_handoff`, and before saying this thread can settle.",
   // No `parameters`: Tool.make defaults to Tool.EmptyParams, which serializes
   // to a top-level `type: "object"` JSON Schema. An explicit empty
   // Schema.Struct({}) serializes to `anyOf: [object, array]`, which is not a
@@ -57,7 +57,8 @@ const WorktreeStatusTool = Tool.make("t3_worktree_status", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false)
+  // Counting unmerged work fetches the default branch and looks up the branch's pull request.
+  .annotate(Tool.OpenWorld, true)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const WorktreeListTool = Tool.make("t3_worktree_list", {

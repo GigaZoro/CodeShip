@@ -2,6 +2,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as References from "effect/References";
@@ -466,6 +467,133 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }),
   );
 
+  it.effect(
+    "counts a dispatched request handler until it parks and until its answer is written",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input, output } = yield* makeInMemoryStdio();
+        const transportReady = yield* Deferred.make<CodexProtocol.CodexAppServerPatchedProtocol>();
+        const mayPark = yield* Deferred.make<void>();
+        const parked = yield* Deferred.make<CodexProtocol.CodexRequestHandlerWaitpoint>();
+        const decision = yield* Deferred.make<{ readonly decision: string }>();
+        const lineAfterRequestRead = yield* Deferred.make<void>();
+        const order: Array<string> = [];
+        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+          stdio,
+          onRequest: () =>
+            Effect.gen(function* () {
+              const self = yield* Deferred.await(transportReady);
+              yield* Deferred.await(mayPark);
+              order.push("parked");
+              const waitpoint = yield* self.requestHandlerWaitpoint;
+              yield* waitpoint.park;
+              yield* Deferred.succeed(parked, waitpoint);
+              return yield* Deferred.await(decision);
+            }),
+          onNotification: () =>
+            Deferred.succeed(lineAfterRequestRead, undefined).pipe(Effect.asVoid),
+        });
+        yield* Deferred.succeed(transportReady, transport);
+
+        yield* Queue.offer(
+          input,
+          encoder.encode(
+            `${[
+              encodeUnknownJsonString({ id: 7, method: "item/tool/requestUserInput", params: {} }),
+              encodeUnknownJsonString({ method: "t3/outputBarrier", params: {} }),
+            ].join("\n")}\n`,
+          ),
+        );
+        yield* Deferred.await(lineAfterRequestRead);
+        const handlersParked = yield* transport.awaitRequestHandlersParked.pipe(
+          Effect.andThen(Effect.sync(() => order.push("handlers parked"))),
+          Effect.forkScoped,
+        );
+        yield* Deferred.succeed(mayPark, undefined);
+        yield* Fiber.join(handlersParked);
+        assert.deepEqual(order, ["parked", "handlers parked"]);
+
+        // The answering side marks the waitpoint before it answers, so the handler counts again.
+        yield* (yield* Deferred.await(parked)).answer;
+        yield* Deferred.succeed(decision, { decision: "accept" });
+        yield* transport.awaitRequestHandlersParked;
+        yield* transport.flushOutgoing;
+        const written = Option.getOrUndefined(yield* Queue.poll(output));
+        assert.isDefined(written, "The answer was not written before the flush ended");
+        assert.deepEqual(yield* decodeJson(written ?? ""), {
+          id: 7,
+          result: { decision: "accept" },
+        });
+      }),
+  );
+
+  it.effect("stops counting a parked request handler that Codex resolves", () =>
+    Effect.gen(function* () {
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const transportReady = yield* Deferred.make<CodexProtocol.CodexAppServerPatchedProtocol>();
+      const parked = yield* Deferred.make<CodexProtocol.CodexRequestHandlerWaitpoint>();
+      const ended = yield* Deferred.make<void>();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        onRequest: () =>
+          Effect.gen(function* () {
+            const self = yield* Deferred.await(transportReady);
+            const waitpoint = yield* self.requestHandlerWaitpoint;
+            yield* waitpoint.park;
+            yield* Deferred.succeed(parked, waitpoint);
+            return yield* Effect.never;
+          }).pipe(Effect.onInterrupt(() => Deferred.succeed(ended, undefined))),
+      });
+      yield* Deferred.succeed(transportReady, transport);
+      yield* Queue.offer(input, encodeJsonl({ id: 9, method: "item/tool/requestUserInput" }));
+      const waitpoint = yield* Deferred.await(parked);
+      yield* Queue.offer(
+        input,
+        encodeJsonl({ method: "serverRequest/resolved", params: { threadId: "t", requestId: 9 } }),
+      );
+      yield* Deferred.await(ended);
+      // A late answer to a handler that already ended must not count it again.
+      yield* waitpoint.answer;
+      yield* transport.awaitRequestHandlersParked;
+    }),
+  );
+
+  it.effect("keeps counting a request handler answered before it parks", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transportReady = yield* Deferred.make<CodexProtocol.CodexAppServerPatchedProtocol>();
+      const registered = yield* Deferred.make<CodexProtocol.CodexRequestHandlerWaitpoint>();
+      const answered = yield* Deferred.make<void>();
+      const decision = yield* Deferred.make<{ readonly decision: string }>();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        onRequest: () =>
+          Effect.gen(function* () {
+            const self = yield* Deferred.await(transportReady);
+            const waitpoint = yield* self.requestHandlerWaitpoint;
+            yield* Deferred.succeed(registered, waitpoint);
+            yield* Deferred.await(answered);
+            yield* waitpoint.park;
+            return yield* Deferred.await(decision);
+          }),
+      });
+      yield* Deferred.succeed(transportReady, transport);
+      yield* Queue.offer(input, encodeJsonl({ id: 11, method: "item/tool/requestUserInput" }));
+      const waitpoint = yield* Deferred.await(registered);
+      yield* waitpoint.answer;
+      yield* Deferred.succeed(decision, { decision: "accept" });
+      yield* Deferred.succeed(answered, undefined);
+      yield* transport.awaitRequestHandlersParked;
+      yield* transport.flushOutgoing;
+      const written = Option.getOrUndefined(yield* Queue.poll(output));
+      assert.isDefined(written, "The answer was not written before the flush ended");
+      assert.deepEqual(yield* decodeJson(written ?? ""), {
+        id: 11,
+        result: { decision: "accept" },
+      });
+    }),
+  );
+
   it.effect("warns when a notification handler holds the reader for a second", () =>
     Effect.gen(function* () {
       const warnings = yield* Queue.unbounded<Record<string, unknown>>();
@@ -664,6 +792,30 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
         result: { interrupted: ["1"] },
       });
     }),
+  );
+
+  it.effect(
+    "ignores replies to requests a client before it sent, when given a request id prefix",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input, output } = yield* makeInMemoryStdio();
+        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+          stdio,
+          requestIdPrefix: "adopted:",
+        });
+        const response = yield* transport
+          .request("thread/read", { threadId: "thread-1" })
+          .pipe(Effect.forkScoped);
+        assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), {
+          id: "adopted:1",
+          method: "thread/read",
+          params: { threadId: "thread-1" },
+        });
+        // The previous client's request 1 is answered after the takeover.
+        yield* Queue.offer(input, encodeJsonl({ id: 1, result: { owner: "previous" } }));
+        yield* Queue.offer(input, encodeJsonl({ id: "adopted:1", result: { owner: "adopted" } }));
+        assert.deepEqual(yield* Fiber.join(response), { owner: "adopted" });
+      }),
   );
 
   it.effect("interrupts pending request handlers when the protocol terminates", () =>

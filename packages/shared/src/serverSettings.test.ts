@@ -22,6 +22,8 @@ import { resolveProjectScripts } from "./projectScripts.ts";
 import {
   applyServerSettingsPatch,
   autoModePick,
+  autoModeTarget,
+  canAccountRun,
   fallbackTextGenerationModelSelection,
   firstByRank,
   modelPreferencesMigrationPatch,
@@ -1351,6 +1353,65 @@ describe("Auto mode", () => {
     expect(
       applyServerSettingsPatch(next, { autoModeModels: { [codex]: null } }).autoModeModels,
     ).toEqual({ [claude]: { model: "claude-sonnet-5-5" } });
+  });
+
+  it("excludes allowBackground: false instances from Auto background picks while keeping them for interactive chats", () => {
+    const reservedSettings: ServerSettings = {
+      ...settings,
+      providerInstances: {
+        ...settings.providerInstances,
+        [ProviderInstanceId.make("claude_first")]: {
+          driver: claude,
+          enabled: true,
+          allowBackground: false,
+        },
+      },
+    };
+    const [second, first, codexAccount] = accounts;
+    const interactive = autoModePick({
+      settings: reservedSettings,
+      accounts,
+      projectId: null,
+    });
+    expect(interactive?.instanceId).toBe(first?.instanceId);
+
+    const background = autoModePick({
+      settings: reservedSettings,
+      accounts,
+      projectId: null,
+      background: true,
+    });
+    expect(background?.instanceId).toBe(second?.instanceId);
+    expect(canAccountRun(first!, reservedSettings, null, { background: true })).toBe(false);
+    expect(canAccountRun(first!, reservedSettings, null)).toBe(true);
+    expect(
+      autoModeTarget({
+        selection: {
+          instanceId: first!.instanceId,
+          model: "claude-opus-5-5",
+          autoAccount: true,
+        },
+        started: true,
+        settings: reservedSettings,
+        accounts: [second!, first!, codexAccount!],
+        projectId: null,
+        background: true,
+      })?.instanceId,
+    ).toBe(second?.instanceId);
+    expect(
+      autoModeTarget({
+        selection: {
+          instanceId: first!.instanceId,
+          model: "claude-opus-5-5",
+          autoAccount: true,
+        },
+        started: true,
+        settings: reservedSettings,
+        accounts: [first!],
+        projectId: null,
+        background: true,
+      }),
+    ).toBeNull();
   });
 });
 

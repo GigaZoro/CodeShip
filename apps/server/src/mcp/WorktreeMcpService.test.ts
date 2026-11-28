@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentId,
+  GitManagerError,
   type OrchestrationV2ThreadProjection,
   type Project,
   ProjectId,
@@ -688,13 +689,17 @@ describe("t3_worktree_handoff", () => {
 });
 
 describe("t3_worktree_status", () => {
-  it.effect("reports an attached thread's worktree and branch", () => {
+  it.effect("reports an attached thread's worktree, branch and work not yet on main", () => {
+    const unmergedWork = vi.fn((_: { readonly cwd: string }) =>
+      Effect.succeed({ refName: "feature/existing", changedFileCount: 1, unmergedCommitCount: 24 }),
+    );
     const harness = makeHarness({
       thread: {
         worktreePath: "/worktrees/project/existing",
         branch: "feature/existing",
       },
       projectNewWorktreesStartFromOrigin: true,
+      git: { unmergedWork },
     });
     return Effect.gen(function* () {
       const result = yield* runStatus(harness);
@@ -703,7 +708,41 @@ describe("t3_worktree_status", () => {
         worktreePath: "/worktrees/project/existing",
         branch: "feature/existing",
         defaultStartFromOrigin: true,
+        unmergedWork: { unmergedCommitCount: 24, changedFileCount: 1 },
       });
+      expect(unmergedWork).toHaveBeenCalledWith({ cwd: "/worktrees/project/existing" });
+    });
+  });
+
+  it.effect("reports a failed unmerged-work check instead of failing the status", () => {
+    const harness = makeHarness({
+      thread: { worktreePath: "/worktrees/project/existing", branch: "feature/existing" },
+      git: {
+        unmergedWork: () =>
+          Effect.fail(
+            new GitManagerError({
+              operation: "GitWorkflowService.unmergedWork",
+              cwd: "/worktrees/project/existing",
+              detail: "Git does not recognize this worktree's .git.",
+            }),
+          ),
+      },
+    });
+    return Effect.gen(function* () {
+      const result = yield* runStatus(harness);
+      expect(result.unmergedWork).toEqual({ checkFailed: expect.stringContaining(".git") });
+    });
+  });
+
+  it.effect("reports no unmerged work for a thread without a worktree", () => {
+    const unmergedWork = vi.fn((_: { readonly cwd: string }) =>
+      Effect.succeed({ refName: "main", changedFileCount: 3, unmergedCommitCount: 0 }),
+    );
+    const harness = makeHarness({ thread: {}, git: { unmergedWork } });
+    return Effect.gen(function* () {
+      const result = yield* runStatus(harness);
+      expect(result).toMatchObject({ attached: false, unmergedWork: null });
+      expect(unmergedWork).not.toHaveBeenCalled();
     });
   });
 });

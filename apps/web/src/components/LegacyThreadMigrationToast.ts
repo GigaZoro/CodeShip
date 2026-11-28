@@ -24,6 +24,7 @@ export function startLegacyThreadMigrationToast(): () => void {
             { total: migration.totalThreadCount.toLocaleString(getFormattingLocale()) },
           ),
           timeout: 0,
+          data: { source: "legacy-thread-migration", quiet: true },
         });
         return;
       }

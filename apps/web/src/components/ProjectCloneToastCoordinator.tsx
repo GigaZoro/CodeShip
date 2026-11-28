@@ -47,6 +47,8 @@ interface TrackedToast {
   readonly phase: ProjectCloneSnapshot["phase"];
   readonly startedAt: ProjectCloneSnapshot["startedAt"];
   readonly closed?: true;
+  /** Shown in the activity log rather than as a toast. */
+  readonly quiet: boolean;
 }
 
 function renderKey(clone: ProjectCloneSnapshot): string {
@@ -65,6 +67,7 @@ async function runCloneAction(
         type: "error",
         title,
         description: thrownErrorMessage(error, t) ?? t(msg("An error occurred.")),
+        data: { source: "project-clone" },
       }),
     );
   }
@@ -132,15 +135,27 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
       }
 
       const showToast = (options: ReturnType<typeof stackedThreadToast>) => {
-        const rendered = { renderedKey: key, phase: clone.phase, startedAt: clone.startedAt };
-        if (tracked && !tracked.closed) {
-          toastManager.update(tracked.toastId, options);
+        // Progress the user need not watch stays in the activity log; a stall or an outcome is a toast.
+        const quiet = clone.phase === "running" && clone.stalled !== true;
+        const tagged = {
+          ...options,
+          data: { ...options.data, source: "project-clone" as const, quiet },
+        };
+        const rendered = {
+          renderedKey: key,
+          phase: clone.phase,
+          startedAt: clone.startedAt,
+          quiet,
+        };
+        if (tracked && !tracked.closed && tracked.quiet === quiet) {
+          toastManager.update(tracked.toastId, tagged);
           toasts.current.set(clone.projectId, { toastId: tracked.toastId, ...rendered });
           return;
         }
+        if (tracked && !tracked.closed) toastManager.close(tracked.toastId);
 
         const toastId = toastManager.add({
-          ...options,
+          ...tagged,
           // Updates to a closing toast are ignored, even before it has been removed.
           onClose: () => {
             const current = toasts.current.get(clone.projectId);

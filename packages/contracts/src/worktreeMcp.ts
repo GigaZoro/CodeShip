@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { GitRefName, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { GitRefName, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /** Uses the managed worktree folder; handoff detaches the provider, ending this turn and resuming there next run. */
 export const WorktreeMcpHandoffInput = Schema.Struct({
@@ -83,6 +83,22 @@ export const WorktreeMcpStatusResult = Schema.Struct({
   projectWorkspaceRoot: TrimmedNonEmptyString,
   defaultStartFromOrigin: Schema.Boolean.annotate({
     description: "`startFromOrigin` default for `t3_worktree_handoff`.",
+  }),
+  unmergedWork: Schema.NullOr(
+    Schema.Union([
+      Schema.Struct({
+        unmergedCommitCount: NonNegativeInt.annotate({
+          description: "Commits not on the default branch, as of a fresh fetch.",
+        }),
+        changedFileCount: NonNegativeInt.annotate({
+          description: "Uncommitted and untracked files.",
+        }),
+      }),
+      Schema.Struct({ checkFailed: Schema.String }),
+    ]),
+  ).annotate({
+    description:
+      "The worktree's work that is not on the default branch, the check Settle runs. Null without a worktree; `checkFailed` is not a pass. A squash still counts once the default branch has changed the same lines.",
   }),
 });
 export type WorktreeMcpStatusResult = typeof WorktreeMcpStatusResult.Type;

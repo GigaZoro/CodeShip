@@ -78,7 +78,10 @@ import { useNowMinute } from "../hooks/useNowMinute";
 import { deadlineAfter, deadlineStore, type ClockStore } from "@t3tools/client-runtime/clock";
 import { matchesAnyThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
 import {
+  isThreadStalled,
   matchesThreadListStatus,
+  threadListDeadlines,
+  type ThreadListDeadlineInput,
   type ThreadListStatusFilter,
 } from "@t3tools/client-runtime/state/thread-status";
 import { threadNeedsYouReason } from "@t3tools/client-runtime/state/thread-inbox";
@@ -190,20 +193,19 @@ export function setFileDragActive(setActive: (active: boolean) => void, active: 
 }
 
 /**
- * A clock that advances exactly when a snooze wake time passes, so a woken
- * thread leaves the shelf on time without a per-second clock.
+ * A clock that advances exactly when a snooze ends or a working thread stalls, so a woken
+ * thread leaves the shelf, and a stalled one joins Needs you, on time without a per-second clock.
  */
-export function useSnoozeWakeClock(
-  threads: ReadonlyArray<{ readonly snoozedUntil?: string | null | undefined }>,
-): number {
+export function useListDeadlineClock(threads: ReadonlyArray<ThreadListDeadlineInput>): number {
   const [clockMs, setClockMs] = React.useState(() => Date.now());
   const wakeTimes: number[] = [];
   let nextWakeAt: number | null = null;
   for (const thread of threads) {
-    const wakeAt = thread.snoozedUntil == null ? Number.NaN : Date.parse(thread.snoozedUntil);
-    if (!(wakeAt > clockMs)) continue;
-    wakeTimes.push(wakeAt);
-    if (nextWakeAt === null || wakeAt < nextWakeAt) nextWakeAt = wakeAt;
+    for (const wakeAt of threadListDeadlines(thread)) {
+      if (!(wakeAt > clockMs)) continue;
+      wakeTimes.push(wakeAt);
+      if (nextWakeAt === null || wakeAt < nextWakeAt) nextWakeAt = wakeAt;
+    }
   }
   const woke = useDeadlinePassed(nextWakeAt);
   // Advancing to the latest wake that has passed skips every wake that elapsed
@@ -252,13 +254,13 @@ export function useRetainedValue<T>(key: string | null, value: T | null): T | nu
  * fires late.
  */
 export function useSidebarClock(
-  threads: ReadonlyArray<{ readonly snoozedUntil?: string | null | undefined }>,
+  threads: ReadonlyArray<ThreadListDeadlineInput>,
   inboxReturns: {
     readonly subscribe: (listener: () => void) => () => void;
     readonly getSnapshot: () => unknown;
   },
 ): number {
-  const wakeClock = useSnoozeWakeClock(threads);
+  const wakeClock = useListDeadlineClock(threads);
   const nowMinute = useNowMinute();
   const inboxVersion = React.useSyncExternalStore(inboxReturns.subscribe, inboxReturns.getSnapshot);
   const key = `${nowMinute}:${wakeClock}:${String(inboxVersion)}`;
@@ -1676,6 +1678,8 @@ function statusPill(key: ThreadStatusDisplayKey, pulse = false): ThreadStatusPil
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
+  /** A working thread quiet past its stall limit (`useThreadStall`). */
+  stalled?: boolean;
 }): ThreadStatusPill | null {
   const { thread } = input;
 
@@ -1692,14 +1696,14 @@ export function resolveThreadStatusPill(input: {
     (thread.runtime?.status === "running" && thread.blockedOnThreadWait !== true) ||
     thread.runtime?.status === "waiting"
   ) {
-    return statusPill("working", true);
+    return input.stalled === true ? statusPill("stalled") : statusPill("working", true);
   }
   if (
     thread.runtime?.status === "preparing" ||
     thread.runtime?.status === "starting" ||
     thread.runtime?.status === "queued"
   ) {
-    return statusPill("starting", true);
+    return input.stalled === true ? statusPill("stalled") : statusPill("starting", true);
   }
   if (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) {
     return statusPill("waiting");
@@ -1827,6 +1831,7 @@ export function matchesSidebarThreadFilters(
       matchesThreadListStatus(thread, filters.statusFilter, {
         woke: hasUnseenServerWake(thread, filters.now),
         locallyUnread: filters.locallyUnreadKeys.has(sidebarThreadKey(thread)),
+        stalled: isThreadStalled(thread, Date.parse(filters.now)),
       }))
   );
 }

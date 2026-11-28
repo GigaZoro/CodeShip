@@ -22,6 +22,8 @@ import { makeChildStdio, makeStderrTail, makeTerminationError } from "./_interna
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
+  /** See CodexAppServerPatchedProtocolOptions.requestIdPrefix. */
+  readonly requestIdPrefix?: string;
   readonly logger?: (
     event: CodexProtocol.CodexAppServerProtocolLogEvent,
   ) => Effect.Effect<void, never>;
@@ -41,6 +43,9 @@ export class CodexAppServerClient extends Context.Service<
   {
     readonly raw: CodexAppServerClientRaw;
     readonly awaitTermination: Effect.Effect<never, CodexError.CodexAppServerError>;
+    readonly requestHandlerWaitpoint: CodexProtocol.CodexAppServerPatchedProtocol["requestHandlerWaitpoint"];
+    readonly awaitRequestHandlersParked: CodexProtocol.CodexAppServerPatchedProtocol["awaitRequestHandlersParked"];
+    readonly flushOutgoing: CodexProtocol.CodexAppServerPatchedProtocol["flushOutgoing"];
     readonly request: <M extends CodexRpc.ClientRequestMethod>(
       method: M,
       payload: CodexRpc.ClientRequestParamsByMethod[M],
@@ -229,6 +234,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.requestIdPrefix === undefined ? {} : { requestIdPrefix: options.requestIdPrefix }),
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,
     onTermination: (error) => Deferred.fail(termination, error).pipe(Effect.asVoid),
@@ -260,6 +266,9 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
 
   return CodexAppServerClient.of({
     awaitTermination: Deferred.await(termination),
+    requestHandlerWaitpoint: transport.requestHandlerWaitpoint,
+    awaitRequestHandlersParked: transport.awaitRequestHandlersParked,
+    flushOutgoing: transport.flushOutgoing,
     raw: {
       notifications: transport.incomingNotifications,
       requests: transport.incomingRequests,

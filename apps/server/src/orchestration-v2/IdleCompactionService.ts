@@ -1,6 +1,7 @@
 import {
   CommandId,
   IDLE_COMPACTION_TEXT,
+  isProviderInstanceBackgroundAllowed,
   MessageId,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
@@ -47,7 +48,8 @@ export const make = Effect.gen(function* () {
             current,
             thread.projectId,
             thread.providerInstanceId,
-          )
+          ) ||
+          !isProviderInstanceBackgroundAllowed(current, thread.providerInstanceId)
         )
           return;
         const activeProviderThreadIds =
@@ -85,7 +87,8 @@ export const make = Effect.gen(function* () {
             current,
             records.thread.projectId,
             records.thread.providerInstanceId,
-          )
+          ) ||
+          !isProviderInstanceBackgroundAllowed(current, records.thread.providerInstanceId)
         )
           return;
         const latestRun = records.runs

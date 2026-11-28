@@ -16,6 +16,7 @@ import {
 import {
   CommandId,
   isCompactionCommandMessage,
+  isProviderInstanceBackgroundAllowed,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   latestProviderTurnForAttempt,
   withMessageSenderNote,
@@ -534,6 +535,27 @@ export interface ProviderTurnStartServiceV2Shape {
     readonly runId: RunId;
     readonly willRetry?: boolean;
   }) => Effect.Effect<void, ProviderTurnStartError>;
+  /**
+   * Continues a running run whose provider process a session host kept alive through a planned
+   * update. Fails, writing nothing, when the run or its process cannot be taken over; the caller
+   * then ends the process with `abandonAdoption` and recovers the run as after any restart.
+   * The process's output stays held until `releaseAdoptedOutput`.
+   */
+  readonly adopt: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  }) => Effect.Effect<void, ProviderTurnStartError>;
+  /**
+   * Lets a taken-over process send its output, once every run it was working on is adopted.
+   * True once what its host kept was replayed; false when it was not, or the session is gone.
+   */
+  readonly releaseAdoptedOutput: (providerSessionId: ProviderSessionId) => Effect.Effect<boolean>;
+  /**
+   * Ends a session whose takeover failed the way a server shutdown does: its process ends and
+   * runs it adopted stay running for restart recovery.
+   */
+  readonly abandonAdoption: (providerSessionId: ProviderSessionId) => Effect.Effect<void>;
+  /** Ends a run still `starting` as failed with the cause; a no-op once it left `starting`. */
   readonly failStartingRun: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
@@ -1132,6 +1154,36 @@ export const layer: Layer.Layer<
           },
         });
       }
+      const isBackgroundRun =
+        message.scheduledTaskId !== undefined ||
+        projection.thread.delegatedFrom !== undefined ||
+        projection.thread.lineage?.relationshipToParent === "subagent" ||
+        run.delegatedTaskId !== undefined ||
+        (message.createdBy === "agent" && message.creationSource !== "provider");
+      if (
+        isBackgroundRun &&
+        !isProviderInstanceBackgroundAllowed(
+          yield* serverSettings.getSettings.pipe(Effect.orDie),
+          run.providerInstanceId,
+        )
+      ) {
+        return yield* settleRunBeforeStart({
+          signal: "background-disallowed",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Provider account is reserved for interactive chats",
+            failure: makeProviderFailure({
+              class: "validation_error",
+              code: "provider_instance_background_disallowed",
+              message: `Provider instance "${run.providerInstanceId}" is reserved for interactive chats only (background runs disabled).`,
+            }),
+          },
+        });
+      }
       // A process that sent nothing for a whole start step has stopped answering, and the retry
       // would wait on it again. One still sending events for other turns stays.
       const releaseSilentSession = (error: Error) =>
@@ -1661,6 +1713,7 @@ export const layer: Layer.Layer<
             driver: providerThread.driver,
             projectId: projection.thread.projectId,
             model: run.modelSelection.model,
+            background: true,
             requesterThreadId: projection.thread.id,
             ...(resolvedRuntimePolicy.cwd === null ? {} : { cwd: resolvedRuntimePolicy.cwd }),
           }),
@@ -3925,6 +3978,175 @@ export const layer: Layer.Layer<
       });
     });
 
+    const adopt = Effect.fn("ProviderTurnStartService.adopt")(
+      function* (input: { readonly threadId: ThreadId; readonly runId: RunId }) {
+        const notAdoptable = (cause: string) =>
+          new ProviderTurnStartError({ runId: input.runId, cause });
+        const projection = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+        const run = projection.runs.find((candidate) => candidate.id === input.runId);
+        if (run === undefined || run.status !== "running") {
+          return yield* notAdoptable(`Run ${input.runId} is not running.`);
+        }
+        const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+        const attempt = projection.attempts.find(
+          (candidate) => candidate.id === run.activeAttemptId,
+        );
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === run.providerThreadId,
+        );
+        const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
+        const checkpointScope = projection.checkpointScopes.find(
+          (candidate) => candidate.id === rootNode?.checkpointScopeId,
+        );
+        if (
+          rootNode === undefined ||
+          attempt === undefined ||
+          providerThread === undefined ||
+          providerThread.providerSessionId === null ||
+          message === undefined ||
+          checkpointScope === undefined
+        ) {
+          return yield* notAdoptable(`Run ${run.id} is missing its execution projection state.`);
+        }
+        const providerTurn = projection.providerTurns
+          .filter(
+            (turn) =>
+              turn.runAttemptId === attempt.id &&
+              turn.providerThreadId === providerThread.id &&
+              turn.status === "running",
+          )
+          .toSorted((left, right) => left.ordinal - right.ordinal)
+          .at(-1);
+        if (providerTurn?.nativeTurnRef == null) {
+          return yield* notAdoptable(`Run ${run.id} has no running provider turn to take over.`);
+        }
+        const providerSessionId = providerThread.providerSessionId;
+        const runtimePolicyResolved = yield* runtimePolicy
+          .resolve({ thread: projection.thread, modelSelection: run.modelSelection, run })
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId: run.id, cause })));
+        const inheritedBackgroundTurnItems = yield* projectionStore
+          .getRuntimeRecoveryProjection(projection.thread.id)
+          .pipe(
+            Effect.map((current) =>
+              RunExecutionService.selectInheritedBackgroundTurnItems({
+                threadId: current.thread.id,
+                currentProviderThreadId: providerThread.id,
+                currentRunOrdinal: run.ordinal,
+                runs: current.runs,
+                turnItems: current.turnItems,
+              }),
+            ),
+          );
+        const runControls = makeRunControls({
+          threadId: projection.thread.id,
+          runId: run.id,
+          attemptId: attempt.id,
+          providerThreadId: providerThread.id,
+          runOrdinal: run.ordinal,
+          worktreePath: projection.thread.worktreePath,
+          inheritedBackgroundTurnItems,
+        });
+        const existingSessionProjection = projection.providerSessions.find(
+          (candidate) => candidate.id === providerSessionId,
+        );
+        const session = yield* providerSessions
+          .open({
+            threadId: projection.thread.id,
+            providerSessionId,
+            modelSelection: run.modelSelection,
+            runtimePolicy: runtimePolicyResolved,
+            ...(existingSessionProjection === undefined
+              ? {}
+              : { resumeFromSession: existingSessionProjection }),
+            ...(providerThread.nativeThreadRef?.nativeId == null
+              ? {}
+              : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
+            ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
+              ? {}
+              : {
+                  initialProviderItemIdentityVersion:
+                    providerThread.nativeMetadata.itemIdentityVersion,
+                }),
+            adoptRunningProcess: true,
+          })
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId: run.id, cause })));
+        if (session.adoptTurn === undefined) {
+          yield* providerSessions.close(providerSessionId).pipe(
+            Effect.ignore({
+              log: "Error",
+              message: "Could not close a provider session that cannot take over its turn.",
+            }),
+          );
+          return yield* notAdoptable(`Provider ${session.driver} cannot take over a running turn.`);
+        }
+        const routableSubagents = projection.subagents.filter((subagent) =>
+          RunExecutionService.canRouteRelatedSubagent(subagent.status),
+        );
+        const pendingRequests = yield* projectionStore.getPendingProviderTurnRequests(
+          input.threadId,
+          providerTurn.id,
+        );
+        yield* runExecution
+          .startRootRun({
+            commandId: CommandId.make(`command:effect:provider-turn.adopt:${run.id}`),
+            appThread: projection.thread,
+            providerSessionId,
+            session,
+            run,
+            rootNode,
+            checkpointScope,
+            providerThread,
+            attempt,
+            attemptId: attempt.id,
+            loadInheritedBackgroundTurnItems: runControls.loadInheritedBackgroundTurnItems,
+            relatedThreadIds: routableSubagents.flatMap((subagent) =>
+              subagent.childThreadId === null ? [] : [subagent.childThreadId],
+            ),
+            relatedProviderThreadIds: routableSubagents.flatMap((subagent) =>
+              subagent.providerThreadId === null ? [] : [subagent.providerThreadId],
+            ),
+            providerTurnOrdinal: providerTurn.ordinal,
+            shouldStartProviderTurn: runControls.shouldStartProviderTurn,
+            shouldFinalizeRun: runControls.shouldFinalizeRun,
+            hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
+            loadRunInterruptReason: runControls.loadRunInterruptReason,
+            message: {
+              messageId: message.id,
+              text: message.text,
+              attachments: message.attachments,
+              createdBy: message.createdBy,
+              creationSource: message.creationSource,
+              ...(message.scheduledTaskId === undefined
+                ? {}
+                : { scheduledTaskId: message.scheduledTaskId }),
+              ...(message.senderThreadId === undefined
+                ? {}
+                : { senderThreadId: message.senderThreadId }),
+            },
+            modelSelection: run.modelSelection,
+            runtimePolicy: runtimePolicyResolved,
+            startFailure: (error) =>
+              Effect.succeed(makeProviderFailure({ cause: error, class: "provider_error" })),
+            adoptRunningTurn: {
+              providerTurn,
+              turnItems: projection.turnItems.filter(
+                (item) => item.providerTurnId === providerTurn.id,
+              ),
+              runtimeRequests: pendingRequests,
+            },
+          })
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId: run.id, cause })));
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.mapError((cause) =>
+            isProviderTurnStartError(cause)
+              ? cause
+              : new ProviderTurnStartError({ runId: input.runId, cause }),
+          ),
+        ),
+    );
+
     const startWithWorkspaceLease: ProviderTurnStartServiceV2Shape["start"] = Effect.fn(
       "ProviderTurnStartService.start",
     )(
@@ -4014,6 +4236,39 @@ export const layer: Layer.Layer<
         ),
     );
     return ProviderTurnStartServiceV2.of({
+      adopt,
+      releaseAdoptedOutput: Effect.fn("ProviderTurnStartService.releaseAdoptedOutput")(function* (
+        providerSessionId: ProviderSessionId,
+      ) {
+        const session = yield* providerSessions
+          .get(providerSessionId)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logError("Could not read a taken-over provider session", cause).pipe(
+                Effect.as(Option.none()),
+              ),
+            ),
+          );
+        const release = Option.getOrUndefined(session)?.releaseAdoptedOutput;
+        if (release === undefined) return false;
+        return yield* release;
+      }),
+      abandonAdoption: Effect.fn("ProviderTurnStartServiceV2.abandonAdoption")(
+        (providerSessionId: ProviderSessionId) =>
+          // Like a server shutdown, so adopted runs are left to restart recovery, not failed.
+          providerSessions
+            .release({
+              providerSessionId,
+              reason: "server_shutdown",
+              detail: "The provider process could not be taken over after the update.",
+            })
+            .pipe(
+              Effect.ignore({
+                log: "Error",
+                message: "Could not close a provider session whose takeover failed.",
+              }),
+            ),
+      ),
       start: startWithWorkspaceLease,
       failStartingRun: Effect.fn("ProviderTurnStartService.failStartingRun")(
         function* ({ threadId, runId, attemptId, rootNodeId, cause }) {

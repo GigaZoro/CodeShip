@@ -16,6 +16,7 @@ import {
 } from "../ChatView.logic";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { useDeadlinePassed, useNowAfter } from "../../hooks/useDeadline";
+import { useThreadStall } from "../../hooks/useThreadStall";
 import type { usePendingThreadRequests } from "./usePendingThreadRequests";
 import {
   AuthOrchestrationOperateScope,
@@ -79,6 +80,7 @@ import {
 } from "../../state/use-orchestration-command";
 import {
   backgroundWorkNowItem,
+  stalledNowItem,
   childInputNowItem,
   goalNowItem,
   runStopNowItem,
@@ -654,6 +656,11 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
         t,
       )
     : null;
+  const stall = useThreadStall(activeThreadShell);
+  const stalledNow =
+    activeThread && stall
+      ? stalledNowItem({ threadId: activeThread.id, lastEventAt: stall.lastEventAt })
+      : null;
   // The relative times read the clock; nowMinute re-renders them on the minute.
   const snoozedUntil = activeThreadShell?.snoozedUntil ?? null;
   const settledAt = activeThreadShell?.settledAt ?? null;
@@ -808,7 +815,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     activeBranchMismatchKey,
     // A Stop that went unanswered needs the user; one in progress is the thread's work.
     attentionNow: runStop?.state === "unresponsive" ? runStopNow : childInputNow,
-    workNow: runStop?.state === "stopping" ? runStopNow : backgroundWorkNow,
+    workNow: runStop?.state === "stopping" ? runStopNow : (backgroundWorkNow ?? stalledNow),
     childInputNow,
     goalNow,
     handleSwitchCheckoutToThread,

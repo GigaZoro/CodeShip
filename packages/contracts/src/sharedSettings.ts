@@ -28,6 +28,7 @@ export const MACHINE_SHARED_SETTING_KEYS = [
   "autoResumeLimitedThreads",
   "failoverLimitedThreads",
   "sidebarAutoSettleAfterDays",
+  "stalledThreadAfterMinutes",
   "sidebarAutoSettleScheduledThreads",
   "sidebarAutoSettleOnMerge",
   "sidebarAutoSettleKeepPullRequests",
@@ -165,6 +166,7 @@ export const SharedProviderInstanceDefinition = Schema.Struct({
   displayName: Schema.optionalKey(TrimmedNonEmptyString),
   accentColor: Schema.optionalKey(TrimmedNonEmptyString),
   enabled: Schema.Boolean,
+  allowBackground: Schema.optionalKey(Schema.Boolean),
   config: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
 });
 export type SharedProviderInstanceDefinition = typeof SharedProviderInstanceDefinition.Type;

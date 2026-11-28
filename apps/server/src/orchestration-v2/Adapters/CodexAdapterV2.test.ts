@@ -37,6 +37,7 @@ import {
   type ProviderUsageLimitsUpdate,
   RunAttemptId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
   type ServerProviderModel,
@@ -88,6 +89,9 @@ import * as ModelManifest from "../../provider/ModelManifest.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { resolveProviderCompatibility } from "../../provider/providerCompatibility.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import type { DetachedStdioHandle } from "../../sessionHost/DetachedStdioHandle.ts";
+import * as SessionHostService from "../../sessionHost/SessionHostService.ts";
+import { AgentScope, type AgentScopeShape } from "@t3tools/shared/AgentScope";
 import { withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 
@@ -1410,6 +1414,7 @@ describe("CodexAdapterV2 session initialize", () => {
       CodexAdapterV2.CodexAdapterV2Options,
       "onAuthenticationFailed" | "readSignedOut"
     > = {},
+    openOptions: { readonly adoptRunningProcess?: true } = {},
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -1470,6 +1475,7 @@ describe("CodexAdapterV2 session initialize", () => {
         providerSessionId: ProviderSessionId.make(`provider-session-${transcript.scenario}`),
         modelSelection: CODEX_TEST_MODEL_SELECTION,
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        ...openOptions,
       });
       return {
         ensureThread: (threadId: string) =>
@@ -1546,6 +1552,40 @@ describe("CodexAdapterV2 session initialize", () => {
         providerThreads.map((providerThread) => providerThread.nativeThreadRef?.nativeId),
         ["concurrent-first", "concurrent-second"],
       );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("sends no initialize to an app server it took over", () =>
+    Effect.gen(function* () {
+      // The server that started the app server initialized it; Codex rejects a second handshake.
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: "adopted-no-initialize",
+          entries: replayPreamble("adopted-no-initialize")
+            .slice(3, 5)
+            .map((entry) => withReplayRequestId(entry, 1)),
+        }),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {},
+        { adoptRunningProcess: true },
+      );
+
+      const providerThread = yield* session.ensureThread("thread-adopted-no-initialize");
+      assert.equal(providerThread.nativeThreadRef?.nativeId, "adopted-no-initialize");
+      assert.equal(session.initializeRequests(), 0);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -15596,4 +15636,297 @@ describe("CodexAdapterV2 app-server process", () => {
         assert.isFalse(yield* child.isRunning.pipe(Effect.orElseSucceed(() => true)));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+});
+
+const sessionHostCodexSettings = Schema.decodeSync(CodexSettings)({ binaryPath: "codex-bin" });
+
+describe("layerAppServerClientFactory with a session host", () => {
+  it.effect("launches the broker's app server without a second agent scope", () =>
+    Effect.gen(function* () {
+      const wrapped: Array<Parameters<AgentScopeShape["wrap"]>[0]> = [];
+      const spawned: Array<SessionHostService.SpawnSessionHostInput> = [];
+      const agentScope: AgentScopeShape = {
+        ...(yield* AgentScope),
+        wrap: (input) => {
+          wrapped.push(input);
+          return Effect.succeed({
+            command: "/bin/sh",
+            args: ["-c", "scoped", "--", input.command, ...input.args],
+          });
+        },
+      };
+      const sessionHost = Layer.mock(SessionHostService.SessionHostService)({
+        spawnChildProcessHandle: (input) => {
+          spawned.push(input);
+          return Effect.die("the broker is not started in this test");
+        },
+      });
+      const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+        Effect.provide(
+          CodexAdapterV2.layerAppServerClientFactory.pipe(
+            Layer.provide(sessionHost),
+            Layer.provide(
+              Layer.mock(PortScanner.PortDiscovery)({
+                trackAgent: () => () => undefined,
+              }),
+            ),
+            Layer.provide(
+              Layer.succeed(
+                ProviderEventLoggers.ProviderEventLoggers,
+                ProviderEventLoggers.NoOpProviderEventLoggers,
+              ),
+            ),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+        Effect.provideService(AgentScope, agentScope),
+      );
+      const threadId = ThreadId.make("thread-session-host-scope");
+      const exit = yield* factory
+        .open({
+          instanceId: ProviderInstanceId.make("codex"),
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-host-scope"),
+          runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+          settings: sessionHostCodexSettings,
+          environment: {},
+        })
+        .pipe(Effect.scoped, Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+      assert.deepEqual(wrapped, []);
+      assert.equal(spawned.length, 1);
+      assert.equal(spawned[0]?.command, "codex-bin");
+      assert.equal(spawned[0]?.threadId, threadId);
+      assert.equal(spawned[0]?.shell, false);
+    }),
+  );
+
+  const makeTakenOverProcess = Effect.fn("CodexAdapterV2Test.makeTakenOverProcess")(function* (
+    replayComplete: () => Promise<number>,
+  ) {
+    const stdout = yield* Queue.unbounded<Uint8Array>();
+    const written = yield* Queue.unbounded<string>();
+    const decoder = new TextDecoder();
+    const childProcess = ChildProcessSpawner.makeHandle({
+      pid: ChildProcessSpawner.ProcessId(1),
+      stdout: Stream.fromQueue(stdout),
+      stderr: Stream.empty,
+      all: Stream.empty,
+      stdin: Sink.forEach((chunk: Uint8Array) => Queue.offer(written, decoder.decode(chunk))),
+      exitCode: Effect.never,
+      isRunning: Effect.succeed(true),
+      kill: () => Effect.void,
+      getInputFd: () => Sink.drain,
+      getOutputFd: () => Stream.empty,
+      unref: Effect.succeed(Effect.void),
+    });
+    const handle = {
+      sessionHostId: "host-adopted",
+      detachingForUpdate: false,
+      releaseOutput: () => undefined,
+      waitForReplayComplete: replayComplete,
+    } as unknown as DetachedStdioHandle;
+    const sessionHost = Layer.mock(SessionHostService.SessionHostService)({
+      takeAdoptable: () => Effect.succeedSome({ handle, childProcess }),
+      terminate: () => Effect.void,
+    });
+    const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+      Effect.provide(
+        CodexAdapterV2.layerAppServerClientFactory.pipe(
+          Layer.provide(sessionHost),
+          Layer.provide(
+            Layer.mock(PortScanner.PortDiscovery)({
+              trackAgent: () => () => undefined,
+            }),
+          ),
+          Layer.provide(
+            Layer.succeed(
+              ProviderEventLoggers.ProviderEventLoggers,
+              ProviderEventLoggers.NoOpProviderEventLoggers,
+            ),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    );
+    const replayed = yield* Deferred.make<boolean>();
+    const open = factory.open({
+      instanceId: ProviderInstanceId.make("codex"),
+      threadId: ThreadId.make("thread-adopted"),
+      providerSessionId: ProviderSessionId.make("provider-session-adopted"),
+      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+      settings: sessionHostCodexSettings,
+      environment: {},
+      adoptRunningProcess: { outputReady: Effect.void, replayComplete: replayed },
+    });
+    return { stdout, written, open, replayed };
+  });
+
+  it.effect("reports a taken-over process's replay only once its broker finished it", () =>
+    Effect.gen(function* () {
+      let finishReplay: (seq: number) => void = () => undefined;
+      const replay = new Promise<number>((resolve) => {
+        finishReplay = resolve;
+      });
+      const { open, replayed } = yield* makeTakenOverProcess(() => replay);
+      yield* Effect.gen(function* () {
+        yield* open;
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 20 }));
+        assert.isFalse(yield* Deferred.isDone(replayed));
+        finishReplay(7);
+        assert.isTrue(yield* Deferred.await(replayed));
+      }).pipe(Effect.scoped);
+    }),
+  );
+
+  it.effect("reports a failed replay of a taken-over process", () =>
+    Effect.gen(function* () {
+      const { open, replayed } = yield* makeTakenOverProcess(() =>
+        Promise.reject(new Error("the broker connection closed")),
+      );
+      yield* Effect.gen(function* () {
+        yield* open;
+        assert.isFalse(yield* Deferred.await(replayed));
+      }).pipe(Effect.scoped);
+    }),
+  );
+
+  it.effect("ignores a reply to the previous server's request in a session it takes over", () =>
+    Effect.gen(function* () {
+      const { stdout, written, open } = yield* makeTakenOverProcess(() => Promise.resolve(0));
+      const encoder = new TextEncoder();
+      yield* Effect.gen(function* () {
+        const client = yield* open;
+        const response = yield* client.raw
+          .request("thread/read", { threadId: "thread-1" })
+          .pipe(Effect.forkScoped);
+        const sent = JSON.parse((yield* Queue.take(written)).split("\n")[0] ?? "") as {
+          readonly id: unknown;
+        };
+        assert.isString(sent.id);
+        // The previous server's request 1 is answered after the takeover.
+        const reply = (id: unknown, owner: string) =>
+          encoder.encode(`${JSON.stringify({ id, result: { owner } })}\n`);
+        yield* Queue.offer(stdout, reply(1, "previous"));
+        yield* Queue.offer(stdout, reply(sent.id, "adopted"));
+        assert.deepEqual(yield* Fiber.join(response), { owner: "adopted" });
+      }).pipe(Effect.scoped);
+    }),
+  );
+});
+
+describe("CodexAdapterV2 item ordinals after a takeover", () => {
+  const nativeTurnId = "turn-1";
+  const turnItemIdFor = (key: string) =>
+    IdAllocator.derive.turnItemFromProviderItem({
+      driver: ProviderDriverKind.make("codex"),
+      nativeItemId: key,
+    });
+  const reasoningKey = (index: number) =>
+    JSON.stringify([nativeTurnId, "reasoning-1", "summary", index]);
+  const startedAt = DateTime.makeUnsafe(0);
+  const stored = (
+    key: string,
+    nativeItemId: string,
+    type: "reasoning" | "command_execution",
+    ordinal: number,
+  ) => ({
+    id: turnItemIdFor(key),
+    type,
+    ordinal,
+    nativeItemRef: {
+      driver: ProviderDriverKind.make("codex"),
+      nativeId: nativeItemId,
+      strength: "strong" as const,
+    },
+    startedAt,
+    updatedAt: startedAt,
+  });
+
+  it("numbers new items after every stored one when stored items share a native id", () => {
+    const positions: CodexAdapterV2.CodexItemPositions = {
+      itemPositions: new Map(),
+      nextItemOrdinal: CodexAdapterV2.firstCodexItemOrdinal(1),
+    };
+    CodexAdapterV2.seedAdoptedCodexItemPositions(positions, {
+      nativeTurnId,
+      turnItemIdFor,
+      items: [
+        stored(reasoningKey(0), "reasoning-1", "reasoning", 101),
+        stored(reasoningKey(1), "reasoning-1", "reasoning", 102),
+        stored("command-1", "command-1", "command_execution", 103),
+      ],
+    });
+    const ordinalOf = (key: string) =>
+      CodexAdapterV2.allocateCodexItemPosition(positions, key, startedAt).ordinal;
+    assert.deepEqual(
+      [
+        ordinalOf(reasoningKey(0)),
+        ordinalOf(reasoningKey(1)),
+        ordinalOf("command-1"),
+        ordinalOf("command-2"),
+      ],
+      [101, 102, 103, 104],
+    );
+  });
+
+  const storedRequest = (
+    id: string,
+    nativeRequestId: string,
+    status: "pending" | "resolved",
+    providerTurnId = ProviderTurnId.make("provider-turn-adopted"),
+  ) => ({
+    id: RuntimeRequestId.make(id),
+    providerTurnId,
+    nativeRequestRef: {
+      driver: ProviderDriverKind.make("codex"),
+      nativeId: nativeRequestId,
+      strength: "strong" as const,
+    },
+    status,
+  });
+
+  it("keeps a pending approval's position when the taken-over process asks it again", () => {
+    const positions: CodexAdapterV2.CodexItemPositions = {
+      itemPositions: new Map(),
+      nextItemOrdinal: CodexAdapterV2.firstCodexItemOrdinal(1),
+    };
+    const request = storedRequest("request-stored", "0", "pending");
+    CodexAdapterV2.seedAdoptedCodexItemPositions(positions, {
+      nativeTurnId,
+      turnItemIdFor,
+      items: [
+        stored("command-1", "command-1", "command_execution", 101),
+        {
+          ...stored("approval", "command-1", "command_execution", 102),
+          id: TurnItemId.make("turn-item-approval-stored"),
+          type: "approval_request",
+          requestId: request.id,
+        },
+      ],
+      requests: [request],
+    });
+    assert.equal(
+      CodexAdapterV2.allocateCodexItemPosition(
+        positions,
+        CodexAdapterV2.codexApprovalItemKey("command-1", "0"),
+        startedAt,
+      ).ordinal,
+      102,
+    );
+  });
+
+  it("maps only a taken-over turn's pending Codex requests to their stored ids", () => {
+    const pending = storedRequest("request-pending", "0", "pending");
+    assert.deepEqual(
+      [
+        ...CodexAdapterV2.adoptedCodexRequestIds([
+          pending,
+          storedRequest("request-resolved", "1", "resolved"),
+          { ...storedRequest("request-other-driver", "2", "pending"), nativeRequestRef: null },
+        ]),
+      ],
+      [["0", pending]],
+    );
+  });
 });

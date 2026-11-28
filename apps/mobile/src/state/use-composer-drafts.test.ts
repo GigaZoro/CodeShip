@@ -402,6 +402,7 @@ function modelReconciliationHarness(
     catalogValueAtom,
     snapshotAtom: () => snapshotAtom,
     hiddenThreadTagsAtom: () => Atom.make(null),
+    stalledAfterMsAtom: () => Atom.make(null),
   });
   const selectedShell = shells.threadShellAtom({ environmentId, threadId: selectedThreadId });
   onTestFinished(registry.mount(selectedShell));

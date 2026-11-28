@@ -176,6 +176,13 @@ export const PROCESS_BOUND_EFFECT_TYPES = [
   "runtime-request.respond",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
+/** What a provider process kept through a planned update must get before it is detached. */
+export const DELIVERED_BEFORE_DETACH_EFFECT_TYPES = [
+  "runtime-request.respond",
+  "provider-turn.interrupt",
+  "provider-turn.steer",
+] as const satisfies ReadonlyArray<(typeof PROCESS_BOUND_EFFECT_TYPES)[number]>;
+
 const PROVIDER_START_EFFECT_TYPES = [
   "provider-turn.start",
   "provider-turn.restart",
@@ -298,6 +305,15 @@ export interface EffectOutboxV2Shape {
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
   /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
   readonly awaitSettled: (effectId: string) => Effect.Effect<void, EffectOutboxError>;
+  /** Pending or running effects of these types on these threads, oldest first. */
+  readonly listUnsettled: (input: {
+    readonly threadIds: ReadonlyArray<ThreadId>;
+    readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+  }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
+  /** From now on only effects of these types are claimed; a shutdown uses it to deliver and stop. */
+  readonly restrictClaimsTo: (
+    effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>,
+  ) => Effect.Effect<void>;
   readonly reconcileAfterProcessLoss: Effect.Effect<
     { readonly requeued: number; readonly cancelled: number },
     EffectOutboxError
@@ -379,6 +395,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const available = yield* Queue.dropping<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
     const settledSignals = new Map<string, Deferred.Deferred<void>>();
+    let claimableTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]> | undefined;
     const signalSettled = (effectIds: ReadonlyArray<string>) =>
       Effect.forEach(
         effectIds,
@@ -414,6 +431,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND ${
+          claimableTypes === undefined
+            ? sql`1 = 1`
+            : sql`candidate.effect_type IN ${sql.in(claimableTypes)}`
+        }
         AND NOT EXISTS (
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
@@ -645,6 +667,25 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         }
         yield* signalSettled([effectId]);
       }),
+      listUnsettled: Effect.fn("EffectOutbox.listUnsettled")(
+        function* ({ threadIds, effectTypes }) {
+          if (threadIds.length === 0 || effectTypes.length === 0) return [];
+          const rows = yield* sql<{ readonly effect_id: string }>`
+            SELECT effect_id
+            FROM orchestration_v2_effect_outbox
+            WHERE status IN ('pending', 'running')
+              AND thread_id IN ${sql.in(threadIds)}
+              AND effect_type IN ${sql.in(effectTypes)}
+            ORDER BY rowid ASC
+          `.pipe(NodeSqliteClient.readOnly);
+          return rows.map(({ effect_id }) => effect_id);
+        },
+        Effect.mapError((cause) => new EffectOutboxError({ operation: "list-unsettled", cause })),
+      ),
+      restrictClaimsTo: (effectTypes) =>
+        Effect.sync(() => {
+          claimableTypes = [...effectTypes];
+        }).pipe(Effect.andThen(notifyAvailable())),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);
         const cancelledRows = yield* sql<{ readonly effect_id: string }>`

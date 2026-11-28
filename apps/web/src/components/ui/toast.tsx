@@ -37,7 +37,10 @@ import {
 import { useThreadRouteTarget } from "~/hooks/useThreadRouteTarget";
 import { SharedTooltipTrigger } from "./shared-tooltip";
 
-export type ThreadToastData = {
+import { tn } from "~/i18n";
+import { noticeLog, withNoticeLog, type NoticeData } from "./toastNoticeLog";
+
+export type ThreadToastData = Pick<NoticeData, "source" | "quiet" | "repeatCount"> & {
   threadRef?: ScopedThreadRef | null;
   threadId?: ThreadId | null;
   leadingIcon?: ReactNode;
@@ -82,7 +85,7 @@ type ToastManagerEvent = Parameters<ToastManagerListener>[0];
  * from before the first render (and while the root error view replaces the providers), so hold
  * those until a provider listens.
  */
-function createBufferedToastManager(): BaseToastManager {
+function createBufferedToastManager(channel: string): BaseToastManager {
   const manager = Toast.createToastManager<ThreadToastData>();
   const listeners = new Set<ToastManagerListener>();
   const pending: ToastManagerEvent[] = [];
@@ -93,22 +96,30 @@ function createBufferedToastManager(): BaseToastManager {
     }
     for (const listener of listeners) listener(event);
   });
-  return {
-    ...manager,
-    " subscribe"(listener) {
-      listeners.add(listener);
-      for (const event of pending.splice(0)) listener(event);
-      return () => {
-        listeners.delete(listener);
-      };
+  return withNoticeLog(
+    {
+      ...manager,
+      " subscribe"(listener) {
+        listeners.add(listener);
+        for (const event of pending.splice(0)) listener(event);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
     },
-  };
+    noticeLog,
+    channel,
+  );
 }
 
-const toastManager = createBufferedToastManager();
-const anchoredToastManager = createBufferedToastManager();
+const toastManager = createBufferedToastManager("toast");
+const anchoredToastManager = createBufferedToastManager("anchored");
 type ToastId = ReturnType<typeof toastManager.add>;
-const threadToastVisibleTimeoutRemainingMs = new Map<ToastId, number>();
+/** Visible time left per toast; a repeat (a new repeatCount) starts the full time again. */
+const threadToastVisibleTimeoutRemainingMs = new Map<
+  ToastId,
+  { readonly remainingMs: number; readonly repeatCount: number | undefined }
+>();
 
 const TOAST_ICONS = {
   error: CircleAlertIcon,
@@ -142,8 +153,25 @@ function handleToastDismissClick(
   onClose: (() => void) | undefined,
 ) {
   onClose?.();
+  noticeLog.markDismissing(toastId);
   manager.close(toastId);
 }
+
+/** Acting on a toast: any button but dismiss and the ones that only show or copy its text. */
+function markToastClicked(target: EventTarget, toastId: ToastId) {
+  const button = target instanceof Element ? target.closest("button") : null;
+  if (button === null || button.dataset.slot === "toast-close") return;
+  if (button.closest("[data-notice-passive]") !== null) return;
+  noticeLog.markClicked(toastId);
+}
+
+/** base-ui closes on Escape and on a finished swipe inside these events. */
+const markToastDismissGesture = (toastId: ToastId) => ({
+  onKeyDownCapture: (event: { key: string }) => {
+    if (event.key === "Escape") noticeLog.markDismissing(toastId);
+  },
+  onPointerUpCapture: () => noticeLog.markDismissing(toastId),
+});
 
 function CopyErrorButton({ text }: { text: string }) {
   const { copyToClipboard, isCopied } = useCopyToClipboard({
@@ -164,6 +192,7 @@ function CopyErrorButton({ text }: { text: string }) {
           variant="ghost-muted"
           aria-label={label}
           className="[--control-icon-color:currentColor] rounded-md text-muted-foreground/80 hover:bg-transparent hover:text-muted-foreground"
+          data-notice-passive
           onClick={() => copyToClipboard(text)}
         />
       }
@@ -193,6 +222,7 @@ function ToastExpandableSection({
     <div className="min-w-0">
       <button
         aria-expanded={open}
+        data-notice-passive
         className="inline-flex cursor-pointer items-center gap-1 rounded-md py-0.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
         onClick={() => setOpen((prev) => !prev)}
         type="button"
@@ -405,6 +435,14 @@ function ToastBodyContent({
             </div>
           ) : null}
           <Toast.Title className="min-w-0 wrap-break-word font-medium" data-slot="toast-title" />
+          {toastData?.repeatCount !== undefined && toastData.repeatCount > 1 ? (
+            <span
+              className="h-lh shrink-0 text-xs text-muted-foreground tabular-nums"
+              data-slot="toast-repeat-count"
+            >
+              {tn(toastData.repeatCount, "{count} time", "{count} times")}
+            </span>
+          ) : null}
         </div>
         <ToastDescriptionAndExpandable
           toastData={toastData}
@@ -486,16 +524,22 @@ function useActiveThreadRefFromRoute(): ScopedThreadRef | null {
 function ThreadToastVisibleAutoDismiss({
   toastId,
   dismissAfterVisibleMs,
+  repeatCount,
 }: {
   toastId: ToastId;
   dismissAfterVisibleMs: number | undefined;
+  repeatCount: number | undefined;
 }) {
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- dismiss timer that pauses on visibilitychange, focus and blur so it only counts visible time
   useEffect(() => {
     if (!dismissAfterVisibleMs || dismissAfterVisibleMs <= 0) return;
     if (typeof window === "undefined" || typeof document === "undefined") return;
 
-    let remainingMs = threadToastVisibleTimeoutRemainingMs.get(toastId) ?? dismissAfterVisibleMs;
+    const saved = threadToastVisibleTimeoutRemainingMs.get(toastId);
+    let remainingMs =
+      saved !== undefined && saved.repeatCount === repeatCount
+        ? saved.remainingMs
+        : dismissAfterVisibleMs;
     let startedAtMs: number | null = null;
     let timeoutId: number | null = null;
     let closed = false;
@@ -510,6 +554,7 @@ function ThreadToastVisibleAutoDismiss({
       if (closed) return;
       closed = true;
       threadToastVisibleTimeoutRemainingMs.delete(toastId);
+      noticeLog.end(toastId, "auto-dismissed");
       toastManager.close(toastId);
     };
 
@@ -518,7 +563,7 @@ function ThreadToastVisibleAutoDismiss({
       remainingMs = Math.max(0, remainingMs - (Date.now() - startedAtMs));
       startedAtMs = null;
       clearTimer();
-      threadToastVisibleTimeoutRemainingMs.set(toastId, remainingMs);
+      threadToastVisibleTimeoutRemainingMs.set(toastId, { remainingMs, repeatCount });
     };
 
     const start = () => {
@@ -557,7 +602,7 @@ function ThreadToastVisibleAutoDismiss({
       pause();
       clearTimer();
     };
-  }, [dismissAfterVisibleMs, toastId]);
+  }, [dismissAfterVisibleMs, repeatCount, toastId]);
 
   return null;
 }
@@ -662,6 +707,8 @@ function Toasts({ position }: { position: ToastPosition }) {
               )}
               data-position={position}
               key={toast.id}
+              onClickCapture={(event) => markToastClicked(event.target, toast.id)}
+              {...markToastDismissGesture(toast.id)}
               style={
                 {
                   "--toast-index": visibleIndex,
@@ -679,6 +726,7 @@ function Toasts({ position }: { position: ToastPosition }) {
             >
               <ThreadToastVisibleAutoDismiss
                 dismissAfterVisibleMs={toast.data?.dismissAfterVisibleMs}
+                repeatCount={toast.data?.repeatCount}
                 toastId={toast.id}
               />
               <div className={toastCornerDismissClass}>
@@ -769,6 +817,8 @@ function AnchoredToasts() {
                     tooltipStyle ? "rounded-md" : "rounded-lg",
                   )}
                   data-slot="toast-popup"
+                  onClickCapture={(event) => markToastClicked(event.target, toast.id)}
+                  {...markToastDismissGesture(toast.id)}
                   toast={toast}
                 >
                   {tooltipStyle ? (

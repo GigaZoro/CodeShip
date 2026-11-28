@@ -139,6 +139,7 @@ function layerExecutorFor(input: {
         forgetLoadedProviderThread: () => Effect.void,
         subscribePromptSuggestion: () => Stream.empty,
         releaseIfSilent: () => Effect.die("unused releaseIfSilent"),
+        prepareDetachForUpdate: () => Effect.die("unused prepareDetachForUpdate"),
       }),
     ),
     Layer.succeed(
@@ -146,6 +147,9 @@ function layerExecutorFor(input: {
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
         failStartingRun: (request) =>
           record(`fail-starting:${request.runId}:${request.attemptId}:${request.rootNodeId}`),
+        adopt: (request) => record(`adopt:${request.runId}`),
+        releaseAdoptedOutput: () => Effect.die("unused releaseAdoptedOutput"),
+        abandonAdoption: () => Effect.die("unused abandonAdoption"),
         start:
           input.start ??
           (() =>

@@ -674,6 +674,9 @@ export const invalidateCommandResolutions = Effect.fn("shell.invalidateCommandRe
     const cache = yield* CommandResolutionCache;
     cache.clear();
     commandResolutionGenerations.set(cache, (commandResolutionGenerations.get(cache) ?? 0) + 1);
+    const listings = yield* PathDirectoryListings;
+    yield* Cache.invalidateAll(listings);
+    resolverPathDirectoryListings.clear();
   },
 );
 
@@ -1200,46 +1203,67 @@ const resolveMacosGit = Effect.fnUntraced(function* (
   const locateXcodeGit = yield* XcodeGitLocation;
   const cache = yield* CommandResolutionCache;
   const nowNanos = yield* Clock.currentTimeNanos;
-  const childCwd = cwd ?? (yield* HostProcess.WorkingDirectory);
-  const searchPath = commandSearchPath(env, "darwin", childCwd);
+  const services = yield* Effect.context();
+  const explicitWorkingDirectory = services.mapUnsafe.has(HostProcess.WorkingDirectory.key)
+    ? (services.mapUnsafe.get(HostProcess.WorkingDirectory.key) as string)
+    : undefined;
+  const readWorkingDirectory = (): string | null => {
+    if (cwd !== undefined) return cwd;
+    if (explicitWorkingDirectory !== undefined) return explicitWorkingDirectory;
+    try {
+      return process.cwd();
+    } catch {
+      return null;
+    }
+  };
+  // Read after the clock, so the lookup below starts in the directory the key names.
+  const childCwd = readWorkingDirectory();
+  const searchPath = commandSearchPath(env, "darwin", childCwd ?? undefined);
   const relativeSearch = searchPath.split(":").some((entry) => !NodePath.posix.isAbsolute(entry));
   const developerDir = env.DEVELOPER_DIR ?? "";
+  const needsCwd =
+    relativeSearch || (developerDir !== "" && !NodePath.posix.isAbsolute(developerDir));
   const cacheKey = [
     "xcode-git",
     String(spawnResolverCacheId(resolveExecutable)),
     String(spawnResolverCacheId(locateXcodeGit)),
     searchPath,
     developerDir,
-    relativeSearch || (developerDir && !NodePath.posix.isAbsolute(developerDir)) ? childCwd : "",
+    needsCwd && childCwd !== null ? childCwd : "",
   ].join(COMMAND_RESOLUTION_CACHE_KEY_SEPARATOR);
-  const cached = cache.get(cacheKey);
+  const canCache = !needsCwd || childCwd !== null;
+  const cached = canCache ? cache.get(cacheKey) : undefined;
+  const lookupCwd = childCwd ?? undefined;
   // An Xcode update or removal deletes the binary; look again instead of failing the spawn.
   if (cached !== undefined && cached.expiresAtNanos > nowNanos) {
     const cachedPath = cached.resolvedPath;
     if (
       cachedPath === null ||
       (yield* Effect.promise(async () =>
-        resolveExecutable(cachedPath, "darwin", env, childCwd),
+        resolveExecutable(cachedPath, "darwin", env, lookupCwd),
       )) !== undefined
     ) {
       return cachedPath ?? "git";
     }
   }
   const pathGit = yield* Effect.promise(async () =>
-    resolveExecutable("git", "darwin", env, childCwd),
+    resolveExecutable("git", "darwin", env, lookupCwd),
   );
-  const located = pathGit === MACOS_GIT_SHIM ? locateXcodeGit(env, childCwd) : undefined;
+  const located = pathGit === MACOS_GIT_SHIM ? locateXcodeGit(env, lookupCwd) : undefined;
   const realGit =
     located !== undefined &&
-    (yield* Effect.promise(async () => resolveExecutable(located, "darwin", env, childCwd))) !==
+    (yield* Effect.promise(async () => resolveExecutable(located, "darwin", env, lookupCwd))) !==
       undefined
       ? located
       : // A match anchored to the cwd came through an empty PATH entry, which a child would search
         // again from its own cwd; launch the file that was checked instead of bare `git`.
-        pathGit === NodePath.posix.join(childCwd, "git")
+        childCwd !== null && pathGit === NodePath.posix.join(childCwd, "git")
         ? pathGit
         : null;
-  cacheCommandResolution(cache, cacheKey, realGit, nowNanos);
+  // The lookups above await and the cwd can move meanwhile; cache only what the key's cwd found.
+  if (canCache && (!needsCwd || readWorkingDirectory() === childCwd)) {
+    cacheCommandResolution(cache, cacheKey, realGit, nowNanos);
+  }
   return realGit ?? "git";
 });
 

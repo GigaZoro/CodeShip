@@ -1,9 +1,13 @@
 /**
  * When an account whose usage limit is out should claim a banked reset. Pure: it reads one provider
- * snapshot and returns a decision, so the redeemer re-runs it on a fresh reading right before it
- * claims.
+ * snapshot and returns a decision for each of its limits, so the redeemer re-runs it on a fresh
+ * reading right before it claims, and `orchestrator_capabilities` publishes what it decides.
  */
 import type {
+  OrchestratorMcpResetClaimReason,
+  OrchestratorMcpResetRunReason,
+  OrchestratorMcpResetWaitReason,
+  ServerProvider,
   ServerProviderResetCredit,
   ServerProviderResetKind,
   ServerProviderUsageLimits,
@@ -14,18 +18,17 @@ const HOUR_MS = 3_600_000;
 // A window younger than this has too little history to read a burn rate from.
 const EARLY_PACE_HOURS = 3;
 
-export type UsageResetWaitReason =
-  | "unmeasured"
-  | "unknown-plan-reset"
-  | "stale-reading"
-  | "plan-resets-soon"
-  | "no-reset";
+/** The limit id of each driver's own, unscoped meters; a scoped meter has its own. */
+const ACCOUNT_LIMIT_IDS: Readonly<Record<string, string>> = {
+  claudeAgent: "claude",
+  codex: "codex",
+};
 
-export type UsageResetDecision =
-  | { readonly action: "run"; readonly reason: "plan-available" | "usage-allowed" }
+type UsageResetOutcome =
+  | { readonly action: "run"; readonly reason: OrchestratorMcpResetRunReason }
   | {
       readonly action: "wait";
-      readonly reason: UsageResetWaitReason;
+      readonly reason: OrchestratorMcpResetWaitReason;
       /** The plan reset every blocking meter waits for, when it is known. */
       readonly boundaryMs: number | null;
     }
@@ -36,8 +39,15 @@ export type UsageResetDecision =
       readonly limitId: string;
       /** The plan reset of the limit this claim clears, in epoch milliseconds. */
       readonly boundaryMs: number;
-      readonly reason: "reset-too-far" | "reset-expiring";
+      readonly reason: OrchestratorMcpResetClaimReason;
     };
+
+export type UsageResetDecision = UsageResetOutcome & {
+  /** Null for the account's own, unscoped meters; else the model a scoped meter limits, as the provider names it. */
+  readonly model: string | null;
+};
+
+export type UsageResetClaim = Extract<UsageResetDecision, { readonly action: "claim" }>;
 
 export interface UsageResetOptions {
   readonly nowMs: number;
@@ -48,6 +58,7 @@ export interface UsageResetOptions {
 
 interface Meter {
   readonly kind: ServerProviderUsageWindow["kind"];
+  /** The model a scoped meter limits, as the provider names it. */
   readonly model: string | undefined;
   readonly usedPercent: number;
   readonly resetsAtMs: number;
@@ -62,25 +73,36 @@ interface Reset {
 }
 
 /**
- * Only rate-limit windows count. A monthly one counts when it states its length: Codex's monthly
- * credit limit is a spending cap with no window, and a reset does not refill it.
+ * Whether a window is a rate limit, the only kind the rule counts. A monthly one is when it states
+ * its length: Codex's monthly credit limit and Claude's monthly spend are spending caps with no
+ * window, and a reset does not refill them.
  */
+export function isRateLimit(window: ServerProviderUsageWindow): boolean {
+  if (window.kind === "other") return false;
+  return window.kind !== "monthly" || window.windowDurationMins !== undefined;
+}
+
 function meterOf(window: ServerProviderUsageWindow): Meter | null {
-  if (window.kind === "other") return null;
-  if (window.kind === "monthly" && window.windowDurationMins === undefined) return null;
+  if (!isRateLimit(window)) return null;
   return {
     kind: window.kind,
-    model: window.model?.toLowerCase(),
+    model: window.model,
     usedPercent: window.usedPercent,
     resetsAtMs: window.resetsAt === undefined ? Number.NaN : Date.parse(window.resetsAt),
     windowHours: (window.windowDurationMins ?? 0) / 60,
   };
 }
 
+const modelKey = (meter: Meter) => meter.model?.toLowerCase();
+
+/** A model-scoped meter at 100%: its own limit, which gets its own decision. */
+const isSpentScoped = (meter: Meter): meter is Meter & { readonly model: string } =>
+  meter.model !== undefined && meter.usedPercent >= 100;
+
 /** A reset kind is a contract about meters, never about a provider's choice of id. */
 function clearsMeter(kind: ServerProviderResetKind, meter: Meter): boolean {
   if (kind === "full") return true;
-  if (kind === "fable") return meter.model === "fable";
+  if (kind === "fable") return modelKey(meter) === "fable";
   if (meter.model !== undefined) return false;
   return kind === "weekly" ? meter.kind === "weekly" : meter.kind === "session";
 }
@@ -158,7 +180,8 @@ interface Track {
 }
 
 /** A spent meter stops its own model's meters; an unscoped one stops the whole account. */
-const stops = (by: Meter, meter: Meter) => by.model === undefined || by.model === meter.model;
+const stops = (by: Meter, meter: Meter) =>
+  by.model === undefined || modelKey(by) === modelKey(meter);
 
 function track(meter: Meter, cleared: boolean, spent: boolean, measuredMs: number): Track {
   const windowMs = meter.windowHours * HOUR_MS;
@@ -237,7 +260,7 @@ function decideBlocked(input: {
   readonly nowMs: number;
   readonly maxWaitMs: number;
   readonly measuredMs: number;
-}): UsageResetDecision {
+}): UsageResetOutcome {
   const plan = planReset(input.blocking, input.nowMs);
   // Without the plan reset the wait threshold cannot be applied, so no reset is spent on it.
   if ("untimed" in plan) return { action: "wait", reason: plan.untimed, boundaryMs: null };
@@ -267,18 +290,24 @@ function decideBlocked(input: {
 }
 
 /**
- * The decision for an account's snapshot: the first limit that calls for a claim, else why the
- * account waits or runs. Credits and Claude's weekly 5-hour program are never spent here.
+ * The decision for each limit on an account's snapshot: the account's own first, then each
+ * model-scoped meter at 100%. The first claim among them is the one to make. Credits and Claude's
+ * weekly 5-hour program are never spent here.
  */
 export function decideUsageReset(
   limits: ServerProviderUsageLimits,
   options: UsageResetOptions,
-): UsageResetDecision {
+): ReadonlyArray<UsageResetDecision> {
+  const meters = limits.windows.flatMap((window) => meterOf(window) ?? []);
+  const spentScoped = meters.filter(isSpentScoped);
   const measuredMs = Date.parse(limits.checkedAt);
   if (limits.unavailable !== undefined || !Number.isFinite(measuredMs)) {
-    return { action: "wait", reason: "unmeasured", boundaryMs: null };
+    const unmeasured = { action: "wait", reason: "unmeasured", boundaryMs: null } as const;
+    return [
+      { model: null, ...unmeasured },
+      ...spentScoped.map((meter) => ({ model: meter.model, ...unmeasured })),
+    ];
   }
-  const meters = limits.windows.flatMap((window) => meterOf(window) ?? []);
   const unscoped = meters.filter((meter) => meter.model === undefined);
   const resets = availableResets(limits, options.nowMs);
   const shared = {
@@ -291,28 +320,33 @@ export function decideUsageReset(
 
   const blocking = blockingMeters(unscoped, limits.usageAllowed);
   // The provider's own answer outranks a window still shown at 100%.
-  const account: UsageResetDecision =
+  const account: UsageResetOutcome =
     limits.usageAllowed === true
       ? { action: "run", reason: "usage-allowed" }
       : blocking.length === 0 && limits.usageAllowed !== false
         ? { action: "run", reason: "plan-available" }
         : decideBlocked({ ...shared, blocking, limitId: options.accountLimitId });
-  if (account.action === "claim") return account;
 
   // A model-scoped meter (Claude's Fable week) is its own limit, but while the account is blocked
   // that model waits for the account's meters too, so its reset must clear them as well.
   const accountBlocking = account.action === "run" ? [] : blocking;
-  const scoped = meters
-    .filter((meter) => meter.model !== undefined && meter.usedPercent >= 100)
-    .map((meter) =>
-      decideBlocked({
-        ...shared,
-        blocking: [...accountBlocking, meter],
-        limitId: `${meter.kind}_scoped:${meter.model}`,
-      }),
-    );
-  return (
-    scoped.find((decision) => decision.action === "claim") ??
-    (account.action === "run" ? (scoped[0] ?? account) : account)
-  );
+  const scoped = spentScoped.map((meter): UsageResetDecision => ({
+    model: meter.model,
+    ...decideBlocked({
+      ...shared,
+      blocking: [...accountBlocking, meter],
+      limitId: `${meter.kind}_scoped:${modelKey(meter)}`,
+    }),
+  }));
+  return [{ model: null, ...account }, ...scoped];
+}
+
+/** The decisions on a provider's last reading; none when it has none or its driver has no usage limits. */
+export function providerResetDecisions(
+  provider: ServerProvider,
+  options: Omit<UsageResetOptions, "accountLimitId">,
+): ReadonlyArray<UsageResetDecision> {
+  const accountLimitId = ACCOUNT_LIMIT_IDS[provider.driver];
+  if (provider.usageLimits === undefined || accountLimitId === undefined) return [];
+  return decideUsageReset(provider.usageLimits, { ...options, accountLimitId });
 }

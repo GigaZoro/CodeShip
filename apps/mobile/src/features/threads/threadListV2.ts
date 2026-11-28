@@ -34,8 +34,11 @@ import { collectFinishedNotSeen } from "@t3tools/client-runtime/state/needs-you-
 import { matchesAnyThreadTag } from "@t3tools/client-runtime/state/thread-tag-filter";
 import {
   hasUnseenCompletion as threadHasUnseenCompletion,
+  isThreadStalled,
   matchesThreadListStatus,
   resolveThreadStatus,
+  threadListDeadlines,
+  type ThreadListDeadlineInput,
   type ThreadListStatusFilter,
   type ThreadStatus,
 } from "@t3tools/client-runtime/state/thread-status";
@@ -214,39 +217,40 @@ export function resolveThreadListV2SnoozeGateExpiryMs(
   return messageAtMs + QUEUED_TURN_START_GRACE_MS;
 }
 
-/** The earliest `snoozedUntil` strictly after `nowMs`, in epoch ms. */
-export function nextSnoozeWakeAfter(
-  threads: ReadonlyArray<{ readonly snoozedUntil?: string | null }>,
+/** The earliest snooze end or stall strictly after `nowMs`, in epoch ms. */
+export function nextThreadListDeadlineAfter(
+  threads: ReadonlyArray<ThreadListDeadlineInput>,
   nowMs: number,
 ): number | null {
   let next: number | null = null;
   for (const thread of threads) {
-    if (thread.snoozedUntil == null) continue;
-    const wakeAtMs = Date.parse(thread.snoozedUntil);
-    if (wakeAtMs > nowMs && (next === null || wakeAtMs < next)) next = wakeAtMs;
+    for (const deadline of threadListDeadlines(thread)) {
+      if (deadline > nowMs && (next === null || deadline < next)) next = deadline;
+    }
   }
   return next;
 }
 
-// Outside search, the clock only changes list membership/order at snooze deadlines.
+// Outside search, the clock only changes list membership/order at snooze and stall deadlines.
 export function threadListV2LayoutTime(input: {
-  readonly threads: ReadonlyArray<{ readonly snoozedUntil?: string | null }>;
+  readonly threads: ReadonlyArray<ThreadListDeadlineInput>;
   readonly now: string;
   readonly searchQuery: string;
 }) {
   if (input.searchQuery !== "") return input.now;
   const nowMs = Date.parse(input.now);
   if (!Number.isFinite(nowMs)) return input.now;
-  let previousWakeAt: number | undefined;
-  let nextWakeAt: number | undefined;
+  let previousDeadline: number | undefined;
+  let nextDeadline: number | undefined;
   for (const thread of input.threads) {
-    if (thread.snoozedUntil == null) continue;
-    const wakeAt = Date.parse(thread.snoozedUntil);
-    if (!Number.isFinite(wakeAt)) continue;
-    if (wakeAt <= nowMs) previousWakeAt = Math.max(previousWakeAt ?? wakeAt, wakeAt);
-    else nextWakeAt = Math.min(nextWakeAt ?? wakeAt, wakeAt);
+    for (const deadline of threadListDeadlines(thread)) {
+      if (deadline <= nowMs) previousDeadline = Math.max(previousDeadline ?? deadline, deadline);
+      else nextDeadline = Math.min(nextDeadline ?? deadline, deadline);
+    }
   }
-  return new Date(previousWakeAt ?? (nextWakeAt === undefined ? 0 : nextWakeAt - 1)).toISOString();
+  return new Date(
+    previousDeadline ?? (nextDeadline === undefined ? 0 : nextDeadline - 1),
+  ).toISOString();
 }
 
 export const THREAD_LIST_V2_SETTLED_INITIAL_COUNT = 10;
@@ -1077,6 +1081,7 @@ export function buildThreadListV2Items(input: {
       (statusFilter === "all" ||
         matchesThreadListStatus(thread, statusFilter, {
           woke: resolveThreadListV2WokeAt(thread, { now }) !== null,
+          stalled: isThreadStalled(thread, nowMs),
         })),
   );
   const awaiting = collectNeedsYouThreads(listableThreads, { now });

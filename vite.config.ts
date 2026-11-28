@@ -382,6 +382,14 @@ export default defineConfig({
         rules: { "t3code/no-frame-waits-in-browser-tests": "error" },
       },
       {
+        files: ["apps/web/src/**"],
+        rules: { "t3code/require-toast-source": "error" },
+      },
+      {
+        files: ["apps/web/src/**/*.{test,spec}.{ts,tsx}", "apps/web/src/**/test/**"],
+        rules: { "t3code/require-toast-source": "off" },
+      },
+      {
         files: ["apps/**/src/**", "packages/**/src/**"],
         rules: { "t3code/no-dom-test-environment": "error" },
       },

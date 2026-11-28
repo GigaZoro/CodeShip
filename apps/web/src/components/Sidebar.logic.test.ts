@@ -453,6 +453,16 @@ describe("resolveThreadStatusPill", () => {
     });
   });
 
+  it("shows Stalled in place of Working or Starting once the run stalls", () => {
+    for (const status of ["running", "starting"] as const) {
+      const thread = { ...baseThread, runtime: { ...baseThread.runtime, status } };
+      expect(resolveThreadStatusPill({ thread, stalled: true })).toMatchObject({
+        label: "Stalled",
+        pulse: false,
+      });
+    }
+  });
+
   it("shows waiting for an idle thread with pending background tasks", () => {
     expect(
       resolveThreadStatusPill({
@@ -1784,6 +1794,22 @@ describe("sidebarSectionsListThread", () => {
       }),
     ).toBe(false);
     expect(sidebarSectionsListThread(thread, { ...base, tagFilter: new Set(["bug"]) })).toBe(false);
+  });
+
+  it("files a stalled run under Needs you rather than Working", () => {
+    const runId = RunId.make("run-stalled");
+    const stalled = {
+      ...shell({
+        status: "running",
+        latestRunId: runId,
+        activeRunId: runId,
+        createdBy: "agent",
+        updatedAt: DateTime.makeUnsafe("2026-06-20T11:50:05.000Z"),
+      }),
+      stalledAfterMs: 10 * 60_000,
+    };
+    expect(sidebarSectionsListThread(stalled, { ...base, statusFilter: "attention" })).toBe(true);
+    expect(sidebarSectionsListThread(stalled, { ...base, statusFilter: "working" })).toBe(false);
   });
 
   it("reads a snooze wake from the epoch clock in every time zone", () => {

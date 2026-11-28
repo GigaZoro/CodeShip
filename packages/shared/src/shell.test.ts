@@ -136,7 +136,8 @@ describe("readEnvironmentFromLoginShell", () => {
           encoding: "utf8",
           env: { PATH: process.env.PATH },
         }).trim();
-        NodeFS.copyFileSync(printenv, NodePath.join(tools, "printenv"));
+        // Symlink rather than copy so Apple Silicon AMFI keeps /usr/bin/printenv runnable.
+        NodeFS.symlinkSync(printenv, NodePath.join(tools, "printenv"));
         vi.stubEnv("PATH", tools);
         const shellPath = NodePath.join(home, "bin");
         const bashEnv = NodePath.join(home, "env.bash");
@@ -824,6 +825,15 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
         yield* resolveCommandPath("codex", { env }).pipe(
           Effect.provideService(FileSystem.FileSystem, {
             ...fs,
+            readDirectory: (directory) =>
+              Effect.gen(function* () {
+                if (installing && directory === cwd) {
+                  installing = false;
+                  // The install finishes while this scan still sees the old PATH.
+                  yield* invalidateCommandResolutions();
+                }
+                return yield* fs.readDirectory(directory);
+              }),
             stat: (file) =>
               Effect.gen(function* () {
                 if (installing && file === executable) {
@@ -843,6 +853,7 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
     }).pipe(
       Effect.provideService(HostProcess.Platform, "win32"),
       Effect.provideService(CommandResolutionCache, new Map()),
+      Effect.provideServiceEffect(PathDirectoryListings, makePathDirectoryListings),
     ),
   );
 
@@ -1755,9 +1766,10 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
               mode: 0o700,
             });
             const env = { PATH: entry + ":/usr/bin" };
+            const expected = entry === "" ? path.join(cwd, "git") : "git";
             yield* Effect.gen(function* () {
-              expect((yield* resolveSpawnCommand("git", [], { env })).command).toBe("git");
-              expect((yield* resolveSpawnCommand("git", [], { env, cwd })).command).toBe("git");
+              expect((yield* resolveSpawnCommand("git", [], { env })).command).toBe(expected);
+              expect((yield* resolveSpawnCommand("git", [], { env, cwd })).command).toBe(expected);
             }).pipe(
               Effect.provideService(HostProcess.WorkingDirectory, cwd),
               Effect.provideService(HostProcess.Platform, "darwin"),
