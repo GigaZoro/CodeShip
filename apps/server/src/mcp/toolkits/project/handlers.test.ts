@@ -1282,7 +1282,7 @@ it.effect(
         ["init", "-b", "main"],
         ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"],
         ["remote", "add", "origin", origin],
-        ["push", "origin", "main"],
+        ["update-ref", "refs/remotes/origin/main", "HEAD"],
       ]) {
         yield* git.execute({ operation: "test.setupRepo", cwd: repo, args });
       }
