@@ -112,6 +112,10 @@ export function antigravityAuthUsesBrowser(authMethod: AntigravityAuthMethod): b
   return authMethod === "oauth-personal" || authMethod === "oauth-business";
 }
 
+export function antigravityTokenFileName(authMethod: AntigravityAuthMethod): string {
+  return authMethod === "oauth-business" ? "acp_business_token.json" : "acp_token.json";
+}
+
 export function antigravityAuthLabel(authMethod: AntigravityAuthMethod): string {
   switch (authMethod) {
     case "oauth-personal":
@@ -195,7 +199,11 @@ export const resolveAntigravityInstanceDirectories = Effect.fn(
 
 /** Each native process keeps its GEMINI_HOME for life. Only the selector changes on publication. */
 export const makeAntigravityLoginProfiles = Effect.fn("AntigravityAuth.makeLoginProfiles")(
-  function* (base: string, instanceId: ProviderInstanceId) {
+  function* (
+    base: string,
+    instanceId: ProviderInstanceId,
+    authMethod: AntigravityAuthMethod = "oauth-personal",
+  ) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const platform = yield* HostProcess.Platform;
@@ -250,7 +258,8 @@ export const makeAntigravityLoginProfiles = Effect.fn("AntigravityAuth.makeLogin
             }
           }
         }
-        const tokenFile = (profile: string) => path.join(profile, acp, "acp_token.json");
+        const tokenFile = (profile: string) =>
+          path.join(profile, acp, antigravityTokenFileName(authMethod));
         const persist = fs.stat(tokenFile(home)).pipe(
           Effect.filterOrFail(
             (info) => info.type === "File" && info.size > 0n,
@@ -519,7 +528,7 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
     platform,
     geminiHome,
     acpDirectory,
-    tokenPath: path.join(acpDirectory, "acp_token.json"),
+    tokenPath: path.join(acpDirectory, antigravityTokenFileName(auth.authMethod)),
     tempDirectory,
     browserCommand,
     ...(caBundlePath === undefined ? {} : { caBundlePath }),

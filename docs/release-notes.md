@@ -1,3 +1,7 @@
+## 2026-11-28 — Antigravity quota checks support signed-in Gemini Enterprise profiles
+
+- Antigravity subscription quota probes and staged sign-in profiles now check `acp_business_token.json` for Gemini Enterprise (`oauth-business`) accounts instead of hardcoding `acp_token.json`, while continuing to avoid interactive sign-in when a profile is signed out.
+
 ## 2026-11-28 — Read-only guest links isolate connected tools
 
 - On supported Macs, guests can search and read files on Claude threads with a verified personal Pro or Max login. The guest turn runs with shell commands, connected tools, plugins, and hooks disabled. Choose **Wait for me** on other hosts or providers to review each guest message. A read-only turn keeps its restrictions after the link closes.

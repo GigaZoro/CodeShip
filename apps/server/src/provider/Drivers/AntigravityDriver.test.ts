@@ -686,6 +686,7 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
   const writeTokenFile = Effect.fn("writeAntigravityTokenFile")(function* (
     instanceId: ProviderInstanceId,
     refreshToken: string,
+    fileName = "acp_token.json",
   ) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -694,7 +695,7 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
     const acpDir = path.join(directories.profile, "antigravity-acp");
     yield* fs.makeDirectory(acpDir, { recursive: true });
     yield* fs.writeFileString(
-      path.join(acpDir, "acp_token.json"),
+      path.join(acpDir, fileName),
       JSON.stringify({
         client_id: "google-client-id",
         client_secret: "google-client-secret",
@@ -971,6 +972,58 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
         const resolvedSnap = yield* driverTransient.snapshot.getSnapshot;
         expect(resolvedSnap.usageLimits?.credentialFingerprint).toBeDefined();
         expect(resolvedSnap.usageLimits?.credentialFingerprint).not.toBe(fallbackFingerprint);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "probes Gemini Enterprise usage only when acp_business_token.json exists without starting interactive sign-in",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-enterprise-" });
+        const installation = yield* makeManagedAntigravityInstallation(baseDir);
+        const fake = makeQuotaSpawner(() => ({}));
+        const google = makeGoogleIdentityHttpClient({
+          userIdByRefreshToken: { "refresh-enterprise": "google-enterprise-sub-1" },
+        });
+        const enterpriseConfig = {
+          ...AntigravityDriver.defaultConfig(),
+          authMethod: "oauth-business" as const,
+          gcpProject: "enterprise-project",
+          gcpLocation: "us-central1",
+        };
+        const createEnterpriseDriver = (instanceId: ProviderInstanceId, displayName: string) =>
+          AntigravityDriver.create({
+            instanceId,
+            displayName,
+            enabled: true,
+            config: enterpriseConfig,
+            environment: [],
+          }).pipe(
+            Effect.provideService(AntigravityInstallation.AntigravityInstallation, installation),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+            Effect.provideService(HttpClient.HttpClient, google.client),
+          );
+
+        // Signed-out Enterprise profile with only an unrelated personal token must stay unsupported and never spawn.
+        const signedOutId = ProviderInstanceId.make("agy-enterprise-signed-out");
+        yield* writeTokenFile(signedOutId, "refresh-personal-only", "acp_token.json");
+        const signedOutDriver = yield* createEnterpriseDriver(signedOutId, "Enterprise Signed Out");
+        yield* signedOutDriver.snapshot.refreshUsage!;
+        const signedOutSnap = yield* signedOutDriver.snapshot.getSnapshot;
+        expect(signedOutSnap.usageLimits?.unavailable?.reason).toBe("unsupported");
+        expect(fake.getAttempts()).toBe(0);
+
+        // Signed-in Enterprise profile with acp_business_token.json probes /usage and computes credentialFingerprint.
+        const signedInId = ProviderInstanceId.make("agy-enterprise-signed-in");
+        yield* writeTokenFile(signedInId, "refresh-enterprise", "acp_business_token.json");
+        const signedInDriver = yield* createEnterpriseDriver(signedInId, "Enterprise Signed In");
+        yield* signedInDriver.snapshot.refreshUsage!;
+        const signedInSnap = yield* signedInDriver.snapshot.getSnapshot;
+        expect(signedInSnap.usageLimits?.unavailable).toBeUndefined();
+        expect(signedInSnap.usageLimits?.windows.length).toBeGreaterThan(0);
+        expect(signedInSnap.usageLimits?.credentialFingerprint).toBeDefined();
+        expect(fake.getAttempts()).toBe(1);
       }).pipe(Effect.scoped),
   );
 });

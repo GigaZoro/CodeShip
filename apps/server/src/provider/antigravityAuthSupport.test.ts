@@ -26,6 +26,7 @@ import {
   ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
   type AntigravityAuthConfig,
   type AntigravityProfile,
+  antigravityTokenFileName,
   buildAntigravityAcpSpawnInput,
   isAntigravitySignInRequiredError,
   makeAntigravityStderrHandler,
@@ -206,6 +207,48 @@ describe("Antigravity process environment", () => {
         yield* staged.activate(true);
         expect(yield* fs.readFileString(token(profiles.active))).toBe("new");
         expect(yield* fs.exists(token(root))).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "uses acp_business_token.json for Gemini Enterprise login profiles and prepared profiles",
+    () =>
+      Effect.gen(function* () {
+        expect(antigravityTokenFileName("oauth-personal")).toBe("acp_token.json");
+        expect(antigravityTokenFileName("oauth-business")).toBe("acp_business_token.json");
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = path.join(yield* fs.makeTempDirectoryScoped(), "enterprise-profile");
+        const id = ProviderInstanceId.make("enterprise-test");
+        const profiles = yield* makeAntigravityLoginProfiles(root, id, "oauth-business");
+        const businessToken = (home: string) =>
+          path.join(home, "antigravity-acp", "acp_business_token.json");
+        const personalToken = (home: string) =>
+          path.join(home, "antigravity-acp", "acp_token.json");
+        const staged = yield* profiles.stage("00000000-0000-4000-8000-000000000003");
+        yield* fs.makeDirectory(path.join(root, "antigravity-acp"), { recursive: true });
+        yield* fs.writeFileString(businessToken(root), "old-enterprise");
+        // Writing only personal acp_token.json must not satisfy oauth-business persistence.
+        yield* fs.writeFileString(personalToken(staged.home), "wrong-method");
+        expect((yield* staged.persist.pipe(Effect.flip)).operation).toBe("save");
+        yield* fs.writeFileString(businessToken(staged.home), "new-enterprise");
+        yield* staged.persist;
+        yield* staged.activate(true);
+        expect(yield* fs.readFileString(businessToken(profiles.active))).toBe("new-enterprise");
+        expect(yield* fs.exists(businessToken(root))).toBe(false);
+
+        const prepared = yield* prepareAntigravityProfile({
+          profileDirectory: path.join(root, "prepared"),
+          auth: {
+            authMethod: "oauth-business",
+            apiKey: "",
+            gcpProject: "proj",
+            gcpLocation: "us-central1",
+          },
+        });
+        expect(prepared.tokenPath).toBe(
+          path.join(prepared.acpDirectory, "acp_business_token.json"),
+        );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

@@ -37,6 +37,7 @@ import {
   antigravityAuthConfigIssue,
   antigravityAuthLabel,
   antigravityAuthUsesBrowser,
+  antigravityTokenFileName,
   buildAntigravityAcpSpawnInput,
   isAntigravitySignInRequiredError,
   makeAntigravityLoginProfiles,
@@ -509,7 +510,11 @@ export const AntigravityDriver: ProviderDriver<
       if (installed.source !== "managed" || !supportsAntigravityAcpQuota(installed.version)) {
         return unavailableAntigravityLimits(checkedAt, "unsupported");
       }
-      const tokenPath = path.join(profiles.active, "antigravity-acp", "acp_token.json");
+      const tokenPath = path.join(
+        profiles.active,
+        "antigravity-acp",
+        antigravityTokenFileName(auth.authMethod),
+      );
       // The managed runtime stores the active profile's login here. A probe must never initiate sign-in.
       if (!(yield* fileSystem.exists(tokenPath))) {
         return unavailableAntigravityLimits(checkedAt, "unsupported");
