@@ -1,0 +1,16 @@
+# Project delivery manifest for CodeShip (inherits active delivery preset)
+version: 1
+extends: active
+project:
+  name: CodeShip
+  env_profile: generic
+  tracker:
+    type: ado
+    org: DiamondDogTrade
+    project: CodeShip
+    area_path: CodeShip
+delivery:
+  tier: active
+verify:
+  commands:
+    - vp run check:changed

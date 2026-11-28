@@ -1,4 +1,5 @@
 import {
+  AutoRoutingConstraints,
   CommandId,
   EnvironmentId,
   MessageId,
@@ -394,6 +395,15 @@ const ONCE_MEMORY_RETRY = Duration.minutes(5);
 // An automated scheduled occurrence deferred by the per-repo cap retries once a slot can open.
 const REPO_CAPACITY_RETRY = Duration.minutes(2);
 const decodeCapExemption = Schema.decodeUnknownOption(RepoCapExemption);
+const RoutingConstraintsJson = Schema.fromJsonString(AutoRoutingConstraints);
+const decodeRoutingConstraintsJson = Schema.decodeUnknownOption(RoutingConstraintsJson);
+const encodeRoutingConstraintsJson = Schema.encodeSync(RoutingConstraintsJson);
+const hasRoutingConstraints = (constraints: AutoRoutingConstraints): boolean =>
+  constraints.capabilityTier !== undefined ||
+  constraints.minTier !== undefined ||
+  (constraints.excludeVendorFamily !== undefined &&
+    (typeof constraints.excludeVendorFamily === "string" ||
+      constraints.excludeVendorFamily.length > 0));
 const DelegateProvidersJson = Schema.fromJsonString(ScheduledTaskDelegateProviders);
 const decodeDelegateProvidersJson = Schema.decodeUnknownEffect(DelegateProvidersJson);
 const encodeDelegateProvidersSchema = Schema.encodeSync(DelegateProvidersJson);
@@ -522,6 +532,8 @@ interface ScheduledTaskRow {
   readonly max_live_runs?: number | null;
   /** From scheduled_task_cap_exemption: null when not exempt from the per-repo cap. */
   readonly cap_exemption?: string | null;
+  /** From scheduled_task_routing_constraints: null when the task declares no Auto routing constraints. */
+  readonly routing_constraints_json?: string | null;
   /** From scheduled_task_changed_by: null when who made the latest change is unknown. */
   readonly changed_by_json?: string | null;
 }
@@ -1025,6 +1037,14 @@ const decodeRow = Effect.fnUntraced(
                 ? null
                 : Option.getOrNull(decodeCapExemption(row.cap_exemption)),
           }),
+      ...(row.routing_constraints_json === undefined
+        ? {}
+        : {
+            routingConstraints:
+              row.routing_constraints_json === null
+                ? null
+                : Option.getOrNull(decodeRoutingConstraintsJson(row.routing_constraints_json)),
+          }),
       ...(row.changed_by_json === undefined
         ? {}
         : {
@@ -1358,6 +1378,13 @@ export const layer = Layer.effect(
         exemption TEXT NOT NULL
       )
     `;
+    // A row stores declarative Auto routing constraints (tier floor, vendor exclusion) for a task.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_routing_constraints (
+        task_id TEXT PRIMARY KEY,
+        constraints_json TEXT NOT NULL
+      )
+    `;
     // Who made a task's latest change. Tasks changed before this table existed have no row, so
     // their author reads as unknown rather than a guess.
     yield* sql`
@@ -1625,6 +1652,8 @@ export const layer = Layer.effect(
           WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs,
         (SELECT exemption FROM scheduled_task_cap_exemption ce
           WHERE ce.task_id = scheduled_tasks.task_id) AS cap_exemption,
+        (SELECT constraints_json FROM scheduled_task_routing_constraints rcon
+          WHERE rcon.task_id = scheduled_tasks.task_id) AS routing_constraints_json,
         (SELECT changed_by_json FROM scheduled_task_changed_by cb
           WHERE cb.task_id = scheduled_tasks.task_id) AS changed_by_json
       FROM scheduled_tasks
@@ -1738,6 +1767,8 @@ export const layer = Layer.effect(
           WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs,
         (SELECT exemption FROM scheduled_task_cap_exemption ce
           WHERE ce.task_id = scheduled_tasks.task_id) AS cap_exemption,
+        (SELECT constraints_json FROM scheduled_task_routing_constraints rcon
+          WHERE rcon.task_id = scheduled_tasks.task_id) AS routing_constraints_json,
         (SELECT changed_by_json FROM scheduled_task_changed_by cb
           WHERE cb.task_id = scheduled_tasks.task_id) AS changed_by_json
       FROM scheduled_tasks
@@ -2138,6 +2169,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_delegate_providers WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_live_run_limit WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_cap_exemption WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_routing_constraints WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_changed_by WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_runs WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_threads WHERE task_id = ${id}`),
@@ -2428,7 +2460,7 @@ export const layer = Layer.effect(
       task: ScheduledTask,
     ) {
       const own: ModelSelection = launchModelSelection(yield* readSettings, task);
-      const route = Option.isNone(accountRouting)
+      const route: AccountRouting.LaunchRoute = Option.isNone(accountRouting)
         ? { selection: own, failover: null }
         : yield* accountRouting.value.failoverLaunch({
             selection: own,
@@ -2437,11 +2469,15 @@ export const layer = Layer.effect(
             ...(task.fallbackModelSelections === undefined
               ? {}
               : { fallbackModelSelections: task.fallbackModelSelections }),
+            ...(task.routingConstraints == null
+              ? {}
+              : { routingConstraints: task.routingConstraints }),
           });
       return {
         selection: route.selection,
         crossProviderFailoverFrom:
           route.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined,
+        ...(route.degradedReason === undefined ? {} : { degradedReason: route.degradedReason }),
         failover:
           route.failover === null
             ? null
@@ -2838,6 +2874,9 @@ export const layer = Layer.effect(
               messageId,
               scheduledTaskId: active.id,
               ...demand,
+              ...(active.routingConstraints == null
+                ? {}
+                : { routingConstraints: active.routingConstraints }),
               text,
               attachments: [],
               mode: "queue",
@@ -2887,6 +2926,14 @@ export const layer = Layer.effect(
                     yield* nameRunChat(task.id, runRecordId, threadId, active.group ?? null);
                   }
                   yield* milestone("launching", threadId);
+                  if (target.degradedReason !== undefined) {
+                    yield* Effect.logInfo("Scheduled task Auto routing degraded gracefully", {
+                      taskId: active.id,
+                      degradedReason: target.degradedReason,
+                      instanceId: target.selection.instanceId,
+                      model: target.selection.model,
+                    });
+                  }
                   const launched = yield* threadLaunch.launch({
                     commandId,
                     onMilestone: (name, threadId) =>
@@ -2910,6 +2957,12 @@ export const layer = Layer.effect(
                       ...(target.crossProviderFailoverFrom === undefined
                         ? {}
                         : { crossProviderFailoverFrom: target.crossProviderFailoverFrom }),
+                      ...(active.routingConstraints == null
+                        ? {}
+                        : { routingConstraints: active.routingConstraints }),
+                      ...(target.degradedReason === undefined
+                        ? {}
+                        : { degradedReason: target.degradedReason }),
                       text: prompt.success,
                       attachments: [],
                     },
@@ -3296,6 +3349,14 @@ export const layer = Layer.effect(
         Effect.map((rows) => Option.getOrNull(decodeCapExemption(rows[0]?.exemption))),
       );
 
+    const routingConstraintsJsonOf = (taskId: ScheduledTaskId) =>
+      sql<{ readonly constraints_json: string }>`
+        SELECT constraints_json FROM scheduled_task_routing_constraints WHERE task_id = ${taskId}
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.map((rows) => rows[0]?.constraints_json ?? null),
+      );
+
     const isRepoCapacityExempt = Effect.fnUntraced(function* (task: ScheduledTask) {
       if (task.interactionMode === "plan") return true;
       const exemption = yield* capExemptionOf(task.id).pipe(Effect.orElseSucceed(() => null));
@@ -3477,6 +3538,9 @@ export const layer = Layer.effect(
           ...(current.fallbackModelSelections === undefined
             ? {}
             : { fallbackModelSelections: current.fallbackModelSelections }),
+          ...(current.routingConstraints == null
+            ? {}
+            : { routingConstraints: current.routingConstraints }),
         });
         if (block === null) return false;
         const now = yield* localNow;
@@ -3985,6 +4049,20 @@ export const layer = Layer.effect(
               INSERT INTO scheduled_task_cap_exemption (task_id, exemption)
               VALUES (${id}, ${exemption})
               ON CONFLICT (task_id) DO UPDATE SET exemption = excluded.exemption
+            `;
+
+    const writeRoutingConstraints = (
+      id: ScheduledTaskId,
+      constraints: AutoRoutingConstraints | null | undefined,
+    ) =>
+      constraints === undefined
+        ? Effect.void
+        : constraints === null || !hasRoutingConstraints(constraints)
+          ? sql`DELETE FROM scheduled_task_routing_constraints WHERE task_id = ${id}`
+          : sql`
+              INSERT INTO scheduled_task_routing_constraints (task_id, constraints_json)
+              VALUES (${id}, ${encodeRoutingConstraintsJson(constraints)})
+              ON CONFLICT (task_id) DO UPDATE SET constraints_json = excluded.constraints_json
             `;
 
     /** "keep" keeps the last read while the path stays the same; null drops it. */
@@ -5119,6 +5197,9 @@ export const layer = Layer.effect(
                     : { delegateProviders: task.delegateProviders }),
                   ...(task.maxLiveRuns === undefined ? {} : { maxLiveRuns: task.maxLiveRuns }),
                   ...(task.capExemption === undefined ? {} : { capExemption: task.capExemption }),
+                  ...(task.routingConstraints === undefined
+                    ? {}
+                    : { routingConstraints: task.routingConstraints }),
                   runtimeMode: task.runtimeMode,
                   interactionMode: task.interactionMode,
                   createdBy: task.createdBy,
@@ -5613,6 +5694,7 @@ export const layer = Layer.effect(
             yield* writeDelegateProviders(id, input.delegateProviders);
             yield* writeMaxLiveRuns(id, input.maxLiveRuns);
             yield* writeCapExemption(id, input.capExemption);
+            yield* writeRoutingConstraints(id, input.routingConstraints);
             yield* writeRunCondition(id, runCondition);
             yield* writePromptFile(
               id,
@@ -5766,6 +5848,12 @@ export const layer = Layer.effect(
             const capExemptionDiffers =
               task.capExemption !== undefined &&
               task.capExemption !== (yield* capExemptionOf(taskId));
+            const routingConstraintsDiffers =
+              task.routingConstraints !== undefined &&
+              (task.routingConstraints === null || !hasRoutingConstraints(task.routingConstraints)
+                ? null
+                : encodeRoutingConstraintsJson(task.routingConstraints)) !==
+                (yield* routingConstraintsJsonOf(taskId));
             const [changedBy] = yield* sql<{ readonly changed_by_json: string }>`
               SELECT changed_by_json FROM scheduled_task_changed_by WHERE task_id = ${taskId}`;
             // One revision has one author, so only a copy that lacked it can be filled in.
@@ -5797,6 +5885,7 @@ export const layer = Layer.effect(
               !delegatesDiffer &&
               !liveRunLimitDiffers &&
               !capExemptionDiffers &&
+              !routingConstraintsDiffers &&
               !changedByMissing &&
               filledDescription.length === 0 &&
               filledFallbacks.length === 0
@@ -5809,6 +5898,9 @@ export const layer = Layer.effect(
             if (delegatesDiffer) yield* writeDelegateProviders(taskId, task.delegateProviders);
             if (liveRunLimitDiffers) yield* writeMaxLiveRuns(taskId, task.maxLiveRuns);
             if (capExemptionDiffers) yield* writeCapExemption(taskId, task.capExemption);
+            if (routingConstraintsDiffers) {
+              yield* writeRoutingConstraints(taskId, task.routingConstraints);
+            }
             if (changedByMissing) yield* writeChangedBy(taskId, task.changedBy ?? null);
             return { outcome: "applied" as const };
           }),
@@ -5963,6 +6055,7 @@ export const layer = Layer.effect(
           yield* writeDelegateProviders(id, task.delegateProviders);
           yield* writeMaxLiveRuns(id, task.maxLiveRuns);
           yield* writeCapExemption(id, task.capExemption);
+          yield* writeRoutingConstraints(id, task.routingConstraints);
           // A copy that does not say who made its revision leaves the author unknown here, not
           // the author of the revision it replaces.
           yield* writeChangedBy(id, task.changedBy ?? null);
@@ -7423,6 +7516,12 @@ export const layer = Layer.effect(
               task.threadId === null ? launchModelSelection(yield* readSettings, task) : null,
             projectId: task.projectId,
             delegates: task.delegateProviders ?? [],
+            ...(task.fallbackModelSelections === undefined
+              ? {}
+              : { fallbackModelSelections: task.fallbackModelSelections }),
+            ...(task.routingConstraints == null
+              ? {}
+              : { routingConstraints: task.routingConstraints }),
           });
           if (block !== null) continue;
           const now = iso(yield* localNow);

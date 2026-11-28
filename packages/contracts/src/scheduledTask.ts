@@ -13,7 +13,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { MemoryShortage } from "./hostMemory.ts";
-import { ModelSelection } from "./modelSelection.ts";
+import { AutoRoutingConstraints, ModelSelection } from "./modelSelection.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   OrchestrationV2Actor,
@@ -760,6 +760,8 @@ export const ScheduledTask = Schema.Struct({
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
   /** Null when not exempt from the per-repository implementation thread cap. */
   capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
+  /** Optional declarative Auto routing constraints (tier floor, vendor exclusion). Null when unset. */
+  routingConstraints: Schema.optional(Schema.NullOr(AutoRoutingConstraints)),
   /** Null when unknown: changed before changes were recorded, or by a machine without them. */
   changedBy: Schema.optional(Schema.NullOr(ScheduledTaskChangedBy)),
 });
@@ -875,6 +877,10 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
       "How many runs of a recurring task that starts a new chat may work at once, delegated tasks included. A scheduled occurrence is skipped while that many still work. Omitted keeps the stored limit, or for a new task 1.",
   }),
   capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
+  routingConstraints: Schema.optional(Schema.NullOr(AutoRoutingConstraints)).annotate({
+    description:
+      "Auto routing constraints (capabilityTier, minTier, excludeVendorFamily) applied when running in Auto mode. Null clears; omitted keeps the stored constraints.",
+  }),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
@@ -925,6 +931,8 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
   /** Absent from machines without repo cap exemptions; the receiving machine keeps its own. */
   capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
+  /** Absent from machines without routing constraints; the receiving machine keeps its own. */
+  routingConstraints: Schema.optional(Schema.NullOr(AutoRoutingConstraints)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,

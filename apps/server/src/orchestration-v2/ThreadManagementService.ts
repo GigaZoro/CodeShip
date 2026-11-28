@@ -156,6 +156,7 @@ export interface ThreadManagementSendInput {
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
+  readonly routingConstraints?: AccountRouting.AutoRoutingConstraints;
   readonly mode: ThreadManagementSendMode;
   /** Starts only while this stopped run is still the thread's latest (see the Orchestrator). */
   readonly manualContinuationOfRunId?: RunId;
@@ -1090,6 +1091,9 @@ const make = Effect.gen(function* () {
             command.dispatchMode.type === "restart_active" ||
             (command.dispatchMode.type === "start_immediately" &&
               (command.deliveryIntent === "steer" || command.deliveryIntent === "restart")),
+          ...(command.routingConstraints === undefined
+            ? {}
+            : { routingConstraints: command.routingConstraints }),
           ...(isServerContinuationOrWake
             ? { preservePreviousSelection: true }
             : {
@@ -1311,6 +1315,9 @@ const make = Effect.gen(function* () {
         text: input.text,
         attachments: input.attachments,
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+        ...(input.routingConstraints === undefined
+          ? {}
+          : { routingConstraints: input.routingConstraints }),
         ...(input.manualContinuationOfRunId === undefined
           ? {}
           : { manualContinuationOfRunId: input.manualContinuationOfRunId }),

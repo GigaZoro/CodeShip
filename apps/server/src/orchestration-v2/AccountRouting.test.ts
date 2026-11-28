@@ -4646,6 +4646,73 @@ describe("routeAutoAccountWithDetails declarative capability tier and dissimilar
     assert.equal(launchDissimilar.selection.instanceId, codexInstance);
     assert.equal(launchDissimilar.selection.model, "gpt-6.2-astra");
   });
+
+  it.effect(
+    "honors routingConstraints in failoverLaunch even when failoverLimitedThreads is false and avoids false usage blocks when the excluded vendor is limited",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(nowMs);
+        const setup = multiVendorSetup();
+        const claudeLimited = new Map([
+          [
+            primary,
+            [{ resetAt: "2026-11-03T13:00:00.000Z", refusedAt: "2026-11-03T11:59:00.000Z" }],
+          ],
+        ]);
+        const layer = AccountRouting.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              ServerSettings.layerTest({
+                ...setup.settings,
+                failoverLimitedThreads: false,
+              }).pipe(Layer.orDie),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed(setup.providers),
+              }),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getUsageLimitedProviderInstances: () => Effect.succeed(claudeLimited),
+              }),
+              Layer.mock(ProviderMcp.ProviderMcp)({
+                listLoaded: () => Effect.succeedNone,
+                discover: () => Effect.succeedNone,
+              }),
+            ),
+          ),
+        );
+        const { routed, blockExcluded, blockDefault } = yield* Effect.gen(function* () {
+          const routing = yield* AccountRouting.AccountRouting;
+          const routed = yield* routing.failoverLaunch({
+            selection: setup.selection,
+            projectId,
+            scheduled: true,
+            routingConstraints: {
+              minTier: "deep",
+              excludeVendorFamily: "anthropic",
+            },
+          });
+          const blockExcluded = yield* routing.scheduledRunBlock({
+            selection: setup.selection,
+            projectId,
+            delegates: [],
+            routingConstraints: {
+              minTier: "deep",
+              excludeVendorFamily: "anthropic",
+            },
+          });
+          const blockDefault = yield* routing.scheduledRunBlock({
+            selection: setup.selection,
+            projectId,
+            delegates: [],
+          });
+          return { routed, blockExcluded, blockDefault };
+        }).pipe(Effect.provide(layer));
+        assert.equal(routed.degradedReason, undefined);
+        assert.equal(routed.selection.instanceId, codexInstance);
+        assert.equal(routed.selection.model, "gpt-6.2-astra");
+        assert.isNull(blockExcluded);
+        assert.isNotNull(blockDefault);
+      }),
+  );
 });
 
 describe("Operator Quota Firewall (allowBackground: false)", () => {

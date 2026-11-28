@@ -1,3 +1,8 @@
+## 2026-11-28 — Scheduled tasks support declarative Auto routing constraints and central delivery manifest onboarding
+
+- Scheduled tasks (`schedule_task`, `list_scheduled_tasks`, SQLite persistence, and shared-task sync) now accept optional `routingConstraints` (`capabilityTier`, `minTier`, `excludeVendorFamily`) and forward them into Auto account routing, usage-block admission, and thread launch—enforcing tier floors, excluding specified vendor families, degrading gracefully with `degradedReason` when no dissimilar provider has quota, and staying fully backward compatible when omitted.
+- Maintainers: added a root `project.agent.yaml` manifest (`version: 1`, `extends: active`) onboarding CodeShip to the generic delivery engine.
+
 ## 2026-11-28 — Harder landing worktree locks, dynamic pre-turn check budgets, and faster landing script tests
 
 - Maintainers: pre-turn and speculative `landing-turn.cjs` checks now receive a dynamic `CHECK_CHANGED_TEST_STEP_MAX` budget scaled to the landing turn cap (`10800s`, or explicit caller `CHECK_CHANGED_TEST_STEP_MAX` / `CHECK_CHANGED_TIMEOUT`) instead of falling back to `3600s`, while under-turn checks stay capped at the remaining lease budget.

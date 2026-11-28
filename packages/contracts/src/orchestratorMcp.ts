@@ -1215,6 +1215,10 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   delegateProviders: Schema.optional(OrchestratorMcpDelegateProviders),
   maxLiveRuns: Schema.optional(OrchestratorMcpMaxLiveRuns),
   capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
+  routingConstraints: Schema.optional(Schema.NullOr(AutoRoutingConstraints)).annotate({
+    description:
+      "Auto routing constraints (`capabilityTier`, `minTier`, `excludeVendorFamily`) when running in Auto mode; ignored for explicit non-Auto model pins. Null clears; omit to keep.",
+  }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -1307,6 +1311,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
   capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
+  routingConstraints: Schema.optional(Schema.NullOr(AutoRoutingConstraints)),
   liveRuns: Schema.optional(NonNegativeInt).annotate({
     description:
       "New-thread repeating task: its runs here that still work, delegated tasks included.",
@@ -1447,6 +1452,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
   capExemption: OrchestratorMcpScheduleTaskInput.fields.capExemption,
+  routingConstraints: OrchestratorMcpScheduleTaskInput.fields.routingConstraints,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

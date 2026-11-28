@@ -4,13 +4,19 @@ import * as Schema from "effect/Schema";
 import {
   MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
+  ScheduledTask,
   ScheduledTaskDescription,
   ScheduledTaskSchedule,
+  ScheduledTaskSharedCopy,
+  ScheduledTaskUpsertInput,
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 
 const decodeSchedule = Schema.decodeUnknownSync(ScheduledTaskSchedule);
 const decodeUpsertSchedule = Schema.decodeUnknownSync(ScheduledTaskUpsertSchedule);
+const decodeTask = Schema.decodeUnknownSync(ScheduledTask);
+const decodeUpsertInput = Schema.decodeUnknownSync(ScheduledTaskUpsertInput);
+const decodeSharedCopy = Schema.decodeUnknownSync(ScheduledTaskSharedCopy);
 
 describe("ScheduledTaskDescription", () => {
   const decode = Schema.decodeUnknownSync(ScheduledTaskDescription);
@@ -85,5 +91,94 @@ describe("webhook filters", () => {
     expect(accepts([{ path: "body.label.name", op: "in", value: ["needs review"] }])).toBe(true);
     expect(accepts([{ path: "body.action", op: "equals" }])).toBe(false);
     expect(accepts([{ path: "body.action", op: "matches", value: "^opened$" }])).toBe(false);
+  });
+});
+
+describe("ScheduledTask routingConstraints", () => {
+  const baseUpsert = {
+    title: "Nightly audit",
+    prompt: "Check the tree",
+    enabled: true,
+    schedule: { type: "interval", everyMs: 60_000 },
+    projectId: "project-1",
+    threadId: null,
+    workspaceStrategy: { type: "root" },
+    modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5", autoAccount: true },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    createdBy: "user",
+    creationSource: "web",
+  };
+  const baseTask = {
+    ...baseUpsert,
+    id: "task-1",
+    createdAt: "2026-11-28T00:00:00.000Z",
+    updatedAt: "2026-11-28T00:00:00.000Z",
+    nextRunAt: "2026-11-28T00:01:00.000Z",
+    lastRunAt: null,
+    lastRunStatus: "never",
+    lastRunError: null,
+    runCount: 0,
+  };
+  const baseShared = {
+    id: "task-1",
+    title: "Nightly audit",
+    prompt: "Check the tree",
+    enabled: true,
+    schedule: { type: "interval", everyMs: 60_000 },
+    workspaceStrategy: { type: "root" },
+    modelSelection: baseUpsert.modelSelection,
+    followsDefaultModel: false,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    createdBy: "user",
+    creationSource: "web",
+    createdAt: "2026-11-28T00:00:00.000Z",
+    shared: {
+      revision: { at: "2026-11-28T00:00:00.000Z", environmentId: "env-a" },
+      project: { type: "none" },
+      excludedEnvironmentIds: [],
+    },
+  };
+
+  it("decodes omitted, null, single, and array routingConstraints across scheduled task contracts", () => {
+    expect(decodeUpsertInput(baseUpsert).routingConstraints).toBeUndefined();
+    expect(decodeTask(baseTask).routingConstraints).toBeUndefined();
+    expect(decodeSharedCopy(baseShared).routingConstraints).toBeUndefined();
+
+    expect(
+      decodeUpsertInput({ ...baseUpsert, routingConstraints: null }).routingConstraints,
+    ).toBeNull();
+    expect(decodeTask({ ...baseTask, routingConstraints: null }).routingConstraints).toBeNull();
+    expect(
+      decodeSharedCopy({ ...baseShared, routingConstraints: null }).routingConstraints,
+    ).toBeNull();
+
+    const single = {
+      capabilityTier: "deep",
+      minTier: "standard",
+      excludeVendorFamily: "anthropic",
+    };
+    expect(
+      decodeUpsertInput({ ...baseUpsert, routingConstraints: single }).routingConstraints,
+    ).toEqual(single);
+    expect(decodeTask({ ...baseTask, routingConstraints: single }).routingConstraints).toEqual(
+      single,
+    );
+    expect(
+      decodeSharedCopy({ ...baseShared, routingConstraints: single }).routingConstraints,
+    ).toEqual(single);
+
+    const multi = {
+      minTier: "frontier",
+      excludeVendorFamily: ["anthropic", "openai"],
+    };
+    expect(
+      decodeUpsertInput({ ...baseUpsert, routingConstraints: multi }).routingConstraints,
+    ).toEqual(multi);
+    expect(() =>
+      decodeUpsertInput({ ...baseUpsert, routingConstraints: { capabilityTier: "ultra" } }),
+    ).toThrow();
+    expect(() => decodeTask({ ...baseTask, routingConstraints: { minTier: "ultra" } })).toThrow();
   });
 });

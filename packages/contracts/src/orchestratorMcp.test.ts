@@ -86,6 +86,13 @@ it.each(["First line\nsecond line", "First line second line", "x".repeat(301)]
 it.each([
   {},
   { modelSelection: { instanceId: "codex", model: "astra" }, followsDefaultModel: false },
+  {
+    routingConstraints: {
+      capabilityTier: "deep",
+      minTier: "standard",
+      excludeVendorFamily: "anthropic",
+    },
+  },
 ])("decodes scheduled tasks from old and current linked machines: %j", (modelFields) => {
   const task = {
     scheduledTaskId: "task-1",
@@ -106,10 +113,25 @@ describe("scheduled task model selection input", () => {
   const decode = Schema.decodeUnknownSync(OrchestratorMcpSaveScheduledTaskInput);
   const base = { environmentId: "local", projectId: "project-1", prompt: "go" };
 
-  it("accepts a canonical selection", () => {
+  it("accepts a canonical selection and optional routingConstraints", () => {
     expect(
       decode({ ...base, modelSelection: { instanceId: "codex", model: "gpt-5" } }).modelSelection,
     ).toEqual({ instanceId: "codex", model: "gpt-5" });
+    expect(decode(base).routingConstraints).toBeUndefined();
+    expect(decode({ ...base, routingConstraints: null }).routingConstraints).toBeNull();
+    expect(
+      decode({
+        ...base,
+        routingConstraints: {
+          minTier: "deep",
+          excludeVendorFamily: ["anthropic", "openai"],
+        },
+      }).routingConstraints,
+    ).toEqual({
+      minTier: "deep",
+      excludeVendorFamily: ["anthropic", "openai"],
+    });
+    expect(() => decode({ ...base, routingConstraints: { capabilityTier: "ultra" } })).toThrow();
   });
 
   it.each([

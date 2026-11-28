@@ -1899,3 +1899,248 @@ it.effect(
       }).pipe(Effect.provide(combinedLayer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
+
+it.effect(
+  "persists routingConstraints and forwards them into Auto scheduled-task routing (tier floor, vendor exclusion, graceful degradation, and omitted backward compatibility)",
+  () =>
+    Effect.gen(function* () {
+      const start = "2026-11-10T12:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(start));
+      const claude = ProviderInstanceId.make("claude_primary");
+      const codex = ProviderInstanceId.make("codex_primary");
+      const claudeDriver = ProviderDriverKind.make("claudeAgent");
+      const codexDriver = ProviderDriverKind.make("codex");
+      const provider = (
+        instanceId: ProviderInstanceId,
+        driver: ProviderDriverKind,
+        models: ServerProvider["models"],
+      ): ServerProvider => ({
+        instanceId,
+        driver,
+        enabled: true,
+        installed: true,
+        version: null,
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: start,
+        models,
+        slashCommands: [],
+        skills: [],
+      });
+      const codexLimitedRef = yield* Ref.make(false);
+      const claudeLimitedRef = yield* Ref.make(false);
+      const routing = AccountRouting.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest({
+              failoverLimitedThreads: false,
+              autoModeProvider: claudeDriver,
+              autoModeModels: {
+                [claudeDriver]: {
+                  model: "claude-opus-5-5",
+                  options: [{ id: "effort", value: "high" }],
+                },
+                [codexDriver]: {
+                  model: "gpt-6.2-astra",
+                  options: [{ id: "reasoningEffort", value: "high" }],
+                },
+              },
+              providerInstances: {
+                [claude]: { driver: claudeDriver, enabled: true },
+                [codex]: { driver: codexDriver, enabled: true },
+              },
+              providerInstanceFailoverOrder: [claude, codex],
+            }).pipe(Layer.orDie),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([
+                provider(claude, claudeDriver, [
+                  {
+                    slug: "claude-opus-5-5",
+                    name: "Claude Opus 5.5",
+                    aliases: [],
+                    isCustom: false,
+                    capabilities: {
+                      optionDescriptors: [
+                        {
+                          id: "effort",
+                          label: "Effort",
+                          type: "select",
+                          options: [
+                            { id: "low", label: "Low" },
+                            { id: "high", label: "High" },
+                            { id: "max", label: "Max" },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                ]),
+                provider(codex, codexDriver, [
+                  {
+                    slug: "gpt-6.2-astra",
+                    name: "GPT 6.2 Astra",
+                    aliases: [],
+                    isCustom: false,
+                    capabilities: {
+                      optionDescriptors: [
+                        {
+                          id: "reasoningEffort",
+                          label: "Reasoning",
+                          type: "select",
+                          options: [
+                            { id: "low", label: "Low" },
+                            { id: "medium", label: "Medium" },
+                            { id: "high", label: "High" },
+                            { id: "xhigh", label: "Extra High" },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                ]),
+              ]),
+            }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getUsageLimitedProviderInstances: () =>
+                Effect.gen(function* () {
+                  const entries: Array<
+                    readonly [
+                      ProviderInstanceId,
+                      ReadonlyArray<{
+                        readonly resetAt: string | null;
+                        readonly refusedAt: string;
+                      }>,
+                    ]
+                  > = [];
+                  if (yield* Ref.get(claudeLimitedRef)) {
+                    entries.push([
+                      claude,
+                      [{ resetAt: "2026-11-10T15:00:00.000Z", refusedAt: start }],
+                    ]);
+                  }
+                  if (yield* Ref.get(codexLimitedRef)) {
+                    entries.push([
+                      codex,
+                      [{ resetAt: "2026-11-10T15:00:00.000Z", refusedAt: start }],
+                    ]);
+                  }
+                  return new Map(entries);
+                }),
+            }),
+            Layer.mock(ProviderMcp.ProviderMcp)({
+              listLoaded: () => Effect.succeedNone,
+              discover: () => Effect.succeedNone,
+            }),
+          ),
+        ),
+      );
+      const launches = yield* Ref.make<ReadonlyArray<ThreadLaunchService.ThreadLaunchInput>>([]);
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launches, (seen) => [...seen, input]).pipe(
+            Effect.as({
+              threadId: ThreadId.make(`thread-${input.title}`),
+              resumed: false,
+            } as never),
+          ),
+        routing,
+      );
+      const autoSelection: ModelSelection = {
+        instanceId: claude,
+        model: "claude-opus-5-5",
+        autoAccount: true,
+        options: [{ id: "effort", value: "high" }],
+      };
+
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+
+        // 1. Persistence round-trip: create with constraints, omit keeps, update replaces, null clears.
+        const initialConstraints = {
+          capabilityTier: "frontier" as const,
+          minTier: "deep" as const,
+          excludeVendorFamily: "anthropic",
+        };
+        const { task: constrained } = yield* service.upsert(
+          yield* historyTask("Constrained", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+            modelSelection: autoSelection,
+            routingConstraints: initialConstraints,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        expect(constrained.routingConstraints).toEqual(initialConstraints);
+
+        const { task: kept } = yield* service.upsert(
+          yield* historyTask("Constrained", {
+            id: constrained.id,
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+            modelSelection: autoSelection,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        expect(kept.routingConstraints).toEqual(initialConstraints);
+
+        // 2. Scheduled dispatch with excluded vendor limited still runs on dissimilar provider & tier floor.
+        yield* Ref.set(claudeLimitedRef, true);
+        const dissimilarRan = yield* service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some((row) => row.id === constrained.id && row.lastRunStatus === "succeeded"),
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("35 seconds");
+        yield* Fiber.join(dissimilarRan);
+
+        const firstLaunch = (yield* Ref.get(launches))[0];
+        expect(firstLaunch?.modelSelection.instanceId).toBe(codex);
+        expect(firstLaunch?.modelSelection.model).toBe("gpt-6.2-astra");
+        expect(firstLaunch?.modelSelection.options).toEqual([
+          { id: "reasoningEffort", value: "xhigh" },
+        ]);
+        expect(firstLaunch?.initialMessage?.routingConstraints).toEqual(initialConstraints);
+        expect(firstLaunch?.initialMessage?.degradedReason).toBeUndefined();
+
+        // 3. Graceful degradation when dissimilar vendor is usage-limited: launches on available vendor with degradedReason.
+        yield* Ref.set(claudeLimitedRef, false);
+        yield* Ref.set(codexLimitedRef, true);
+        yield* service.runNow({ id: constrained.id });
+        const degradedLaunch = (yield* Ref.get(launches))[1];
+        expect(degradedLaunch?.modelSelection.instanceId).toBe(claude);
+        expect(degradedLaunch?.modelSelection.model).toBe("claude-opus-5-5");
+        expect(degradedLaunch?.modelSelection.options).toEqual([{ id: "effort", value: "max" }]);
+        expect(degradedLaunch?.initialMessage?.routingConstraints).toEqual(initialConstraints);
+        expect(degradedLaunch?.initialMessage?.degradedReason).toBe(
+          "no-dissimilar-provider-available",
+        );
+
+        // 4. Clearing with null and omitting on a fresh task preserves backward compatibility.
+        const { task: cleared } = yield* service.upsert(
+          yield* historyTask("Constrained", {
+            id: constrained.id,
+            schedule: { type: "once", runAt: "2026-11-10T12:05:00.000Z" },
+            modelSelection: autoSelection,
+            routingConstraints: null,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        expect(cleared.routingConstraints).toBeNull();
+
+        yield* Ref.set(codexLimitedRef, false);
+        const { task: plain } = yield* service.upsert(
+          yield* historyTask("PlainAuto", {
+            schedule: { type: "once", runAt: "2026-11-10T12:05:00.000Z" },
+            modelSelection: autoSelection,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        expect(plain.routingConstraints).toBeNull();
+        yield* service.runNow({ id: plain.id });
+        const plainLaunch = (yield* Ref.get(launches))[2];
+        expect(plainLaunch?.modelSelection.instanceId).toBe(claude);
+        expect(plainLaunch?.initialMessage?.routingConstraints).toBeUndefined();
+        expect(plainLaunch?.initialMessage?.degradedReason).toBeUndefined();
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);

@@ -3,6 +3,8 @@ import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
+  type AutoRoutingConstraints,
+  type AutoRoutingDegradationReason,
   CommandId,
   type ChatAttachment,
   GitCommandError,
@@ -70,6 +72,8 @@ export interface ThreadLaunchInitialMessage {
   readonly messageId?: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly crossProviderFailoverFrom?: ProviderInstanceId;
+  readonly routingConstraints?: AutoRoutingConstraints;
+  readonly degradedReason?: AutoRoutingDegradationReason;
   readonly senderThreadId?: ThreadId;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -1139,6 +1143,12 @@ const make = Effect.gen(function* () {
               ...(input.initialMessage.senderThreadId === undefined
                 ? {}
                 : { senderThreadId: input.initialMessage.senderThreadId }),
+              ...(input.initialMessage.routingConstraints === undefined
+                ? {}
+                : { routingConstraints: input.initialMessage.routingConstraints }),
+              ...(input.initialMessage.degradedReason === undefined
+                ? {}
+                : { degradedReason: input.initialMessage.degradedReason }),
               attachments: input.initialMessage.attachments,
               ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
               ...(input.generateTitle === true ? { titleSeed: input.title } : {}),

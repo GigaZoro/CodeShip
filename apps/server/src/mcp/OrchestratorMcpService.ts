@@ -521,6 +521,7 @@ function scheduledTaskSummary(
       ? {}
       : { delegateProviders: task.delegateProviders }),
     ...(task.capExemption === undefined ? {} : { capExemption: task.capExemption }),
+    ...(task.routingConstraints == null ? {} : { routingConstraints: task.routingConstraints }),
     ...(liveRuns === null
       ? {}
       : { maxLiveRuns: task.maxLiveRuns ?? DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS, liveRuns }),
@@ -3193,6 +3194,9 @@ const make = Effect.gen(function* () {
           : { delegateProviders: input.delegateProviders }),
         ...(input.maxLiveRuns === undefined ? {} : { maxLiveRuns: input.maxLiveRuns }),
         ...(input.capExemption === undefined ? {} : { capExemption: input.capExemption }),
+        ...(input.routingConstraints === undefined
+          ? {}
+          : { routingConstraints: input.routingConstraints }),
         // A replay saves over the task it created: what it does not mention stays.
         ...(input.shared === true ? { shared: sharedChoice(input, replayed?.shared) } : {}),
         ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
@@ -3452,6 +3456,9 @@ const make = Effect.gen(function* () {
             : { delegateProviders: input.delegateProviders }),
           ...(input.maxLiveRuns === undefined ? {} : { maxLiveRuns: input.maxLiveRuns }),
           ...(input.capExemption === undefined ? {} : { capExemption: input.capExemption }),
+          ...(input.routingConstraints === undefined
+            ? {}
+            : { routingConstraints: input.routingConstraints }),
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }

@@ -1952,6 +1952,7 @@ export function usageBlock(
     readonly projectId: ProjectId;
     readonly delegates: ReadonlyArray<ProviderDriverKind>;
     readonly fallbackModelSelections?: ReadonlyArray<ModelSelection>;
+    readonly routingConstraints?: AutoRoutingConstraints | undefined;
     readonly background?: boolean | undefined;
     readonly scheduled?: boolean | undefined;
   },
@@ -2172,6 +2173,7 @@ export class AccountRouting extends Context.Service<
       readonly projectId: ProjectId;
       readonly delegates: ReadonlyArray<ProviderDriverKind>;
       readonly fallbackModelSelections?: ReadonlyArray<ModelSelection>;
+      readonly routingConstraints?: AutoRoutingConstraints | undefined;
     }) => Effect.Effect<UsageBlock | null>;
     /**
      * Reads the usage of each held Codex account at most every 10 minutes, and lifts its holds as
@@ -2420,6 +2422,7 @@ export const layer = Layer.effect(
       readonly projectId: ProjectId;
       readonly delegates: ReadonlyArray<ProviderDriverKind>;
       readonly fallbackModelSelections?: ReadonlyArray<ModelSelection>;
+      readonly routingConstraints?: AutoRoutingConstraints | undefined;
       readonly background?: boolean | undefined;
       readonly scheduled?: boolean | undefined;
     }) {
@@ -2929,7 +2932,18 @@ export const layer = Layer.effect(
           const backgroundDisallowed =
             isBackgroundContext(input) &&
             !isProviderInstanceBackgroundAllowed(settings, named.instanceId);
-          if (!settings.failoverLimitedThreads && !backgroundDisallowed && !billingPriority) {
+          const hasAutoConstraints =
+            auto &&
+            input.routingConstraints !== undefined &&
+            (excludedVendorFamilies(input.routingConstraints).size > 0 ||
+              input.routingConstraints.capabilityTier !== undefined ||
+              input.routingConstraints.minTier !== undefined);
+          if (
+            !settings.failoverLimitedThreads &&
+            !backgroundDisallowed &&
+            !billingPriority &&
+            !hasAutoConstraints
+          ) {
             return stay;
           }
           const context = {

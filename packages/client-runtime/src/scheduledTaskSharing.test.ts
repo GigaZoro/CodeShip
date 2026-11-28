@@ -174,6 +174,7 @@ describe("planSharedScheduledTaskSync", () => {
         delegateProviders: [],
         maxLiveRuns: 1,
         capExemption: null,
+        routingConstraints: null,
       },
       expected: {
         description: null,
@@ -182,15 +183,18 @@ describe("planSharedScheduledTaskSync", () => {
         delegateProviders: [],
         maxLiveRuns: 1,
         capExemption: null,
+        routingConstraints: null,
       },
     },
     {
-      name: "a source with an active capExemption preserves it in the shared copy",
+      name: "a source with an active capExemption and routingConstraints preserves them in the shared copy",
       fields: {
         capExemption: "broken_main" as const,
+        routingConstraints: { minTier: "deep" as const, excludeVendorFamily: "anthropic" },
       },
       expected: {
         capExemption: "broken_main",
+        routingConstraints: { minTier: "deep", excludeVendorFamily: "anthropic" },
       },
     },
     {
@@ -213,6 +217,9 @@ describe("planSharedScheduledTaskSync", () => {
         : {}),
       ...("maxLiveRuns" in (copy ?? {}) ? { maxLiveRuns: copy?.maxLiveRuns } : {}),
       ...("capExemption" in (copy ?? {}) ? { capExemption: copy?.capExemption } : {}),
+      ...("routingConstraints" in (copy ?? {})
+        ? { routingConstraints: copy?.routingConstraints }
+        : {}),
     }).toEqual(expected);
   });
 });

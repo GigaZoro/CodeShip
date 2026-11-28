@@ -8593,8 +8593,13 @@ describe("OrchestratorMcpService capacity and automatic placement", () => {
         });
         assert.isTrue(incidentBatch.dispatched > 0);
 
-        // saveScheduledTask forwards capExemption and listScheduledTasks exposes capExemption.
+        // saveScheduledTask forwards capExemption and routingConstraints and listScheduledTasks exposes them.
         const savedCapExemptions: Array<string | null | undefined> = [];
+        const savedRoutingConstraints: Array<ScheduledTaskUpsertInput["routingConstraints"]> = [];
+        const savedRouting = {
+          minTier: "deep" as const,
+          excludeVendorFamily: "anthropic",
+        };
         const savedTask = {
           id: ScheduledTaskId.make("task:cap"),
           title: "Fix broken main",
@@ -8608,6 +8613,7 @@ describe("OrchestratorMcpService capacity and automatic placement", () => {
           runtimeMode: "full-access" as const,
           interactionMode: "default" as const,
           capExemption: "broken_main" as const,
+          routingConstraints: savedRouting,
           createdAt: "2026-11-28T00:00:00Z",
           updatedAt: "2026-11-28T00:00:00Z",
           nextRunAt: "2026-11-28T00:01:00Z",
@@ -8622,6 +8628,7 @@ describe("OrchestratorMcpService capacity and automatic placement", () => {
           id: ScheduledTaskId.make("task:ordinary"),
           title: "Ordinary",
           capExemption: null,
+          routingConstraints: null,
         } as unknown as ScheduledTask;
         const scheduleDeps = Layer.mergeAll(
           NodeServices.layer,
@@ -8645,6 +8652,7 @@ describe("OrchestratorMcpService capacity and automatic placement", () => {
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({
             upsert: (upsertInput: ScheduledTaskUpsertInput) => {
               savedCapExemptions.push(upsertInput.capExemption);
+              savedRoutingConstraints.push(upsertInput.routingConstraints);
               return Effect.succeed({ task: savedTask, created: true });
             },
             list: () => Effect.succeed({ tasks: [savedTask, ordinaryTask] }),
@@ -8659,18 +8667,37 @@ describe("OrchestratorMcpService capacity and automatic placement", () => {
             prompt: "Repair main",
             schedule: { type: "interval", everyMs: 60_000 },
             capExemption: "broken_main",
+            routingConstraints: savedRouting,
+          });
+          yield* service.updateScheduledTask(scope, {
+            scheduledTaskId: savedTask.id,
+            title: "Fix broken main (renamed)",
+          });
+          yield* service.updateScheduledTask(scope, {
+            scheduledTaskId: savedTask.id,
+            routingConstraints: null,
           });
           return yield* service.listScheduledTasks(scope, {});
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(scheduleDeps))));
-        assert.deepEqual(savedCapExemptions, ["broken_main"]);
+        assert.deepEqual(savedCapExemptions, ["broken_main", undefined, undefined]);
+        assert.deepEqual(savedRoutingConstraints, [savedRouting, undefined, null]);
         assert.deepEqual(
           listedScheduled.tasks.map((task) => ({
             scheduledTaskId: task.scheduledTaskId,
             capExemption: task.capExemption,
+            routingConstraints: task.routingConstraints,
           })),
           [
-            { scheduledTaskId: savedTask.id, capExemption: "broken_main" },
-            { scheduledTaskId: ordinaryTask.id, capExemption: null },
+            {
+              scheduledTaskId: savedTask.id,
+              capExemption: "broken_main",
+              routingConstraints: savedRouting,
+            },
+            {
+              scheduledTaskId: ordinaryTask.id,
+              capExemption: null,
+              routingConstraints: undefined,
+            },
           ],
         );
 

@@ -11,6 +11,7 @@ const INERT = [
   /^\.(agents|cursor|vscode|devcontainer|macroscope|repos)\//,
   /^[^/]+\.md$/,
   /^LICENSE$/,
+  /^project\.agent\.yaml$/,
 ];
 
 // Shared test setup, the modules it imports, and vendored mobile dependencies affect every package.
