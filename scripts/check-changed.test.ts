@@ -2300,9 +2300,23 @@ const providerEnv = NodePath.join(
 
 const summaryOf = (stdout: string) => stdout.slice(stdout.lastIndexOf("check:changed summary"));
 
+// Vite+'s fspy skips tracking paths under /dev (such as Linux /dev/shm), so nested `vp run --cache`
+// fixture workspaces must live outside /dev even when the outer test runner sets TMPDIR to /dev/shm.
+const tracedTempDir = (): string => {
+  const dir = NodeOS.tmpdir();
+  if (!isLinuxHost) return dir;
+  let resolved = dir;
+  try {
+    resolved = NodeFS.realpathSync(dir);
+  } catch {
+    // Keep dir as-is if realpath fails.
+  }
+  return resolved === "/dev" || resolved.startsWith("/dev/") ? "/tmp" : dir;
+};
+
 function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
   const root = NodeFS.realpathSync(
-    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
+    NodeFS.mkdtempSync(NodePath.join(tracedTempDir(), "t3 checks & (fixture) ")),
   );
   const write = (file: string, content: string) => writeUnder(root, file, content);
   for (const file of [
@@ -2507,7 +2521,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     // A linked worktree with its own install, as two checkouts each run `vp i`.
     checkout(files: Array<string>) {
       const checkout = NodeFS.realpathSync(
-        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks retry ")),
+        NodeFS.mkdtempSync(NodePath.join(tracedTempDir(), "t3 checks retry ")),
       );
       worktrees.push(checkout);
       git("worktree", "add", "--detach", checkout, "HEAD");

@@ -7,7 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 
 import {
   ARGUMENT_CHARACTERS,
@@ -26,6 +26,20 @@ import {
   serverTestChainCount,
 } from "./cached-tests.ts";
 import { readsCheckoutGit } from "./run-cached-test-group.ts";
+
+// Vite+'s fspy skips tracking paths under /dev (such as Linux /dev/shm), so nested `vp run --cache`
+// fixture workspaces must live outside /dev even when the outer test runner sets TMPDIR to /dev/shm.
+const tracedTempDir = (): string => {
+  const dir = NodeOS.tmpdir();
+  if (!isLinuxHost) return dir;
+  let resolved = dir;
+  try {
+    resolved = NodeFS.realpathSync(dir);
+  } catch {
+    // Keep dir as-is if realpath fails.
+  }
+  return resolved === "/dev" || resolved.startsWith("/dev/") ? "/tmp" : dir;
+};
 
 describe("cachedTestTasks", () => {
   it.each(["darwin", "linux", "win32"] as const)(
@@ -660,7 +674,7 @@ describe("cachedTestTasks", () => {
     }) => Promise<void>,
   ) => {
     const directory = await NodeFSP.realpath(
-      await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-tests-")),
+      await NodeFSP.mkdtemp(NodePath.join(tracedTempDir(), "cached-tests-")),
     );
     const root = NodePath.resolve(import.meta.dirname, "../..");
     const write = (file: string, content: string) =>
