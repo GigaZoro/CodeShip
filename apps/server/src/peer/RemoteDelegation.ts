@@ -411,8 +411,7 @@ const make = Effect.gen(function* () {
       // A target that names only where the task runs keeps an Auto parent's child on Auto, there
       // on that environment's Auto settings, as a child here stays Auto on this one's.
       const staysAuto =
-        inherited.autoAccount === true &&
-        input.auto !== false &&
+        (input.auto === true || (inherited.autoAccount === true && input.auto !== false)) &&
         target.providerInstanceId === undefined &&
         target.driverKind === undefined &&
         target.model === undefined &&
@@ -592,14 +591,16 @@ const make = Effect.gen(function* () {
               );
             const launch = (
               staysAuto
-                ? launchWith({ auto: true }).pipe(
-                    // Auto mode off there refuses before it makes the thread, so the same key
-                    // then starts it on the parent's model.
-                    Effect.catchIf(
-                      (error) => error.code === "auto_mode_unavailable",
-                      () => launchWith({ modelSelection, inheritedOptionIds }),
-                    ),
-                  )
+                ? input.auto === true
+                  ? launchWith({ auto: true })
+                  : launchWith({ auto: true }).pipe(
+                      // Auto mode off there refuses before it makes the thread, so the same key
+                      // then starts it on the parent's model.
+                      Effect.catchIf(
+                        (error) => error.code === "auto_mode_unavailable",
+                        () => launchWith({ modelSelection, inheritedOptionIds }),
+                      ),
+                    )
                 : launchWith({ modelSelection, inheritedOptionIds })
             ).pipe(
               Effect.filterOrElse(

@@ -1,3 +1,8 @@
+## 2026-11-28 — Live machine capacity telemetry and least-loaded placement for worktree implementation delegates
+
+- `orchestrator_capabilities` now includes an optional `capacity` snapshot (`loadAverage1m`, `cpuCores`, `loadPerCore`, `activeThreads`, `activeLandingCommands`, `checkSlots`, `freeCheckSlots`, `availableMemoryBytes`, `totalMemoryBytes`, `memoryShort`, and `activeImplementationThreadsByRepo`), remaining backward- and forward-compatible with older linked peers.
+- Unpinned `delegate_task` calls with `isolation: "worktree"` and `role: "implementation"` now probe reachable full-access linked environments in parallel and place the child on the least-loaded eligible machine that has the repository and requested provider, while keeping explicit `target.environmentId`/`target.projectId` pins, shared-checkout work, unpushed local `HEAD` commits, non-implementation roles, and peer-originated work local.
+
 ## 2026-11-28 — Optional remote landing over SSH with load-aware host selection
 
 - Maintainers: `landing-turn.cjs land` now supports `--remote <host[,host2,...]>` / `T3_LANDING_REMOTE_HOST` (plus `--remote-dir <path>` / `T3_LANDING_REMOTE_DIR` and `--local` to override) to offload landings to the least-loaded reachable SSH host (`load1 / cpus`) via a temporary staging ref (`refs/heads/landing-staging/<id>`) and temporary remote worktree without touching the remote host's main checkout. If no candidate host is reachable, it falls back cleanly to local landing; once remote execution starts, check failures, conflicts, and disconnects fail closed without launching a duplicate local lander, and the staging ref is always cleaned up.

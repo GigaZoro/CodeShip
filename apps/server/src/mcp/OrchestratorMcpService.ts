@@ -195,6 +195,9 @@ import {
   staleUsageObservations,
 } from "./orchestratorUsage.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as MachinePlacement from "../peer/MachinePlacement.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
@@ -1543,6 +1546,18 @@ const make = Effect.gen(function* () {
   const reviewAssignments = yield* Effect.serviceOption(
     ReviewAssignmentRegistry.ReviewAssignmentRegistry,
   );
+  // Optional so existing test runtimes stay unchanged; production server.ts provides all three.
+  const hostResources = yield* Effect.serviceOption(HostResources.HostResources);
+  const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
+  const peerForwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
+
+  const readCapacity = () =>
+    MachinePlacement.readLocalCapacity({
+      hostResources,
+      memoryAdmission,
+      projections,
+      projects,
+    });
 
   /** Everything a restricted review needs that the request alone can show, checked before any reuse or forwarding. */
   const requireRestrictableReview = Effect.fn("OrchestratorMcpService.requireRestrictableReview")(
@@ -3625,32 +3640,60 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope);
-      const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
-      const settings = yield* readSettings;
-      const { providers, checking } = yield* loadProvidersRechecked(
-        input.usage
-          ? (provider) =>
-              orchestrationCapableInstanceIds.has(provider.instanceId) &&
-              canAccountRun(provider, settings, parent?.thread.projectId ?? null, {
-                background: true,
-              })
-          : undefined,
+      const [
+        {
+          orchestrationCapableInstanceIds,
+          settings,
+          providers,
+          checking,
+          availability,
+          redemptions,
+          publishedAtMs,
+        },
+        capacity,
+      ] = yield* Effect.all(
+        [
+          Effect.gen(function* () {
+            const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+            const settings = yield* readSettings;
+            const { providers, checking } = yield* loadProvidersRechecked(
+              input.usage
+                ? (provider) =>
+                    orchestrationCapableInstanceIds.has(provider.instanceId) &&
+                    canAccountRun(provider, settings, parent?.thread.projectId ?? null, {
+                      background: true,
+                    })
+                : undefined,
+            );
+            const availability = Option.isNone(accountRouting)
+              ? {
+                  accounts: new Map<ProviderInstanceId, string>(),
+                  estimated: new Set<ProviderInstanceId>(),
+                  models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
+                  credits: new Map<ProviderInstanceId, ProviderCreditUse>(),
+                  grants: new Map<ProviderInstanceId, ProviderCreditGrant>(),
+                }
+              : yield* accountRouting.value.limits({ requesterThreadId: parent?.thread.id });
+            const redemptions =
+              input.usage === true && Option.isSome(usageResetRedeemer)
+                ? yield* usageResetRedeemer.value.lastRedemptions
+                : new Map<string, OrchestratorMcpLastRedemption>();
+            // Read after the re-check, so no reading is newer than the time the reset rule decides at.
+            const publishedAtMs = yield* Clock.currentTimeMillis;
+            return {
+              orchestrationCapableInstanceIds,
+              settings,
+              providers,
+              checking,
+              availability,
+              redemptions,
+              publishedAtMs,
+            };
+          }),
+          readCapacity(),
+        ],
+        { concurrency: "unbounded" },
       );
-      const availability = Option.isNone(accountRouting)
-        ? {
-            accounts: new Map<ProviderInstanceId, string>(),
-            estimated: new Set<ProviderInstanceId>(),
-            models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
-            credits: new Map<ProviderInstanceId, ProviderCreditUse>(),
-            grants: new Map<ProviderInstanceId, ProviderCreditGrant>(),
-          }
-        : yield* accountRouting.value.limits({ requesterThreadId: parent?.thread.id });
-      const redemptions =
-        input.usage === true && Option.isSome(usageResetRedeemer)
-          ? yield* usageResetRedeemer.value.lastRedemptions
-          : new Map<string, OrchestratorMcpLastRedemption>();
-      // Read after the re-check, so no reading is newer than the time the reset rule decides at.
-      const publishedAtMs = yield* Clock.currentTimeMillis;
       const inherited = parent?.thread.modelSelection;
       const inheritedProvider = providers.find(
         (provider) => provider.instanceId === inherited?.instanceId,
@@ -3761,6 +3804,7 @@ const make = Effect.gen(function* () {
               redeemUsageResets: settings.redeemUsageResets,
             }
           : {}),
+        capacity,
         features: {
           appOwnedSubagents: true,
           asyncPolling: true,
@@ -3823,6 +3867,7 @@ const make = Effect.gen(function* () {
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
+      const parentRootNodeId = parentRun.rootNodeId;
       const [current, legacy] = taskIds.map((id) =>
         parent.subagents.find((task) => task.id === id && task.origin === "app_owned"),
       );
@@ -3865,20 +3910,27 @@ const make = Effect.gen(function* () {
           ? awaitTask(scope, original.id, input.timeoutMs)
           : readTask(scope, original.id, false, true);
       }
-      const environmentId =
+      const delegateToEnvironment = (environmentId: EnvironmentId) =>
+        remoteDelegation
+          .delegate(
+            scope,
+            { thread: parent.thread, runId: parentRun.id, nodeId: parentRootNodeId },
+            { ...input, target: { ...input.target, environmentId } },
+            { key, commandId },
+          )
+          .pipe(
+            Effect.flatMap(({ taskId }) =>
+              input.mode === "wait"
+                ? awaitTask(scope, taskId, input.timeoutMs)
+                : readTask(scope, taskId, false, true),
+            ),
+          );
+      const explicitEnvironmentId =
         original === undefined
           ? PeerForwarding.remoteTarget(scope, input.target?.environmentId)
           : undefined;
-      if (input.target !== undefined && environmentId !== undefined) {
-        const { taskId } = yield* remoteDelegation.delegate(
-          scope,
-          { thread: parent.thread, runId: parentRun.id, nodeId: parentRun.rootNodeId },
-          { ...input, target: { ...input.target, environmentId } },
-          { key, commandId },
-        );
-        return yield* input.mode === "wait"
-          ? awaitTask(scope, taskId, input.timeoutMs)
-          : readTask(scope, taskId, false, true);
+      if (explicitEnvironmentId !== undefined) {
+        return yield* delegateToEnvironment(explicitEnvironmentId);
       }
       const foreignProjectId =
         original === undefined &&
@@ -3906,6 +3958,41 @@ const make = Effect.gen(function* () {
           accepted: { childThreadId: committedThread?.id ?? null },
           requested: reviewAssignment,
         });
+      }
+      const currentSettings = yield* readSettings;
+      const roleSelection =
+        committedThread === null && input.auto !== true
+          ? yield* delegatedTaskRoleSelection(input)
+          : undefined;
+      const automaticEnvironmentId =
+        original === undefined &&
+        !isRetryOfAcceptedDelegation &&
+        input.target?.environmentId === undefined &&
+        Option.isSome(peerForwarding)
+          ? yield* MachinePlacement.resolveAutomaticPlacement({
+              scope,
+              parentProjectId: parent.thread.projectId,
+              parentWorktreePath: parent.thread.worktreePath,
+              parentLinkOrigin: parent.thread.linkOrigin,
+              inheritedInstanceId: parent.thread.modelSelection.instanceId,
+              inheritedParentModel: advertisedSlug(
+                providers.find(
+                  (provider) => provider.instanceId === parent.thread.modelSelection.instanceId,
+                ),
+                parent.thread.modelSelection.model,
+              ),
+              inheritedAutoAccount: parent.thread.modelSelection.autoAccount === true,
+              hasRoleSelection: roleSelection !== undefined,
+              input,
+              localCapacity: readCapacity,
+              peerLinks,
+              peerForwarding: peerForwarding.value,
+              projects,
+              git: gitDriver,
+            })
+          : undefined;
+      if (automaticEnvironmentId !== undefined) {
+        return yield* delegateToEnvironment(automaticEnvironmentId);
       }
       // The child runs in its own project, so that project's accounts and Auto settings apply.
       const projectId = foreignProjectId ?? parent.thread.projectId;
@@ -3940,11 +4027,6 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
-      const currentSettings = yield* readSettings;
-      const roleSelection =
-        committedThread === null && input.auto !== true
-          ? yield* delegatedTaskRoleSelection(input)
-          : undefined;
       // A role's model set to Auto runs where Auto mode starts a new chat, and on its saved model
       // while Auto mode cannot run, as the Settings picker shows it.
       const autoPick =

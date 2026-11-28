@@ -6,6 +6,7 @@ import {
   CommandId,
   ENVIRONMENT_DESCRIPTOR_PATH,
   EventId,
+  type HostResourcesSnapshot,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -73,6 +74,7 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as HostResources from "../resourceTelemetry/HostResources.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
@@ -310,6 +312,8 @@ interface BoxSetup {
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
   /** Why Git gave the box no repository for its projects, when it gave none. */
   readonly repositoryLookupFailure?: RepositoryIdentityResolver.RepositoryIdentityLookupError;
+  /** Host resource snapshot reported in the box's capabilities().capacity. */
+  readonly hostMetrics?: HostResourcesSnapshot;
 }
 
 interface BoxLaunch {
@@ -366,6 +370,7 @@ const boxToolkitLayer = (
     settings = {},
     checkWorktreeBase = () => Effect.void,
     repositoryLookupFailure,
+    hostMetrics,
   }: BoxSetup = {},
 ) => {
   const interrupts = new Set<string>();
@@ -760,7 +765,15 @@ const boxToolkitLayer = (
     ),
     Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
     Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-    Layer.provide(Layer.merge(ServerSettings.layerTest(settings), MemoryAdmission.layerTest())),
+    Layer.provide(
+      Layer.mergeAll(
+        ServerSettings.layerTest(settings),
+        MemoryAdmission.layerTest(),
+        hostMetrics === undefined
+          ? Layer.empty
+          : Layer.succeed(HostResources.HostResources, { read: Effect.succeed(hostMetrics) }),
+      ),
+    ),
     Layer.provide(NodeServices.layer),
   );
 };
@@ -808,11 +821,29 @@ const makeLaptop = (
   } as RepositoryIdentity,
   /** The parent checkout's Git remotes. */
   remotes: ReadonlyArray<string> = ["origin"],
+  options?: {
+    readonly hostMetrics?: HostResourcesSnapshot;
+    readonly headPushed?: boolean;
+  },
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
     const layerDatabase = Layer.succeedContext(database);
     const adapterRegistry = ProviderAdapterRegistry.layerFromAdapters([adapter]);
+    const layerLaptopProject = Layer.mock(ProjectService.ProjectService)({
+      getById: () =>
+        Effect.succeedSome({
+          workspaceRoot: "/home/me/app",
+          repositoryIdentity: null,
+        } as never),
+      getWithRepositoryIdentity: () =>
+        isProjectOperationError(identity) || isRepositoryLookupError(identity)
+          ? Effect.fail(identity)
+          : Effect.succeedSome({
+              workspaceRoot: "/home/me/app",
+              repositoryIdentity: identity,
+            } as never),
+    });
     const layerOrchestrator = Layer.mergeAll(
       layerDatabase,
       ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
@@ -841,22 +872,7 @@ const makeLaptop = (
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
           Layer.provideMerge(PeerForwarding.layer),
-          Layer.provide(
-            Layer.mock(ProjectService.ProjectService)({
-              getById: () =>
-                Effect.succeedSome({
-                  workspaceRoot: "/home/me/app",
-                  repositoryIdentity: null,
-                } as never),
-              getWithRepositoryIdentity: () =>
-                isProjectOperationError(identity) || isRepositoryLookupError(identity)
-                  ? Effect.fail(identity)
-                  : Effect.succeedSome({
-                      workspaceRoot: "/home/me/app",
-                      repositoryIdentity: identity,
-                    } as never),
-            }),
-          ),
+          Layer.provide(layerLaptopProject),
           Layer.provide(
             Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
               namedProjectsRoot: "/p",
@@ -882,17 +898,26 @@ const makeLaptop = (
       ),
       Layer.provide(adapterRegistry),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
-      Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+      Layer.provide(layerLaptopProject),
       Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
+      Layer.provide(
+        options?.hostMetrics === undefined
+          ? Layer.empty
+          : Layer.succeed(HostResources.HostResources, {
+              read: Effect.succeed(options.hostMetrics),
+            }),
+      ),
       Layer.provide(
         Layer.mock(GitVcsDriver.GitVcsDriver)({
           resolveCommit: () => Effect.succeed({ commitSha: parentCommit } as never),
           execute: ({ args }) =>
             args.join(" ") === "remote"
               ? Effect.succeed({ stdout: remotes.map((name) => `${name}\n`).join("") } as never)
-              : Effect.die(`The laptop does not expect git ${args.join(" ")}`),
+              : args.join(" ") === "branch -r --contains HEAD" && options?.headPushed !== undefined
+                ? Effect.succeed({ stdout: options.headPushed ? "  origin/main\n" : "" } as never)
+                : Effect.die(`The laptop does not expect git ${args.join(" ")}`),
         }),
       ),
       Layer.fresh,
@@ -1679,6 +1704,107 @@ it.effect.each([
       expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each([
+  { name: "Auto parent", parentSelection: autoParent },
+  { name: "non-Auto parent", parentSelection: modelSelection },
+])(
+  "explicit auto:true fails with auto_mode_unavailable instead of falling back ($name)",
+  ({ name, parentSelection }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread, boxProjects, {
+          settings: { autoModeProvider: null },
+        });
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a, ProjectId.make("project:laptop"), parentSelection);
+        const parentProjection = yield* a.orchestrator.getThreadProjection(parentThreadId);
+
+        const result = yield* a.remote
+          .delegate(
+            parentScope,
+            { thread: parentProjection.thread, runId: parentRunId, nodeId: parentRootNode },
+            {
+              task: "Run the suite on the box.",
+              auto: true,
+              target: { environmentId: box.environmentId },
+            },
+            {
+              key: `explicit-auto-${name}`,
+              commandId: CommandId.make(`command:explicit-auto-${name}`),
+            },
+          )
+          .pipe(Effect.result);
+
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          expect(result.failure.code).toBe("auto_mode_unavailable");
+        }
+        expect(yield* Ref.get(thread.launched)).toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "automatic placement offloads an unpinned worktree implementation task through real RemoteDelegation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const gib = 1024 ** 3;
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread, boxProjects, {
+          providers: laptopProviders,
+          hostMetrics: {
+            sampledAt: 1_000,
+            cpuUtilization: 0.1,
+            cpuCount: 8,
+            availableMemoryBytes: 24 * gib,
+            totalMemoryBytes: 32 * gib,
+            loadAverage: [0.5, 0.5, 0.5] as const,
+          },
+        });
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers, undefined, undefined, undefined, {
+          headPushed: true,
+          hostMetrics: {
+            sampledAt: 1_000,
+            cpuUtilization: 0.9,
+            cpuCount: 8,
+            availableMemoryBytes: 24 * gib,
+            totalMemoryBytes: 32 * gib,
+            loadAverage: [12, 12, 12] as const,
+          },
+        });
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Implement the feature on the least-loaded machine.",
+          role: "implementation",
+          isolation: "worktree",
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        const launched = yield* Ref.get(thread.launched);
+        expect(launched?.projectId).toBe(boxProject);
+        expect(launched?.modelSelection).toEqual(modelSelection);
+        expect(launched?.workspaceStrategy).toEqual({
+          type: "worktree",
+          baseRef: parentCommit,
+          preferredRemote: "origin",
+          startFromOrigin: true,
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a task from a No-project chat runs in the box's No project", () =>

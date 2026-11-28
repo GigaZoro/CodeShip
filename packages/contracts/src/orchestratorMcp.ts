@@ -1066,6 +1066,21 @@ export const OrchestratorMcpEnvironmentLinksResult = Schema.Struct({
 export type OrchestratorMcpEnvironmentLinksResult =
   typeof OrchestratorMcpEnvironmentLinksResult.Type;
 
+export const OrchestratorMcpMachineCapacity = Schema.Struct({
+  loadAverage1m: Schema.Finite,
+  cpuCores: NonNegativeInt,
+  loadPerCore: Schema.Finite,
+  activeThreads: NonNegativeInt,
+  activeLandingCommands: NonNegativeInt,
+  checkSlots: NonNegativeInt,
+  freeCheckSlots: NonNegativeInt,
+  availableMemoryBytes: Schema.NullOr(Schema.Finite),
+  totalMemoryBytes: Schema.NullOr(Schema.Finite),
+  memoryShort: Schema.Boolean,
+  activeImplementationThreadsByRepo: Schema.optional(Schema.Record(Schema.String, NonNegativeInt)),
+});
+export type OrchestratorMcpMachineCapacity = typeof OrchestratorMcpMachineCapacity.Type;
+
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   parentThreadId: Schema.NullOr(ThreadId),
   inheritedProviderInstanceId: Schema.NullOr(ProviderInstanceId),
@@ -1078,6 +1093,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   maxWaitHours: Schema.optional(Schema.Number),
   /** With `usage`: whether this server claims banked resets by itself. */
   redeemUsageResets: Schema.optional(Schema.Boolean),
+  capacity: Schema.optional(OrchestratorMcpMachineCapacity),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
