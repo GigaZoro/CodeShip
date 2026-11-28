@@ -694,3 +694,37 @@ describe("shouldRecommendDatabaseCompaction", () => {
     ).toBe(true);
   });
 });
+
+describe("runLoopGuard settings", () => {
+  it("defaults interactive limits well above automated roles", () => {
+    const decoded = decodeServerSettings({});
+    expect(decoded.runLoopGuard).toEqual({
+      enabled: true,
+      thrashBreakerEnabled: true,
+      identicalErrorThreshold: 3,
+      limits: {
+        interactive: { maxTurns: 100, maxToolCalls: 1000 },
+        scheduled: { maxTurns: 20, maxToolCalls: 150 },
+        maintenance: { maxTurns: 5, maxToolCalls: 25 },
+        delegated: { maxTurns: 25, maxToolCalls: 200 },
+      },
+    });
+    expect(DEFAULT_SERVER_SETTINGS.runLoopGuard).toEqual(decoded.runLoopGuard);
+  });
+
+  it("accepts nested partial patches and validates threshold and cap bounds", () => {
+    const patch = {
+      runLoopGuard: {
+        identicalErrorThreshold: 4,
+        limits: { scheduled: { maxToolCalls: 40 } },
+      },
+    };
+    expect(decodeServerSettingsPatch(patch)).toEqual(patch);
+    expect(() =>
+      decodeServerSettingsPatch({ runLoopGuard: { identicalErrorThreshold: 1 } }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ runLoopGuard: { limits: { scheduled: { maxTurns: 0 } } } }),
+    ).toThrow();
+  });
+});

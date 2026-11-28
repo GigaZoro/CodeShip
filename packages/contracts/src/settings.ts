@@ -37,6 +37,7 @@ import {
   MemoryGuardCompressorShare,
   MemoryGuardReserveGiB,
 } from "./hostMemory.ts";
+import { RunLoopGuardSettings, RunLoopGuardSettingsPatch } from "./runLoopGuard.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
@@ -1455,6 +1456,7 @@ export const ServerSettings = Schema.Struct({
   automatedStartMemoryGuard: AutomatedStartMemoryGuard.pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  runLoopGuard: RunLoopGuardSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 
   worktreesDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** Server-maintained history keeps old worktrees eligible for cleanup and review diffs. */
@@ -1987,6 +1989,7 @@ export const ServerSettingsPatch = Schema.Struct({
       reserveGiB: Schema.optionalKey(MemoryGuardReserveGiB),
     }),
   ),
+  runLoopGuard: Schema.optionalKey(RunLoopGuardSettingsPatch),
   worktreesDirectory: Schema.optionalKey(TrimmedString),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),

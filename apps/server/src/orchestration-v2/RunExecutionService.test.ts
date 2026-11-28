@@ -25,6 +25,7 @@ import {
   ProviderTurnId,
   RunAttemptId,
   RunId,
+  ScheduledTaskId,
   ServerSettingsError,
   ThreadId,
   TurnItemId,
@@ -4153,5 +4154,442 @@ it.effect("keeps a failed root's still-running native children live while the ru
       written.some((event) => event.type === "subagent.updated"),
       "a child that outlives the failed root must not be settled with it",
     );
+  }),
+);
+
+function runLoopGuardIntegrationScenario(input: {
+  readonly key: string;
+  readonly scheduledTaskId?: ScheduledTaskId;
+  readonly runLoopGuardSettings?: NonNullable<
+    Parameters<typeof ServerSettings.layerTest>[0]
+  >["runLoopGuard"];
+  readonly events: (ids: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly nodeId: NodeId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly providerTurnId: ProviderTurnId;
+  }) => ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>;
+  readonly waitForInterruptToCloseStream?: boolean;
+}) {
+  return Effect.gen(function* () {
+    const threadId = ThreadId.make(`thread:${input.key}`);
+    const runId = RunId.make(`run:${input.key}`);
+    const attemptId = RunAttemptId.make(`attempt:${input.key}`);
+    const nodeId = NodeId.make(`node:${input.key}`);
+    const providerThreadId = ProviderThreadId.make(`provider-thread:${input.key}`);
+    const providerTurnId = ProviderTurnId.make(`provider-turn:${input.key}`);
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const written = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+    const interruptCalls = yield* Ref.make<ReadonlyArray<ProviderTurnId>>([]);
+    const streamClosedOnInterrupt = yield* Deferred.make<void>();
+    const ingestionDone = yield* Deferred.make<void>();
+
+    const layerTest = RunExecutionService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ThreadCommandExecutor.layer,
+          McpAppModelContext.layerEmpty,
+          PreviewAgentActivity.layer,
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            captureBaseline: () => Effect.void,
+          }),
+          layerTurnItemPositionsTest,
+          Layer.mock(EventSink.EventSinkV2)({
+            write: () => Effect.succeed([]),
+            writeWithEffects: (batch) =>
+              Ref.update(written, (current) => [...current, ...batch.events]).pipe(Effect.as([])),
+            writeIfRunCurrent: (batch) =>
+              Ref.update(written, (current) => [...current, ...batch.events]).pipe(
+                Effect.as({ committed: true, storedEvents: [] }),
+              ),
+          }),
+          IdAllocator.layer,
+          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+            ingestNormalized: () => Effect.succeed([]),
+          }),
+          ServerSettings.layerTest(
+            input.runLoopGuardSettings === undefined
+              ? {}
+              : { runLoopGuard: input.runLoopGuardSettings },
+          ),
+        ),
+      ),
+    );
+
+    const baseEvents = input.events({
+      threadId,
+      runId,
+      nodeId,
+      providerThreadId,
+      providerTurnId,
+    });
+    const eventStream =
+      input.waitForInterruptToCloseStream === true
+        ? Stream.fromIterable(baseEvents).pipe(
+            Stream.concat(
+              Stream.fromEffect(Deferred.await(streamClosedOnInterrupt)).pipe(Stream.drain),
+            ),
+          )
+        : Stream.fromIterable(baseEvents);
+
+    return yield* Effect.gen(function* () {
+      const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+      yield* runExecution.startRootRun({
+        commandId: CommandId.make(`command:${input.key}`),
+        appThread: rootAppThread(threadId),
+        providerSessionId: ProviderSessionId.make(`session:${input.key}`),
+        session: {
+          events: Stream.empty,
+          subscribeEvents: Effect.succeed({
+            events: eventStream,
+            close: Deferred.succeed(ingestionDone, undefined),
+          }),
+          startTurn: () => Effect.void,
+          interruptTurn: (args: { readonly providerTurnId: ProviderTurnId }) =>
+            Ref.update(interruptCalls, (current) => [...current, args.providerTurnId]).pipe(
+              Effect.andThen(Deferred.succeed(streamClosedOnInterrupt, undefined)),
+            ),
+        } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+        run: {
+          id: runId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId,
+        } as OrchestrationV2Run,
+        rootNode: { id: nodeId } as OrchestrationV2ExecutionNode,
+        checkpointScope: {
+          id: CheckpointScopeId.make(`checkpoint-scope:${input.key}`),
+        } as OrchestrationV2CheckpointScope,
+        providerThread: {
+          id: providerThreadId,
+          driver,
+        } as OrchestrationV2ProviderThread,
+        attempt: {
+          id: attemptId,
+          providerTurnId,
+        } as OrchestrationV2RunAttempt,
+        attemptId,
+        providerTurnOrdinal: 1,
+        startFailure: recordStartFailure,
+        message: {
+          messageId: MessageId.make(`message:${input.key}:user`),
+          text: "Execute task.",
+          attachments: [],
+          createdBy: "user",
+          creationSource: input.scheduledTaskId === undefined ? "web" : "server",
+          ...(input.scheduledTaskId === undefined
+            ? {}
+            : { scheduledTaskId: input.scheduledTaskId }),
+        },
+        modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+          approvalPolicy: "never",
+          sandboxPolicy: {
+            type: "readOnly",
+            access: { type: "fullAccess" },
+            networkAccess: false,
+          },
+        },
+      });
+      yield* Deferred.await(ingestionDone);
+      return {
+        events: yield* Ref.get(written),
+        interruptCalls: yield* Ref.get(interruptCalls),
+      };
+    }).pipe(Effect.provide(layerTest));
+  });
+}
+
+it.effect("aborts scheduled run hitting configured tool-call cap with structured reason", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const { events, interruptCalls } = yield* runLoopGuardIntegrationScenario({
+      key: "loop-guard-scheduled-cap",
+      scheduledTaskId: ScheduledTaskId.make("sched:loop-guard"),
+      runLoopGuardSettings: {
+        limits: { scheduled: { maxTurns: 10, maxToolCalls: 2 } },
+      },
+      waitForInterruptToCloseStream: true,
+      events: ({ threadId, runId, nodeId, providerThreadId, providerTurnId }) => [
+        {
+          type: "provider_turn.updated",
+          driver,
+          threadId,
+          providerTurn: {
+            id: providerTurnId,
+            providerThreadId,
+            nodeId,
+            runAttemptId: RunAttemptId.make("attempt:loop-guard-scheduled-cap"),
+            nativeTurnRef: null,
+            ordinal: 1,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+        ...[1, 2, 3].map((index): ProviderAdapter.ProviderAdapterV2Event => ({
+          type: "turn_item.updated",
+          driver,
+          turnItem: {
+            id: TurnItemId.make(`cmd:${index}`),
+            threadId,
+            runId,
+            nodeId,
+            providerThreadId,
+            providerTurnId,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: index,
+            status: "completed",
+            title: "Run check",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "command_execution",
+            input: `echo ${index}`,
+            exitCode: 0,
+            output: "ok",
+          },
+        })),
+      ],
+    });
+
+    assert.lengthOf(interruptCalls, 1);
+    const runEvent = events.find((event) => event.type === "run.updated");
+    assert.isDefined(runEvent);
+    assert.equal(runEvent.payload.status, "interrupted");
+    const interruptResult = events.find(
+      (event) =>
+        event.type === "turn-item.updated" && event.payload.type === "run_interrupt_result",
+    );
+    assert.isDefined(interruptResult);
+    if (
+      interruptResult.type === "turn-item.updated" &&
+      interruptResult.payload.type === "run_interrupt_result"
+    ) {
+      assert.include(interruptResult.payload.message, "scheduled tool-call cap: 3/2");
+    }
+  }),
+);
+
+it.effect("does not cut off interactive sessions under tight scheduled-task defaults", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const { events, interruptCalls } = yield* runLoopGuardIntegrationScenario({
+      key: "loop-guard-interactive-safe",
+      runLoopGuardSettings: {
+        limits: { scheduled: { maxTurns: 1, maxToolCalls: 2 } },
+      },
+      events: ({ threadId, runId, nodeId, providerThreadId, providerTurnId }) => [
+        {
+          type: "provider_turn.updated",
+          driver,
+          threadId,
+          providerTurn: {
+            id: providerTurnId,
+            providerThreadId,
+            nodeId,
+            runAttemptId: RunAttemptId.make("attempt:loop-guard-interactive-safe"),
+            nativeTurnRef: null,
+            ordinal: 1,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+        ...[1, 2, 3, 4].map((index): ProviderAdapter.ProviderAdapterV2Event => ({
+          type: "turn_item.updated",
+          driver,
+          turnItem: {
+            id: TurnItemId.make(`cmd:interactive:${index}`),
+            threadId,
+            runId,
+            nodeId,
+            providerThreadId,
+            providerTurnId,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: index,
+            status: "completed",
+            title: "Run check",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "command_execution",
+            input: `echo ${index}`,
+            exitCode: 0,
+            output: "ok",
+          },
+        })),
+        {
+          type: "turn.terminal",
+          driver,
+          providerThreadId,
+          providerTurnId,
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        },
+      ],
+    });
+
+    assert.lengthOf(interruptCalls, 0);
+    const runEvent = events.find((event) => event.type === "run.updated");
+    assert.isDefined(runEvent);
+    assert.equal(runEvent.payload.status, "waiting");
+  }),
+);
+
+it.effect("trips thrash circuit breaker on 3rd identical normalized tool error in stream", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const { events, interruptCalls } = yield* runLoopGuardIntegrationScenario({
+      key: "loop-guard-thrash",
+      scheduledTaskId: ScheduledTaskId.make("sched:thrash"),
+      waitForInterruptToCloseStream: true,
+      events: ({ threadId, runId, nodeId, providerThreadId, providerTurnId }) => [
+        {
+          type: "provider_turn.updated",
+          driver,
+          threadId,
+          providerTurn: {
+            id: providerTurnId,
+            providerThreadId,
+            nodeId,
+            runAttemptId: RunAttemptId.make("attempt:loop-guard-thrash"),
+            nativeTurnRef: null,
+            ordinal: 1,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+        ...[
+          "2026-11-28T01:00:00Z /tmp/tmp-aaa111/lock (11111111-1111-1111-1111-111111111111): EACCES",
+          "2026-11-28T01:00:05Z /tmp/tmp-bbb222/lock (22222222-2222-2222-2222-222222222222): EACCES",
+          "2026-11-28T01:00:10Z /private/tmp/tmp-ccc333/lock (33333333-3333-3333-3333-333333333333): EACCES",
+        ].map((output, index): ProviderAdapter.ProviderAdapterV2Event => ({
+          type: "turn_item.updated",
+          driver,
+          turnItem: {
+            id: TurnItemId.make(`err:thrash:${index}`),
+            threadId,
+            runId,
+            nodeId,
+            providerThreadId,
+            providerTurnId,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: index + 1,
+            status: "failed",
+            title: "Write file",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "command_execution",
+            input: "touch /etc/protected",
+            exitCode: 1,
+            output,
+          },
+        })),
+      ],
+    });
+
+    assert.lengthOf(interruptCalls, 1);
+    const runEvent = events.find((event) => event.type === "run.updated");
+    assert.isDefined(runEvent);
+    assert.equal(runEvent.payload.status, "interrupted");
+    const interruptResult = events.find(
+      (event) =>
+        event.type === "turn-item.updated" && event.payload.type === "run_interrupt_result",
+    );
+    assert.isDefined(interruptResult);
+    if (
+      interruptResult.type === "turn-item.updated" &&
+      interruptResult.payload.type === "run_interrupt_result"
+    ) {
+      assert.include(interruptResult.payload.message, "thrash circuit breaker");
+      assert.include(interruptResult.payload.message, "command_execution(exit=1)");
+      assert.include(interruptResult.payload.message, "eacces");
+    }
+  }),
+);
+
+it.effect("resets thrash counter on intervening success so retries do not false-trip", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const { events, interruptCalls } = yield* runLoopGuardIntegrationScenario({
+      key: "loop-guard-reset",
+      scheduledTaskId: ScheduledTaskId.make("sched:reset"),
+      events: ({ threadId, runId, nodeId, providerThreadId, providerTurnId }) => [
+        {
+          type: "provider_turn.updated",
+          driver,
+          threadId,
+          providerTurn: {
+            id: providerTurnId,
+            providerThreadId,
+            nodeId,
+            runAttemptId: RunAttemptId.make("attempt:loop-guard-reset"),
+            nativeTurnRef: null,
+            ordinal: 1,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+        ...(
+          [
+            { status: "failed", exitCode: 1, output: "compile error" },
+            { status: "failed", exitCode: 1, output: "compile error" },
+            { status: "completed", exitCode: 0, output: "fixed" },
+            { status: "failed", exitCode: 1, output: "compile error" },
+          ] as const
+        ).map((spec, index): ProviderAdapter.ProviderAdapterV2Event => ({
+          type: "turn_item.updated",
+          driver,
+          turnItem: {
+            id: TurnItemId.make(`cmd:reset:${index}`),
+            threadId,
+            runId,
+            nodeId,
+            providerThreadId,
+            providerTurnId,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: index + 1,
+            status: spec.status,
+            title: "Build",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "command_execution",
+            input: "tsc",
+            exitCode: spec.exitCode,
+            output: spec.output,
+          },
+        })),
+        {
+          type: "turn.terminal",
+          driver,
+          providerThreadId,
+          providerTurnId,
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        },
+      ],
+    });
+
+    assert.lengthOf(interruptCalls, 0);
+    const runEvent = events.find((event) => event.type === "run.updated");
+    assert.isDefined(runEvent);
+    assert.equal(runEvent.payload.status, "waiting");
   }),
 );
