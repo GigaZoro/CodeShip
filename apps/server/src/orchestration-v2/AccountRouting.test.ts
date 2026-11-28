@@ -1943,6 +1943,327 @@ describe("a thread whose provider has no account with room", () => {
       assert.isNull(stand(codexOut, { selection: onCodex(true) }));
     });
   });
+
+  describe("Antigravity per-meter Auto routing and known-room switching (AB#7597)", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const agMain = ProviderInstanceId.make("antigravity_asd");
+    const agSpare = ProviderInstanceId.make("antigravity_akucheri");
+    const meterReset = "2026-11-04T12:00:00.000Z";
+    const spareReset = "2026-11-04T10:00:00.000Z";
+    const refusedAt = "2026-11-03T11:50:00.000Z";
+
+    const thinkingXhigh = {
+      optionDescriptors: [
+        {
+          id: "thinking_level",
+          label: "Thinking",
+          type: "select" as const,
+          options: [
+            { id: "high", label: "High" },
+            { id: "xhigh", label: "Extra high" },
+          ],
+        },
+      ],
+    };
+    const agModels: ServerProvider["models"] = [
+      {
+        slug: "gemini-4-neon",
+        name: "Gemini 4 Neon",
+        isCustom: false,
+        isDefault: true,
+        capabilities: thinkingXhigh,
+      },
+      {
+        slug: "gemini-4-argon",
+        name: "Gemini 4 Argon",
+        isCustom: false,
+        capabilities: null,
+      },
+      {
+        slug: "claude-opus-5-5",
+        name: "Claude Opus 5.5",
+        isCustom: false,
+        capabilities: null,
+      },
+    ];
+
+    const agAccount = (
+      instanceId: ProviderInstanceId,
+      usage: {
+        readonly gemini?: number;
+        readonly argon?: number;
+        readonly thirdParty?: number;
+      } = {},
+    ) =>
+      provider(instanceId, {
+        driver: antigravity,
+        models: agModels,
+        usageLimits: {
+          checkedAt: "2026-11-03T11:59:00.000Z",
+          windows: [
+            {
+              id: "gemini-5h",
+              kind: "session" as const,
+              label: "Gemini",
+              usedPercent: usage.gemini ?? 10,
+              resetsAt: meterReset,
+            },
+            {
+              id: "gemini-argon-5h",
+              kind: "session" as const,
+              label: "Argon",
+              usedPercent: usage.argon ?? 10,
+              resetsAt: meterReset,
+            },
+            {
+              id: "3p-5h",
+              kind: "session" as const,
+              label: "Third-party",
+              usedPercent: usage.thirdParty ?? 10,
+              resetsAt: meterReset,
+            },
+          ],
+        },
+      });
+
+    const agSettings = (savedModel?: string) => ({
+      ...settings([agMain, agSpare, primary]),
+      autoModeProvider: antigravity,
+      autoModeModels: {
+        [claude]: { model: "claude-opus-5-5" },
+        ...(savedModel === undefined ? {} : { [antigravity]: { model: savedModel } }),
+      },
+      providerInstances: {
+        [agMain]: { driver: antigravity, enabled: true },
+        [agSpare]: { driver: antigravity, enabled: true },
+        [primary]: { driver: claude, enabled: true },
+      },
+    });
+
+    it.each([
+      {
+        meter: "third-party",
+        model: "claude-opus-5-5",
+        otherMeter: "gemini-default",
+      },
+      {
+        meter: "gemini-default",
+        model: "gemini-4-neon",
+        otherMeter: "third-party",
+      },
+      {
+        meter: "gemini-argon",
+        model: "gemini-4-argon",
+        otherMeter: "third-party",
+      },
+    ] as const)(
+      "routes a started Antigravity Auto chat on $meter by per-meter room",
+      ({ meter, model, otherMeter }) => {
+        const providers = [agAccount(agMain), agAccount(agSpare), provider(primary)];
+        const base = {
+          settings: agSettings(model),
+          providers,
+          mcpSignInsNeeded: new Map(),
+          nowMs,
+          projectId,
+          currentInstanceId: agMain,
+          started: true,
+          selection: { instanceId: agMain, model, autoAccount: true },
+        };
+
+        // Refused on agMain only -> moves to agSpare on the same provider.
+        const peerMove = autoRoute({
+          ...base,
+          recordedLimits: new Map([
+            [agMain, [{ resetAt: meterReset, refusedAt, modelScope: meter }]],
+          ]),
+        });
+        assert.isNull(peerMove.move);
+        assert.include(peerMove.selection, { instanceId: agSpare, model, autoAccount: true });
+
+        // Refused on every Antigravity account -> moves to Claude with a cross-provider notice.
+        const crossMove = autoRoute({
+          ...base,
+          recordedLimits: new Map([
+            [agMain, [{ resetAt: meterReset, refusedAt, modelScope: meter }]],
+            [agSpare, [{ resetAt: spareReset, refusedAt, modelScope: meter }]],
+          ]),
+        });
+        assert.include(crossMove.selection, {
+          instanceId: primary,
+          model: "claude-opus-5-5",
+          autoAccount: true,
+        });
+        assert.isNotNull(crossMove.move);
+        assert.equal(crossMove.move.from, agMain);
+        assert.equal(crossMove.move.until, spareReset);
+
+        // Another meter refused on every Antigravity account -> own meter still has room, so stays put.
+        const staysPut = autoRoute({
+          ...base,
+          recordedLimits: new Map([
+            [agMain, [{ resetAt: meterReset, refusedAt, modelScope: otherMeter }]],
+            [agSpare, [{ resetAt: spareReset, refusedAt, modelScope: otherMeter }]],
+          ]),
+        });
+        assert.isNull(staysPut.move);
+        assert.include(staysPut.selection, { instanceId: agMain, model, autoAccount: true });
+      },
+    );
+
+    it("falls back across Antigravity native Auto meters before leaving for another provider", () => {
+      const providers = [agAccount(agMain), agAccount(agSpare), provider(primary)];
+      const base = {
+        settings: agSettings(),
+        providers,
+        mcpSignInsNeeded: new Map(),
+        nowMs,
+        projectId,
+        currentInstanceId: agMain,
+        started: true,
+        selection: { instanceId: agMain, model: "claude-opus-5-5", autoAccount: true },
+      };
+
+      // Third-party refused on all Antigravity accounts, but Gemini still has room -> stays on Antigravity Gemini.
+      const geminiFallback = autoRoute({
+        ...base,
+        recordedLimits: new Map([
+          [agMain, [{ resetAt: meterReset, refusedAt, modelScope: "third-party" }]],
+          [agSpare, [{ resetAt: spareReset, refusedAt, modelScope: "third-party" }]],
+        ]),
+      });
+      assert.isNull(geminiFallback.move);
+      assert.include(geminiFallback.selection, {
+        instanceId: agMain,
+        model: "gemini-4-neon",
+        autoAccount: true,
+      });
+
+      // Both third-party and Gemini refused on every Antigravity account -> moves to Claude.
+      const crossMove = autoRoute({
+        ...base,
+        recordedLimits: new Map([
+          [
+            agMain,
+            [
+              { resetAt: meterReset, refusedAt, modelScope: "third-party" },
+              { resetAt: meterReset, refusedAt, modelScope: "gemini-default" },
+            ],
+          ],
+          [
+            agSpare,
+            [
+              { resetAt: spareReset, refusedAt, modelScope: "third-party" },
+              { resetAt: spareReset, refusedAt, modelScope: "gemini-default" },
+            ],
+          ],
+        ]),
+      });
+      assert.isNotNull(crossMove.move);
+      assert.include(crossMove.selection, {
+        instanceId: primary,
+        model: "claude-opus-5-5",
+        autoAccount: true,
+      });
+    });
+
+    it("gates account switching on known per-model room rather than only a driver allow-list", () => {
+      const customDriver = ProviderDriverKind.make("custom-quota-driver");
+      const customA = ProviderInstanceId.make("custom_a");
+      const customB = ProviderInstanceId.make("custom_b");
+      const customModels: ServerProvider["models"] = [
+        { slug: "custom-pro", name: "Custom Pro", isCustom: false, capabilities: null },
+      ];
+      const customAccount = (
+        instanceId: ProviderInstanceId,
+        usedPercent?: number,
+      ): ServerProvider =>
+        provider(instanceId, {
+          driver: customDriver,
+          models: customModels,
+          ...(usedPercent === undefined
+            ? {}
+            : {
+                usageLimits: {
+                  checkedAt: "2026-11-03T11:59:00.000Z",
+                  windows: [
+                    {
+                      id: "pro-5h",
+                      kind: "session" as const,
+                      label: "Pro",
+                      model: "custom-pro",
+                      usedPercent,
+                      resetsAt: meterReset,
+                    },
+                  ],
+                },
+              }),
+        });
+      const customSettings = {
+        ...settings([customA, customB, primary]),
+        autoModeProvider: claude,
+        autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+        providerInstances: {
+          [customA]: { driver: customDriver, enabled: true },
+          [customB]: { driver: customDriver, enabled: true },
+          [primary]: { driver: claude, enabled: true },
+        },
+      };
+
+      // Without usage windows or refusals, an unknown driver is not switched.
+      assert.deepEqual(
+        accountsWithRoom({
+          settings: customSettings,
+          providers: [customAccount(customA), customAccount(customB)],
+          recordedLimits: new Map(),
+          mcpSignInsNeeded: new Map(),
+          nowMs,
+          projectId,
+          driver: customDriver,
+          model: "custom-pro",
+        }),
+        [],
+      );
+
+      // With live per-model usage windows, switching moves from exhausted customA to customB.
+      const peerRoute = autoRoute({
+        settings: customSettings,
+        providers: [customAccount(customA, 100), customAccount(customB, 15), provider(primary)],
+        recordedLimits: new Map(),
+        mcpSignInsNeeded: new Map(),
+        nowMs,
+        projectId,
+        currentInstanceId: customA,
+        started: true,
+        selection: { instanceId: customA, model: "custom-pro", autoAccount: true },
+      });
+      assert.isNull(peerRoute.move);
+      assert.include(peerRoute.selection, {
+        instanceId: customB,
+        model: "custom-pro",
+        autoAccount: true,
+      });
+
+      // When every account of the custom driver is out on custom-pro, moves to Claude.
+      const crossRoute = autoRoute({
+        settings: customSettings,
+        providers: [customAccount(customA, 100), customAccount(customB, 100), provider(primary)],
+        recordedLimits: new Map(),
+        mcpSignInsNeeded: new Map(),
+        nowMs,
+        projectId,
+        currentInstanceId: customA,
+        started: true,
+        selection: { instanceId: customA, model: "custom-pro", autoAccount: true },
+      });
+      assert.isNotNull(crossRoute.move);
+      assert.include(crossRoute.selection, {
+        instanceId: primary,
+        model: "claude-opus-5-5",
+        autoAccount: true,
+      });
+    });
+  });
 });
 
 describe("usageBlock", () => {

@@ -234,7 +234,14 @@ function continueLimitedRun(
   const heldAttemptId = thread.status === "running" ? thread.heldAttemptId : undefined;
   // A held run keeps its id across restarts, so its attempt tells each hold apart. The target is
   // part of the id so a refused switch does not block trying another account.
-  const identity = [thread.id, runId, heldAttemptId, target?.instanceId]
+  const stoppedModel = thread.latestRunModel ?? thread.modelSelection.model;
+  const sameAccountModelSwitch =
+    target !== undefined &&
+    target.instanceId === thread.providerInstanceId &&
+    target.model !== stoppedModel
+      ? target.model
+      : undefined;
+  const identity = [thread.id, runId, heldAttemptId, target?.instanceId, sameAccountModelSwitch]
     .filter((part) => part !== undefined)
     .join(":");
   return {
@@ -350,17 +357,46 @@ export function limitFailoverDecision(input: FailoverInput, switching = true) {
           currentInstanceId: input.thread.providerInstanceId,
           started: true,
         });
+  const sameProviderAutoTarget = (() => {
+    if (
+      routed === null ||
+      routed.move !== null ||
+      sameProvider !== undefined ||
+      input.thread.modelSelection.autoAccount !== true
+    ) {
+      return undefined;
+    }
+    const stoppedModel = input.thread.latestRunModel ?? input.thread.modelSelection.model;
+    const changed =
+      routed.selection.instanceId !== input.thread.providerInstanceId ||
+      routed.selection.model !== stoppedModel;
+    if (!changed) return undefined;
+    const targetProvider = input.providers.find(
+      (provider) => provider.instanceId === routed.selection.instanceId,
+    );
+    if (targetProvider === undefined) return undefined;
+    const eligible = accountsWithRoom({
+      ...input,
+      background: true,
+      driver: targetProvider.driver,
+      projectId: input.thread.projectId,
+      model: routed.selection.model,
+    });
+    return eligible.some((account) => account.instanceId === routed.selection.instanceId)
+      ? routed.selection
+      : undefined;
+  })();
   const move = routed?.move ?? undefined;
   const target: ModelSelection | undefined =
     routed?.move != null
       ? routed.selection
-      : sameProvider === undefined
-        ? undefined
-        : {
+      : sameProvider !== undefined
+        ? {
             ...input.thread.modelSelection,
             instanceId: sameProvider.instanceId,
             model: sameProvider.model,
-          };
+          }
+        : sameProviderAutoTarget;
   const command =
     search === null || target === undefined
       ? null

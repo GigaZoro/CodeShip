@@ -527,6 +527,59 @@ export type AccountEligibility =
  * before pending sign-in, then healthy with live usage, unread, and soft-draining. Within each
  * tier: headroom (or earliest weekly reset with `preferEarliestReset`), weekly reset, saved order.
  */
+/**
+ * Whether T3 can tell an account's room for `model`: either the driver reports usage resets and
+ * rejected logins directly, or this account already carries live usage windows or active usage
+ * refusals covering `model` (AB#7597).
+ */
+function providerKnowsModelRoom(
+  provider: ServerProvider,
+  input: Pick<AccountRoutingContext, "nowMs"> & {
+    readonly recordedLimits?: AccountRoutingContext["recordedLimits"];
+  },
+  model: string | null = null,
+): boolean {
+  if (supportsAccountFailover(provider.driver)) return true;
+  const canonical = model === null ? null : canonicalModel(provider, model);
+  const windows = provider.usageLimits?.windows ?? [];
+  if (
+    windows.some(
+      (window) =>
+        window.resetsAt !== undefined &&
+        Date.parse(window.resetsAt) > input.nowMs &&
+        (canonical === null || usageWindowAppliesToModel(provider, window, canonical)),
+    )
+  ) {
+    return true;
+  }
+  const refusals = input.recordedLimits?.get(provider.instanceId) ?? [];
+  return refusals.some((refusal) => {
+    if (
+      canonical !== null &&
+      refusal.modelScope !== undefined &&
+      !refusalScopeCoversModel(provider, refusal.modelScope, canonical)
+    ) {
+      return false;
+    }
+    return recordedUsageLimitEnd(provider, refusal).end > input.nowMs;
+  });
+}
+
+function driverKnowsModelRoom(
+  input: Pick<AccountRoutingContext, "providers" | "nowMs"> & {
+    readonly recordedLimits?: AccountRoutingContext["recordedLimits"];
+  },
+  driver: ProviderDriverKind,
+  model: string | null = null,
+): boolean {
+  return (
+    supportsAccountFailover(driver) ||
+    input.providers.some(
+      (provider) => provider.driver === driver && providerKnowsModelRoom(provider, input, model),
+    )
+  );
+}
+
 export function accountsWithRoom(
   input: AccountSearch & McpSignIns,
   observe?: ObserveAccount,
@@ -536,7 +589,7 @@ export function accountsWithRoom(
   /** New work on it spends the prepaid credits the user allowed, not plan usage. */
   readonly onCredits: boolean;
 }> {
-  if (input.funding !== "verified" && !supportsAccountFailover(input.driver)) {
+  if (input.funding !== "verified" && !driverKnowsModelRoom(input, input.driver, input.model)) {
     if (observe)
       for (const provider of input.providers) observe(provider.instanceId, "unsupported_driver");
     return [];
@@ -544,6 +597,10 @@ export function accountsWithRoom(
   const eligible = input.providers.flatMap((provider) => {
     if (provider.driver !== input.driver) {
       observe?.(provider.instanceId, "driver_pinned");
+      return [];
+    }
+    if (input.funding !== "verified" && !providerKnowsModelRoom(provider, input, input.model)) {
+      observe?.(provider.instanceId, "unsupported_driver");
       return [];
     }
     const admission = accountSearchEligibility(provider, input);
@@ -605,9 +662,14 @@ function accountSearchEligibility(provider: ServerProvider, input: AccountSearch
 
 /** Accounts of `driver` that could run `model` but for usage, each with when its limits on it end. */
 function accountsByLimitEnd(input: AccountSearch) {
-  if (input.funding !== "verified" && !supportsAccountFailover(input.driver)) return [];
+  if (input.funding !== "verified" && !driverKnowsModelRoom(input, input.driver, input.model)) {
+    return [];
+  }
   return input.providers.flatMap((provider) => {
     if (provider.driver !== input.driver) return [];
+    if (input.funding !== "verified" && !providerKnowsModelRoom(provider, input, input.model)) {
+      return [];
+    }
     const admission = accountSearchEligibility(provider, input);
     return admission.kind === "eligible" ||
       (admission.kind === "usage_limited" && admission.limitedUntilMs !== null)
@@ -903,7 +965,16 @@ export function autoRoute(input: AutoRouteInput, crossProvider = true): AutoRout
   const background = isBackgroundContext(input);
   const excludedFamilies = excludedVendorFamilies(input.routingConstraints);
   const { selection, driver, searchModel } = resolveAutoRoute(input);
-  if ((selection === input.selection && !billingPriority) || driver === undefined) {
+  const startedKnownRoomAuto =
+    input.started &&
+    input.selection.autoAccount === true &&
+    activeAutoModeProvider(input.settings) !== null &&
+    driver !== undefined &&
+    driverKnowsModelRoom(input, driver, searchModel);
+  if (
+    (selection === input.selection && !billingPriority && !startedKnownRoomAuto) ||
+    driver === undefined
+  ) {
     return stay(selection);
   }
   if (
@@ -1255,7 +1326,7 @@ export function autoRoute(input: AutoRouteInput, crossProvider = true): AutoRout
       const hasRoomNow =
         ((!isSubscriptionAccount(provider) && !isPayPerUseAccount(provider)) ||
           (limitEnd === null && usageAllowed)) &&
-        (!supportsAccountFailover(candidateDriver) ||
+        (!providerKnowsModelRoom(provider, input, chosenModel) ||
           !input.settings.failoverLimitedThreads ||
           limitEnd === null) &&
         usageAllowed;
@@ -1474,7 +1545,7 @@ function crossProviderSearches(
     input.settings.providerInstanceFailoverOrder,
     eligible,
   )) {
-    if (!supportsAccountFailover(provider.driver) || drivers.has(provider.driver)) continue;
+    if (!providerKnowsModelRoom(provider, input) || drivers.has(provider.driver)) continue;
     drivers.add(provider.driver);
     for (const auto of autoDriverCandidates(input.settings, eligible, provider.driver)) {
       searches.push({
@@ -1761,7 +1832,9 @@ function selectionAccounts(
 ) {
   const own = input.providers.find((provider) => provider.instanceId === selection.instanceId);
   if (own === undefined) return null;
-  const switching = input.settings.failoverLimitedThreads && supportsAccountFailover(own.driver);
+  const switching =
+    input.settings.failoverLimitedThreads &&
+    driverKnowsModelRoom(input, own.driver, selection.model);
   if (input.selection.autoAccount === true && switching) {
     const candidates = autoDriverCandidates(input.settings, input.providers, own.driver);
     if (candidates.length > 1) {
@@ -1825,7 +1898,15 @@ function selectionWait(
 ): UsageWait | null {
   const own = selectionAccounts(input, selection, started);
   const blocked = own === null ? null : waitForRoom(own.driver, own.accounts);
-  if (blocked === null || (started && selection === input.selection)) return blocked;
+  const startedKnownRoomAuto =
+    started &&
+    input.selection.autoAccount === true &&
+    activeAutoModeProvider(input.settings) !== null &&
+    own !== null &&
+    driverKnowsModelRoom(input, own.driver, selection.model);
+  if (blocked === null || (started && selection === input.selection && !startedKnownRoomAuto)) {
+    return blocked;
+  }
   const backgroundDisallowed =
     !started &&
     isBackgroundContext(input) &&
@@ -2277,7 +2358,7 @@ export const readMcpSignIns = Effect.fn("AccountRouting.readMcpSignIns")(functio
       : mcp.discover(instanceId);
   const accounts = input.providers.filter(
     (provider) =>
-      supportsAccountFailover(provider.driver) &&
+      providerKnowsModelRoom(provider, input) &&
       (input.driver === undefined || provider.driver === input.driver) &&
       ProviderMcp.canListMcpServers(provider, input.nowMs),
   );

@@ -486,6 +486,162 @@ describe("limitFailoverCommand across providers", () => {
     });
     assert.notEqual(target?.selection.instanceId, codexId);
   });
+
+  describe("Antigravity per-meter Auto recovery sweep (AB#7597)", () => {
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const agMain = ProviderInstanceId.make("antigravity_asd");
+    const agSpare = ProviderInstanceId.make("antigravity_akucheri");
+    const thinkingXhigh = {
+      optionDescriptors: [
+        {
+          id: "thinking_level",
+          label: "Thinking",
+          type: "select" as const,
+          options: [
+            { id: "high", label: "High" },
+            { id: "xhigh", label: "Extra high" },
+          ],
+        },
+      ],
+    };
+    const agModels: ServerProvider["models"] = [
+      { ...model("gemini-4-neon", "Gemini 4 Neon"), isDefault: true, capabilities: thinkingXhigh },
+      model("gemini-4-argon", "Gemini 4 Argon"),
+      model("claude-opus-5-5", "Claude Opus 5.5"),
+    ];
+    const agAccount = (instanceId: ProviderInstanceId) =>
+      provider(instanceId, {
+        driver: antigravity,
+        models: agModels,
+      });
+    const agThread: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+      ...thread,
+      providerInstanceId: agMain,
+      latestRunProviderInstanceId: agMain,
+      latestRunModel: "claude-opus-5-5",
+      modelSelection: { instanceId: agMain, model: "claude-opus-5-5", autoAccount: true },
+    };
+    const agSettings = (savedModel?: string) => ({
+      ...crossSettings,
+      autoModeProvider: antigravity,
+      autoModeModels: {
+        [claude]: { model: "claude-opus-4-1" },
+        ...(savedModel === undefined ? {} : { [antigravity]: { model: savedModel } }),
+      },
+      providerInstanceFailoverOrder: [agMain, agSpare, claudeAgent],
+      providerInstances: {
+        [agMain]: { driver: antigravity, enabled: true },
+        [agSpare]: { driver: antigravity, enabled: true },
+        [claudeAgent]: { driver: claude, enabled: true },
+      },
+    });
+    const thirdPartyOut = {
+      resetAt,
+      refusedAt: "2026-10-29T11:00:00Z",
+      modelScope: "third-party",
+    };
+    const geminiOut = {
+      resetAt,
+      refusedAt: "2026-10-29T11:00:00Z",
+      modelScope: "gemini-default",
+    };
+
+    it("moves a third-party-limited Antigravity Auto chat to another Antigravity account with room", () => {
+      const command = limitFailoverCommand({
+        mcpSignInsNeeded: new Map(),
+        thread: agThread,
+        settings: agSettings("claude-opus-5-5"),
+        providers: [agAccount(agMain), agAccount(agSpare), provider("claudeAgent")],
+        recordedLimits: new Map([[agMain, [thirdPartyOut]]]),
+        nowMs: now,
+      });
+      assert.include(command?.modelSelection, {
+        instanceId: agSpare,
+        model: "claude-opus-5-5",
+        autoAccount: true,
+      });
+      assert.isUndefined(command?.usageLimitMove);
+    });
+
+    it("moves a third-party-limited Antigravity Auto chat to Gemini on another account or on its own account when Gemini has room", () => {
+      const peerGemini = limitFailoverCommand({
+        mcpSignInsNeeded: new Map(),
+        thread: agThread,
+        settings: agSettings(),
+        providers: [agAccount(agMain), agAccount(agSpare), provider("claudeAgent")],
+        recordedLimits: new Map([
+          [agMain, [thirdPartyOut]],
+          [agSpare, [thirdPartyOut]],
+        ]),
+        nowMs: now,
+      });
+      assert.include(peerGemini?.modelSelection, {
+        instanceId: agSpare,
+        model: "gemini-4-neon",
+        autoAccount: true,
+      });
+      assert.isUndefined(peerGemini?.usageLimitMove);
+
+      // When agSpare is also out on Gemini and only agMain still has Gemini room, switch meters on agMain.
+      const ownGemini = limitFailoverCommand({
+        mcpSignInsNeeded: new Map(),
+        thread: agThread,
+        settings: agSettings(),
+        providers: [agAccount(agMain), agAccount(agSpare), provider("claudeAgent")],
+        recordedLimits: new Map([
+          [agMain, [thirdPartyOut]],
+          [agSpare, [thirdPartyOut, geminiOut]],
+        ]),
+        nowMs: now,
+      });
+      assert.include(ownGemini?.modelSelection, {
+        instanceId: agMain,
+        model: "gemini-4-neon",
+        autoAccount: true,
+      });
+      assert.equal(
+        ownGemini?.commandId,
+        CommandId.make("limit-failover:thread:failover:run:failover:antigravity_asd:gemini-4-neon"),
+      );
+      assert.isUndefined(ownGemini?.usageLimitMove);
+    });
+
+    it("moves an Antigravity Auto chat to Claude when its refused meter has no room on any Antigravity account", () => {
+      const command = limitFailoverCommand({
+        mcpSignInsNeeded: new Map(),
+        thread: agThread,
+        settings: agSettings("claude-opus-5-5"),
+        providers: [agAccount(agMain), agAccount(agSpare), provider("claudeAgent")],
+        recordedLimits: new Map([
+          [agMain, [thirdPartyOut]],
+          [agSpare, [thirdPartyOut]],
+        ]),
+        nowMs: now,
+      });
+      assert.include(command?.modelSelection, {
+        instanceId: claudeAgent,
+        model: "claude-opus-4-1",
+        autoAccount: true,
+      });
+      assert.equal(command?.usageLimitMove?.from, agMain);
+    });
+
+    it("keeps the Antigravity Auto chat waiting when no Antigravity meter or other provider has room", () => {
+      const command = limitFailoverCommand({
+        mcpSignInsNeeded: new Map(),
+        thread: agThread,
+        settings: agSettings(),
+        providers: [agAccount(agMain), agAccount(agSpare), provider("claudeAgent")],
+        recordedLimits: new Map([
+          [agMain, [thirdPartyOut, geminiOut]],
+          [agSpare, [thirdPartyOut, geminiOut]],
+          [claudeAgent, [claudeOut]],
+        ]),
+        nowMs: now,
+      });
+      assert.isNull(command);
+    });
+  });
 });
 
 describe("limitRecoveryTarget", () => {

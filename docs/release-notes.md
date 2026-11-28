@@ -1,3 +1,8 @@
+## 2026-11-28 — Antigravity per-meter Auto failover and known-room account switching
+
+- Antigravity Auto chats whose refused meter has no room on any Antigravity account now fail over on both send and the usage-limit recovery sweep—falling back to an available Antigravity Auto meter first, or continuing on another provider with room—while chats on meters with room stay put.
+- Account switching and cross-provider failover in `AccountRouting` are now gated on whether CodeShip knows an account's per-model room (via live usage windows, active refusals, or native failover support) rather than only a static driver allow-list.
+
 ## 2026-11-28 — Scheduled tasks support declarative Auto routing constraints and central delivery manifest onboarding
 
 - Scheduled tasks (`schedule_task`, `list_scheduled_tasks`, SQLite persistence, and shared-task sync) now accept optional `routingConstraints` (`capabilityTier`, `minTier`, `excludeVendorFamily`) and forward them into Auto account routing, usage-block admission, and thread launch—enforcing tier floors, excluding specified vendor families, degrading gracefully with `degradedReason` when no dissimilar provider has quota, and staying fully backward compatible when omitted.
