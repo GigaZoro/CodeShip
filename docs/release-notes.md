@@ -1,3 +1,8 @@
+## 2026-11-28 — Zero-LLM upstream drift radar and i18n parity gate
+
+- Maintainers: added `scripts/upstream-drift-radar.mjs` (deterministic `git merge-tree --write-tree` with legacy fallback, security advisory scan, and optional isolated worktree verification) and `scripts/i18n-diff-gate.mjs` (zero-LLM locale key parity check) as `--needs-run` run conditions for scheduled maintenance tasks.
+- Maintainers: updated `machine-config.json` to retire the weekly dependency upgrade task, stagger fixed schedules onto prime minutes (`:07`, `:17`, `:23`), order shared tasks VPS-first (`Zoro-VPS` → `Zoro-PC` → `MacBook-Pro-Andrii`), and add 3-provider `fallbackModelSelections` (Claude, Codex, Antigravity) to every recurring task.
+
 ## 2026-11-28 — Calm preset in Appearance
 
 - **Settings → Appearance** and the command palette now include a **Calm preset** action (**Apply Calm** / **Apply Calm preset**) that switches to compact spacing, Essentials thread details, folding older finished turns, and calm status colors in one step on web and desktop, and compact spacing plus calm status colors on mobile.
