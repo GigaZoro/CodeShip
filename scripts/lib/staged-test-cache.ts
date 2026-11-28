@@ -9,8 +9,25 @@ import * as Effect from "effect/Effect";
 const databaseName = "cache.db";
 
 const SQLITE_BUSY = 5;
+const SQLITE_NOTADB = 26;
 export const isSqliteBusy = (cause: unknown) =>
   cause instanceof Error && "errcode" in cause && cause.errcode === SQLITE_BUSY;
+export const isSqliteNotADb = (cause: unknown) =>
+  cause instanceof Error &&
+  (("errcode" in cause && cause.errcode === SQLITE_NOTADB) ||
+    ("errstr" in cause &&
+      typeof cause.errstr === "string" &&
+      /not a database/i.test(cause.errstr)) ||
+    /not a database/i.test(cause.message));
+
+// Commit one header page on a 0-byte lock file so subsequent opens never race an empty file plus
+// hot rollback journal (SQLITE_NOTADB on macOS under load). If another run acquires the lock during
+// the brief COMMIT -> BEGIN EXCLUSIVE window, the caller handles SQLITE_BUSY / SQLITE_NOTADB.
+export function ensureSqliteHeader(db: NodeSqlite.DatabaseSync, file: string) {
+  if (NodeFS.statSync(file, { throwIfNoEntry: false })?.size === 0) {
+    db.exec("PRAGMA user_version = 1; COMMIT; BEGIN EXCLUSIVE;");
+  }
+}
 
 function cacheVersions(cache: string) {
   if (!NodeFS.existsSync(cache)) return [];
@@ -115,13 +132,16 @@ const partitionLockWaitMillis = 60_000;
 // The lock is an exclusive transaction on this file, which the OS releases with its process.
 function tryLockPartitions(partitions: string) {
   NodeFS.mkdirSync(partitions, { recursive: true });
-  const lock = new NodeSqlite.DatabaseSync(`${partitions}.sqlite`);
+  const file = `${partitions}.sqlite`;
+  let lock: NodeSqlite.DatabaseSync | undefined;
   try {
+    lock = new NodeSqlite.DatabaseSync(file);
     lock.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+    ensureSqliteHeader(lock, file);
     return lock;
   } catch (cause) {
-    lock.close();
-    if (isSqliteBusy(cause)) return undefined;
+    lock?.close();
+    if (isSqliteBusy(cause) || isSqliteNotADb(cause)) return undefined;
     throw cause;
   }
 }

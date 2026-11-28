@@ -1287,6 +1287,279 @@ describe("check:changed", () => {
       }),
   );
 
+  it.effect(
+    "treats SQLITE_NOTADB on budget slots, landing markers, and partition locks as contended, handles ensureSqliteHeader BUSY races, initializes headers, warns once with recovery hint, and fails on non-transient errors",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* slotDirectory;
+        const slot0 = NodePath.join(dir, "slot-0.sqlite");
+        // Seed a 0-byte slot file (the exact macOS state when another holder has an unsynced journal).
+        NodeFS.writeFileSync(slot0, "");
+        const notADbError = () =>
+          Object.assign(new Error("file is not a database"), { errcode: 26 });
+        const busyError = () => Object.assign(new Error("database is locked"), { errcode: 5 });
+
+        let remainingNotADb = 4;
+        const warnings: Array<string> = [];
+        const origExec = NodeSqlite.DatabaseSync.prototype.exec;
+        const origClose = NodeSqlite.DatabaseSync.prototype.close;
+        using execSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "exec")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql: string) {
+            if (remainingNotADb > 0 && sql.includes("BEGIN EXCLUSIVE")) {
+              remainingNotADb -= 1;
+              throw notADbError();
+            }
+            return origExec.call(this, sql);
+          });
+
+        const waitingEntered = yield* Deferred.make<void>();
+        const run = yield* runSteps(
+          [{ name: "step", run: () => Effect.succeed({ ok: true, output: "" }) }],
+          { concurrency: 1, timeoutSeconds: 60, slotDirectory: dir },
+        ).pipe(
+          Effect.provideService(Console.Console, {
+            ...globalThis.console,
+            log: (...args: ReadonlyArray<unknown>) => {
+              if (args.join(" ").includes("hold every slot")) {
+                Deferred.doneUnsafe(waitingEntered, Exit.void);
+              }
+            },
+            warn: (...args: ReadonlyArray<unknown>) => {
+              warnings.push(args.join(" "));
+            },
+          } as Console.Console),
+          Effect.onExit(() => Deferred.succeed(waitingEntered, undefined)),
+          Effect.forkChild,
+        );
+
+        yield* Deferred.await(waitingEntered);
+        for (let tick = 0; tick < 5; tick++) yield* TestClock.adjust("1 second");
+        const results = yield* Fiber.join(run);
+        execSpy.mockRestore();
+
+        assert.deepStrictEqual(
+          results.map((result) => result.outcome),
+          ["pass"],
+        );
+        // Never unlinked, and initialized with a real SQLite header page on first acquisition.
+        assert.isTrue(NodeFS.existsSync(slot0));
+        assert.isAtLeast(NodeFS.statSync(slot0).size, 4096);
+        assert.strictEqual(
+          NodeFS.readFileSync(slot0).subarray(0, 16).toString("utf8"),
+          "SQLite format 3\0",
+        );
+        // Persistent NOTADB warns once with a recovery hint rather than spamming every poll.
+        const notADbWarnings = warnings.filter(
+          (line) => line.includes("slot-0.sqlite") && line.includes("SQLITE_NOTADB"),
+        );
+        assert.strictEqual(notADbWarnings.length, 1);
+        assert.include(notADbWarnings[0]!, `remove ${slot0}`);
+
+        // With 2 slots, a NOTADB slot-0 (including errcode-less message fallback) falls through
+        // immediately to slot-1 without waiting.
+        let slot0Fails = true;
+        using fallthroughSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "exec")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql: string) {
+            if (slot0Fails && sql.includes("BEGIN EXCLUSIVE")) {
+              slot0Fails = false;
+              throw new Error("file is encrypted or is not a database");
+            }
+            return origExec.call(this, sql);
+          });
+        const fallthrough = yield* runSteps(
+          [{ name: "step", run: () => Effect.succeed({ ok: true, output: "" }) }],
+          { concurrency: 2, timeoutSeconds: 60, slotDirectory: dir },
+        );
+        fallthroughSpy.mockRestore();
+        assert.deepStrictEqual(
+          fallthrough.map((result) => result.outcome),
+          ["pass"],
+        );
+
+        // Losing the COMMIT -> BEGIN EXCLUSIVE race inside ensureSqliteHeader closes the handle
+        // cleanly and retries (concurrency 1) or falls through (concurrency 2) without handle leaks.
+        const raceDir = yield* slotDirectory;
+        const raceSlot0 = NodePath.join(raceDir, "slot-0.sqlite");
+        NodeFS.writeFileSync(raceSlot0, "");
+        let retryRaceOnce = true;
+        let failedRetryHandle: NodeSqlite.DatabaseSync | undefined;
+        let closedFailedRetryHandle = false;
+        using retryCloseSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "close")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync) {
+            if (this === failedRetryHandle) closedFailedRetryHandle = true;
+            return origClose.call(this);
+          });
+        using retryRaceSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "exec")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql: string) {
+            if (retryRaceOnce && sql.includes("PRAGMA user_version = 1")) {
+              retryRaceOnce = false;
+              failedRetryHandle = this;
+              origExec.call(this, "PRAGMA user_version = 1; COMMIT;");
+              throw busyError();
+            }
+            return origExec.call(this, sql);
+          });
+        const raceWaitEntered = yield* Deferred.make<void>();
+        const raceRun = yield* runSteps(
+          [{ name: "after-header-race", run: () => Effect.succeed({ ok: true, output: "" }) }],
+          { concurrency: 1, timeoutSeconds: 60, slotDirectory: raceDir },
+        ).pipe(
+          Effect.provideService(Console.Console, {
+            ...globalThis.console,
+            log: (...args: ReadonlyArray<unknown>) => {
+              if (args.join(" ").includes("hold every slot")) {
+                Deferred.doneUnsafe(raceWaitEntered, Exit.void);
+              }
+            },
+          } as Console.Console),
+          Effect.onExit(() => Deferred.succeed(raceWaitEntered, undefined)),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(raceWaitEntered);
+        assert.isTrue(closedFailedRetryHandle);
+        yield* TestClock.adjust("1 second");
+        const raceResults = yield* Fiber.join(raceRun);
+        retryRaceSpy.mockRestore();
+        retryCloseSpy.mockRestore();
+        assert.deepStrictEqual(
+          raceResults.map((result) => result.outcome),
+          ["pass"],
+        );
+        assert.isAtLeast(NodeFS.statSync(raceSlot0).size, 4096);
+
+        const fallthroughRaceDir = yield* slotDirectory;
+        NodeFS.writeFileSync(NodePath.join(fallthroughRaceDir, "slot-0.sqlite"), "");
+        let fallthroughRaceOnce = true;
+        let failedFallthroughHandle: NodeSqlite.DatabaseSync | undefined;
+        let closedFailedFallthroughHandle = false;
+        using fallthroughCloseSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "close")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync) {
+            if (this === failedFallthroughHandle) closedFailedFallthroughHandle = true;
+            return origClose.call(this);
+          });
+        using fallthroughRaceSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "exec")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql: string) {
+            if (fallthroughRaceOnce && sql.includes("PRAGMA user_version = 1")) {
+              fallthroughRaceOnce = false;
+              failedFallthroughHandle = this;
+              origExec.call(this, "PRAGMA user_version = 1; COMMIT;");
+              throw busyError();
+            }
+            return origExec.call(this, sql);
+          });
+        const fallthroughRaceResults = yield* runSteps(
+          [
+            {
+              name: "fallthrough-header-race",
+              run: () => Effect.succeed({ ok: true, output: "" }),
+            },
+          ],
+          { concurrency: 2, timeoutSeconds: 60, slotDirectory: fallthroughRaceDir },
+        );
+        fallthroughRaceSpy.mockRestore();
+        fallthroughCloseSpy.mockRestore();
+        assert.isTrue(closedFailedFallthroughHandle);
+        assert.deepStrictEqual(
+          fallthroughRaceResults.map((result) => result.outcome),
+          ["pass"],
+        );
+
+        // Partition locks (testCachePartition / tryLockPartitions) treat SQLITE_NOTADB (including
+        // errstr-only errors) as contended and initialize `${partitions}.sqlite` via ensureSqliteHeader.
+        const partitions = NodePath.join(dir, "tests");
+        const partitionLockFile = `${partitions}.sqlite`;
+        NodeFS.writeFileSync(partitionLockFile, "");
+        let partitionNotADb = true;
+        const partitionContended = yield* Deferred.make<void>();
+        using partitionSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "exec")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql: string) {
+            if (partitionNotADb && sql.includes("BEGIN EXCLUSIVE")) {
+              partitionNotADb = false;
+              Deferred.doneUnsafe(partitionContended, Exit.void);
+              throw Object.assign(new Error("sqlite failure"), {
+                errstr: "file is not a database",
+              });
+            }
+            return origExec.call(this, sql);
+          });
+        const partitionRun = yield* testCachePartition(partitions, "install").pipe(
+          Effect.forkChild,
+        );
+        yield* Deferred.await(partitionContended);
+        yield* TestClock.adjust("1 second");
+        const partitionResult = yield* Fiber.join(partitionRun);
+        partitionSpy.mockRestore();
+        assert.isFalse(partitionNotADb);
+        assert.strictEqual(partitionResult, NodePath.join(partitions, "install.0"));
+        assert.isTrue(NodeFS.existsSync(partitionLockFile));
+        assert.isAtLeast(NodeFS.statSync(partitionLockFile).size, 4096);
+        assert.strictEqual(
+          NodeFS.readFileSync(partitionLockFile).subarray(0, 16).toString("utf8"),
+          "SQLite format 3\0",
+        );
+
+        // Landing markers returning SQLITE_NOTADB are treated as held (not unlinked or fatal).
+        const markerPath = NodePath.join(dir, "landing-wait-999999.sqlite");
+        NodeFS.writeFileSync(markerPath, "");
+        let markerNotADb = true;
+        using markerSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "exec")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql: string) {
+            if (markerNotADb && sql.includes("BEGIN EXCLUSIVE")) {
+              markerNotADb = false;
+              throw notADbError();
+            }
+            return origExec.call(this, sql);
+          });
+        const markerWaitEntered = yield* Deferred.make<void>();
+        const markerRun = yield* runSteps(
+          [{ name: "after-marker", run: () => Effect.succeed({ ok: true, output: "" }) }],
+          { concurrency: 1, timeoutSeconds: 60, slotDirectory: dir },
+        ).pipe(
+          Effect.provideService(Console.Console, {
+            ...globalThis.console,
+            log: (...args: ReadonlyArray<unknown>) => {
+              if (args.join(" ").includes("hold every slot")) {
+                Deferred.doneUnsafe(markerWaitEntered, Exit.void);
+              }
+            },
+          } as Console.Console),
+          Effect.onExit(() => Deferred.succeed(markerWaitEntered, undefined)),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(markerWaitEntered);
+        assert.isTrue(NodeFS.existsSync(markerPath));
+        yield* TestClock.adjust("1 second");
+        const markerResults = yield* Fiber.join(markerRun);
+        markerSpy.mockRestore();
+        assert.deepStrictEqual(
+          markerResults.map((result) => result.outcome),
+          ["pass"],
+        );
+
+        // Non-transient SQLite errors still fail immediately.
+        using ioErrSpy = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "exec")
+          .mockImplementation(() => {
+            throw Object.assign(new Error("disk I/O error"), { errcode: 10 });
+          });
+        const failure = yield* runSteps(
+          [{ name: "fail", run: () => Effect.succeed({ ok: true, output: "" }) }],
+          { concurrency: 1, timeoutSeconds: 60, slotDirectory: dir },
+        ).pipe(Effect.flip);
+        ioErrSpy.mockRestore();
+        assert.include(String(failure), "cannot take a budget slot");
+        assert.include(String(failure), "disk I/O error");
+      }),
+  );
+
   it("bounds the test step by an explicit timeout and caps its per-file growth otherwise", () => {
     assert.strictEqual(testStepTimeoutSeconds(3, 900, false), 900);
     assert.strictEqual(testStepTimeoutSeconds(20, 900, false), 2400);
@@ -2205,7 +2478,7 @@ const writeUnder = (root: string, file: string, content = "input") => {
 };
 
 // On Windows cpSync copies a junction inside a folder as the folder it points to, verbatimSymlinks or not.
-const copyKeepingLinks = (from: string, to: string): void => {
+const copyKeepingLinks = (from: string, to: string, hardlinkFiles = false): void => {
   NodeFS.mkdirSync(NodePath.dirname(to), { recursive: true });
   const stat = NodeFS.lstatSync(from);
   if (stat.isSymbolicLink()) {
@@ -2213,10 +2486,16 @@ const copyKeepingLinks = (from: string, to: string): void => {
   } else if (stat.isDirectory()) {
     NodeFS.mkdirSync(to, { recursive: true });
     for (const entry of NodeFS.readdirSync(from)) {
-      copyKeepingLinks(NodePath.join(from, entry), NodePath.join(to, entry));
+      copyKeepingLinks(NodePath.join(from, entry), NodePath.join(to, entry), hardlinkFiles);
+    }
+  } else if (hardlinkFiles) {
+    try {
+      NodeFS.linkSync(from, to);
+    } catch {
+      NodeFS.copyFileSync(from, to, NodeFS.constants.COPYFILE_FICLONE);
     }
   } else {
-    NodeFS.copyFileSync(from, to);
+    NodeFS.copyFileSync(from, to, NodeFS.constants.COPYFILE_FICLONE);
   }
 };
 
@@ -2279,9 +2558,7 @@ it("fingerprints ignored inputs without entering dependency trees or directory l
     "root.d.ts",
     "target/leaked.d.ts",
     ".generated/code.ts",
-    ".astro/types.ts",
     "ignored/deep/.generated/code.js",
-    "ignored/deep/.astro/data.json",
     "ignored/deep/types.d.ts",
     "ignored/deep/.env.test",
     "ignored/space & дослід.d.ts",
@@ -2304,6 +2581,10 @@ it("fingerprints ignored inputs without entering dependency trees or directory l
   );
   for (const file of [
     ...expected.filter((file) => !file.endsWith("/")),
+    ".astro/types.ts",
+    ".astro/types.d.ts",
+    "ignored/deep/.astro/data.json",
+    "ignored/deep/.astro/content.d.ts",
     ".generated/nested/code.ts",
     "ignored/deep/.generated/linked-repo/code.ts",
     "ignored/plain.ts",
@@ -2625,6 +2906,112 @@ const tracedTempDir = (): string => {
   return resolved === "/dev" || resolved.startsWith("/dev/") ? "/tmp" : dir;
 };
 
+// Minimal git + Vite+ fixture for tests that exercise `vp run test-cache` and
+// `run-cached-test-group.ts` directly without spawning full `check-changed.ts` runs.
+function cachedGroupFixture() {
+  const root = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(tracedTempDir(), "t3 cached-group-")),
+  );
+  const host = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cached-group-host-"));
+  const write = (file: string, content: string) => writeUnder(root, file, content);
+  for (const file of [
+    "scripts/lib/cached-tests.ts",
+    "scripts/lib/cached-vitest-options.ts",
+    "scripts/lib/run-cached-test-group.ts",
+    ".github/scripts/git-history.cjs",
+  ]) {
+    write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
+  }
+  const nodeBin = NodePath.join(root, "node_modules", "fixture-node-bin");
+  NodeFS.mkdirSync(NodePath.dirname(nodeBin), { recursive: true });
+  NodeFS.symlinkSync(NodePath.dirname(process.execPath), nodeBin, "junction");
+  write(".gitignore", "node_modules/\n");
+  write(
+    "package.json",
+    JSON.stringify({
+      type: "module",
+      engines: { node: process.versions.node },
+    }),
+  );
+  const source = "packages/example/source.ts";
+  write(source, "export const value = 1;\n");
+  write(
+    "vite.config.mjs",
+    `
+    import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
+    export default {
+      run: { tasks: cachedTestTasks(process.env.T3_CACHED_TESTS) },
+      test: {
+        include: ["**/*.test.ts"],
+        pool: "threads",
+        maxWorkers: Number(process.env.T3CODE_TEST_MAX_WORKERS) || undefined,
+        setupFiles: [${JSON.stringify(providerEnv)}],
+      },
+    };
+  `,
+  );
+  for (const name of ["@t3tools/shared", "vite-plus"]) {
+    const dest = NodePath.join(root, "node_modules", name);
+    NodeFS.mkdirSync(NodePath.dirname(dest), { recursive: true });
+    NodeFS.symlinkSync(
+      NodeFS.realpathSync(NodePath.join(import.meta.dirname, "node_modules", name)),
+      dest,
+      "junction",
+    );
+  }
+  const git = (...args: Array<string>) =>
+    NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe", env });
+  git("init", "-q", "-b", "main");
+  git("add", ".");
+  git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "core.hooksPath=",
+    "commit",
+    "-m",
+    "fixture",
+  );
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const request = NodePath.join(host, "request.json");
+  const cache = NodePath.join(host, "cache");
+  return {
+    root,
+    source,
+    git,
+    write,
+    head: () => git("rev-parse", "HEAD").trim(),
+    runCachedGroup(file: string, head: string, variables: Record<string, string> = {}) {
+      NodeFS.writeFileSync(request, JSON.stringify({ files: [file], groupSize: 1 }));
+      const [command, args] = localVitePlusCommand(["run", "--remote-cache", "off", "test-cache"]);
+      return NodeChildProcess.spawnSync(command, args, {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...withoutCallerSettings(env),
+          TEMP: NodeOS.tmpdir(),
+          [pathKey]: [
+            NodePath.join(root, "node_modules/.bin"),
+            NodePath.join(import.meta.dirname, "../node_modules/.bin"),
+            nodeBin,
+            env[pathKey] ?? "",
+          ].join(NodePath.delimiter),
+          ...changedTestRequestEnv(request, "fixture", 1, cache, "fixture", head),
+          ...variables,
+        },
+      });
+    },
+    [Symbol.dispose]() {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+      NodeFS.rmSync(host, { recursive: true, force: true });
+    },
+  };
+}
+
 function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(tracedTempDir(), "t3 checks & (fixture) ")),
@@ -2657,7 +3044,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
   NodeFS.mkdirSync(NodePath.dirname(nodeBin), { recursive: true });
   NodeFS.symlinkSync(NodePath.dirname(process.execPath), nodeBin, "junction");
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-  write(".gitignore", "node_modules/\nrecords/\n.generated/\n.env*\n");
+  write(".gitignore", "node_modules/\nrecords/\n.generated/\n.astro/\n.env*\n");
   write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
   write(
     "package.json",
@@ -2695,9 +3082,10 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     const args = process.argv.slice(2);
     // Windows gives a finished step's pid to the next process at once, so a pid-named record could be replaced.
     const settings = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/i.test(name)));
-    fs.writeFileSync(path.join(process.env.RECORDS, randomUUID() + '.json'), JSON.stringify({ args, cwd: process.cwd(), settings }), { flag: 'wx' });
+    fs.writeFileSync(path.join(process.env.RECORDS, randomUUID() + '.json'), JSON.stringify({ args, cwd: process.cwd(), settings, workers: process.env.T3CODE_TEST_MAX_WORKERS }), { flag: 'wx' });
     const edit = args[0] === process.env.EDIT_STEP || args.includes(process.env.EDIT_STEP);
     if (edit && !args.includes('test-cache')) {
+      fs.mkdirSync(path.dirname(process.env.EDIT_FILE), { recursive: true });
       fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
     }
     if (args[0] === 'test' || args.includes('test-cache')) {
@@ -2729,6 +3117,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
       // As the repository's test config does through scripts/lib/test-workers.ts and its setup.
       test: {
         include: ["**/*.test.ts"],
+        pool: "threads",
         maxWorkers: Number(process.env.T3CODE_TEST_MAX_WORKERS) || undefined,
         setupFiles: [${JSON.stringify(providerEnv)}],
       },
@@ -2786,6 +3175,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     args: Array<string>;
     cwd: string;
     settings: Record<string, string>;
+    workers?: string;
   }> =>
     NodeFS.readdirSync(records).map((file) =>
       JSON.parse(NodeFS.readFileSync(NodePath.join(records, file), "utf8")),
@@ -2856,7 +3246,7 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
         ["vitest", NodeFS.realpathSync(NodePath.join(NodePath.dirname(vitePlus), "vitest"))],
       ]);
       for (const [name, shared] of copies) {
-        copyKeepingLinks(shared, NodePath.join(store(name), name));
+        copyKeepingLinks(shared, NodePath.join(store(name), name), true);
         const dependencies = NodePath.dirname(shared);
         for (const entry of NodeFS.readdirSync(dependencies)) {
           for (const dependency of entry.startsWith("@")
@@ -2941,6 +3331,10 @@ function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
     calls: (): Array<{ args: Array<string>; cwd: string }> =>
       recorded().map(({ args, cwd }) => ({ args, cwd })),
     settings: (): Array<Record<string, string>> => recorded().map(({ settings }) => settings),
+    testWorkers: (cwd: string): Array<string | undefined> =>
+      recorded()
+        .filter((call) => call.cwd === cwd && call.args.includes("test-cache"))
+        .map(({ workers }) => workers),
     [Symbol.dispose]() {
       NodeFS.rmSync(root, { recursive: true, force: true });
       NodeFS.rmSync(records, { recursive: true, force: true });
@@ -3649,17 +4043,19 @@ it("reuses passes in another worktree with the same inputs and tracked environme
     JSON.stringify({ layoutVersion: 5, prunedAt: "first" }),
   );
   const firstCheckout = project.checkout(files);
-  // Two workers here and one in the retry; pass each checkout as PWD, which PowerShell leaves unset.
+  // Two workers here (6 preceding steps + 2 test slots under --concurrency 8) and one in the retry;
+  // pass each checkout as PWD, which PowerShell leaves unset.
   const first = project.run(
     "lint",
     "",
     project.source,
-    ["--concurrency", "16"],
+    ["--concurrency", "8"],
     { ...passthrough, PWD: firstCheckout },
     firstCheckout,
   );
   expect(first.status, first.stdout + first.stderr).toBe(1);
   expect(first.stdout).toContain("pass  test (2 files)");
+  expect(project.testWorkers(firstCheckout)).toEqual(["2"]);
 
   project.write(
     "node_modules/.modules.yaml",
@@ -3677,6 +4073,7 @@ it("reuses passes in another worktree with the same inputs and tracked environme
   expect(repeat.status, repeat.stdout + repeat.stderr).toBe(1);
   expect(repeat.stdout).toContain("pass  test (2 files)");
   expect(repeat.stdout).toContain("cache hit, replaying");
+  expect(project.testWorkers(retryCheckout)).toEqual(["1"]);
   expect(NodeFS.readdirSync(NodePath.join(project.root, ".git/t3-check-changed/tests"))).toEqual([
     expect.stringMatching(/^[0-9a-f]{64}\.0$/),
   ]);
@@ -4142,7 +4539,7 @@ it.each([
     `git(other, "init", "-q"); execFileSync("git", ["rev-parse", "--git-dir"], { cwd: other, stdio: "pipe", env: { ...process.env, GIT_ALTERNATE_OBJECT_DIRECTORIES: JSON.stringify(join(root, ".git", "objects")) } })`,
   ],
 ])("reruns a test group that %s after a commit that leaves its files alone", (_, read) => {
-  using project = launcherFixture();
+  using project = cachedGroupFixture();
   project.write(
     "fixture.test.ts",
     `import { execFileSync } from "node:child_process";
@@ -4161,14 +4558,14 @@ it.each([
       }
     });`,
   );
-  const first = project.run();
+  const first = project.runCachedGroup("fixture.test.ts", project.head());
   expect(first.status, first.stdout + first.stderr).toBe(0);
   project.write(project.source, "export const value = 2;\n");
   project.git("add", project.source);
   project.git("commit", "-m", "unread change");
-  const next = project.run();
+  const next = project.runCachedGroup("fixture.test.ts", project.head());
   expect(next.status, next.stdout + next.stderr).toBe(0);
-  expect(next.stdout).toContain("pass  test (1 files)");
+  expect(next.stdout).toContain("fixture.test.ts");
   expect(next.stdout).not.toContain("cache hit, replaying");
 });
 
@@ -4205,13 +4602,31 @@ it("rejects a package support range without a development pin", () => {
   expect(project.calls()).toEqual([]);
 });
 
-it("passes uncached when a check rewrites a generated file", () => {
+it("passes uncached when a check rewrites a generated file, while caching when a check writes .astro outputs", () => {
   using project = launcherFixture();
   project.write(project.source, "export const value = 2;\n");
+  // Generating Astro's derived .astro/*.d.ts during a check (as `astro check` does in a fresh
+  // worktree) must not disable pass caching.
+  const astroResult = project.run("", "lint", "apps/marketing/.astro/types.d.ts");
+  expect(astroResult.status, astroResult.stdout + astroResult.stderr).toBe(0);
+  expect(astroResult.stdout).not.toContain(
+    "pass not cached: generated files changed during the run",
+  );
+  expect(
+    NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
+  ).toBe(true);
+
+  NodeFS.rmSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json"), {
+    force: true,
+  });
   project.write("packages/example/.generated/types.d.ts", "export {};\n");
   const result = project.run("", "lint", "packages/example/.generated/types.d.ts");
   expect(result.status, result.stdout + result.stderr).toBe(0);
   expect(result.stdout).toContain("pass not cached: generated files changed during the run");
+  expect(result.stdout).toContain("packages/example/.generated/types.d.ts");
+  expect(
+    NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
+  ).toBe(false);
 });
 
 it("fails a reused pass when its test step rewrites a generated file", () => {

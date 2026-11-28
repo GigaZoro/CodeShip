@@ -93,7 +93,13 @@ import {
   serverTestChainCount,
   unlessAbsent,
 } from "./lib/cached-tests.ts";
-import { isSqliteBusy, stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
+import {
+  ensureSqliteHeader,
+  isSqliteBusy,
+  isSqliteNotADb,
+  stageTestCache,
+  testCachePartition,
+} from "./lib/staged-test-cache.ts";
 
 const GiB = 1024 ** 3;
 // The test step's limit grows by this much per selected file: each server chain runs its test files one at a time.
@@ -219,6 +225,9 @@ const sharedBudget = (
       throw cause;
     }
   };
+  const NOTADB_WARN_THRESHOLD = 3;
+  const notADbPolls = new Map<string, number>();
+  const warnedNotADb = new Set<string>();
   /** False while a landing run has yet to hold its marker; true for every other run. */
   const markLanding = () => {
     if (!landing || marker) return true;
@@ -226,15 +235,15 @@ const sharedBudget = (
     try {
       db = new NodeSqlite.DatabaseSync(markerFile);
     } catch (cause) {
-      if (isSqliteCantOpen(cause)) return false;
+      if (isSqliteCantOpen(cause) || isSqliteNotADb(cause)) return false;
       throw cause;
     }
     try {
       db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
     } catch (cause) {
       db.close();
-      // Another run's stale-marker check holds it for a moment.
-      if (isSqliteBusy(cause)) return false;
+      // Another run's stale-marker check holds it for a moment, or its empty header is still syncing.
+      if (isSqliteBusy(cause) || isSqliteNotADb(cause)) return false;
       throw cause;
     }
     // That check may have removed the file before this lock; a lock on a removed file holds nobody back.
@@ -264,13 +273,14 @@ const sharedBudget = (
           db = new NodeSqlite.DatabaseSync(file);
         } catch (cause) {
           if (isSqliteCantOpen(cause)) return false;
+          if (isSqliteNotADb(cause)) return true;
           throw cause;
         }
         try {
           db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
         } catch (cause) {
           db.close();
-          if (isSqliteBusy(cause)) return true;
+          if (isSqliteBusy(cause) || isSqliteNotADb(cause)) return true;
           throw cause;
         }
         // Nobody held it: a marker its landing left behind. Remove it while still locked, so a landing
@@ -285,17 +295,36 @@ const sharedBudget = (
     Effect.try({
       try: () => {
         const held: Array<NodeSqlite.DatabaseSync> = [];
-        if (!landing && landingWaits()) return held;
+        const warnNotADb: Array<string> = [];
+        if (!landing && landingWaits()) return { held, warnNotADb };
         try {
           for (const file of files) {
             if (held.length === max) break;
-            const db = new NodeSqlite.DatabaseSync(file);
+            let db: NodeSqlite.DatabaseSync | undefined;
             try {
+              db = new NodeSqlite.DatabaseSync(file);
               db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+              ensureSqliteHeader(db, file);
+              notADbPolls.delete(file);
               held.push(db);
             } catch (cause) {
-              db.close();
-              if (!isSqliteBusy(cause)) throw cause;
+              db?.close();
+              if (isSqliteBusy(cause)) {
+                notADbPolls.delete(file);
+                continue;
+              }
+              if (isSqliteNotADb(cause)) {
+                // On macOS under load, a live holder's 0-byte slot file + hot journal can surface
+                // as SQLITE_NOTADB (26). Never unlink a potentially held lock; treat it as busy.
+                const count = (notADbPolls.get(file) ?? 0) + 1;
+                notADbPolls.set(file, count);
+                if (count >= NOTADB_WARN_THRESHOLD && !warnedNotADb.has(file)) {
+                  warnedNotADb.add(file);
+                  warnNotADb.push(NodePath.basename(file));
+                }
+                continue;
+              }
+              throw cause;
             }
           }
         } catch (cause) {
@@ -303,7 +332,7 @@ const sharedBudget = (
           throw cause;
         }
         holding += held.length;
-        return held;
+        return { held, warnNotADb };
       },
       catch: (cause) =>
         `check:changed: cannot take a budget slot in ${directory}: ${String(cause)}`,
@@ -320,13 +349,18 @@ const sharedBudget = (
           continue;
         }
         const signal = freed;
-        const held = yield* Effect.uninterruptible(
+        const { held, warnNotADb } = yield* Effect.uninterruptible(
           lockFree(max).pipe(
-            Effect.tap((held) =>
+            Effect.tap(({ held }) =>
               held.length > 0 ? Effect.addFinalizer(() => release(held)) : Effect.void,
             ),
           ),
         );
+        for (const slotName of warnNotADb) {
+          yield* Console.warn(
+            `check:changed: budget slot ${slotName} in ${directory} returned SQLITE_NOTADB across ${NOTADB_WARN_THRESHOLD} polls; treating as busy while waiting. If this persists with no other check:changed runs active, remove ${NodePath.join(directory, slotName)}.`,
+          );
+        }
         if (held.length > 0) {
           yield* flushWait;
           return held.length;
@@ -748,12 +782,15 @@ const isNestedRepository = async (folder: string) => {
 
 const GENERATED_INPUT = /(?:^|\/)\.generated\//;
 const ENV_INPUT = /(?:^|\/)\.env[^/]*$/;
+// Astro regenerates .astro/ (including .astro/*.d.ts) whenever `astro check` runs; apps/marketing/vite.config.ts
+// already excludes !.astro/** from its own task cache inputs.
+const ASTRO_OUTPUT = /(?:^|\/)\.astro(?:\/|$)/;
 // Of the ignored inputs, tests read env files and the generated sources that are not declarations.
 export const isTestInput = (file: string) =>
   !file.endsWith(".d.ts") && (GENERATED_INPUT.test(file) || ENV_INPUT.test(file));
 
-// The ignored files checks read: generated sources, Astro's generated types, declarations and env
-// files.
+// The ignored files checks read: generated sources, declarations and env files (excluding Astro's
+// derived .astro/ folder).
 export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (root: string) {
   // Pathspec exclusions filter output, but do not prune Git for Windows' junction traversal.
   const output = yield* git(root, [
@@ -797,15 +834,13 @@ export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (
   return yield* Effect.tryPromise(async () => {
     const files = new Set<string>();
     const matches = (file: string) =>
-      GENERATED_INPUT.test(file) ||
-      ENV_INPUT.test(file) ||
-      /(?:^|\/)\.astro\//.test(file) ||
-      file.endsWith(".d.ts");
+      !ASTRO_OUTPUT.test(file) &&
+      (GENERATED_INPUT.test(file) || ENV_INPUT.test(file) || file.endsWith(".d.ts"));
     // Git can list a folder together with folders inside it; each is read once. A path removed since
     // Git listed it is no input, as for `add` in checkChanged.
     const seen = new Set<string>();
     const walk = async (file: string): Promise<void> => {
-      if (seen.has(file) || (await inNodeModules(file))) return;
+      if (seen.has(file) || ASTRO_OUTPUT.test(file) || (await inNodeModules(file))) return;
       seen.add(file);
       const absolute = NodePath.join(root, file);
       const info = await unlessAbsentAsync(NodeFSP.lstat(absolute));
@@ -820,7 +855,7 @@ export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (
         }
         for (const entry of entries) {
           // Git never lists a .git entry, whatever it holds.
-          if (isDotGit(entry.name)) continue;
+          if (isDotGit(entry.name) || entry.name === ".astro") continue;
           const child = `${file}/${entry.name}`;
           if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(child);
           else if (matches(child)) files.add(child);
@@ -2027,8 +2062,16 @@ const checkChangedRun = Effect.fn("checkChanged.run")(function* (
   const fingerprints = Effect.fn("checkChanged.fingerprints")(function* (against: string) {
     const { hash, tree: checked, bytes } = yield* sourceFingerprint(against);
     const source = hash.copy().digest("hex");
-    yield* addFiles(hash, yield* ignoredInputs(root));
-    return { source, tree: checked, bytes, inputs: hash.update(yield* installed()).digest("hex") };
+    const ignored = yield* addFiles(hash, yield* ignoredInputs(root));
+    const install = yield* installed();
+    return {
+      source,
+      tree: checked,
+      bytes,
+      ignored,
+      install,
+      inputs: hash.update(install).digest("hex"),
+    };
   });
   const fingerprintStarted = yield* Clock.currentTimeMillis;
   const before = yield* fingerprints(base);
@@ -2526,7 +2569,15 @@ const checkChangedRun = Effect.fn("checkChanged.run")(function* (
       );
       return false;
     }
-    yield* Console.log("  pass not cached: generated files changed during the run");
+    const changedIgnored = [...new Set([...before.ignored.keys(), ...after.ignored.keys()])]
+      .filter((file) => before.ignored.get(file) !== after.ignored.get(file))
+      .sort();
+    if (before.install !== after.install) changedIgnored.push("node_modules install");
+    const detail =
+      changedIgnored.length > 0
+        ? ` (${changedIgnored.slice(0, CHANGED_PATHS_SHOWN).join(", ")}${changedIgnored.length > CHANGED_PATHS_SHOWN ? `, and ${changedIgnored.length - CHANGED_PATHS_SHOWN} more` : ""})`
+        : "";
+    yield* Console.log(`  pass not cached: generated files changed during the run${detail}`);
     return yield* recordCheckedPass;
   }
   // Write then rename, so a concurrent run never reads half a file.

@@ -1,3 +1,9 @@
+## 2026-11-28 — Hardened `check:changed` slot locking, pass caching, and launcher tests
+
+- Maintainers: `check:changed` budget slots, landing markers, and staged test-cache partition locks now treat transient `SQLITE_NOTADB` (26) as contended instead of failing, initialize 0-byte SQLite lock files with a committed header page on first acquisition, and warn once with a recovery hint if a slot stays unreadable across polls.
+- Maintainers: `check:changed` now excludes Astro's derived `.astro/` folder (including `.astro/*.d.ts`) from `ignoredInputs` and reports offending paths when generated files invalidate pass caching; removing unused `"composite": true` from `scripts/tsconfig.json` and `oxlint-plugin-t3code/tsconfig.json` stops `tsc --noEmit` from emitting `tsconfig.tsbuildinfo` and busting Vite+ `typecheck` caching.
+- Maintainers: `scripts/check-changed.test.ts` launcher and checkout-Git rerun tests now use `pool: "threads"`, hardlink/`COPYFILE_FICLONE` package copies in `checkout()`, `--concurrency 8` for the two-worker worktree cache-reuse run, and a lightweight `cachedGroupFixture` for direct `run-cached-test-group` cases.
+
 ## 2026-11-28 — Safer process cleanup on macOS and Linux
 
 - Stopping a command or agent session now keeps its process group number reserved through cleanup on supported hosts. This prevents a late stop from reaching a different program that inherited the same number. Claude also cleans up its MCP servers when the CLI exits or CodeShip shuts down.
