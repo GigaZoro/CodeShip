@@ -289,7 +289,12 @@ export interface AcpAdapterV2Flavor {
     /** The session's model after selection, with its display name when the agent lists it. */
     readonly currentModel: { readonly id: string; readonly name: string | undefined } | undefined;
   }) => Effect.Effect<ReadonlyArray<EffectAcpSchema.ContentBlock>, EffectAcpErrors.AcpError>;
-  readonly promptFailure?: (cause: unknown) => OrchestrationV2ProviderFailure;
+  readonly promptFailure?: (cause: unknown) => OrchestrationV2ProviderFailure | undefined;
+  /**
+   * Partial per-turn usage accumulated before a prompt failed (for example, a stalled
+   * model request aborted after earlier tool calls).
+   */
+  readonly extractPromptFailureUsage?: (cause: unknown) => EffectAcpSchema.Usage | undefined;
   /**
    * Runs before `session/prompt`. The returned check sees a prompt the agent ended
    * without an error or cancel, and reports a failure its stop reason hid. A reported
@@ -2337,6 +2342,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               yield* cancelPendingRuntimeRequests();
               const context = yield* Ref.get(activeTurn);
               if (context !== null) {
+                if (flavor.reportsPerTurnPromptUsage === true && !context.finalized) {
+                  const partialUsage = flavor.extractPromptFailureUsage?.(error);
+                  if (partialUsage !== undefined) {
+                    context.promptUsage = partialUsage;
+                  }
+                }
                 const failure = flavor.promptFailure?.(error);
                 yield* finalizeTurn(
                   context,
@@ -8415,6 +8426,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                         error.success._tag === "AcpRequestError" &&
                         error.success.code === -32800);
                     const failure = Cause.squash(cause);
+                    if (flavor.reportsPerTurnPromptUsage === true && !context.finalized) {
+                      const partialUsage = flavor.extractPromptFailureUsage?.(failure);
+                      if (partialUsage !== undefined) {
+                        context.promptUsage = partialUsage;
+                      }
+                    }
                     if (!interrupted && flavor.restartRuntimeAfterPromptError?.(failure) === true) {
                       yield* Ref.set(runtimeRestartRequired, true);
                     }

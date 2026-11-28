@@ -18,12 +18,15 @@ import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/process";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import * as EffectAcpErrors from "effect-acp/errors";
@@ -40,6 +43,8 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   ANTIGRAVITY_PINNED_SYSTEM_INSTRUCTIONS,
+  ANTIGRAVITY_PROMPT_STALL_FAILURE_CODE,
+  ANTIGRAVITY_PROMPT_STALL_TIMEOUT,
   makeAntigravityAcpAdapterFlavor,
   makeAntigravityAdapterV2,
 } from "./AntigravityAdapterV2.ts";
@@ -1495,5 +1500,442 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           [legacyPinned.text, PULL_REQUEST_LINKING_INSTRUCTIONS],
         );
       }).pipe(Effect.provide(layerSession), Effect.scoped),
+  );
+});
+
+describe("AntigravityAdapterV2 stalled model requests", () => {
+  it("keeps the default idle-progress stall limit well below the 55-minute backend 502 cutoff", () => {
+    const minutes = Duration.toMillis(ANTIGRAVITY_PROMPT_STALL_TIMEOUT) / 60_000;
+    assert.isAbove(minutes, 0);
+    assert.isBelow(minutes, 55);
+  });
+
+  const runFakeStallScenario = (scenario: {
+    readonly id: string;
+    readonly idleTimeout: Duration.Input;
+    readonly retryOutcome: "stall" | "recover";
+  }) =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* Crypto.Crypto;
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: `t3-antigravity-stall-${scenario.id}-`,
+      });
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let sessionUpdate: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+      let promptCalls = 0;
+      let cancelCalls = 0;
+      let activeCancelGate: Deferred.Deferred<void> | undefined;
+      const instanceId = ProviderInstanceId.make(`antigravity-stall-${scenario.id}`);
+      const threadId = ThreadId.make(`thread-antigravity-stall-${scenario.id}`);
+
+      const adapter = yield* makeAntigravityAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        promptIdleTimeout: scenario.idleTimeout,
+        makeRuntime: (input) =>
+          makeAntigravityAcpRuntime({
+            ...input,
+            childProcessSpawner,
+            spawn: {
+              command: process.execPath,
+              args: [mockAgentPath],
+              cwd: input.cwd,
+              env: { T3_ACP_ANTIGRAVITY: "1" },
+            },
+          }).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.map((runtime): RuntimeService => ({
+              ...runtime,
+              handleSessionUpdate: (handler) =>
+                Effect.sync(() => {
+                  sessionUpdate = handler;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
+              cancel: Effect.gen(function* () {
+                cancelCalls += 1;
+                if (activeCancelGate !== undefined) {
+                  yield* Deferred.succeed(activeCancelGate, undefined).pipe(Effect.ignore);
+                }
+              }),
+              prompt: () =>
+                Effect.gen(function* () {
+                  if (sessionUpdate === undefined) {
+                    return yield* Effect.die("the adapter must handle session updates");
+                  }
+                  promptCalls += 1;
+                  const attempt = promptCalls;
+                  const send = sessionUpdate;
+                  const emit = (update: EffectAcpSchema.SessionUpdate) =>
+                    send(
+                      normalizeAntigravitySessionUpdate({ sessionId: "mock-session-1", update }),
+                    );
+
+                  if (attempt === 1) {
+                    // Emit one completed tool call, then stall until cancelled (or a late 502).
+                    yield* emit({
+                      sessionUpdate: "tool_call",
+                      toolCallId: "call-read-input",
+                      title: "Running view_file",
+                      kind: "read",
+                      status: "in_progress",
+                      rawInput: { absolute_path: path.join(workspace, "input.md") },
+                    });
+                    yield* emit({
+                      sessionUpdate: "tool_call_update",
+                      toolCallId: "call-read-input",
+                      status: "completed",
+                    });
+                  } else if (scenario.retryOutcome === "recover") {
+                    yield* emit({
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: "Recovered after stall retry." },
+                    });
+                    return {
+                      stopReason: "end_turn" as const,
+                      usage: { inputTokens: 200, outputTokens: 45, totalTokens: 245 },
+                    };
+                  }
+
+                  const cancelGate = yield* Deferred.make<void>();
+                  activeCancelGate = cancelGate;
+                  yield* Deferred.await(cancelGate);
+                  if (activeCancelGate === cancelGate) {
+                    activeCancelGate = undefined;
+                  }
+                  return {
+                    stopReason: "cancelled" as const,
+                    usage:
+                      attempt === 1
+                        ? {
+                            inputTokens: 120,
+                            outputTokens: 15,
+                            totalTokens: 135,
+                            cachedReadTokens: 30,
+                            thoughtTokens: 5,
+                          }
+                        : {
+                            inputTokens: 40,
+                            outputTokens: 10,
+                            totalTokens: 50,
+                          },
+                  };
+                }),
+            })),
+          ),
+        withProcess: (_stop, task) => task,
+        // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+        defaultModel: Effect.succeed(undefined),
+      });
+
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: workspace,
+      });
+      const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+      const session = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make(`provider-session-stall-${scenario.id}`),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* session.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      yield* session.startTurn({
+        appThread: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make(`project-stall-${scenario.id}`),
+          title: "Antigravity stall test",
+          providerInstanceId: instanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: workspace,
+          activeProviderThreadId: providerThread.id,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+        threadId,
+        runId: RunId.make(`run-stall-${scenario.id}`),
+        runOrdinal: 1,
+        providerTurnOrdinal: 1,
+        attemptId: RunAttemptId.make(`attempt-stall-${scenario.id}`),
+        rootNodeId: NodeId.make(`node-stall-${scenario.id}`),
+        providerThread,
+        message: {
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make(`message-stall-${scenario.id}`),
+          text: "review the input file",
+          attachments: [],
+        },
+        modelSelection,
+        runtimePolicy,
+      });
+      const events = Array.from(
+        yield* session.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        ),
+      );
+      return { events, promptCalls, cancelCalls };
+    }).pipe(Effect.provide(layerSession), Effect.scoped);
+
+  it.live(
+    "aborts after the idle limit, retries once within the same turn, and fails with a named stall reason and partial usage when the retry also stalls",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* runFakeStallScenario({
+          id: "double-stall",
+          idleTimeout: "120 millis",
+          retryOutcome: "stall",
+        });
+        assert.equal(result.promptCalls, 2);
+        assert.equal(result.cancelCalls, 2);
+
+        const terminal = result.events.findLast((event) => event.type === "turn.terminal");
+        assert.isDefined(terminal);
+        assert.equal(terminal?.type, "turn.terminal");
+        if (terminal?.type === "turn.terminal") {
+          assert.equal(terminal.status, "failed");
+          assert.equal(terminal.failure?.class, "transport_error");
+          assert.equal(terminal.failure?.code, ANTIGRAVITY_PROMPT_STALL_FAILURE_CODE);
+          assert.isTrue(terminal.failure?.retryable);
+          assert.match(terminal.failure?.message ?? "", /stalled/i);
+        }
+
+        const finalTurnUpdate = result.events.findLast(
+          (event) => event.type === "provider_turn.updated",
+        );
+        assert.isDefined(finalTurnUpdate);
+        if (finalTurnUpdate?.type === "provider_turn.updated") {
+          assert.equal(finalTurnUpdate.providerTurn.status, "failed");
+          assert.deepEqual(finalTurnUpdate.providerTurn.turnTokenUsage, {
+            usageScope: "main_agent",
+            usageStatus: "partial",
+            hasSubagents: false,
+            inputTokens: 190,
+            outputTokens: 30,
+            cachedInputTokens: 30,
+            reasoningTokens: 5,
+          });
+        }
+      }),
+  );
+
+  it.live("completes the same turn with combined usage when the in-turn stall retry succeeds", () =>
+    Effect.gen(function* () {
+      const result = yield* runFakeStallScenario({
+        id: "retry-recovers",
+        idleTimeout: "120 millis",
+        retryOutcome: "recover",
+      });
+      assert.equal(result.promptCalls, 2);
+      assert.equal(result.cancelCalls, 1);
+
+      const terminal = result.events.findLast((event) => event.type === "turn.terminal");
+      assert.isDefined(terminal);
+      if (terminal?.type === "turn.terminal") {
+        assert.equal(terminal.status, "completed");
+        assert.isNull(terminal.failure);
+      }
+
+      const finalTurnUpdate = result.events.findLast(
+        (event) => event.type === "provider_turn.updated",
+      );
+      assert.isDefined(finalTurnUpdate);
+      if (finalTurnUpdate?.type === "provider_turn.updated") {
+        assert.equal(finalTurnUpdate.providerTurn.status, "completed");
+        assert.deepEqual(finalTurnUpdate.providerTurn.turnTokenUsage, {
+          usageScope: "main_agent",
+          usageStatus: "complete",
+          hasSubagents: false,
+          inputTokens: 350,
+          outputTokens: 65,
+          cachedInputTokens: 30,
+          reasoningTokens: 5,
+        });
+      }
+    }),
+  );
+
+  it.effect("resets the idle timer whenever stream updates keep arriving", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* Crypto.Crypto;
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-antigravity-stall-progress-",
+      });
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let sessionUpdate: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+      let promptCalls = 0;
+      let cancelCalls = 0;
+      const chunks = ["step 1 ", "step 2 ", "step 3 ", "done"] as const;
+      const releaseGates = yield* Effect.forEach(chunks, () => Deferred.make<void>());
+      const sentGates = yield* Effect.forEach(chunks, () => Deferred.make<void>());
+      const promptStarted = yield* Deferred.make<void>();
+      const instanceId = ProviderInstanceId.make("antigravity-stall-progress");
+      const threadId = ThreadId.make("thread-antigravity-stall-progress");
+
+      const adapter = yield* makeAntigravityAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        promptIdleTimeout: "160 millis",
+        makeRuntime: (input) =>
+          makeAntigravityAcpRuntime({
+            ...input,
+            childProcessSpawner,
+            spawn: {
+              command: process.execPath,
+              args: [mockAgentPath],
+              cwd: input.cwd,
+              env: { T3_ACP_ANTIGRAVITY: "1" },
+            },
+          }).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.map((runtime): RuntimeService => ({
+              ...runtime,
+              handleSessionUpdate: (handler) =>
+                Effect.sync(() => {
+                  sessionUpdate = handler;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
+              cancel: Effect.sync(() => {
+                cancelCalls += 1;
+              }),
+              prompt: () =>
+                Effect.gen(function* () {
+                  promptCalls += 1;
+                  yield* Deferred.succeed(promptStarted, undefined).pipe(Effect.ignore);
+                  const send = sessionUpdate!;
+                  for (let i = 0; i < chunks.length; i += 1) {
+                    yield* Deferred.await(releaseGates[i]!);
+                    yield* send(
+                      normalizeAntigravitySessionUpdate({
+                        sessionId: "mock-session-1",
+                        update: {
+                          sessionUpdate: "agent_message_chunk",
+                          content: { type: "text", text: chunks[i]! },
+                        },
+                      }),
+                    );
+                    yield* Deferred.succeed(sentGates[i]!, undefined).pipe(Effect.ignore);
+                  }
+                  return {
+                    stopReason: "end_turn" as const,
+                    usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 },
+                  };
+                }),
+            })),
+          ),
+        withProcess: (_stop, task) => task,
+        // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+        defaultModel: Effect.succeed(undefined),
+      });
+
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: workspace,
+      });
+      const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+      const session = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-stall-progress"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* session.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      yield* session.startTurn({
+        appThread: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project-stall-progress"),
+          title: "Antigravity progress test",
+          providerInstanceId: instanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: workspace,
+          activeProviderThreadId: providerThread.id,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+        threadId,
+        runId: RunId.make("run-stall-progress"),
+        runOrdinal: 1,
+        providerTurnOrdinal: 1,
+        attemptId: RunAttemptId.make("attempt-stall-progress"),
+        rootNodeId: NodeId.make("node-stall-progress"),
+        providerThread,
+        message: {
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make("message-stall-progress"),
+          text: "stream updates",
+          attachments: [],
+        },
+        modelSelection,
+        runtimePolicy,
+      });
+      const eventsFiber = yield* session.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(promptStarted);
+      // Total simulated time = 4 * 100ms = 400ms > 160ms idle limit, proving each update resets the watchdog.
+      for (let i = 0; i < chunks.length; i += 1) {
+        yield* TestClock.adjust("100 millis");
+        yield* Deferred.succeed(releaseGates[i]!, undefined);
+        yield* Deferred.await(sentGates[i]!);
+      }
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.equal(promptCalls, 1);
+      assert.equal(cancelCalls, 0);
+      const terminal = events.findLast((event) => event.type === "turn.terminal");
+      assert.isDefined(terminal);
+      if (terminal?.type === "turn.terminal") {
+        assert.equal(terminal.status, "completed");
+        assert.isNull(terminal.failure);
+      }
+    }).pipe(Effect.provide(layerSession), Effect.scoped),
   );
 });

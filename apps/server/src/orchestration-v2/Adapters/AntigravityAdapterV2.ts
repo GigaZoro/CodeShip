@@ -6,14 +6,21 @@ import {
   type ProviderSetupError,
 } from "@t3tools/contracts";
 import type { SelfInvocation } from "@t3tools/shared/nodeRuntime";
+import { sleepAwake } from "@t3tools/shared/AwakeTime";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as Exit from "effect/Exit";
-import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
+import type * as EffectAcpSchema from "effect-acp/compat";
 import * as EffectAcpErrors from "effect-acp/errors";
+
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { pinnedSystemInstructionsKey } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -58,6 +65,103 @@ import {
 
 const ANTIGRAVITY_PROVIDER = ProviderDriverKind.make("antigravity");
 
+/**
+ * Maximum awake time an Antigravity prompt may wait with no stream progress before
+ * aborting the stalled model request and retrying once within the same turn (well under
+ * the ~55-minute backend 502 cutoff; AB#7688).
+ */
+export const ANTIGRAVITY_PROMPT_STALL_TIMEOUT = Duration.minutes(10);
+const ANTIGRAVITY_PROMPT_STALL_MAX_RETRIES = 1;
+export const ANTIGRAVITY_PROMPT_STALL_FAILURE_CODE = "model_request_stalled";
+
+const ANTIGRAVITY_STALL_RETRY_PROMPT_TEXT =
+  "Continue from where you left off. The previous model request stalled and was aborted.";
+
+interface AntigravityPromptStallCause {
+  readonly _tag: "AntigravityPromptStallCause";
+  readonly idleTimeoutMs: number;
+  readonly attempts: number;
+  readonly partialUsage?: EffectAcpSchema.Usage | undefined;
+}
+
+function isAntigravityPromptStallCause(value: unknown): value is AntigravityPromptStallCause {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { readonly _tag?: unknown })._tag === "AntigravityPromptStallCause"
+  );
+}
+
+function extractAntigravityPromptStallCause(
+  cause: unknown,
+): AntigravityPromptStallCause | undefined {
+  if (isAntigravityPromptStallCause(cause)) return cause;
+  if (typeof cause === "object" && cause !== null && "cause" in cause) {
+    const inner = (cause as { readonly cause?: unknown }).cause;
+    if (isAntigravityPromptStallCause(inner)) return inner;
+  }
+  return undefined;
+}
+
+function formatAntigravityStallDuration(idleTimeoutMs: number): string {
+  if (idleTimeoutMs >= 60_000 && idleTimeoutMs % 60_000 === 0) {
+    const minutes = idleTimeoutMs / 60_000;
+    return minutes === 1 ? "1 minute" : minutes + " minutes";
+  }
+  if (idleTimeoutMs >= 1_000 && idleTimeoutMs % 1_000 === 0) {
+    const seconds = idleTimeoutMs / 1_000;
+    return seconds === 1 ? "1 second" : seconds + " seconds";
+  }
+  return idleTimeoutMs + " ms";
+}
+
+function antigravityPromptStallMessage(stall: AntigravityPromptStallCause): string {
+  const duration = formatAntigravityStallDuration(stall.idleTimeoutMs);
+  return stall.attempts > 1
+    ? "Antigravity model request stalled with no stream progress for " +
+        duration +
+        " (aborted and retried once)."
+    : "Antigravity model request stalled with no stream progress for " + duration + ".";
+}
+
+function makeAntigravityPromptStallError(
+  stall: AntigravityPromptStallCause,
+): EffectAcpErrors.AcpTransportError {
+  return new EffectAcpErrors.AcpTransportError({
+    operation: "call-rpc",
+    method: "session/prompt",
+    detail: antigravityPromptStallMessage(stall),
+    cause: stall,
+  });
+}
+
+function sumOptionalTokens(
+  first: number | null | undefined,
+  second: number | null | undefined,
+): number | undefined {
+  if (first == null && second == null) return undefined;
+  return (first ?? 0) + (second ?? 0);
+}
+
+function mergeAcpUsage(
+  first: EffectAcpSchema.Usage | null | undefined,
+  second: EffectAcpSchema.Usage | null | undefined,
+): EffectAcpSchema.Usage | undefined {
+  if (first == null) return second ?? undefined;
+  if (second == null) return first;
+  const cachedReadTokens = sumOptionalTokens(first.cachedReadTokens, second.cachedReadTokens);
+  const cachedWriteTokens = sumOptionalTokens(first.cachedWriteTokens, second.cachedWriteTokens);
+  const thoughtTokens = sumOptionalTokens(first.thoughtTokens, second.thoughtTokens);
+  return {
+    inputTokens: first.inputTokens + second.inputTokens,
+    outputTokens: first.outputTokens + second.outputTokens,
+    totalTokens: first.totalTokens + second.totalTokens,
+    ...(cachedReadTokens === undefined ? {} : { cachedReadTokens }),
+    ...(cachedWriteTokens === undefined ? {} : { cachedWriteTokens }),
+    ...(thoughtTokens === undefined ? {} : { thoughtTokens }),
+  };
+}
+
 const AntigravityProviderCapabilitiesV2 = {
   ...AcpProviderCapabilitiesV2,
   sessions: {
@@ -96,6 +200,8 @@ export interface AntigravityAdapterV2Options {
   readonly continuationRequests?: Parameters<typeof makeAcpAdapterV2>[0]["continuationRequests"];
   /** The agent's GEMINI_HOME. Its session logs show turns that ended on an upstream error. */
   readonly profileDirectory?: string;
+  /** Override the idle-progress stall limit (defaults to `ANTIGRAVITY_PROMPT_STALL_TIMEOUT`). */
+  readonly promptIdleTimeout?: Duration.Input;
 }
 
 /**
@@ -144,16 +250,29 @@ export function makeAntigravityAcpAdapterFlavor(
   options: AntigravityAdapterV2Options & AntigravityFlavorServices,
 ): AcpAdapterV2Flavor {
   const { profileDirectory } = options;
+  const idleTimeout = options.promptIdleTimeout ?? ANTIGRAVITY_PROMPT_STALL_TIMEOUT;
+  const idleTimeoutMs = Math.max(1, Duration.toMillis(Duration.fromInputUnsafe(idleTimeout)));
   const antigravityClientFileRoots = (cwd: string | null) =>
     cwd === null ? [options.host.paths.attachmentsDir] : [cwd, options.host.paths.attachmentsDir];
   const makeRuntime = Effect.fn("AntigravityAdapterV2.makeRuntime")(
     function* (input: AcpAdapterV2RuntimeInput) {
       const scope = yield* Scope.fork(yield* Effect.scope);
+      let stallAborting: AntigravityPromptStallCause | undefined;
       const runtime = yield* options
         .withProcess(
           Scope.close(scope, Exit.void),
           options.makeRuntime({
             ...input,
+            ...(input.onTermination === undefined
+              ? {}
+              : {
+                  onTermination: (error) =>
+                    input.onTermination!(
+                      stallAborting === undefined
+                        ? error
+                        : makeAntigravityPromptStallError(stallAborting),
+                    ),
+                }),
             clientFileReads: true,
             sessionSystemPromptAppend:
               input.pinnedSystemInstructions ?? PULL_REQUEST_LINKING_INSTRUCTIONS,
@@ -166,35 +285,211 @@ export function makeAntigravityAcpAdapterFlavor(
       // Served reads are reported from the read handler, so they take turns with agent updates.
       const updates = yield* Semaphore.make(1);
       let projectUpdate: Parameters<typeof runtime.handleSessionUpdate>[0] | undefined;
+      let progressEpoch = 0;
+      let attemptMadeProgress = false;
+      let pendingUserInputCount = 0;
+      let userCancelled = false;
+      let progressChanged = yield* Deferred.make<void>();
+      const signalProgress = Effect.fn("AntigravityAdapterV2.signalProgress")(function* (
+        countsAsAttemptProgress: boolean,
+      ) {
+        progressEpoch += 1;
+        if (countsAsAttemptProgress) {
+          attemptMadeProgress = true;
+        }
+        const previous = progressChanged;
+        progressChanged = yield* Deferred.make<void>();
+        yield* Deferred.succeed(previous, undefined).pipe(Effect.ignore);
+      });
+      const withUserInputPaused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.acquireUseRelease(
+          Effect.sync(() => {
+            pendingUserInputCount += 1;
+          }).pipe(Effect.andThen(signalProgress(false))),
+          () => effect,
+          () =>
+            Effect.sync(() => {
+              pendingUserInputCount = Math.max(0, pendingUserInputCount - 1);
+            }).pipe(Effect.andThen(signalProgress(false))),
+        );
+      const waitForIdleStall: Effect.Effect<void> = Effect.gen(function* () {
+        while (true) {
+          const gate = progressChanged;
+          if (pendingUserInputCount > 0) {
+            yield* Deferred.await(gate);
+            continue;
+          }
+          const epoch = progressEpoch;
+          const winner = yield* Effect.raceFirst(
+            Deferred.await(gate).pipe(Effect.as("progress" as const)),
+            sleepAwake(idleTimeout).pipe(Effect.as("stalled" as const)),
+          );
+          if (winner === "stalled" && progressEpoch === epoch && pendingUserInputCount === 0) {
+            return;
+          }
+        }
+      });
       return {
         ...runtime,
+        handleRequestPermission: (handler) =>
+          runtime.handleRequestPermission((request, context) =>
+            withUserInputPaused(handler(request, context)),
+          ),
+        handleElicitation: (handler) =>
+          runtime.handleElicitation((request, context) =>
+            withUserInputPaused(handler(request, context)),
+          ),
+        handleMcpConnect: (handler) =>
+          runtime.handleMcpConnect((request, context) =>
+            signalProgress(true).pipe(
+              Effect.andThen(handler(request, context)),
+              Effect.ensuring(signalProgress(true)),
+            ),
+          ),
+        handleMcpMessage: (handler) =>
+          runtime.handleMcpMessage((request, context) =>
+            signalProgress(true).pipe(
+              Effect.andThen(handler(request, context)),
+              Effect.ensuring(signalProgress(true)),
+            ),
+          ),
         handleReadTextFile: (handler) =>
           runtime.handleReadTextFile((request, context) =>
-            handler(request, context).pipe(
+            signalProgress(true).pipe(
+              Effect.andThen(handler(request, context)),
               Effect.onExit((exit) => {
                 const served = reads.attempted(request.path, Exit.isSuccess(exit));
-                if (served === undefined || projectUpdate === undefined) return Effect.void;
-                return updates
-                  .withPermit(
-                    projectUpdate({
-                      sessionId: served.sessionId,
-                      update: {
-                        sessionUpdate: "tool_call_update",
-                        toolCallId: served.toolCallId,
-                        status: "completed",
-                      },
-                    }),
-                  )
-                  .pipe(Effect.ignore);
+                const repair =
+                  served === undefined || projectUpdate === undefined
+                    ? Effect.void
+                    : updates
+                        .withPermit(
+                          projectUpdate({
+                            sessionId: served.sessionId,
+                            update: {
+                              sessionUpdate: "tool_call_update",
+                              toolCallId: served.toolCallId,
+                              status: "completed",
+                            },
+                          }),
+                        )
+                        .pipe(Effect.ignore);
+                return repair.pipe(Effect.andThen(signalProgress(true)));
               }),
             ),
           ),
-        prompt: (payload, promptOptions) =>
-          Effect.sync(reads.reset).pipe(Effect.andThen(runtime.prompt(payload, promptOptions))),
+        cancel: Effect.sync(() => {
+          userCancelled = true;
+        }).pipe(Effect.andThen(runtime.cancel)),
+        prompt: Effect.fn("AntigravityAdapterV2.prompt")(function* (payload, promptOptions) {
+          userCancelled = false;
+          stallAborting = undefined;
+          let accumulatedUsage: EffectAcpSchema.Usage | undefined;
+          let priorAttemptMadeProgress = false;
+          for (let attempt = 0; attempt <= ANTIGRAVITY_PROMPT_STALL_MAX_RETRIES; attempt += 1) {
+            reads.reset();
+            attemptMadeProgress = false;
+            progressChanged = yield* Deferred.make<void>();
+            const attemptPayload =
+              attempt === 0 || !priorAttemptMadeProgress
+                ? payload
+                : {
+                    ...payload,
+                    prompt: [{ type: "text" as const, text: ANTIGRAVITY_STALL_RETRY_PROMPT_TEXT }],
+                  };
+            const promptFiber = yield* runtime
+              .prompt(attemptPayload, attempt === 0 ? promptOptions : undefined)
+              .pipe(Effect.forkIn(scope));
+            const watchdogFiber = yield* waitForIdleStall.pipe(Effect.forkIn(scope));
+            const outcome = yield* Effect.raceFirst(
+              Fiber.await(promptFiber).pipe(
+                Effect.map((exit) => ({ _tag: "prompt" as const, exit })),
+              ),
+              Fiber.await(watchdogFiber).pipe(Effect.as({ _tag: "stalled" as const })),
+            ).pipe(
+              Effect.onInterrupt(() =>
+                Fiber.interrupt(watchdogFiber).pipe(
+                  Effect.ignore,
+                  Effect.andThen(Fiber.interrupt(promptFiber).pipe(Effect.ignore)),
+                ),
+              ),
+            );
+            if (outcome._tag === "prompt") {
+              yield* Fiber.interrupt(watchdogFiber).pipe(Effect.ignore);
+              if (Exit.isFailure(outcome.exit)) {
+                return yield* Effect.failCause(outcome.exit.cause);
+              }
+              accumulatedUsage = mergeAcpUsage(accumulatedUsage, outcome.exit.value.usage);
+              return {
+                ...outcome.exit.value,
+                ...(accumulatedUsage === undefined ? {} : { usage: accumulatedUsage }),
+              };
+            }
+            if (userCancelled) {
+              const promptExit = yield* Fiber.await(promptFiber);
+              if (Exit.isFailure(promptExit)) {
+                return yield* Effect.failCause(promptExit.cause);
+              }
+              accumulatedUsage = mergeAcpUsage(accumulatedUsage, promptExit.value.usage);
+              return {
+                ...promptExit.value,
+                ...(accumulatedUsage === undefined ? {} : { usage: accumulatedUsage }),
+              };
+            }
+            priorAttemptMadeProgress = priorAttemptMadeProgress || attemptMadeProgress;
+            const stallAttempt: AntigravityPromptStallCause = {
+              _tag: "AntigravityPromptStallCause",
+              idleTimeoutMs,
+              attempts: attempt + 1,
+              ...(accumulatedUsage === undefined ? {} : { partialUsage: accumulatedUsage }),
+            };
+            stallAborting = stallAttempt;
+            const cancelExit = yield* Effect.exit(runtime.cancel);
+            const promptExit = yield* Fiber.await(promptFiber);
+            stallAborting = undefined;
+            if (Exit.isSuccess(promptExit)) {
+              accumulatedUsage = mergeAcpUsage(accumulatedUsage, promptExit.value.usage);
+              if (promptExit.value.stopReason !== "cancelled") {
+                return {
+                  ...promptExit.value,
+                  ...(accumulatedUsage === undefined ? {} : { usage: accumulatedUsage }),
+                };
+              }
+            }
+            if (userCancelled) {
+              return {
+                stopReason: "cancelled" as const,
+                ...(accumulatedUsage === undefined ? {} : { usage: accumulatedUsage }),
+              };
+            }
+            if (attempt < ANTIGRAVITY_PROMPT_STALL_MAX_RETRIES && Exit.isSuccess(cancelExit)) {
+              yield* Effect.logWarning("orchestration-v2.antigravity-prompt-stalled-retrying", {
+                idleTimeoutMs,
+                attempt: attempt + 1,
+                priorAttemptMadeProgress,
+              });
+              continue;
+            }
+            return yield* makeAntigravityPromptStallError({
+              _tag: "AntigravityPromptStallCause",
+              idleTimeoutMs,
+              attempts: attempt + 1,
+              ...(accumulatedUsage === undefined ? {} : { partialUsage: accumulatedUsage }),
+            });
+          }
+          return yield* makeAntigravityPromptStallError({
+            _tag: "AntigravityPromptStallCause",
+            idleTimeoutMs,
+            attempts: ANTIGRAVITY_PROMPT_STALL_MAX_RETRIES + 1,
+            ...(accumulatedUsage === undefined ? {} : { partialUsage: accumulatedUsage }),
+          });
+        }),
         handleSessionUpdate: (handler) => {
           projectUpdate = handler;
           return runtime.handleSessionUpdate((notification) =>
-            updates.withPermit(handler(reads.repair(notification))),
+            signalProgress(true).pipe(
+              Effect.andThen(updates.withPermit(handler(reads.repair(notification)))),
+            ),
           );
         },
         start: () =>
@@ -294,6 +589,19 @@ export function makeAntigravityAcpAdapterFlavor(
     // 1.4.5 returns the root trajectory's Gemini usageMetadata delta; 1.4.1 returns none.
     reportsPerTurnPromptUsage: true,
     geminiPromptUsage: true,
+    promptFailure: (cause) => {
+      const stall = extractAntigravityPromptStallCause(cause);
+      if (stall === undefined) return undefined;
+      return makeProviderFailure({
+        class: "transport_error",
+        code: ANTIGRAVITY_PROMPT_STALL_FAILURE_CODE,
+        message: antigravityPromptStallMessage(stall),
+        retryable: true,
+      });
+    },
+    extractPromptFailureUsage: (cause) => extractAntigravityPromptStallCause(cause)?.partialUsage,
+    restartRuntimeAfterPromptError: (cause) =>
+      extractAntigravityPromptStallCause(cause) !== undefined,
     ...(profileDirectory === undefined
       ? {}
       : {

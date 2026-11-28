@@ -1,3 +1,8 @@
+## 2026-11-28 — Antigravity turns fail fast and retry once when a model request stalls
+
+- Antigravity turns now watch for awake stream progress and abort a stalled model request after 10 minutes of silence instead of waiting ~55 minutes for a backend 502.
+- The adapter retries the stalled request once within the same turn, fails with a retryable `model_request_stalled` transport failure if the retry also stalls, and reports partial token usage collected before the stall.
+
 ## 2026-11-28 — Antigravity quota checks support signed-in Gemini Enterprise profiles
 
 - Antigravity subscription quota probes and staged sign-in profiles now check `acp_business_token.json` for Gemini Enterprise (`oauth-business`) accounts instead of hardcoding `acp_token.json`, while continuing to avoid interactive sign-in when a profile is signed out.

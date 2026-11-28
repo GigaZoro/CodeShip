@@ -110,11 +110,11 @@ describe("GrokAdapterV2 capabilities", () => {
           code: -32603,
           errorMessage: "Internal error",
         }),
-      ).class,
+      )?.class,
       "provider_error",
     );
     assert.equal(
-      flavor.promptFailure?.(new Error("Rate limit mentioned in an ordinary error")).class,
+      flavor.promptFailure?.(new Error("Rate limit mentioned in an ordinary error"))?.class,
       "provider_error",
     );
     assert.equal(
@@ -123,7 +123,7 @@ describe("GrokAdapterV2 capabilities", () => {
           code: -32603,
           errorMessage: "error sending request for url (https://api.x.ai/v1/responses)",
         }),
-      ).class,
+      )?.class,
       "transport_error",
     );
   });
