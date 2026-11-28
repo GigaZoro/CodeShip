@@ -58,7 +58,11 @@ import {
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
 } from "./checkpointDiff.ts";
-import { ModelSelection } from "./modelSelection.ts";
+import {
+  AutoRoutingConstraints,
+  AutoRoutingDegradationReason,
+  ModelSelection,
+} from "./modelSelection.ts";
 import {
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
@@ -1163,6 +1167,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
   modelSelection: Schema.optional(ModelSelection),
+  degradedReason: Schema.optional(AutoRoutingDegradationReason),
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
   terminalResultObservation: Schema.optional(
@@ -4141,6 +4146,8 @@ export type OrchestrationV2ServerCommand =
       readonly launchAlreadyRouted?: true;
       /** Server-only: the delegate tool validated it, so a client cannot start a restricted child. */
       readonly reviewAssignment?: OrchestrationV2ReviewAssignment;
+      readonly routingConstraints?: AutoRoutingConstraints;
+      readonly degradedReason?: AutoRoutingDegradationReason;
     })
   | OrchestrationV2InternalCommand;
 

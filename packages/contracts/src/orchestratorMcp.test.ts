@@ -121,3 +121,66 @@ describe("scheduled task model selection input", () => {
     expect(() => decode({ ...base, modelSelection })).toThrow();
   });
 });
+
+describe("delegate_task declarative Auto routing constraints", () => {
+  it("decodes capabilityTier, minTier, excludeVendorFamily, and degradedReason", () => {
+    const withSingleExclude = decodeDelegateTaskInput({
+      task: "Review the diff carefully.",
+      auto: true,
+      routing: {
+        capabilityTier: "fast",
+        minTier: "standard",
+        excludeVendorFamily: "anthropic",
+      },
+    });
+    expect(withSingleExclude.routing).toEqual({
+      capabilityTier: "fast",
+      minTier: "standard",
+      excludeVendorFamily: "anthropic",
+    });
+
+    const withArrayExclude = decodeDelegateTaskInput({
+      task: "Run a deep security audit.",
+      auto: true,
+      routing: {
+        capabilityTier: "frontier",
+        excludeVendorFamily: ["Anthropic", "OpenAI"],
+      },
+    });
+    expect(withArrayExclude.routing).toEqual({
+      capabilityTier: "frontier",
+      excludeVendorFamily: ["Anthropic", "OpenAI"],
+    });
+
+    expect(() =>
+      decodeDelegateTaskInput({
+        task: "Check types.",
+        auto: true,
+        routing: { capabilityTier: "ultra" },
+      }),
+    ).toThrow();
+
+    const degraded = decodeDelegateTaskResult({
+      taskId: "node-task-2",
+      childThreadId: "thread-child-2",
+      childRunId: "run-child-2",
+      childNodeId: "node-task-2",
+      status: "completed",
+      workState: "result_available",
+      hasPendingChildRuns: false,
+      providerInstanceId: "claudeAgent",
+      model: "claude-opus-5-5",
+      degradedReason: "no-dissimilar-provider-available",
+      summary: "Done.",
+      resultContextTransferId: null,
+      latestTerminalRunId: "run-child-2",
+      latestTerminalStatus: "completed",
+      latestTerminalSummary: "Done.",
+      latestTerminalResultContextTransferId: null,
+      hasPendingQuestion: false,
+      pendingApproval: null,
+      waitTimedOut: false,
+    });
+    expect(degraded.degradedReason).toBe("no-dissimilar-provider-available");
+  });
+});

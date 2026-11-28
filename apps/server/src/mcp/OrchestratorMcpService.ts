@@ -87,6 +87,10 @@ import {
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerSettings as ServerSettingsValue,
+  type AutoRoutingConstraints,
+  type AutoRoutingDegradationReason,
+  type ProviderOptionSelection,
   ThreadId,
   isOrchestrationV2WorkActive,
   isProviderAvailable,
@@ -102,7 +106,13 @@ import {
 } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
-import { autoModePick, canAccountRun } from "@t3tools/shared/serverSettings";
+import {
+  autoModeModelFor,
+  autoModePick,
+  canAccountRun,
+  orderProviderInstancesForFailover,
+} from "@t3tools/shared/serverSettings";
+import { exhaustedUsageWindow, isSubscriptionAccount } from "@t3tools/shared/usageLimits";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
   normalizeThreadPullRequestKey,
@@ -123,6 +133,13 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import {
+  applyAutoRoutingConstraints,
+  classifyAutoRequestComplexity,
+  excludedVendorFamilies,
+  filterEligibleAutoProviders,
+  vendorFamilyOfDriver,
+} from "../orchestration-v2/AutoComplexityRouting.ts";
 import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -611,6 +628,155 @@ export const requireAutoModePick = (
     : Effect.succeed(pick);
 };
 
+function resolveFallbackCandidateModel(
+  provider: ServerProvider,
+  preferredModel: string | null,
+  excludedFamilies: ReadonlySet<string>,
+  nowMs: number,
+): string | null {
+  if (preferredModel !== null) {
+    const resolved = resolveSelectableModel(provider.driver, preferredModel, provider.models);
+    if (
+      resolved !== null &&
+      !excludedFamilies.has(vendorFamilyOfDriver(provider.driver, resolved))
+    ) {
+      return resolved;
+    }
+  }
+  const activeModels = provider.models.filter((model) => !model.isLegacy && !model.isCustom);
+  const nonExcluded = activeModels.filter(
+    (model) => !excludedFamilies.has(vendorFamilyOfDriver(provider.driver, model.slug)),
+  );
+  const pool = nonExcluded.length > 0 ? nonExcluded : activeModels;
+  const withRoom = pool.find(
+    (model) =>
+      provider.usageLimits?.usageAllowed !== false &&
+      (!isSubscriptionAccount(provider) ||
+        exhaustedUsageWindow(provider, nowMs, model.slug) === undefined),
+  );
+  if (withRoom !== undefined) return withRoom.slug;
+  const preferredDefault = pool.find((model) => model.isDefault) ?? pool[0];
+  if (preferredDefault !== undefined) return preferredDefault.slug;
+  return provider.models.length === 0 ? preferredModel : null;
+}
+
+function pickAutoSelectionWithConstraintsFallback(input: {
+  readonly baseSelection: ModelSelection;
+  readonly settings: ServerSettingsValue;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly projectId: ProjectId;
+  readonly taskText: string;
+  readonly routing: AutoRoutingConstraints;
+  readonly nowMs: number;
+}): {
+  readonly selection: ModelSelection;
+  readonly degradedReason?: AutoRoutingDegradationReason | undefined;
+} {
+  if (input.baseSelection.autoAccount !== true || input.baseSelection.quotaAwareAuto === true) {
+    return { selection: input.baseSelection };
+  }
+  const excludedFamilies = excludedVendorFamilies(input.routing);
+  let selected = input.baseSelection;
+  let degradedReason: AutoRoutingDegradationReason | undefined;
+
+  if (excludedFamilies.size > 0) {
+    interface Candidate {
+      readonly instanceId: ProviderInstanceId;
+      readonly driver: ServerProvider["driver"];
+      readonly model: string;
+      readonly options?: ReadonlyArray<ProviderOptionSelection> | undefined;
+      readonly hasQuota: boolean;
+    }
+    const candidates: Array<Candidate> = [];
+    const seen = new Set<ProviderInstanceId>();
+    const addCandidate = (provider: ServerProvider, preferredModel: string | null) => {
+      if (
+        seen.has(provider.instanceId) ||
+        !canAccountRun(provider, input.settings, input.projectId)
+      ) {
+        return;
+      }
+      const chosenModel = resolveFallbackCandidateModel(
+        provider,
+        preferredModel,
+        excludedFamilies,
+        input.nowMs,
+      );
+      if (chosenModel === null) return;
+      seen.add(provider.instanceId);
+      const auto = autoModeModelFor(input.settings, provider.driver);
+      const descriptors = provider.models.find((model) => model.slug === chosenModel)?.capabilities
+        ?.optionDescriptors;
+      const usageAllowed = provider.usageLimits?.usageAllowed !== false;
+      const windowExhausted =
+        isSubscriptionAccount(provider) &&
+        exhaustedUsageWindow(provider, input.nowMs, chosenModel) !== undefined;
+      candidates.push({
+        instanceId: provider.instanceId,
+        driver: provider.driver,
+        model: chosenModel,
+        options: acceptedOptionSelections(descriptors, auto?.options),
+        hasQuota: usageAllowed && !windowExhausted,
+      });
+    };
+
+    const primaryProvider = input.providers.find(
+      (provider) => provider.instanceId === input.baseSelection.instanceId,
+    );
+    if (primaryProvider !== undefined) {
+      addCandidate(primaryProvider, input.baseSelection.model);
+    }
+    for (const provider of orderProviderInstancesForFailover(
+      input.settings.providerInstanceFailoverOrder,
+      input.providers,
+    )) {
+      const auto = autoModeModelFor(input.settings, provider.driver);
+      addCandidate(provider, auto?.model ?? null);
+    }
+
+    if (candidates.length > 0) {
+      const filtered = filterEligibleAutoProviders(candidates, input.routing);
+      degradedReason = filtered.degradedReason;
+      const picked =
+        filtered.providers.find((candidate) => candidate.hasQuota) ?? filtered.providers[0];
+      if (
+        picked !== undefined &&
+        (picked.instanceId !== selected.instanceId || picked.model !== selected.model)
+      ) {
+        selected = {
+          instanceId: picked.instanceId,
+          model: picked.model,
+          ...(picked.options && picked.options.length > 0 ? { options: picked.options } : {}),
+          autoAccount: true,
+        };
+      }
+    }
+  }
+
+  const chosenAccount = input.providers.find(
+    (provider) => provider.instanceId === selected.instanceId,
+  );
+  if (chosenAccount !== undefined) {
+    const complexity = classifyAutoRequestComplexity({
+      text: input.taskText,
+      started: false,
+    });
+    selected = applyAutoRoutingConstraints({
+      selection: selected,
+      constraints: input.routing,
+      complexity,
+      account: chosenAccount,
+      started: false,
+      configuredAuto: autoModeModelFor(input.settings, chosenAccount.driver),
+    });
+  }
+
+  return {
+    selection: selected,
+    ...(degradedReason === undefined ? {} : { degradedReason }),
+  };
+}
+
 /**
  * Refuses a new thread before anything is created when its first turn would run on an account a
  * usage limit stopped. Without account routing (as in tests) nothing is refused.
@@ -623,6 +789,7 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
       readonly allowFailover?: boolean;
       /** The thread a delegate is for, whose allowance of prepaid credits then applies. */
       readonly requesterThreadId?: ThreadId;
+      readonly routingConstraints?: AutoRoutingConstraints | undefined;
     },
     routing: Option.Option<AccountRouting.AccountRouting["Service"]>,
   ) {
@@ -2250,6 +2417,7 @@ const make = Effect.gen(function* () {
       providerInstanceId: modelSelection.instanceId,
       model: modelSelection.model,
       options: modelSelection.options ?? [],
+      ...(task.degradedReason === undefined ? {} : { degradedReason: task.degradedReason }),
       summary: derivedResult,
       resultContextTransferId,
       latestTerminalRunId: terminalRun?.id ?? null,
@@ -2479,6 +2647,7 @@ const make = Effect.gen(function* () {
       hasPendingChildRuns: false,
       providerInstanceId: task.providerInstanceId,
       model: task.model,
+      ...(task.degradedReason === undefined ? {} : { degradedReason: task.degradedReason }),
       summary: task.result ?? (status === "queued" ? (task.progress ?? null) : null),
       resultContextTransferId: null,
       latestTerminalRunId: null,
@@ -3750,6 +3919,7 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
+      const currentSettings = yield* readSettings;
       const roleSelection =
         committedThread === null && input.auto !== true
           ? yield* delegatedTaskRoleSelection(input)
@@ -3760,12 +3930,81 @@ const make = Effect.gen(function* () {
         committedThread !== null
           ? undefined
           : input.auto === true
-            ? yield* requireAutoModePick(yield* readSettings, providers, projectId)
+            ? yield* requireAutoModePick(currentSettings, providers, projectId)
             : input.auto === undefined && roleSelection?.autoAccount === true
-              ? (autoModePick({ settings: yield* readSettings, accounts: providers, projectId }) ??
+              ? (autoModePick({ settings: currentSettings, accounts: providers, projectId }) ??
                 undefined)
               : undefined;
-      const standIn = autoPick ?? roleSelection;
+      const targetPinsModel =
+        input.target?.providerInstanceId !== undefined ||
+        input.target?.driverKind !== undefined ||
+        input.target?.model !== undefined ||
+        input.target?.options !== undefined;
+      const autoRoutingBase =
+        !isRetryOfAcceptedDelegation &&
+        committedThread === null &&
+        reviewAssignment === undefined &&
+        input.routing !== undefined &&
+        input.auto !== false &&
+        !targetPinsModel
+          ? (autoPick ??
+            (roleSelection === undefined && parent.thread.modelSelection.autoAccount === true
+              ? (autoModePick({ settings: currentSettings, accounts: providers, projectId }) ??
+                parent.thread.modelSelection)
+              : undefined))
+          : undefined;
+      const constrainedRoute =
+        autoRoutingBase !== undefined && input.routing !== undefined
+          ? Option.isSome(accountRouting)
+            ? yield* Effect.gen(function* () {
+                const launch = yield* accountRouting.value.failoverLaunch({
+                  selection: autoRoutingBase,
+                  projectId,
+                  discoverMcpSignIns: false,
+                  requesterThreadId: parent.thread.id,
+                  requestPrompt: { text: input.task },
+                  routingConstraints: input.routing,
+                });
+                if (launch.failover?.reason === "usageLimit") {
+                  return {
+                    selection: launch.selection,
+                    crossProviderFailoverFrom: launch.failover.crossProviderFrom,
+                    degradedReason: launch.degradedReason,
+                  };
+                }
+                const routeInput = {
+                  selection: autoRoutingBase,
+                  projectId,
+                  currentInstanceId: null,
+                  started: false,
+                  requesterThreadId: parent.thread.id,
+                  requestPrompt: { text: input.task },
+                  routingConstraints: input.routing,
+                };
+                const routed =
+                  accountRouting.value.routeWithDetails !== undefined
+                    ? yield* accountRouting.value.routeWithDetails(routeInput)
+                    : { selection: yield* accountRouting.value.route(routeInput) };
+                return {
+                  selection: routed.selection,
+                  crossProviderFailoverFrom: undefined,
+                  degradedReason: routed.degradedReason ?? launch.degradedReason,
+                };
+              })
+            : {
+                ...pickAutoSelectionWithConstraintsFallback({
+                  baseSelection: autoRoutingBase,
+                  settings: currentSettings,
+                  providers,
+                  projectId,
+                  taskText: input.task,
+                  routing: input.routing,
+                  nowMs: yield* Clock.currentTimeMillis,
+                }),
+                crossProviderFailoverFrom: undefined,
+              }
+          : undefined;
+      const standIn = constrainedRoute?.selection ?? autoPick ?? roleSelection;
       const resolved =
         committedThread !== null
           ? {
@@ -3776,7 +4015,7 @@ const make = Effect.gen(function* () {
             }
           : standIn === undefined
             ? yield* resolveDelegateTarget(parent.thread.modelSelection)
-            : input.auto === true
+            : input.auto === true || constrainedRoute !== undefined
               ? yield* resolveStandIn(standIn)
               : yield* resolveStandIn(standIn).pipe(
                   // Only a role model that is gone falls back; options it rejects fail as named.
@@ -3808,21 +4047,26 @@ const make = Effect.gen(function* () {
         }
       }
       const route =
-        !isRetryOfAcceptedDelegation &&
-        input.target === undefined &&
-        reviewAssignment === undefined &&
-        Option.isSome(accountRouting)
-          ? yield* accountRouting.value.failoverLaunch({
+        constrainedRoute !== undefined ||
+        isRetryOfAcceptedDelegation ||
+        input.target !== undefined ||
+        reviewAssignment !== undefined ||
+        Option.isNone(accountRouting)
+          ? null
+          : yield* accountRouting.value.failoverLaunch({
               selection: primaryTarget.modelSelection,
               projectId,
               discoverMcpSignIns: false,
               requesterThreadId: parent.thread.id,
-            })
-          : null;
+            });
       const crossProviderFailoverFrom =
-        route?.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined;
+        constrainedRoute?.crossProviderFailoverFrom ??
+        (route?.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined);
+      const degradedReason = constrainedRoute?.degradedReason ?? route?.degradedReason;
       const target =
-        route !== null && crossProviderFailoverFrom !== undefined
+        route !== null &&
+        route.failover?.reason === "usageLimit" &&
+        route.failover.crossProviderFrom !== undefined
           ? {
               modelSelection: route.selection,
               supportedRuntimeModes: providers.find(
@@ -3836,6 +4080,7 @@ const make = Effect.gen(function* () {
             selection: target.modelSelection,
             projectId,
             requesterThreadId: parent.thread.id,
+            ...(input.routing === undefined ? {} : { routingConstraints: input.routing }),
           },
           accountRouting,
         );
@@ -3900,6 +4145,10 @@ const make = Effect.gen(function* () {
           ...(input.title === undefined ? {} : { title: input.title }),
           modelSelection: target.modelSelection,
           ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
+          ...(degradedReason === undefined ? {} : { degradedReason }),
+          ...(input.routing !== undefined && target.modelSelection.autoAccount === true
+            ? { routingConstraints: input.routing }
+            : {}),
           runtimeMode,
           interactionMode,
           ...(foreignProjectId === undefined ? {} : { projectId: foreignProjectId }),

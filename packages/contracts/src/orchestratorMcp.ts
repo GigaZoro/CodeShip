@@ -67,7 +67,12 @@ import {
   OrchestrationV2TurnItemStatus,
   ReviewAssignmentHandle,
 } from "./orchestrationV2.ts";
-import { CanonicalModelSelection, ModelSelection } from "./modelSelection.ts";
+import {
+  AutoRoutingConstraints,
+  AutoRoutingDegradationReason,
+  CanonicalModelSelection,
+  ModelSelection,
+} from "./modelSelection.ts";
 import { SharedSettingVersion } from "./sharedSettings.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
@@ -312,6 +317,10 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
       "Role 'review' only. One line on how the change was re-planned or split since its last review. Starts round 1 of a new part. Required after 3 review rounds in this chat.",
   }),
   auto: Schema.optional(OrchestratorMcpAuto),
+  routing: Schema.optional(AutoRoutingConstraints).annotate({
+    description:
+      "Auto routing constraints (`capabilityTier`, `minTier`, `excludeVendorFamily`) when `auto: true` or inheriting Auto; ignored for explicit `target` pins.",
+  }),
   isolation: Schema.optional(
     Schema.Union([Schema.Literals(["shared", "worktree"]), AssignmentIsolation]).annotate({
       description:
@@ -366,6 +375,7 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   model: Schema.NullOr(Schema.String),
   options: Schema.optional(Schema.Array(ProviderOptionSelection)),
+  degradedReason: Schema.optional(AutoRoutingDegradationReason),
   summary: Schema.NullOr(Schema.String),
   resultContextTransferId: Schema.NullOr(ContextTransferId),
   hasPendingQuestion: Schema.Boolean.annotate({

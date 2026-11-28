@@ -1,3 +1,8 @@
+## 2026-11-28 — Declarative capability tiers and provider dissimilarity for Auto delegations
+
+- `delegate_task` in Auto mode accepts an optional `routing` object (`capabilityTier`, `minTier`, `excludeVendorFamily`) so agents can ask for `fast`, `standard`, `deep`, or `frontier` capability tiers, enforce a minimum reasoning floor across prompt lengths, and steer delegations away from an excluded vendor family (such as `anthropic`, `openai`, `google`, or `xai`).
+- When all dissimilar providers lack quota or availability, Auto routing falls back to an eligible provider and reports `degradedReason: "no-dissimilar-provider-available"` instead of failing the delegation. Concrete `target` model pins remain unaffected.
+
 ## 2026-11-28 — Zero-LLM upstream drift radar and i18n parity gate
 
 - Maintainers: added `scripts/upstream-drift-radar.mjs` (deterministic `git merge-tree --write-tree` with legacy fallback, security advisory scan, and optional isolated worktree verification) and `scripts/i18n-diff-gate.mjs` (zero-LLM locale key parity check) as `--needs-run` run conditions for scheduled maintenance tasks.

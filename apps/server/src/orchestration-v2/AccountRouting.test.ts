@@ -45,6 +45,7 @@ import {
   automaticAccountEligibility,
   failoverLimitedLaunch,
   routeAutoAccount,
+  routeAutoAccountWithDetails,
   usageBlock,
 } from "./AccountRouting.ts";
 
@@ -3698,5 +3699,174 @@ describe("Auto request complexity routing", () => {
       requestPrompt: { text: "git status" },
     });
     assert.strictEqual(routedExplicit, explicit);
+  });
+});
+
+describe("routeAutoAccountWithDetails declarative capability tier and dissimilarity constraints", () => {
+  const codexDriver = ProviderDriverKind.make("codex");
+  const codexInstance = ProviderInstanceId.make("codex_secondary");
+
+  const multiVendorSetup = (options?: { readonly codexLimited?: boolean }) => {
+    const claudeAccount = provider(primary, {
+      driver: claude,
+      models: [
+        {
+          slug: "claude-opus-5-5",
+          name: "Claude Opus 5.5",
+          aliases: ["primary"],
+          isCustom: false,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "effort",
+                label: "Effort",
+                type: "select",
+                options: [
+                  { id: "low", label: "Low" },
+                  { id: "medium", label: "Medium" },
+                  { id: "high", label: "High" },
+                  { id: "ultra", label: "Ultra" },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          slug: "claude-sonnet-5-5",
+          name: "Claude Sonnet 5.5",
+          isDefault: true,
+          isCustom: false,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "effort",
+                label: "Effort",
+                type: "select",
+                options: [
+                  { id: "low", label: "Low" },
+                  { id: "high", label: "High" },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const codexAccount = provider(codexInstance, {
+      driver: codexDriver,
+      models: [
+        {
+          slug: "gpt-6.2-astra",
+          name: "GPT 6.2 Astra",
+          aliases: ["primary"],
+          isCustom: false,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "reasoningEffort",
+                label: "Reasoning",
+                type: "select",
+                options: [
+                  { id: "low", label: "Low" },
+                  { id: "medium", label: "Medium" },
+                  { id: "high", label: "High" },
+                  { id: "xhigh", label: "XHigh" },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          slug: "gpt-6.2-sol",
+          name: "GPT 6.2 Sol",
+          isCustom: false,
+          capabilities: null,
+        },
+      ],
+      ...(options?.codexLimited
+        ? {
+            usageLimits: {
+              checkedAt: "2026-11-03T11:59:00.000Z",
+              usageAllowed: false,
+              windows: [],
+            },
+          }
+        : {}),
+    });
+    const routingSettings: ServerSettingsValue = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [primary]: { driver: claude },
+        [codexInstance]: { driver: codexDriver },
+      },
+      providerInstanceFailoverOrder: [primary, codexInstance],
+      failoverLimitedThreads: true,
+      autoModeProvider: claude,
+      autoModeModels: {
+        [claude]: { model: "claude-opus-5-5", options: [{ id: "effort", value: "high" }] },
+        [codexDriver]: {
+          model: "gpt-6.2-astra",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      },
+    };
+    const selection: ModelSelection = {
+      instanceId: primary,
+      model: "claude-opus-5-5",
+      autoAccount: true,
+      options: [{ id: "effort", value: "high" }],
+    };
+    return {
+      settings: routingSettings,
+      providers: [claudeAccount, codexAccount],
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+      selection,
+      projectId,
+      currentInstanceId: null,
+      started: false,
+    };
+  };
+
+  it("routes to a dissimilar vendor family when available and degrades with reason when dissimilar quota is exhausted", () => {
+    const dissimilar = routeAutoAccountWithDetails({
+      ...multiVendorSetup(),
+      requestPrompt: { text: "Check types in this file." },
+      routingConstraints: {
+        capabilityTier: "frontier",
+        excludeVendorFamily: "anthropic",
+      },
+    });
+    assert.equal(dissimilar.degradedReason, undefined);
+    assert.equal(dissimilar.selection.instanceId, codexInstance);
+    assert.equal(dissimilar.selection.model, "gpt-6.2-astra");
+    assert.deepEqual(dissimilar.selection.options, [{ id: "reasoningEffort", value: "xhigh" }]);
+
+    const degraded = routeAutoAccountWithDetails({
+      ...multiVendorSetup({ codexLimited: true }),
+      requestPrompt: { text: "git status" },
+      routingConstraints: {
+        minTier: "deep",
+        excludeVendorFamily: ["anthropic"],
+      },
+    });
+    assert.equal(degraded.degradedReason, "no-dissimilar-provider-available");
+    assert.equal(degraded.selection.instanceId, primary);
+    assert.equal(degraded.selection.model, "claude-opus-5-5");
+    assert.deepEqual(degraded.selection.options, [{ id: "effort", value: "high" }]);
+
+    const launchDissimilar = failoverLimitedLaunch({
+      ...multiVendorSetup(),
+      requestPrompt: { text: "git status" },
+      routingConstraints: {
+        capabilityTier: "fast",
+        minTier: "deep",
+        excludeVendorFamily: "anthropic",
+      },
+    });
+    assert.equal(launchDissimilar.degradedReason, undefined);
+    assert.equal(launchDissimilar.selection.instanceId, codexInstance);
+    assert.equal(launchDissimilar.selection.model, "gpt-6.2-astra");
   });
 });
