@@ -13,8 +13,19 @@ const ROTATED_LOG_FLAGS =
   NodeFS.constants.O_APPEND;
 
 export async function runPosixLogWriter(args: readonly string[]): Promise<void> {
-  const [logPath, statusPath] = args;
+  const [logPath, statusPath, ...rest] = args;
   if (!logPath || !statusPath) throw new Error("Missing command log writer arguments.");
+  let inputFd = 0;
+  for (let index = 0; index < rest.length; index += 1) {
+    if (rest[index] === "--input-fd") {
+      const value = rest[index + 1];
+      if (!value || !/^\d+$/.test(value)) {
+        throw new Error(`Invalid --input-fd argument: ${value ?? ""}`);
+      }
+      inputFd = Number(value);
+      index += 1;
+    }
+  }
   const token = NodeCrypto.randomUUID();
   const header = Buffer.from(TRIMMED_MARKER);
   const completion = Buffer.from(`\0${token}\0`);
@@ -59,11 +70,10 @@ export async function runPosixLogWriter(args: readonly string[]): Promise<void> 
 
   let pending = empty;
   let completed = false;
-  // Not readSync(0): the bundled CLI's node:process import makes stdin non-blocking before this runs.
-  for await (const input of process.stdin as AsyncIterable<Buffer>) {
+  const consume = (input: Buffer) => {
     if (completed) {
       append(input);
-      continue;
+      return;
     }
     const bytes = pending.length === 0 ? input : Buffer.concat([pending, input]);
     const end = bytes.lastIndexOf(completion);
@@ -84,7 +94,7 @@ export async function runPosixLogWriter(args: readonly string[]): Promise<void> 
       completed = true;
       pending = empty;
       append(bytes.subarray(end + completion.length));
-      continue;
+      return;
     }
     append(input);
     // Only a suffix beginning at the last NUL can be a partial completion frame.
@@ -94,6 +104,45 @@ export async function runPosixLogWriter(args: readonly string[]): Promise<void> 
       suffix.length > 0 && completion.subarray(0, suffix.length).equals(suffix)
         ? Buffer.from(suffix)
         : empty;
+  };
+
+  // Read the FIFO with blocking readSync instead of process.stdin (libuv/kqueue): on macOS,
+  // kqueue on a named FIFO deadlocks on writes > 8 KiB and never delivers EOF, leaking writer
+  // processes. POSIX_WRAPPER passes the FIFO on fd 3 so the bundled CLI's node:process import
+  // cannot make it non-blocking; legacy stdin callers clear O_NONBLOCK before falling back.
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  let clearedStdinNonBlocking = false;
+  let useStdinAsync = false;
+  for (;;) {
+    let count: number;
+    try {
+      count = NodeFS.readSync(inputFd, chunk, 0, chunk.length, null);
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : undefined;
+      if (code === "EINTR") continue;
+      if (code === "EAGAIN" && inputFd === 0) {
+        if (!clearedStdinNonBlocking) {
+          clearedStdinNonBlocking = true;
+          const handle = (
+            process.stdin as { _handle?: { setBlocking?: (blocking: boolean) => void } }
+          )._handle;
+          if (typeof handle?.setBlocking === "function") {
+            handle.setBlocking(true);
+            continue;
+          }
+        }
+        useStdinAsync = true;
+        break;
+      }
+      throw error;
+    }
+    if (count === 0) break;
+    consume(chunk.subarray(0, count));
+  }
+  if (useStdinAsync) {
+    for await (const input of process.stdin as AsyncIterable<Buffer>) {
+      consume(input);
+    }
   }
   NodeFS.closeSync(log);
 }

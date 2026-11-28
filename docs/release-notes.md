@@ -1,3 +1,7 @@
+## 2026-11-28 — Background commands no longer stall or leak log writers on macOS
+
+- Background commands on macOS (`t3_command_run`) could deadlock when a single write exceeded 8 KiB and leave finished `__command-log` helper processes running because Node's `process.stdin` uses `kqueue` on the output FIFO. The log writer now reads its FIFO with blocking `readSync` on a dedicated file descriptor, so large outputs complete and helper processes exit cleanly.
+
 ## 2026-11-28 — Fewer pop-ups: repeats count up and background notices wait in the sidebar
 
 - Slow requests, machines that answered again, legacy thread migration and clone progress now go to **Background notices** at the top of the sidebar on web and desktop instead of popping up.

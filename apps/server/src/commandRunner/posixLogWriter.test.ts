@@ -77,3 +77,50 @@ it.skipIf(isWindowsHost).each([
     NodeFS.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+it.skipIf(isWindowsHost).each([
+  ["reads a >8 KiB named FIFO on --input-fd 3 after node:process ran", "fd3"],
+  ["reads a >8 KiB named FIFO on stdin after node:process ran", "stdin"],
+] as const)("%s", async (_scenario, mode) => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-command-writer-fifo-"));
+  const log = NodePath.join(directory, "output.log");
+  const status = NodePath.join(directory, "status");
+  const payloadFile = NodePath.join(directory, "payload.bin");
+  const payload = Buffer.alloc(16 * 1024 + 17, 0x61);
+  NodeFS.writeFileSync(payloadFile, payload);
+  const binPath = NodeURL.fileURLToPath(new URL("../bin.ts", import.meta.url));
+  const script = [
+    'mkfifo -m 600 "$1.pipe" "$1.ack"',
+    mode === "fd3"
+      ? '"$3" --import \'data:text/javascript,import "node:process";\' "$4" __command-log "$1" "$2" --input-fd 3 </dev/null 3<"$1.pipe" >"$1.ack" &'
+      : '"$3" --import \'data:text/javascript,import "node:process";\' "$4" __command-log "$1" "$2" <"$1.pipe" >"$1.ack" &',
+    "wpid=$!",
+    'exec 4>"$1.pipe" 3<"$1.ack"',
+    'rm -f "$1.pipe" "$1.ack"',
+    "IFS= read -r token <&3",
+    '[ -n "$token" ] || exit 2',
+    'cat "$5" >&4',
+    'printf "0\\n" >"$2.tmp"',
+    'printf "\\000%s\\000" "$token" >&4',
+    "exec 4>&-",
+    "IFS= read -r ack <&3",
+    'wait "$wpid"',
+  ].join("\n");
+  const child = NodeChildProcess.spawn(
+    "/bin/sh",
+    ["-c", script, "t3-fifo-test", log, status, process.execPath, binPath, payloadFile],
+    { detached: true },
+  );
+  const exited = NodeEvents.EventEmitter.once(child, "close");
+  try {
+    assert.deepEqual(await exited, [0, null]);
+    assert.deepEqual(NodeFS.readFileSync(log), payload);
+    assert.equal(NodeFS.readFileSync(status, "utf8"), "0\n");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) {
+      process.kill(-child.pid, "SIGKILL");
+    }
+    await exited;
+    NodeFS.rmSync(directory, { recursive: true, force: true });
+  }
+});
