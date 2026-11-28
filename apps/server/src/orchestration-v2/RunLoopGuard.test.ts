@@ -191,6 +191,15 @@ describe("RunLoopGuard", () => {
       }),
       "delegated",
     );
+    // User-owned interactive thread woken by a background-task/delegate continuation stays interactive.
+    assert.equal(
+      resolveRunLoopRole({
+        appThread: { ...rootLineage, createdBy: "user" },
+        run: {},
+        message: { createdBy: "agent" },
+      }),
+      "interactive",
+    );
   });
 
   it("normalizes timestamps, UUIDs, temp paths, PIDs, and durations into identical signatures", () => {

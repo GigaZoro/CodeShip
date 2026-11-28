@@ -70,6 +70,7 @@ const LONG_HEX_HASH_RE = /\b[0-9a-f]{12,}\b/gi;
 
 export function resolveRunLoopRole(input: {
   readonly appThread: Pick<OrchestrationV2AppThread, "lineage"> & {
+    readonly createdBy?: OrchestrationV2AppThread["createdBy"];
     readonly delegatedFrom?: OrchestrationV2AppThread["delegatedFrom"];
   };
   readonly run: Pick<OrchestrationV2Run, "delegatedTaskId">;
@@ -81,15 +82,22 @@ export function resolveRunLoopRole(input: {
   if (input.message.scheduledTaskId !== undefined) {
     return "scheduled";
   }
-  if (input.message.createdBy === "system") {
-    return "maintenance";
-  }
   if (
     input.appThread.lineage.relationshipToParent === "subagent" ||
     input.appThread.delegatedFrom !== undefined ||
-    input.run.delegatedTaskId !== undefined ||
-    input.message.createdBy === "agent"
+    input.run.delegatedTaskId !== undefined
   ) {
+    return "delegated";
+  }
+  // User-created root threads remain interactive on background-task/delegate continuation wakes
+  // (which ProviderContinuationService dispatches with createdBy: "agent").
+  if (input.appThread.createdBy === "user") {
+    return "interactive";
+  }
+  if (input.message.createdBy === "system" || input.appThread.createdBy === "system") {
+    return "maintenance";
+  }
+  if (input.message.createdBy === "agent" || input.appThread.createdBy === "agent") {
     return "delegated";
   }
   return "interactive";
