@@ -255,6 +255,7 @@ describe("RunLoopGuard", () => {
           output: "2026-11-28T10:00:01Z /tmp/build-111/out.js: permission denied",
         }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -268,6 +269,7 @@ describe("RunLoopGuard", () => {
           output: "2026-11-28T10:00:01Z /tmp/build-111/out.js: permission denied",
         }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -280,6 +282,7 @@ describe("RunLoopGuard", () => {
           output: "2026-11-28T10:00:02Z /var/folders/xx/build-222/out.js: permission denied",
         }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -291,6 +294,7 @@ describe("RunLoopGuard", () => {
         output: "2026-11-28T10:00:03Z C:\\Windows\\Temp\\build-333\\out.js: permission denied",
       }),
       attemptId,
+      rootThreadId: threadId,
       rootProviderThreadId,
     });
 
@@ -320,6 +324,7 @@ describe("RunLoopGuard", () => {
             output: { isError: true, content: [{ type: "text", text: message }] },
           }),
           attemptId,
+          rootThreadId: threadId,
           rootProviderThreadId,
         }),
       );
@@ -331,6 +336,7 @@ describe("RunLoopGuard", () => {
       stepRunLoopGuard(state, {
         event: makeCommandItem({ id: "ok:1", status: "completed", exitCode: 0, output: "ok" }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -346,6 +352,7 @@ describe("RunLoopGuard", () => {
           output: "timeout contacting server",
         }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -358,6 +365,7 @@ describe("RunLoopGuard", () => {
           output: "timeout contacting server",
         }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -365,6 +373,7 @@ describe("RunLoopGuard", () => {
       stepRunLoopGuard(state, {
         event: makeTurnEvent({ turnId: "turn:done", status: "completed" }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -378,6 +387,7 @@ describe("RunLoopGuard", () => {
           output: "timeout contacting server",
         }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -402,6 +412,7 @@ describe("RunLoopGuard", () => {
         stepRunLoopGuard(scheduled, {
           event: makeCommandItem({ id: `cmd:${index}`, status: "running" }),
           attemptId,
+          rootThreadId: threadId,
           rootProviderThreadId,
         }),
       );
@@ -409,6 +420,7 @@ describe("RunLoopGuard", () => {
         stepRunLoopGuard(scheduled, {
           event: makeCommandItem({ id: `cmd:${index}`, status: "completed", exitCode: 0 }),
           attemptId,
+          rootThreadId: threadId,
           rootProviderThreadId,
         }),
       );
@@ -416,6 +428,7 @@ describe("RunLoopGuard", () => {
         stepRunLoopGuard(interactive, {
           event: makeCommandItem({ id: `cmd:${index}`, status: "completed", exitCode: 0 }),
           attemptId,
+          rootThreadId: threadId,
           rootProviderThreadId,
         }),
       );
@@ -424,6 +437,7 @@ describe("RunLoopGuard", () => {
     const fourthScheduled = stepRunLoopGuard(scheduled, {
       event: makeCommandItem({ id: "cmd:4", status: "running" }),
       attemptId,
+      rootThreadId: threadId,
       rootProviderThreadId,
     });
     assert.isNotNull(fourthScheduled);
@@ -437,6 +451,7 @@ describe("RunLoopGuard", () => {
       stepRunLoopGuard(interactive, {
         event: makeCommandItem({ id: "cmd:4", status: "completed", exitCode: 0 }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -447,6 +462,7 @@ describe("RunLoopGuard", () => {
       stepRunLoopGuard(turnCapped, {
         event: makeTurnEvent({ turnId: "t1", status: "completed" }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -459,6 +475,7 @@ describe("RunLoopGuard", () => {
           runAttemptId: null,
         }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
@@ -466,12 +483,14 @@ describe("RunLoopGuard", () => {
       stepRunLoopGuard(turnCapped, {
         event: makeTurnEvent({ turnId: "t2", status: "running" }),
         attemptId,
+        rootThreadId: threadId,
         rootProviderThreadId,
       }),
     );
     const turnTripped = stepRunLoopGuard(turnCapped, {
       event: makeTurnEvent({ turnId: "t3", status: "running" }),
       attemptId,
+      rootThreadId: threadId,
       rootProviderThreadId,
     });
     assert.isNotNull(turnTripped);
@@ -502,6 +521,7 @@ describe("RunLoopGuard", () => {
             output: "same error",
           }),
           attemptId,
+          rootThreadId: threadId,
           rootProviderThreadId,
         }),
       );
@@ -529,6 +549,7 @@ describe("RunLoopGuard", () => {
             output: "same error",
           }),
           attemptId,
+          rootThreadId: threadId,
           rootProviderThreadId,
         }),
       );
@@ -536,8 +557,97 @@ describe("RunLoopGuard", () => {
     const fourthHitsCap = stepRunLoopGuard(thrashOffOnly, {
       event: makeCommandItem({ id: "to:4", status: "failed", exitCode: 1, output: "same error" }),
       attemptId,
+      rootThreadId: threadId,
       rootProviderThreadId,
     });
     assert.equal(fourthHitsCap?.code, "tool_call_cap_exceeded");
+  });
+
+  it("ignores child-thread turn items projected from subagents", () => {
+    const state = makeRunLoopGuardState({
+      role: "interactive",
+      settings: {
+        ...DEFAULT_RUN_LOOP_GUARD_SETTINGS,
+        limits: {
+          ...DEFAULT_RUN_LOOP_GUARD_SETTINGS.limits,
+          interactive: { maxTurns: 100, maxToolCalls: 2 },
+        },
+      },
+    });
+    const childThreadId = ThreadId.make("thread:guard-child");
+    for (let i = 1; i <= 4; i++) {
+      const ev = makeCommandItem({
+        id: `child-cmd-${i}`,
+        status: "failed",
+        exitCode: 1,
+        output: "Permission denied",
+      });
+      const childEvent: ProviderAdapter.ProviderAdapterV2Event =
+        ev.type === "turn_item.updated" && ev.turnItem.type === "command_execution"
+          ? {
+              ...ev,
+              turnItem: {
+                ...ev.turnItem,
+                threadId: childThreadId,
+                runId: null,
+                providerThreadId: null,
+                providerTurnId: null,
+              },
+            }
+          : ev;
+      assert.isNull(
+        stepRunLoopGuard(state, {
+          event: childEvent,
+          attemptId,
+          rootThreadId: threadId,
+          rootProviderThreadId,
+        }),
+      );
+    }
+    assert.strictEqual(state.seenToolCallIds.size, 0);
+    assert.strictEqual(state.consecutiveErrorCount, 0);
+  });
+
+  it("distinguishes failed file_search items by error preview rather than generic title", () => {
+    const state = makeRunLoopGuardState({ role: "interactive" });
+    const errors = [
+      "rg: /a: No such file or directory (os error 2)",
+      "rg: /b: Operation not permitted (os error 1)",
+      "rg: /c: Permission denied (os error 13)",
+    ];
+    for (const [idx, preview] of errors.entries()) {
+      const event: ProviderAdapter.ProviderAdapterV2Event = {
+        type: "turn_item.updated",
+        driver,
+        turnItem: {
+          id: TurnItemId.make(`search-${idx}`),
+          threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerThreadId: rootProviderThreadId,
+          providerTurnId: rootProviderTurnId,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: idx + 1,
+          status: "failed",
+          title: "Search files",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "file_search",
+          pattern: "**/*",
+          results: [{ fileName: ".", preview }],
+        },
+      };
+      assert.isNull(
+        stepRunLoopGuard(state, {
+          event,
+          attemptId,
+          rootThreadId: threadId,
+          rootProviderThreadId,
+        }),
+      );
+    }
+    assert.strictEqual(state.consecutiveErrorCount, 1);
   });
 });

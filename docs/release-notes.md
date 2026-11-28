@@ -1,3 +1,7 @@
+## 2026-11-28 — Run loop guard and thrash circuit breaker
+
+- Automated, delegated, maintenance, and interactive runs now enforce configurable per-role turn and tool-call caps alongside a 3-identical-error thrash circuit breaker, aborting stuck loops with a structured reason instead of burning quota.
+
 ## 2026-11-28 — Depth-one landing pipeline pre-checks the next queued change
 
 - Maintainers: `landing-turn.cjs` now pipelines the first queued lander behind the current turn holder: before running under-turn work (`finalize`, under-turn checks, or awaiting an in-flight speculative pre-check), the holder atomically publishes its candidate commit to `refs/heads/landing-lease/candidate` (cleaned up on push, release, or lapsed-lease takeover), and the next waiter in line speculatively rebases and pre-checks a private copy against that candidate. When the holder lands that exact commit and the rebased tree matches, the waiter skips `underTurnCheck` and pushes straight to `main`, logging `speculativeReused` and `phases.speculativeCheck` in `landings.jsonl`.

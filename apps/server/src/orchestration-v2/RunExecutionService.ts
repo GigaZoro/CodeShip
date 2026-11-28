@@ -1802,6 +1802,7 @@ export const layer: Layer.Layer<
               const guardDecision = stepRunLoopGuard(runLoopGuardState, {
                 event,
                 attemptId: input.attempt.id,
+                rootThreadId: input.run.threadId,
                 rootProviderThreadId: input.providerThread.id,
               });
               if (guardDecision !== null) {

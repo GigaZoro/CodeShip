@@ -9,23 +9,23 @@ export const RunLoopRole = Schema.Literals([
 ]);
 export type RunLoopRole = typeof RunLoopRole.Type;
 
-export const MIN_RUN_LOOP_MAX_TURNS = 1;
-export const MAX_RUN_LOOP_MAX_TURNS = 10_000;
+const MIN_RUN_LOOP_MAX_TURNS = 1;
+const MAX_RUN_LOOP_MAX_TURNS = 10_000;
 export const RunLoopMaxTurns = Schema.Int.check(
   Schema.isBetween({ minimum: MIN_RUN_LOOP_MAX_TURNS, maximum: MAX_RUN_LOOP_MAX_TURNS }),
 );
 export type RunLoopMaxTurns = typeof RunLoopMaxTurns.Type;
 
-export const MIN_RUN_LOOP_MAX_TOOL_CALLS = 1;
-export const MAX_RUN_LOOP_MAX_TOOL_CALLS = 100_000;
+const MIN_RUN_LOOP_MAX_TOOL_CALLS = 1;
+const MAX_RUN_LOOP_MAX_TOOL_CALLS = 100_000;
 export const RunLoopMaxToolCalls = Schema.Int.check(
   Schema.isBetween({ minimum: MIN_RUN_LOOP_MAX_TOOL_CALLS, maximum: MAX_RUN_LOOP_MAX_TOOL_CALLS }),
 );
 export type RunLoopMaxToolCalls = typeof RunLoopMaxToolCalls.Type;
 
-export const MIN_RUN_LOOP_IDENTICAL_ERROR_THRESHOLD = 2;
-export const MAX_RUN_LOOP_IDENTICAL_ERROR_THRESHOLD = 50;
-export const DEFAULT_RUN_LOOP_IDENTICAL_ERROR_THRESHOLD = 3;
+const MIN_RUN_LOOP_IDENTICAL_ERROR_THRESHOLD = 2;
+const MAX_RUN_LOOP_IDENTICAL_ERROR_THRESHOLD = 50;
+const DEFAULT_RUN_LOOP_IDENTICAL_ERROR_THRESHOLD = 3;
 export const RunLoopIdenticalErrorThreshold = Schema.Int.check(
   Schema.isBetween({
     minimum: MIN_RUN_LOOP_IDENTICAL_ERROR_THRESHOLD,
@@ -34,7 +34,7 @@ export const RunLoopIdenticalErrorThreshold = Schema.Int.check(
 );
 export type RunLoopIdenticalErrorThreshold = typeof RunLoopIdenticalErrorThreshold.Type;
 
-export const DEFAULT_RUN_LOOP_ROLE_LIMITS = {
+const DEFAULT_RUN_LOOP_ROLE_LIMITS = {
   interactive: { maxTurns: 100, maxToolCalls: 1000 },
   scheduled: { maxTurns: 20, maxToolCalls: 150 },
   maintenance: { maxTurns: 5, maxToolCalls: 25 },

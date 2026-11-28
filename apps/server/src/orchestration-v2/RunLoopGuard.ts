@@ -9,6 +9,7 @@ import {
   type RunLoopGuardSettings,
   type RunLoopRole,
   type RunLoopRoleLimit,
+  type ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -103,7 +104,7 @@ export function resolveRunLoopRole(input: {
   return "interactive";
 }
 
-export function resolveRunLoopLimits(
+function resolveRunLoopLimits(
   settings: RunLoopGuardSettings | undefined,
   role: RunLoopRole,
 ): { readonly settings: RunLoopGuardSettings; readonly limits: RunLoopRoleLimit } {
@@ -139,7 +140,7 @@ function nonEmptyTrimmed(value: string | null | undefined): string | undefined {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
-export function normalizeToolErrorDetail(raw: string): string {
+function normalizeToolErrorDetail(raw: string): string {
   const normalized = raw
     .slice(0, 4_096)
     .replace(ANSI_ESCAPE_RE, "")
@@ -254,9 +255,15 @@ export function extractToolItemErrorSignature(item: OrchestrationV2TurnItem): st
     }
     case "file_search": {
       if (item.status !== "failed") return undefined;
+      const preview = item.results
+        ?.map((result) => nonEmptyTrimmed(result.preview))
+        .find((value): value is string => value !== undefined);
       return formatErrorSignature(
         "file_search",
-        nonEmptyTrimmed(item.title) ?? nonEmptyTrimmed(item.pattern) ?? "file search failed",
+        preview ??
+          nonEmptyTrimmed(item.title) ??
+          nonEmptyTrimmed(item.pattern) ??
+          "file search failed",
       );
     }
     case "web_search": {
@@ -295,6 +302,7 @@ export function stepRunLoopGuard(
   input: {
     readonly event: ProviderAdapter.ProviderAdapterV2Event;
     readonly attemptId: RunAttemptId;
+    readonly rootThreadId: ThreadId;
     readonly rootProviderThreadId: ProviderThreadId;
   },
 ): RunLoopAbortDecision | null {
@@ -341,6 +349,9 @@ export function stepRunLoopGuard(
   }
 
   const item = event.turnItem;
+  if (item.threadId !== input.rootThreadId) {
+    return null;
+  }
   if (!COUNTED_TOOL_CALL_TYPES.has(item.type)) {
     return null;
   }
