@@ -52,6 +52,15 @@ function onLines(stream, listener) {
   });
 }
 
+function killIfAlive(pid) {
+  if (!(pid > 0) || probeProcess(pid).state !== "alive") return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+}
+
 test("a lost turn stops its check with every process the check started before the landing goes on", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-")));
   let step;
@@ -86,7 +95,7 @@ test("a lost turn stops its check with every process the check started before th
     assert.ok(step > 0, "the check never started its step");
     assert.equal(probeProcess(step).state, "gone", "the check's step outlived it");
   } finally {
-    if (step > 0 && probeProcess(step).state === "alive") process.kill(step, "SIGKILL");
+    killIfAlive(step);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -129,13 +138,7 @@ test(
       assert.ok(worker > 0, "the middle process never started the worker");
       assert.equal(probeProcess(worker).state, "gone", "the worker outlived the check");
     } finally {
-      if (worker > 0 && probeProcess(worker).state === "alive") {
-        try {
-          process.kill(worker, "SIGKILL");
-        } catch (error) {
-          if (error?.code !== "ESRCH") throw error;
-        }
-      }
+      killIfAlive(worker);
       fs.rmSync(root, { recursive: true, force: true });
     }
   },
@@ -175,7 +178,7 @@ test(
         "the worker in its own group outlived the check",
       );
     } finally {
-      if (worker > 0 && probeProcess(worker).state === "alive") process.kill(worker, "SIGKILL");
+      killIfAlive(worker);
       fs.rmSync(root, { recursive: true, force: true });
     }
   },
@@ -205,7 +208,7 @@ test(
       assert.ok(worker > 0, "the check never started the worker");
       assert.equal(probeProcess(worker).state, "gone", "the worker outlived the check");
     } finally {
-      if (worker > 0 && probeProcess(worker).state === "alive") process.kill(worker, "SIGKILL");
+      killIfAlive(worker);
       fs.rmSync(root, { recursive: true, force: true });
     }
   },
@@ -251,7 +254,7 @@ test(
       assert.equal(probeProcess(worker).state, "gone", "the worker outlived the failed stop");
     } finally {
       process.env.PATH = searchPath;
-      if (worker > 0 && probeProcess(worker).state === "alive") process.kill(worker, "SIGKILL");
+      killIfAlive(worker);
       fs.rmSync(root, { recursive: true, force: true });
     }
   },
@@ -296,7 +299,7 @@ test(
       await ended;
       assert.ok(worker > 0, "the check never started the worker");
     } finally {
-      if (worker > 0 && probeProcess(worker).state === "alive") process.kill(worker, "SIGKILL");
+      killIfAlive(worker);
       fs.rmSync(root, { recursive: true, force: true });
     }
   },

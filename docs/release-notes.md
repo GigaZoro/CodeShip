@@ -1,3 +1,7 @@
+## 2026-11-28 — Remote landing defaults, self-host skipping, and `~/Projects/CodeShip` auto-discovery
+
+- Maintainers: `landing-turn.cjs land` now auto-discovers `~/Projects/CodeShip` alongside `~/projects/CodeShip` on case-sensitive POSIX hosts, skips remote candidates matching the current machine (hostname, short hostname, or loopback) to land locally without SSH overhead, supports validated `t3.landingRemoteHost` and `t3.landingRemoteDir` Git config defaults (`--local` > `--remote` > env > Git config), and always passes `--local` to the remote lander so remote Git config cannot recurse.
+
 ## 2026-11-28 — Antigravity per-meter Auto failover and known-room account switching
 
 - Antigravity Auto chats whose refused meter has no room on any Antigravity account now fail over on both send and the usage-limit recovery sweep—falling back to an available Antigravity Auto meter first, or continuing on another provider with room—while chats on meters with room stay put.

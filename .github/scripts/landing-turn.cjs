@@ -5,6 +5,7 @@
 const { spawn, spawnSync } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
+const { isIP } = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { StringDecoder } = require("node:string_decoder");
@@ -31,6 +32,8 @@ const TURN_ENV = "T3_LANDING_TURN";
 const RECORD_ENV = "T3_LANDING_RECORD";
 const REMOTE_HOST_ENV = "T3_LANDING_REMOTE_HOST";
 const REMOTE_DIR_ENV = "T3_LANDING_REMOTE_DIR";
+const REMOTE_HOST_GIT_CONFIG = "t3.landingRemoteHost";
+const REMOTE_DIR_GIT_CONFIG = "t3.landingRemoteDir";
 const REMOTE_HOST_RE = /^[A-Za-z0-9._@%+\-[\]:]+$/;
 const PROBE_CONNECT_TIMEOUT_SEC = 10;
 const PROBE_TIMEOUT_MS = 15 * 1000;
@@ -3532,6 +3535,55 @@ function validateRemoteDir(dir) {
   return dir;
 }
 
+function isSelfRemoteTarget(target, localHostname = os.hostname()) {
+  if (typeof target !== "string") return false;
+  const trimmed = target.trim();
+  if (trimmed.length === 0) return false;
+  const atIndex = trimmed.lastIndexOf("@");
+  let host = atIndex >= 0 ? trimmed.slice(atIndex + 1) : trimmed;
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+  host = host.toLowerCase().replace(/\.+$/, "");
+  if (host.length === 0) return false;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+  if (typeof localHostname !== "string") return false;
+  const normalizedLocal = localHostname.trim().toLowerCase().replace(/\.+$/, "");
+  if (normalizedLocal.length === 0) return false;
+  if (host === normalizedLocal) return true;
+  if (isIP(normalizedLocal) === 0) {
+    const dotIndex = normalizedLocal.indexOf(".");
+    if (dotIndex > 0 && host === normalizedLocal.slice(0, dotIndex)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function readGitConfigValue(cwd, key, { env } = {}) {
+  const result = git(cwd, ["config", "--get", key], { allowFailure: true, env });
+  if (!result.ok) return undefined;
+  const trimmed = result.stdout.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveRemoteConfig({ cwd, env = process.env, remoteSpec, remoteDir, local = false }) {
+  if (local) return null;
+  const envRemote = typeof env[REMOTE_HOST_ENV] === "string" ? env[REMOTE_HOST_ENV].trim() : "";
+  const effectiveRemoteSpec =
+    remoteSpec ??
+    (envRemote.length > 0 ? envRemote : readGitConfigValue(cwd, REMOTE_HOST_GIT_CONFIG, { env }));
+  if (effectiveRemoteSpec === undefined) return null;
+  const envDir = typeof env[REMOTE_DIR_ENV] === "string" ? env[REMOTE_DIR_ENV].trim() : "";
+  const effectiveRemoteDir =
+    remoteDir ??
+    (envDir.length > 0 ? envDir : readGitConfigValue(cwd, REMOTE_DIR_GIT_CONFIG, { env }));
+  return {
+    hosts: parseRemoteHosts(effectiveRemoteSpec),
+    remoteDir: validateRemoteDir(effectiveRemoteDir),
+  };
+}
+
 /** Strict POSIX single-quoting helper: safe for every dynamic value passed in a remote shell snippet. */
 function shellQuote(value) {
   const text = String(value);
@@ -3669,6 +3721,7 @@ const REMOTE_PROBE_SCRIPT = [
   '      path.join(home, "repos", "CodeShip"),',
   '      path.join(home, "src", "CodeShip"),',
   '      path.join(home, "projects", "CodeShip"),',
+  '      path.join(home, "Projects", "CodeShip"),',
   "    ];",
   "let found = null;",
   'let reason = "remote checkout not found";',
@@ -3753,7 +3806,7 @@ const REMOTE_LAND_SHELL = [
   'FETCHED=$(git -C "$REMOTE_DIR" rev-parse --verify "${TMP_REF}^{commit}") || exit 1',
   'if [ "$FETCHED" != "$TIP" ]; then printf "%s\\n" "landing turn: remote fetched commit $FETCHED does not match expected $TIP" >&2; exit 1; fi',
   'git -C "$REMOTE_DIR" worktree add --quiet -B "$TMP_BRANCH" "$TMP_WT" "$TIP" || exit 1',
-  'if [ -n "$FINALIZE_CMD" ]; then set -- land --finalize "$FINALIZE_CMD"; else set -- land; fi',
+  'if [ -n "$FINALIZE_CMD" ]; then set -- land --local --finalize "$FINALIZE_CMD"; else set -- land --local; fi',
   '( unset T3_LANDING_REMOTE_HOST T3_LANDING_REMOTE_DIR; cd "$TMP_WT" || exit 1; exec node .github/scripts/landing-turn.cjs "$@" ) & CHILD_PID=$!',
   "RC=0",
   'wait "$CHILD_PID" || RC=$?',
@@ -4165,6 +4218,7 @@ async function landRemote({
   hosts: rawHosts,
   remoteDir: rawRemoteDir,
   finalizeCommand,
+  localHostname = os.hostname(),
   now = Date.now,
   recordClock = () => performance.now(),
   mainCallMs = MAIN_CALL_MS,
@@ -4185,6 +4239,13 @@ async function landRemote({
     throw new RemoteConfigError("landing turn: remote host list must not be empty");
   }
   const remoteDir = validateRemoteDir(rawRemoteDir);
+  const remoteHosts = hosts.filter((host) => !isSelfRemoteTarget(host, localHostname));
+  if (remoteHosts.length === 0) {
+    const matched = hosts.join(", ");
+    const reason = `remote host matches this machine (${matched})`;
+    process.stderr.write(`landing turn: ${reason}; landing locally.\n`);
+    return { status: "remote-unavailable", reason };
+  }
 
   const record = startLandingRecord({ now, clock: recordClock });
   let status;
@@ -4227,7 +4288,7 @@ async function landRemote({
           }));
       const { selected, reason } = await record.time("remoteProbe", () =>
         selectRemoteHost({
-          hosts,
+          hosts: remoteHosts,
           remoteDir,
           expectedOriginUrl,
           probeHost: effectiveProbe,
@@ -4513,6 +4574,7 @@ async function main(
   {
     cwd = process.cwd(),
     env = process.env,
+    localHostname,
     failingMs,
     check,
     finalize,
@@ -4532,24 +4594,15 @@ async function main(
     }
     const { rebased, finalizeCommand, remoteSpec, remoteDir, local } = parsed;
     let remoteConfig = null;
-    if (command === "land" && !local) {
-      const envRemote = typeof env[REMOTE_HOST_ENV] === "string" ? env[REMOTE_HOST_ENV].trim() : "";
-      const effectiveRemoteSpec = remoteSpec ?? (envRemote.length > 0 ? envRemote : undefined);
-      if (effectiveRemoteSpec !== undefined) {
-        const envDir = typeof env[REMOTE_DIR_ENV] === "string" ? env[REMOTE_DIR_ENV].trim() : "";
-        const effectiveRemoteDir = remoteDir ?? (envDir.length > 0 ? envDir : undefined);
-        try {
-          remoteConfig = {
-            hosts: parseRemoteHosts(effectiveRemoteSpec),
-            remoteDir: validateRemoteDir(effectiveRemoteDir),
-          };
-        } catch (error) {
-          if (error instanceof RemoteConfigError) {
-            console.error(error.message);
-            return 2;
-          }
-          throw error;
+    if (command === "land") {
+      try {
+        remoteConfig = resolveRemoteConfig({ cwd, env, remoteSpec, remoteDir, local });
+      } catch (error) {
+        if (error instanceof RemoteConfigError) {
+          console.error(error.message);
+          return 2;
         }
+        throw error;
       }
     }
     keepAwake();
@@ -4560,6 +4613,7 @@ async function main(
         hosts: remoteConfig.hosts,
         remoteDir: remoteConfig.remoteDir,
         finalizeCommand,
+        ...(localHostname === undefined ? {} : { localHostname }),
         ...(probeTimeoutMs === undefined ? {} : { probeTimeoutMs }),
         ...(execSsh === undefined ? {} : { execSsh }),
         ...(probeHost === undefined ? {} : { probeHost }),
@@ -4719,6 +4773,8 @@ module.exports = {
   PRE_TURN_TEST_STEP_MAX_SECONDS,
   REMOTE_HOST_ENV,
   REMOTE_DIR_ENV,
+  REMOTE_HOST_GIT_CONFIG,
+  REMOTE_DIR_GIT_CONFIG,
   FINAL_COMMIT_ENV,
   FINAL_BASE_ENV,
   FINAL_REBASED_ENV,
@@ -4776,6 +4832,9 @@ module.exports = {
     parseRemoteHosts,
     validateRemoteHost,
     validateRemoteDir,
+    isSelfRemoteTarget,
+    readGitConfigValue,
+    resolveRemoteConfig,
     shellQuote,
     buildSshArgs,
     normalizeOriginUrl,

@@ -49,6 +49,7 @@ A branch behind main is rebased onto it first, and the landing then starts again
 - If a fallback lease release cannot be confirmed after retries, the command exits nonzero while still printing any landed commit (`releaseConfirmed: false`). Confirm that commit on `origin/main`; once confirmed, no retry is needed and the lease lapses within ten minutes.
 - A fetch or push of main that stops answering ends the landing after ten minutes, with the turn released. A push whose answer was lost counts as landed when main holds its commit. `git push failed, and whether it landed is unknown`: fetch main; if `git merge-base --is-ancestor HEAD origin/main` succeeds, it landed, otherwise land again.
 - Branch protection that refuses the push: stop and offer a PR instead.
+- Optional SSH remote offload: pass `--remote <host[,...]>`, set `T3_LANDING_REMOTE_HOST`, or configure `git config --local t3.landingRemoteHost <host>` (override with `--local`); self-host targets and unreachable remotes fall back to local landing automatically.
 - Confirm with `git fetch origin && git merge-base --is-ancestor HEAD origin/<default>`.
 
 ## 6. Verify the requested delivery
