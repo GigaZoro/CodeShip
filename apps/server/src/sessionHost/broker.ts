@@ -7,6 +7,11 @@ import * as NodePath from "node:path";
 import * as NodeStringDecoder from "node:string_decoder";
 
 import {
+  holdProcessGroup,
+  ownProcessGroup,
+  type OwnedProcessGroup,
+} from "@t3tools/shared/processGroup";
+import {
   endedWindowsTreeRoot,
   windowsStopTreeArgs,
   windowsTreeRootFromNow,
@@ -134,19 +139,22 @@ function parseJsonRpcLine(line: string): JsonRpcLine | undefined {
 
 function signalChildTree(
   child: NodeChildProcess.ChildProcess,
+  childGroup: OwnedProcessGroup | undefined,
   signal: NodeJS.Signals,
   platform: NodeJS.Platform,
 ): boolean {
   const pid = child.pid;
   if (pid === undefined) return false;
-  if (platform !== "win32") {
+  if (platform !== "win32" && childGroup !== undefined) {
     try {
-      process.kill(-pid, signal);
-      return true;
+      if (childGroup.signal(signal)) return true;
+      // The leader already exited and no holder keeps the group's number; do not signal a reused pid.
+      return false;
     } catch {
-      // Fall back to signaling the direct child if it is no longer a process group leader.
+      // Fall back to signaling the direct child if it is still live and no longer leads its group.
     }
   }
+  if (child.exitCode !== null || child.signalCode !== null) return false;
   try {
     return child.kill(signal);
   } catch {
@@ -356,6 +364,7 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
 
   // Spawned once the socket listens: a broker that cannot serve must not leave a child behind.
   let child!: NodeChildProcess.ChildProcessWithoutNullStreams;
+  let childGroup: OwnedProcessGroup | undefined;
   let windowsChildRoot: WindowsProcessTreeRoot | undefined;
   const stdoutDecoder = new NodeStringDecoder.StringDecoder("utf8");
   const stderrDecoder = new NodeStringDecoder.StringDecoder("utf8");
@@ -366,11 +375,20 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     const frame = pushFrame({ type: "frame", stream: "stdout", chunk: text });
     if (config.jsonRpc) trackChildLines(text, frame.seq);
   };
+  let childExitPending: {
+    readonly code: number | null;
+    readonly signal: NodeJS.Signals | null;
+  } | null = null;
+  let stdoutEnded = false;
+  let stderrEnded = false;
+  const childDoneCallbacks = new Set<() => void>();
+
   const finishChildExit = (code: number | null, signal: NodeJS.Signals | null) => {
     if (childExited) return;
     childExited = true;
     childExitCode = code;
     childExitSignal = signal;
+    childGroup?.release();
     if (windowsChildRoot !== undefined) {
       windowsChildRoot = endedWindowsTreeRoot(windowsChildRoot);
     }
@@ -393,9 +411,17 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
       signal,
     });
 
+    for (const notify of childDoneCallbacks) notify();
+    childDoneCallbacks.clear();
+
     if (activeClient === null && !shuttingDown) {
       armOrphanTimer();
     }
+  };
+
+  const maybeFinishChildExit = () => {
+    if (childExitPending === null || !stdoutEnded || !stderrEnded) return;
+    finishChildExit(childExitPending.code, childExitPending.signal);
   };
 
   const clearOrphanTimer = () => {
@@ -420,30 +446,33 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
         await killWindowsProcessTree(windowsChildRoot);
       }
     } else if (!childExited && child.pid !== undefined) {
-      signalChildTree(child, signal, config.platform);
+      signalChildTree(child, childGroup, signal, config.platform);
       await new Promise<void>((resolve) => {
         if (childExited) {
           resolve();
           return;
         }
         let killTimer: ReturnType<typeof setTimeout> | undefined;
-        const graceTimer = setTimeout(() => {
-          if (!childExited) {
-            signalChildTree(child, "SIGKILL", config.platform);
-          }
-          // SIGKILL cannot be ignored; the cap covers only stdio a grandchild keeps open, so the
-          // exit frame still reaches the client before it is closed.
-          killTimer = setTimeout(resolve, KILL_CONFIRM_MS);
-          killTimer.unref();
-        }, graceMs);
-        graceTimer.unref();
-        child.once("close", () => {
+        const done = () => {
+          childDoneCallbacks.delete(done);
           clearTimeout(graceTimer);
           if (killTimer !== undefined) clearTimeout(killTimer);
           resolve();
-        });
+        };
+        const graceTimer = setTimeout(() => {
+          if (!childExited) {
+            signalChildTree(child, childGroup, "SIGKILL", config.platform);
+          }
+          // SIGKILL cannot be ignored; the cap covers only stdio a grandchild keeps open, so the
+          // exit frame still reaches the client before it is closed.
+          killTimer = setTimeout(done, KILL_CONFIRM_MS);
+          killTimer.unref();
+        }, graceMs);
+        graceTimer.unref();
+        childDoneCallbacks.add(done);
       });
     }
+    childGroup?.release();
 
     // The client goes after the child, so it receives the exit frame and knows the process is gone.
     if (activeClient !== null) {
@@ -608,7 +637,7 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
         }
         case "signal": {
           if (!childExited) {
-            signalChildTree(child, message.signal, config.platform);
+            signalChildTree(child, childGroup, message.signal, config.platform);
           }
           break;
         }
@@ -694,14 +723,31 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
   }
 
   const captureWindowsRoot = config.platform === "win32" ? windowsTreeRootFromNow() : undefined;
-  child = NodeChildProcess.spawn(config.command, [...config.args], {
-    cwd: config.cwd,
-    env: config.env,
-    stdio: ["pipe", "pipe", "pipe"],
-    detached: isPosix,
-    windowsHide: true,
-    shell: config.shell,
-  });
+  const held = isPosix
+    ? holdProcessGroup(
+        {
+          command: config.command,
+          args: config.args,
+          cwd: config.cwd,
+          env: config.env,
+          shell: config.shell,
+        },
+        { fd: 3 },
+      )
+    : undefined;
+  child = NodeChildProcess.spawn(
+    held?.command ?? config.command,
+    [...(held?.args ?? config.args)],
+    {
+      cwd: config.cwd,
+      env: config.env,
+      stdio: held === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"],
+      detached: isPosix,
+      windowsHide: true,
+      shell: held === undefined ? config.shell : false,
+    },
+  ) as NodeChildProcess.ChildProcessWithoutNullStreams;
+  childGroup = isPosix ? ownProcessGroup(child, held === undefined ? undefined : 3) : undefined;
   windowsChildRoot =
     captureWindowsRoot !== undefined && child.pid !== undefined
       ? captureWindowsRoot(child.pid)
@@ -744,8 +790,21 @@ export async function runSessionHostBroker(args: ReadonlyArray<string>): Promise
     finishChildExit(1, null);
   });
 
-  child.once("close", (code, signal) => {
-    finishChildExit(code, signal);
+  const markStdoutEnded = () => {
+    stdoutEnded = true;
+    maybeFinishChildExit();
+  };
+  const markStderrEnded = () => {
+    stderrEnded = true;
+    maybeFinishChildExit();
+  };
+  child.stdout.once("end", markStdoutEnded);
+  child.stdout.once("close", markStdoutEnded);
+  child.stderr.once("end", markStderrEnded);
+  child.stderr.once("close", markStderrEnded);
+  child.once("exit", (code, signal) => {
+    childExitPending = { code, signal };
+    maybeFinishChildExit();
   });
 
   server.once("error", () => {

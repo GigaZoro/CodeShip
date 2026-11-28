@@ -482,6 +482,7 @@ const make = Effect.gen(function* () {
     }
     const startedAt = yield* readProcessStartedAt(pid).pipe(
       Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+      Effect.provideService(FileSystem.FileSystem, fs),
     );
     return startedAt === undefined ? undefined : timeIdentity(startedAt);
   });

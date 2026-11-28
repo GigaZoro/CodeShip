@@ -5,6 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import { ownProcessGroup } from "@t3tools/shared/processGroup";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { assert, it } from "vite-plus/test";
 
@@ -111,14 +112,17 @@ it.skipIf(isWindowsHost).each([
     ["-c", script, "t3-fifo-test", log, status, process.execPath, binPath, payloadFile],
     { detached: true },
   );
+  const group = ownProcessGroup(child, undefined);
   const exited = NodeEvents.EventEmitter.once(child, "close");
   try {
     assert.deepEqual(await exited, [0, null]);
     assert.deepEqual(NodeFS.readFileSync(log), payload);
     assert.equal(NodeFS.readFileSync(status, "utf8"), "0\n");
   } finally {
-    if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) {
-      process.kill(-child.pid, "SIGKILL");
+    try {
+      group.signal("SIGKILL");
+    } catch {
+      // Group already gone.
     }
     await exited;
     NodeFS.rmSync(directory, { recursive: true, force: true });

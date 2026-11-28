@@ -805,7 +805,7 @@ describe("Detached session host broker identity", () => {
         const startedAt = yield* readProcessStartedAt(process.pid);
         assert.isDefined(startedAt);
         assert.equal(identity, timeIdentity(startedAt ?? 0));
-      }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer)))),
+      }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
   );
 });
 

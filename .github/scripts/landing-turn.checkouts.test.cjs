@@ -741,10 +741,13 @@ test(
       await strayExited;
       assert.equal(running(stray.pid), false);
     } finally {
-      try {
-        process.kill(-stray.pid, "SIGKILL");
-      } catch {
-        // Already exited.
+      if (stray.exitCode === null && stray.signalCode === null) {
+        try {
+          // oxlint-disable-next-line t3code/no-raw-process-group-signal -- standalone CommonJS test cleanup while detached leader has not exited
+          process.kill(-stray.pid, "SIGKILL");
+        } catch {
+          // Already exited.
+        }
       }
       await strayExited;
       fs.rmSync(root, { recursive: true, force: true });
