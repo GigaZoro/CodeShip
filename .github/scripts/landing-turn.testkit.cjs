@@ -11,7 +11,7 @@ const { LEASE_REF } = require("./landing-turn.cjs");
 // and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
 for (const name of Object.keys(process.env)) if (/^GIT_/i.test(name)) delete process.env[name];
 // A landing keeps its checkouts in the user's cache folder; the tests' go to one of their own, gone with the process.
-const cache = fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-cache-"));
+const cache = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-cache-")));
 process.on("exit", () => {
   try {
     fs.rmSync(cache, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

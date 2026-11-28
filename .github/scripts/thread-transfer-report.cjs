@@ -117,8 +117,15 @@ function validateScenarios(value) {
   if (value.schemaVersion !== 1) {
     throw new Error("scenarios.schemaVersion must be 1");
   }
-  assertExactKeys(value.providers, PROVIDERS, "scenarios.providers");
-  for (const provider of PROVIDERS) {
+  assertObject(value.providers, "scenarios.providers");
+  const providers = Object.keys(value.providers);
+  if (providers.length === 0) {
+    throw new Error("scenarios.providers must include at least one provider");
+  }
+  for (const provider of providers) {
+    if (!PROVIDER_KEY_PATTERN.test(provider)) {
+      throw new Error(`scenarios.providers has invalid provider key: ${provider}`);
+    }
     const rows = value.providers[provider];
     if (!Array.isArray(rows) || rows.length > MAX_SCENARIO_ROWS) {
       throw new Error(
@@ -211,10 +218,6 @@ const METRICS = [
   { key: "measuredTurnWebSocketMessages", label: "Live turn messages", kind: "messages" },
 ];
 
-function providerLabel(provider) {
-  return provider === "codex" ? "Codex" : "Claude";
-}
-
 /**
  * The scenario rows of a run against the same rows on `main`. Rows that fail or differ from
  * `main` are listed in the open; the full table is collapsed below them.
@@ -230,7 +233,8 @@ function renderScenarios(current, baseline, ceilingChanges) {
   let failed = false;
   let withoutBaseline = 0;
 
-  for (const provider of PROVIDERS) {
+  for (const provider of Object.keys(current.providers)) {
+    const label = providerDisplayName(provider);
     const baselineRows = new Map(
       (baseline?.providers[provider] ?? []).map((row) => [scenarioKey(row), row]),
     );
@@ -240,14 +244,14 @@ function renderScenarios(current, baseline, ceilingChanges) {
       const pass = row.observed <= row.ceiling;
       failed ||= !pass;
       if (beforeObserved === undefined) withoutBaseline += 1;
-      const line = `| ${providerLabel(provider)} | \`${row.phase}\` | \`${row.metric}\` | ${beforeObserved === undefined ? "—" : formatValue(beforeObserved, row.unit)} | ${formatValue(row.observed, row.unit)} | ${formatImpact(row.observed, beforeObserved, row.unit)} | ${formatValue(row.ceiling, row.unit)} | ${pass ? "✅" : "❌"} |`;
+      const line = `| ${label} | \`${row.phase}\` | \`${row.metric}\` | ${beforeObserved === undefined ? "—" : formatValue(beforeObserved, row.unit)} | ${formatValue(row.observed, row.unit)} | ${formatImpact(row.observed, beforeObserved, row.unit)} | ${formatValue(row.ceiling, row.unit)} | ${pass ? "✅" : "❌"} |`;
       all.push(line);
       if (!pass || (beforeObserved !== undefined && beforeObserved !== row.observed)) {
         notable.push(line);
       }
       if (beforeObserved !== undefined && before.ceiling !== row.ceiling) {
         ceilingChanges.push(
-          `- ${providerLabel(provider)} \`${row.phase}\` \`${row.metric}\`: ${formatValue(before.ceiling, row.unit)} → ${formatValue(row.ceiling, row.unit)}`,
+          `- ${label} \`${row.phase}\` \`${row.metric}\`: ${formatValue(before.ceiling, row.unit)} → ${formatValue(row.ceiling, row.unit)}`,
         );
       }
     }
