@@ -99,6 +99,7 @@ export function finalReviewCommand(input: {
       settings: input.settings,
       accounts: input.providers,
       projectId: thread.projectId,
+      background: true,
     }) !== null;
   const reviewers = input.settings.finalReviewModelSelections.map((selection) =>
     selection.autoAccount === true && autoRuns

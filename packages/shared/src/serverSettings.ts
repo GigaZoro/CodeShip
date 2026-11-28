@@ -8,6 +8,7 @@ import {
   globalIdleCompaction,
   type IdleCompactionMode,
   isProviderAvailable,
+  isProviderInstanceBackgroundAllowed,
   isUnconfiguredDefaultInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
@@ -167,10 +168,13 @@ function isAccountEnabledIn(
   account: RunnableAccount,
   settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
   projectId: ProjectId | null,
+  options?: { readonly background?: boolean | undefined },
 ): boolean {
   return (
     account.enabled &&
-    resolveProjectProviderInstanceEnabled(settings, projectId, account.instanceId)
+    resolveProjectProviderInstanceEnabled(settings, projectId, account.instanceId) &&
+    (options?.background !== true ||
+      isProviderInstanceBackgroundAllowed(settings, account.instanceId))
   );
 }
 
@@ -193,8 +197,9 @@ export function canAccountRun(
   account: RunnableAccount,
   settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
   projectId: ProjectId | null,
+  options?: { readonly background?: boolean | undefined },
 ): boolean {
-  return isAccountReady(account) && isAccountEnabledIn(account, settings, projectId);
+  return isAccountReady(account) && isAccountEnabledIn(account, settings, projectId, options);
 }
 
 /** Auto's primary provider, or null while Auto mode is off. */
@@ -353,6 +358,8 @@ interface AutoModeInput {
   readonly accounts: ReadonlyArray<AutoModeAccount>;
   /** Where the thread runs; null for this machine's settings. */
   readonly projectId: ProjectId | null;
+  /** True for background, scheduled, failover, and delegated/agent runs. */
+  readonly background?: boolean | undefined;
 }
 
 /**
@@ -371,14 +378,18 @@ function autoModeRun(input: AutoModeInput, lockedDriver: ProviderDriverKind | nu
     input.accounts.filter(
       (candidate) =>
         candidate.driver === driver &&
-        isAccountEnabledIn(candidate, input.settings, input.projectId),
+        isAccountEnabledIn(candidate, input.settings, input.projectId, {
+          background: input.background,
+        }),
     ),
   );
   if (enabled.length === 0) return null;
   // While none can run (as the server starts, before any check finishes), every enabled one is
   // tried, so the turn goes to one that lists the model and its provider reports what it lacks.
   const runnable = enabled.filter((candidate) =>
-    canAccountRun(candidate, input.settings, input.projectId),
+    canAccountRun(candidate, input.settings, input.projectId, {
+      background: input.background,
+    }),
   );
   return { auto, accounts: runnable.length > 0 ? runnable : enabled };
 }
@@ -420,8 +431,9 @@ export function autoModePick(input: AutoModeInput): ModelSelection | null {
 
 /**
  * What turning Auto on for `selection` runs, or null where Auto cannot run. A new thread starts
- * as `autoModePick` says; a thread that already ran keeps its provider and account and runs that
- * provider's Auto model and options.
+ * as `autoModePick` says; a thread that already ran keeps its provider and account (or another
+ * background-allowed account on the same provider when running in background off a firewalled
+ * account) and runs that provider's Auto model and options.
  */
 export function autoModeTarget(
   input: AutoModeInput & { readonly selection: ModelSelection; readonly started: boolean },
@@ -429,7 +441,16 @@ export function autoModeTarget(
   if (!input.started) return autoModePick(input);
   const own = input.accounts.find((account) => account.instanceId === input.selection.instanceId);
   const run = own === undefined ? null : autoModeRun(input, own.driver);
-  return own === undefined || run === null ? null : autoModeSelection(own, run.auto);
+  if (own === undefined || run === null) return null;
+  const target =
+    input.background === true &&
+    !isProviderInstanceBackgroundAllowed(input.settings, own.instanceId)
+      ? (run.accounts.find(
+          (candidate) =>
+            resolveSelectableModel(candidate.driver, run.auto.model, candidate.models) !== null,
+        ) ?? run.accounts[0])
+      : own;
+  return target === undefined ? null : autoModeSelection(target, run.auto);
 }
 
 /** What an Auto pick runs (see `autoModeTarget`); with Auto mode off, it runs as it names. */

@@ -1,4 +1,5 @@
 import {
+  isProviderInstanceBackgroundAllowed,
   type ModelSelection,
   PROJECT_FILE_BACKED_SETTINGS,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
@@ -93,10 +94,17 @@ export function resolveScheduledTaskDefaultModelSelection(
   projectId: ProjectId | null,
   project?: LegacyProjectSettingsFields | null,
 ): ModelSelection | null {
-  return (
+  const selection =
     settings.scheduledTaskModelSelection ??
-    resolveProjectSettings(settings, projectId, project).settings.defaultModelSelection
-  );
+    resolveProjectSettings(settings, projectId, project).settings.defaultModelSelection;
+  if (
+    selection !== null &&
+    selection.quotaAwareAuto !== true &&
+    !isProviderInstanceBackgroundAllowed(settings, selection.instanceId)
+  ) {
+    return null;
+  }
+  return selection;
 }
 
 function applyProjectFile(

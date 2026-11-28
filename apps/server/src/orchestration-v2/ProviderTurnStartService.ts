@@ -12,6 +12,7 @@ import {
 } from "@t3tools/shared/AwakeTime";
 import {
   CommandId,
+  isProviderInstanceBackgroundAllowed,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
@@ -896,6 +897,36 @@ export const layer: Layer.Layer<
           },
         });
       }
+      const isBackgroundRun =
+        message.scheduledTaskId !== undefined ||
+        projection.thread.delegatedFrom !== undefined ||
+        projection.thread.lineage?.relationshipToParent === "subagent" ||
+        run.delegatedTaskId !== undefined ||
+        (message.createdBy === "agent" && message.creationSource !== "provider");
+      if (
+        isBackgroundRun &&
+        !isProviderInstanceBackgroundAllowed(
+          yield* serverSettings.getSettings.pipe(Effect.orDie),
+          run.providerInstanceId,
+        )
+      ) {
+        return yield* settleRunBeforeStart({
+          signal: "background-disallowed",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Provider account is reserved for interactive chats",
+            failure: makeProviderFailure({
+              class: "validation_error",
+              code: "provider_instance_background_disallowed",
+              message: `Provider instance "${run.providerInstanceId}" is reserved for interactive chats only (background runs disabled).`,
+            }),
+          },
+        });
+      }
       // A process that sent nothing for a whole start step has stopped answering, and the retry
       // would wait on it again. One still sending events for other turns stays.
       const releaseSilentSession = (error: Error) =>
@@ -1391,6 +1422,7 @@ export const layer: Layer.Layer<
             driver: providerThread.driver,
             projectId: projection.thread.projectId,
             model: run.modelSelection.model,
+            background: true,
             requesterThreadId: projection.thread.id,
             ...(resolvedRuntimePolicy.cwd === null ? {} : { cwd: resolvedRuntimePolicy.cwd }),
           }),

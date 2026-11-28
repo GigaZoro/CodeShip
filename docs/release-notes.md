@@ -1,3 +1,7 @@
+## 2026-11-28 — Reserve accounts for interactive chats only
+
+- Added **Allow background runs** in **Settings → Providers** so you can mark a provider instance as **Interactive only** (`allowBackground: false`). Background work—scheduled tasks, Auto background routing, limit failover, idle compaction, final review, and delegated subagents—never consumes a reserved account, even when all other accounts hit usage limits, while interactive chats can still select and run on it normally.
+
 ## 2026-11-28 — Agents see the usage reset decision for each limit
 
 - `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.

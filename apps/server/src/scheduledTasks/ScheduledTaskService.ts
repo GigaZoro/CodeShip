@@ -74,6 +74,7 @@ import {
   type ScheduledTaskUpsertInput,
   type ProviderDriverKind,
   managedPolicyDeniedMessage,
+  isProviderInstanceBackgroundAllowed,
   resolveProjectProviderInstanceEnabled,
   managedRuntimeModeDenial,
   sameThreadFolder,
@@ -1474,12 +1475,13 @@ export const layer = Layer.effect(
                 task.modelSelection,
             }
           : task.shared != null &&
-              !resolveProjectProviderInstanceEnabled(
+              (!resolveProjectProviderInstanceEnabled(
                 settings,
                 task.projectId,
                 task.modelSelection.instanceId,
-              )
-            ? // Another machine's account: the task keeps its own model, runs use the default here.
+              ) ||
+                !isProviderInstanceBackgroundAllowed(settings, task.modelSelection.instanceId))
+            ? // Another machine's or interactive-only account: the task keeps its own model, runs use the default here.
               { ...task, modelUnavailableHere: true }
             : task;
     const launchModelSelection = (settings: ServerSettingsValue, task: ScheduledTask) =>

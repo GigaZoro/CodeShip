@@ -162,6 +162,31 @@ describe("autoCoordinatorAccounts", () => {
     expect(autoCoordinatorAccounts(input)[0]?.instanceId).toBe(first);
     expect(autoCoordinatorAccounts({ ...input, providers: [] })).toEqual([]);
   });
+
+  it("excludes allowBackground: false instances even when all background-eligible accounts are limited", () => {
+    const reserved = ProviderInstanceId.make("codex_reserved");
+    const result = autoCoordinatorAccounts({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      providers: [provider(first), provider(reserved)],
+      projectId: ProjectId.make("project:auto"),
+      nowMs: Date.parse("2026-11-08T00:00:00Z"),
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [first]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+          [reserved]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            allowBackground: false,
+          },
+        },
+        providerInstanceFailoverOrder: [first, reserved],
+      },
+      recordedLimits: new Map([[first, [{ resetAt: null, refusedAt: "2026-11-08T00:00:00Z" }]]]),
+      orchestrationCapableInstanceIds: new Set([first, reserved]),
+    });
+    expect(result).toEqual([]);
+  });
 });
 
 it("skips project-disabled accounts and retains all eligible catalogs in failover order", () => {

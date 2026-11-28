@@ -2285,10 +2285,38 @@ it.effect(
               ScheduledTaskService.CHANGED_IN_APP,
             );
             expect(here.task.modelUnavailableHere).toBeUndefined();
+
+            const reserved = yield* service.upsert(
+              upsertInput({
+                id: "scheduled-task:reserved",
+                modelSelection: { instanceId: "codex_reserved", model: "gpt-5.4" },
+              }),
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
+            expect(reserved.task.modelUnavailableHere).toBe(true);
+            yield* service.runNow({ id: reserved.task.id });
+            const reservedLaunch = yield* Queue.take(launches);
+            expect(reservedLaunch.modelSelection).toEqual({
+              instanceId: "codex",
+              model: "gpt-5.5",
+            });
           }),
         [repoProject, plainProject],
         {
-          settings: { scheduledTaskModelSelection: { instanceId: "codex", model: "gpt-5.5" } },
+          settings: {
+            providerInstances: {
+              [ProviderInstanceId.make("codex")]: { driver: "codex" as never, enabled: true },
+              [ProviderInstanceId.make("codex_reserved")]: {
+                driver: "codex" as never,
+                enabled: true,
+                allowBackground: false,
+              },
+            },
+            scheduledTaskModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5.5",
+            },
+          },
           launch: (input) =>
             Queue.offer(launches, input).pipe(Effect.as({ threadId: "thread-1" } as never)),
         },

@@ -7030,6 +7030,138 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
+  it.effect(
+    "routes delegates off an interactive parent's allowBackground: false account and refuses if no background-allowed account exists",
+    () =>
+      Effect.gen(function* () {
+        const reservedId = ProviderInstanceId.make("claude_reserved");
+        const allowedId = ProviderInstanceId.make("claude_background");
+        const commands: Array<{ readonly modelSelection?: unknown }> = [];
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          origin: "app_owned",
+          childThreadId,
+          providerInstanceId: allowedId,
+          model: "claude-opus",
+          status: "running",
+          result: null,
+        };
+        const parentSelection = { instanceId: reservedId, model: "claude-opus" };
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            assertProviderInstanceEnabled: () => Effect.void,
+            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId
+                  ? parentProjection(commands.length > 0 ? [task] : [], parentSelection)
+                  : childProjection,
+              ),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command as { readonly modelSelection?: unknown });
+                return {
+                  sequence: 1,
+                  storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                } as never;
+              }),
+          }),
+          ServerSettings.layerTest({
+            providerInstances: {
+              [reservedId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                enabled: true,
+                allowBackground: false,
+              },
+              [allowedId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                enabled: true,
+              },
+            },
+            providerInstanceFailoverOrder: [reservedId, allowedId],
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: reservedId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+              model: "claude-opus",
+            }),
+            providerSnapshot({
+              instanceId: allowedId,
+              driver: ProviderDriverKind.make("claudeAgent"),
+              model: "claude-opus",
+            }),
+          ]),
+          adapterRegistryLayer([reservedId, allowedId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const settings = yield* ServerSettings.ServerSettingsService;
+
+          // Interactive parent on reservedId omits target -> routed onto allowedId.
+          yield* service.delegateTask(scope, {
+            task: "Check implementation.",
+            role: "implementation",
+            mode: "async",
+            clientRequestId: "firewall:reroute",
+          });
+          assert.deepEqual(
+            commands.map((command) => command.modelSelection),
+            [{ instanceId: allowedId, model: "claude-opus" }],
+          );
+
+          // Explicit target naming the reserved account is refused.
+          const explicitRefused = yield* service
+            .delegateTask(scope, {
+              task: "Check implementation.",
+              role: "implementation",
+              target: yield* decodeTarget({
+                providerInstanceId: reservedId,
+                model: "claude-opus",
+              }),
+              mode: "async",
+              clientRequestId: "firewall:explicit",
+            })
+            .pipe(Effect.flip);
+          assert.equal(explicitRefused.code, "provider_unavailable");
+          assert.include(explicitRefused.message, "interactive chats only");
+
+          // With the only background account disabled, inherited delegation fails rather than touching reservedId.
+          yield* settings.updateSettings({
+            providerInstances: {
+              [reservedId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                enabled: true,
+                allowBackground: false,
+              },
+              [allowedId]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                enabled: false,
+              },
+            },
+          });
+          const noBackground = yield* service
+            .delegateTask(scope, {
+              task: "Check implementation.",
+              role: "implementation",
+              mode: "async",
+              clientRequestId: "firewall:none",
+            })
+            .pipe(Effect.flip);
+          assert.equal(noBackground.code, "provider_unavailable");
+          assert.equal(commands.length, 1);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
+      }),
+  );
+
   it.effect("creates a thread in Auto mode on auto:true, and none while Auto is off", () =>
     Effect.gen(function* () {
       const claudeInstanceId = ProviderInstanceId.make("claude_work");

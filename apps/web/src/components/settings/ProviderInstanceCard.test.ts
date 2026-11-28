@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
-import { SecretProviderId, type ServerProviderModel } from "@t3tools/contracts";
+import { ProviderDriverKind, SecretProviderId, type ServerProviderModel } from "@t3tools/contracts";
 
 import {
   deriveProviderModelsForDisplay,
   nextProviderEnvironmentWithFieldSecret,
   nextProviderEnvironmentWithFieldValue,
+  withProviderInstanceAllowBackground,
 } from "./ProviderInstanceCard";
 
 describe("deriveProviderModelsForDisplay", () => {
@@ -36,6 +37,18 @@ describe("deriveProviderModelsForDisplay", () => {
         customModels: [{ slug: "kept-custom", name: "kept-custom", capabilities: null }],
       }).map((model) => model.slug),
     ).toEqual(["server-model", "kept-custom"]);
+  });
+});
+
+describe("withProviderInstanceAllowBackground", () => {
+  it("persists allowBackground: false and omits the flag when background runs are re-enabled", () => {
+    const codex = ProviderDriverKind.make("codex");
+    const base = { driver: codex, displayName: "Reserved" };
+    const firewalled = withProviderInstanceAllowBackground(base, false);
+    expect(firewalled).toEqual({ driver: codex, displayName: "Reserved", allowBackground: false });
+    const reenabled = withProviderInstanceAllowBackground(firewalled, true);
+    expect(reenabled).toEqual({ driver: codex, displayName: "Reserved" });
+    expect("allowBackground" in reenabled).toBe(false);
   });
 });
 

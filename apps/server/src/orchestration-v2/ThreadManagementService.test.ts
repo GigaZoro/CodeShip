@@ -173,6 +173,91 @@ it.effect(
   },
 );
 
+it.effect(
+  "the dispatch chokepoint allows interactive user turns on allowBackground: false while refusing background dispatches",
+  () => {
+    const projectId = ProjectId.make("project:thread-management:chokepoint");
+    const threadId = ThreadId.make("thread:thread-management:chokepoint");
+    const instanceId = ProviderInstanceId.make("codex_work");
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    const layerTest = layerDispatchChokepointTest(
+      ServerSettings.layerTest({
+        providerInstances: {
+          [instanceId]: { driver: "codex", enabled: true, allowBackground: false },
+        },
+      }),
+    )(dispatched);
+
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+
+      // Interactive web user dispatch is allowed normally on the reserved account.
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:thread-management:interactive-reserved"),
+        threadId,
+        messageId: MessageId.make("message:thread-management:interactive-reserved"),
+        text: "Run my interactive prompt.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      expect(dispatched).toHaveLength(1);
+
+      // Scheduled, agent/MCP, and delegated background dispatches on the reserved account fail cleanly.
+      const scheduledError = yield* Effect.flip(
+        threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("command:thread-management:scheduled-reserved"),
+          threadId,
+          messageId: MessageId.make("message:thread-management:scheduled-reserved"),
+          text: "Scheduled background run.",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "server",
+          scheduledTaskId: ScheduledTaskId.make("task:reserved"),
+        }),
+      );
+      expect(scheduledError).toBeInstanceOf(
+        ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
+      );
+      expect(scheduledError).toMatchObject({
+        projectId,
+        instanceId,
+        reason: "background_disallowed",
+      });
+
+      const delegatedError = yield* Effect.flip(
+        threads.dispatch({
+          type: "delegated_task.request",
+          createdBy: "agent",
+          creationSource: "mcp",
+          commandId: CommandId.make("command:thread-management:delegated-reserved"),
+          parentThreadId: threadId,
+          parentRunId: RunId.make("run:thread-management:chokepoint"),
+          parentNodeId: NodeId.make("node:thread-management:chokepoint"),
+          task: "Background delegation.",
+          modelSelection: { instanceId, model: "test" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          projectId,
+        }),
+      );
+      expect(delegatedError).toBeInstanceOf(
+        ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
+      );
+      expect(delegatedError).toMatchObject({
+        projectId,
+        instanceId,
+        reason: "background_disallowed",
+      });
+      expect(dispatched).toHaveLength(1);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
+
 it.effect.each([
   { account: "the destination project enables", offIn: "parent", refused: false },
   { account: "the destination project turns off", offIn: "destination", refused: true },

@@ -11,6 +11,7 @@ import {
   hasProjectSettingsOverrides,
   resolveNewThreadEnvMode,
   resolveProjectSettings,
+  resolveScheduledTaskDefaultModelSelection,
   resolveSendEnvMode,
   resolveWorktreeCleanup,
 } from "./projectSettings.ts";
@@ -410,5 +411,45 @@ describe("resolveWorktreeCleanup", () => {
       resolveWorktreeCleanup(applyServerSettingsPatch(edited, { worktreeCleanup: null }), null)
         .worktreeAfterDays,
     ).toBe(8);
+  });
+});
+
+describe("resolveScheduledTaskDefaultModelSelection", () => {
+  it("returns null when the resolved scheduled default targets an interactive-only instance", () => {
+    const reserved = ProviderInstanceId.make("codex_reserved");
+    const selection = createModelSelection(reserved, "gpt-5.4");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [reserved]: {
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          allowBackground: false,
+        },
+      },
+      scheduledTaskModelSelection: selection,
+    };
+
+    expect(resolveScheduledTaskDefaultModelSelection(settings, null)).toBeNull();
+    expect(
+      resolveScheduledTaskDefaultModelSelection(
+        {
+          ...settings,
+          scheduledTaskModelSelection: { ...selection, quotaAwareAuto: true },
+        },
+        null,
+      ),
+    ).toEqual({ ...selection, quotaAwareAuto: true });
+    expect(
+      resolveScheduledTaskDefaultModelSelection(
+        {
+          ...settings,
+          providerInstances: {
+            [reserved]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+          },
+        },
+        null,
+      ),
+    ).toEqual(selection);
   });
 });

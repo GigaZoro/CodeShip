@@ -1,5 +1,6 @@
 import type { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import {
+  isProviderInstanceBackgroundAllowed,
   type ModelSelection,
   ProviderDriverKind,
   type ProviderInstanceId,
@@ -37,6 +38,7 @@ function runnableAccounts(input: AutoCoordinatorContext) {
     input.providers,
   ).filter(
     (provider) =>
+      isProviderInstanceBackgroundAllowed(input.settings, provider.instanceId) &&
       providerConstraints(provider, input.orchestrationCapableInstanceIds.has(provider.instanceId))
         .length === 0,
   );

@@ -3870,3 +3870,193 @@ describe("routeAutoAccountWithDetails declarative capability tier and dissimilar
     assert.equal(launchDissimilar.selection.model, "gpt-6.2-astra");
   });
 });
+
+describe("Operator Quota Firewall (allowBackground: false)", () => {
+  const reserved = ProviderInstanceId.make("claude_reserved");
+  const reservedSettings = (): ServerSettingsValue => ({
+    ...settings([primary, second, reserved]),
+    providerInstances: {
+      [primary]: { driver: claude, enabled: true },
+      [second]: { driver: claude, enabled: true },
+      [reserved]: { driver: claude, enabled: true, allowBackground: false },
+    },
+    autoModeProvider: claude,
+    autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+    failoverLimitedThreads: true,
+  });
+
+  it("never fails over onto an allowBackground: false instance even when all background accounts are limited", () => {
+    const limited = new Map([
+      [primary, [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }]],
+      [second, [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }]],
+    ]);
+    const providers = [provider(primary), provider(second), provider(reserved)];
+    const ctx = {
+      projectId,
+      providers,
+      settings: reservedSettings(),
+      recordedLimits: limited,
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+    };
+
+    // Failover from limited primary skips reserved even when second is also limited.
+    assert.deepEqual(
+      failoverLimitedLaunch({
+        ...ctx,
+        selection: { instanceId: primary, model: "claude-opus-5-5" },
+      }),
+      { selection: { instanceId: primary, model: "claude-opus-5-5" }, failover: null },
+    );
+
+    // Background Auto route from reserved moves to healthy primary, and skips reserved when all background accounts are limited.
+    assert.equal(
+      routeAutoAccount({
+        ...ctx,
+        selection: { instanceId: reserved, model: "claude-opus-5-5", autoAccount: true },
+        currentInstanceId: reserved,
+        started: true,
+        recordedLimits: new Map(),
+        background: true,
+      }).instanceId,
+      primary,
+    );
+    assert.equal(
+      failoverLimitedLaunch({
+        ...ctx,
+        selection: { instanceId: reserved, model: "claude-opus-5-5", autoAccount: true },
+        background: true,
+      }).selection.instanceId,
+      reserved,
+    );
+    assert.deepEqual(
+      accountsWithRoom({ ...ctx, driver: claude, model: "claude-opus-5-5", background: true }).map(
+        (account) => account.instanceId,
+      ),
+      [],
+    );
+  });
+
+  it("moves a background failover off an allowBackground: false instance when failoverLimitedThreads is off", () => {
+    const baseSettings = { ...reservedSettings(), failoverLimitedThreads: false };
+    const result = failoverLimitedLaunch({
+      projectId,
+      selection: { instanceId: reserved, model: "claude-opus-5-5" },
+      providers: [provider(primary), provider(reserved)],
+      settings: baseSettings,
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+      background: true,
+    });
+    assert.equal(result.selection.instanceId, primary);
+    assert.deepEqual(result.failover, { reason: "usageLimit" });
+  });
+
+  it("allows interactive chats to select and keep running on an allowBackground: false instance", () => {
+    const providers = [provider(primary), provider(reserved)];
+    const routed = routeAutoAccount({
+      projectId,
+      providers,
+      settings: reservedSettings(),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(),
+      nowMs,
+      selection: { instanceId: reserved, model: "claude-opus-5-5", autoAccount: true },
+      currentInstanceId: reserved,
+      started: true,
+    });
+    assert.equal(routed.instanceId, reserved);
+    assert.deepEqual(
+      accountsWithRoom({
+        projectId,
+        driver: claude,
+        model: "claude-opus-5-5",
+        providers,
+        settings: reservedSettings(),
+        recordedLimits: new Map(),
+        mcpSignInsNeeded: signIns(),
+        nowMs,
+      }).map((account) => account.instanceId),
+      [primary, reserved],
+    );
+  });
+
+  it.effect(
+    "scheduledRunBlock never counts allowBackground: false room for scheduled runs or delegates",
+    () =>
+      Effect.gen(function* () {
+        const limited = new Map([
+          [
+            primary,
+            [{ resetAt: "2026-11-03T18:00:00.000Z", refusedAt: "2026-11-03T11:00:00.000Z" }],
+          ],
+        ]);
+        const layerWithLimits = AccountRouting.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(ProviderMcp.ProviderMcp)({}),
+              ServerSettings.layerTest(reservedSettings()),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getUsageLimitedProviderInstances: () => Effect.succeed(limited),
+              }),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([provider(primary), provider(reserved)]),
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const routing = yield* AccountRouting.AccountRouting;
+          // Pinned scheduled run targeting reserved still blocks when the only background account (primary) is limited.
+          const pinnedBlock = yield* routing.scheduledRunBlock({
+            selection: { instanceId: reserved, model: "claude-opus-5-5" },
+            projectId,
+            delegates: [],
+          });
+          assert.deepEqual(pinnedBlock, {
+            driver: claude,
+            until: "2026-11-03T18:00:00.000Z",
+            accounts: [primary],
+          });
+
+          // Delegate check also ignores reserved's room.
+          const delegateBlock = yield* routing.scheduledRunBlock({
+            selection: null,
+            projectId,
+            delegates: [claude],
+          });
+          assert.deepEqual(delegateBlock, {
+            driver: claude,
+            until: "2026-11-03T18:00:00.000Z",
+            accounts: [primary],
+          });
+        }).pipe(Effect.provide(layerWithLimits));
+
+        // When a healthy background account exists and failover is allowed, scheduledRunBlock is null (dispatch moves onto primary).
+        const layerHealthy = AccountRouting.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(ProviderMcp.ProviderMcp)({}),
+              ServerSettings.layerTest(reservedSettings()),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getUsageLimitedProviderInstances: () => Effect.succeed(new Map()),
+              }),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([provider(primary), provider(reserved)]),
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const routing = yield* AccountRouting.AccountRouting;
+          const unblocked = yield* routing.scheduledRunBlock({
+            selection: { instanceId: reserved, model: "claude-opus-5-5" },
+            projectId,
+            delegates: [],
+          });
+          assert.equal(unblocked, null);
+        }).pipe(Effect.provide(layerHealthy));
+      }),
+  );
+});

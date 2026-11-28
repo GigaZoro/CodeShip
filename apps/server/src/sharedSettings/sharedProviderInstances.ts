@@ -7,6 +7,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceMutation,
+  resolveProviderInstanceAllowBackground,
   resolveProviderInstanceEnabled,
   type ServerSettings,
   type SharedProviderInstanceValue,
@@ -109,8 +110,11 @@ export function sharedProviderInstanceValue(
   if (driver === undefined) return undefined;
   const named = instance.displayName === undefined ? {} : { displayName: instance.displayName };
   const enabled = resolveProviderInstanceEnabled(instance);
+  const background = resolveProviderInstanceAllowBackground(instance)
+    ? {}
+    : { allowBackground: false };
   if (isBuiltInProviderInstance(instanceId, instance.driver)) {
-    return { driver: instance.driver, ...named, enabled };
+    return { driver: instance.driver, ...named, enabled, ...background };
   }
   const config = sharedConfig(driver, instance.config);
   return {
@@ -118,6 +122,7 @@ export function sharedProviderInstanceValue(
     ...named,
     ...(instance.accentColor === undefined ? {} : { accentColor: instance.accentColor }),
     enabled,
+    ...background,
     ...(Object.keys(config).length === 0 ? {} : { config }),
   };
 }
@@ -231,10 +236,12 @@ export function sharedProviderInstanceMutation(
   // The version's `enabled` replaces the legacy flag a config may still carry.
   const localConfig = withoutLegacyEnabled(local);
   const named = value.displayName === undefined ? {} : { displayName: value.displayName };
+  const background = value.allowBackground === false ? { allowBackground: false } : {};
   if (isBuiltInProviderInstance(instanceId, value.driver)) {
     const {
       displayName: _displayName,
       enabled: _enabled,
+      allowBackground: _allowBackground,
       ...kept
     } = local ?? {
       driver: value.driver,
@@ -243,6 +250,7 @@ export function sharedProviderInstanceMutation(
       ...kept,
       ...named,
       enabled: value.enabled,
+      ...background,
       ...(local?.config === undefined ? {} : { config: localConfig }),
     });
   }
@@ -255,6 +263,7 @@ export function sharedProviderInstanceMutation(
     ...(value.accentColor === undefined ? {} : { accentColor: value.accentColor }),
     ...(local?.environment === undefined ? {} : { environment: local.environment }),
     enabled: value.enabled,
+    ...background,
     // Only the fields this build shares, so a peer cannot set a path, binary or credential here.
     config: {
       ...withoutFields(localConfig, sharedFields),

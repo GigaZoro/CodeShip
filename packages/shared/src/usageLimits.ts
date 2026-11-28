@@ -11,6 +11,7 @@ import {
   type ProviderDriverKind,
   type ServerProviderSlashCommand,
   isProviderAvailable,
+  isProviderInstanceBackgroundAllowed,
   type ServerProvider,
   type ServerProviderUsageLimits,
   type ServerProviderUsageScope,
@@ -513,6 +514,7 @@ export function resolveNewThreadModelSelection(input: {
   readonly now: number;
   readonly settings?: ServerSettings;
   readonly projectId?: ProjectId | null;
+  readonly background?: boolean | undefined;
 }) {
   const selection = input.explicitSelection ?? input.defaultSelection;
   const unchanged = { selection, fallback: null };
@@ -520,10 +522,16 @@ export function resolveNewThreadModelSelection(input: {
     return unchanged;
   const provider = input.providers.find((entry) => entry.instanceId === selection.instanceId);
   const window = exhaustedUsageWindow(provider, input.now, selection.model);
+  const disallowedForBackground =
+    input.background === true &&
+    input.settings !== undefined &&
+    !isProviderInstanceBackgroundAllowed(input.settings, selection.instanceId);
   const usable = (entry: ServerProvider | undefined, model: string): entry is ServerProvider =>
     entry !== undefined &&
     (input.settings
-      ? canAccountRun(entry, input.settings, input.projectId ?? null)
+      ? canAccountRun(entry, input.settings, input.projectId ?? null, {
+          background: input.background,
+        })
       : isAccountReady(entry)) &&
     !exhaustedUsageWindow(entry, input.now, model);
   // As account switching does, an account takes an Auto thread only when it lists the model.
@@ -535,11 +543,13 @@ export function resolveNewThreadModelSelection(input: {
     });
   if (
     !provider ||
-    !window ||
-    (selection.autoAccount === true && anyAccountUsable(provider.driver, selection.model))
+    (!window && !disallowedForBackground) ||
+    (!disallowedForBackground &&
+      selection.autoAccount === true &&
+      anyAccountUsable(provider.driver, selection.model))
   )
     return unchanged;
-  const fallbackReason = { provider, resetsAt: window.resetsAt ?? null };
+  const fallbackReason = { provider, resetsAt: window?.resetsAt ?? null };
   if (input.fallbackSelection.quotaAwareAuto) {
     return { selection: input.fallbackSelection, fallback: fallbackReason };
   }
@@ -550,6 +560,7 @@ export function resolveNewThreadModelSelection(input: {
         accounts: input.providers,
         projectId: input.projectId ?? null,
         started: false,
+        background: input.background,
       })
     : input.fallbackSelection;
   const autoFallback = fallbackSelection.autoAccount === true;

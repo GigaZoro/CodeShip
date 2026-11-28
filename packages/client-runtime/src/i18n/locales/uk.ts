@@ -2417,6 +2417,8 @@ const catalog: MessageCatalog = {
     "Дозволити агентам використовувати вбудований браузер попереднього перегляду.",
   "Allow agents to use the shared browser. Projects can override it.":
     "Дозволити агентам користуватися спільним браузером. Проєкти можуть це змінити.",
+  "Allow background runs": "Дозволити фонові запуски",
+  "Allow background runs for {name}": "Дозволити фонові запуски для {name}",
   "Allow capture": "Дозволити захоплення",
   "Allow commands and edits without prompts.": "Дозволити команди та зміни без запитів.",
   "Allow each permission, then continue.": "Дозвольте кожен дозвіл, потім продовжуйте.",
@@ -6876,6 +6878,7 @@ const catalog: MessageCatalog = {
     "Інтерактивний 3D-пристрій. Перетягуйте екран, щоб взаємодіяти. Перетягуйте поза ним або проведіть двома пальцями, щоб повернути.",
   "Interactive 3D iPhone Duo. Drag the screen to interact. Drag outside it or swipe with two fingers to turn. Pinch over the device to open or close its hinge.":
     "Інтерактивний 3D iPhone Duo. Перетягуйте екран, щоб взаємодіяти. Перетягуйте поза ним або проведіть двома пальцями, щоб повернути. Зведіть чи розведіть пальці над пристроєм, щоб відкрити або закрити шарнір.",
+  "Interactive only": "Лише інтерактивно",
   Interface: "Інтерфейс",
   "interface density": "щільність інтерфейсу",
   "Interface density": "Щільність інтерфейсу",
@@ -14756,6 +14759,8 @@ const catalog: MessageCatalog = {
   "When an agent hands work to a child task without naming a model, the task runs on the model set for its role. Unset roles use the thread's own model.":
     "Коли агент передає роботу дочірньому завданню без указання моделі, завдання виконується на моделі, заданій для його ролі. Для незаданих ролей використовується модель самого чату.",
   "When expression": "Вираз умови",
+  "When off, scheduled tasks, Auto background runs, delegated subtasks, and failover never use this account, keeping its quota reserved for interactive chats.":
+    "Коли вимкнено, заплановані завдання, фонові запуски Auto, делеговані підзавдання та перемикання при лімітах ніколи не використовують цей обліковий запис, зберігаючи його квоту для інтерактивних чатів.",
   "When the app crashes or hits an error, it sends the error message, the stack trace, the app version, and the device model and OS version to the T3.CodeShip team. Each launch also sends startup timings. Reports carry a random ID for this install.":
     "Коли застосунок збоїть або натрапляє на помилку, він надсилає команді T3.CodeShip повідомлення про помилку, трасування стека, версію застосунку, модель пристрою та версію ОС. Кожен запуск також надсилає часові показники запуску. Звіти містять випадковий ID для цього встановлення.",
   "When the sidebar groups threads into folders, show them on two lines: the title, then the branch, pull request, and agent.":

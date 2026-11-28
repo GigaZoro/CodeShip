@@ -1784,6 +1784,20 @@ export const resolveProviderInstanceEnabled = (
   return instance.enabled ?? configEnabled ?? defaultEnabledForDriver(instance.driver);
 };
 
+export const resolveProviderInstanceAllowBackground = (
+  instance: Pick<ProviderInstanceConfig, "allowBackground"> | undefined,
+): boolean => instance?.allowBackground !== false;
+
+export const isProviderInstanceBackgroundAllowed = (
+  settings: Pick<ServerSettings, "providerInstances">,
+  instanceId: ProviderInstanceId,
+): boolean => {
+  const instanceConfig = Object.hasOwn(settings.providerInstances, instanceId)
+    ? settings.providerInstances[instanceId]
+    : undefined;
+  return resolveProviderInstanceAllowBackground(instanceConfig);
+};
+
 export const resolveProjectProviderInstanceEnabled = (
   settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
   projectId: ProjectId | null,

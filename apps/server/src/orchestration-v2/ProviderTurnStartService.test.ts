@@ -2781,6 +2781,16 @@ effectIt.effect.each([undefined, "2099-01-01T00:00:00.000Z"])(
 function makeUsageLimitFailoverHarness(input: {
   readonly prompt?: string;
   readonly failoverLimitedThreads?: boolean;
+  readonly providerInstances?: Record<
+    string,
+    {
+      readonly driver: ProviderDriverKind;
+      readonly enabled?: boolean;
+      readonly allowBackground?: boolean;
+    }
+  >;
+  readonly messageCreatedBy?: "user" | "agent";
+  readonly messageCreationSource?: OrchestrationV2ThreadProjection["messages"][number]["creationSource"];
   readonly willRetry?: boolean;
   readonly startedThread?: {
     readonly nativeThreadId?: string;
@@ -2996,8 +3006,8 @@ function makeUsageLimitFailoverHarness(input: {
         text: prompt,
         attachments: [],
         streaming: false,
-        createdBy: "user",
-        creationSource: "web",
+        createdBy: input.messageCreatedBy ?? "user",
+        creationSource: input.messageCreationSource ?? "web",
         createdAt: now,
         updatedAt: now,
       },
@@ -3322,6 +3332,9 @@ function makeUsageLimitFailoverHarness(input: {
         } as ServerConfig.ServerConfig["Service"]),
         ServerSettings.layerTest({
           failoverLimitedThreads: input.failoverLimitedThreads ?? true,
+          ...(input.providerInstances === undefined
+            ? {}
+            : { providerInstances: input.providerInstances }),
         }),
         ProviderSkillsTestkit.layer,
         Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -4091,5 +4104,59 @@ effectIt.effect(
           failure: { class: "usage_limit", code: "usage_limit_reached" },
         },
       ]);
+    }),
+);
+
+effectIt.effect(
+  "settles unstarted background runs targeting allowBackground: false without opening a session, while interactive runs proceed",
+  () =>
+    Effect.gen(function* () {
+      const accountA = ProviderInstanceId.make("codex-account-a");
+      const accountB = ProviderInstanceId.make("codex-account-b");
+      const codexDriver = ProviderDriverKind.make("codex");
+
+      const backgroundHarness = makeUsageLimitFailoverHarness({
+        messageCreatedBy: "agent",
+        messageCreationSource: "mcp",
+        providerInstances: {
+          [accountA]: { driver: codexDriver, enabled: true, allowBackground: false },
+          [accountB]: { driver: codexDriver, enabled: true },
+        },
+      });
+      yield* backgroundHarness.start;
+      expect(backgroundHarness.openedInstances).toEqual([]);
+      expect(backgroundHarness.startedTurns).toEqual([]);
+      expect(backgroundHarness.projection().runs[0]?.status).toBe("failed");
+      expect(backgroundHarness.projection().turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: { code: "provider_instance_background_disallowed" },
+        },
+      ]);
+
+      const interactiveHarness = makeUsageLimitFailoverHarness({
+        messageCreatedBy: "user",
+        messageCreationSource: "web",
+        providerInstances: {
+          [accountA]: { driver: codexDriver, enabled: true, allowBackground: false },
+          [accountB]: { driver: codexDriver, enabled: true },
+        },
+      });
+      yield* interactiveHarness.start;
+      expect(interactiveHarness.openedInstances).toEqual([accountA]);
+      expect(interactiveHarness.startedTurns).toEqual([
+        { instanceId: accountA, text: "Fix the parser bug" },
+      ]);
+
+      // In-run failover queries accountsWithRoom with background: true so reserved accounts are never chosen.
+      const failoverHarness = makeUsageLimitFailoverHarness({
+        openUsageLimitInstances: new Set([accountA]),
+        accountsWithRoom: [{ instanceId: accountB, model: "gpt-5.4" }],
+      });
+      yield* failoverHarness.start;
+      expect(failoverHarness.accountsWithRoom).toHaveBeenCalledWith(
+        expect.objectContaining({ background: true }),
+      );
     }),
 );

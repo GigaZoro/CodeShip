@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import type { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
 import {
   isProviderAvailable,
+  isProviderInstanceBackgroundAllowed,
   isProviderTextGenerationCapable,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
@@ -171,6 +172,7 @@ export const make = Effect.gen(function* () {
               instanceId !== selection.instanceId &&
               provider?.enabled === true &&
               resolveProjectProviderInstanceEnabled(settings, null, instanceId) &&
+              isProviderInstanceBackgroundAllowed(settings, instanceId) &&
               provider.installed &&
               provider.auth.status !== "unauthenticated" &&
               isProviderAvailable(provider) &&
