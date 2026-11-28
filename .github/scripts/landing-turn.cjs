@@ -36,12 +36,20 @@ const PROBE_CONNECT_TIMEOUT_SEC = 10;
 const PROBE_TIMEOUT_MS = 15 * 1000;
 const PROBE_OUTPUT_MAX_BYTES = 1024 * 1024;
 const TEST_STEP_MAX_ENV = "CHECK_CHANGED_TEST_STEP_MAX";
+const CHECK_TIMEOUT_ENV = "CHECK_CHANGED_TIMEOUT";
 const CHECK_METRICS_FILE_ENV = "CHECK_CHANGED_METRICS_FILE";
+const WORKTREE_LOCK_FILE = "t3-landing-active.json";
+const WORKTREE_LOCK_ACQUIRE_ATTEMPTS = 5;
+const ACTIVE_TOKEN_ENV = "T3_LANDING_ACTIVE_TOKEN";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const ZERO_OID_RE = /^0{40}(?:0{24})?$/;
 // A check:changed run took 2 hours on a busy day. A turn ends this long after its take, on the wall clock, a holder's
 // sleep included: other machines wait on it.
 const TURN_MAX_MS = 3 * 60 * 60 * 1000;
+const PRE_TURN_TEST_STEP_MAX_SECONDS = Math.floor(TURN_MAX_MS / 1000);
+// Age ceiling after which an uncleaned worktree lock is treated as stale even if PID/boot checks cannot prove it dead.
+const WORKTREE_LOCK_MAX_AGE_MS = TURN_MAX_MS * 2;
 // The holder renews its lease three times per lease, so a holder that dies frees main within LEASE_TTL_MS, and a
 // renewal origin did not answer is tried again before the lease runs out.
 const LEASE_TTL_MS = 10 * 60 * 1000;
@@ -68,12 +76,54 @@ const STOP_GRACE_MS = STOP_TREE_MS + 5 * 1000;
 // A fetch of named objects that leaves tags and FETCH_HEAD, which the checkout's other fetches use, alone.
 const FETCH_OBJECTS = ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"];
 
+// Active worktree landing tokens owned by this process, keyed by normalized worktree path.
+const activeWorktreeTokens = new Map();
+
+function normalizeLockKey(dir) {
+  try {
+    return fs.realpathSync.native(dir);
+  } catch {
+    return path.resolve(dir);
+  }
+}
+
+function activeTokenForCwd(cwd) {
+  if (activeWorktreeTokens.size === 0 || !cwd) return undefined;
+  return activeWorktreeTokens.get(normalizeLockKey(cwd));
+}
+
+function hasEnvKeyCaseInsensitive(env, name) {
+  if (!env) return false;
+  if (Object.hasOwn(env, name)) return true;
+  const upper = name.toUpperCase();
+  return Object.keys(env).some((key) => key.toUpperCase() === upper);
+}
+
+function withoutEnvKeys(source, names) {
+  const blocked = new Set(names.map((name) => name.toUpperCase()));
+  const cleaned = {};
+  if (!source) return cleaned;
+  for (const [key, value] of Object.entries(source)) {
+    if (!blocked.has(key.toUpperCase())) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+}
+
 function gitCommand(cwd, args, { env, config = [] }) {
   const flags = config.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
-  return [
-    ["-C", cwd, ...flags, ...args],
-    { env: { ...process.env, ...REAL_HISTORY_ENV, ...env }, windowsHide: true },
-  ];
+  const activeToken = activeTokenForCwd(cwd);
+  const hasCallerToken = hasEnvKeyCaseInsensitive(env, ACTIVE_TOKEN_ENV);
+  const baseEnv =
+    activeToken || hasCallerToken ? withoutEnvKeys(process.env, [ACTIVE_TOKEN_ENV]) : process.env;
+  const mergedEnv = {
+    ...baseEnv,
+    ...REAL_HISTORY_ENV,
+    ...(activeToken && !hasCallerToken ? { [ACTIVE_TOKEN_ENV]: activeToken } : {}),
+    ...env,
+  };
+  return [["-C", cwd, ...flags, ...args], { env: mergedEnv, windowsHide: true }];
 }
 
 function gitResult(args, { status, stdout, stderr, timeoutMs, allowFailure }) {
@@ -616,6 +666,13 @@ function awakeNow() {
   return process.platform === "darwin" ? macAwakeMs() : performance.now();
 }
 
+class WaitAbortedError extends Error {
+  constructor(result) {
+    super(`landing turn: wait aborted (${result?.status ?? "unknown"})`);
+    this.result = result;
+  }
+}
+
 /**
  * Shared state machine for `acquire` (sync) and `acquireAsync` (event-loop-friendly). Waits for the turn on the
  * monotonic clock, counts origin failures on `awakeClock`, and notifies `onWaitState({ firstInQueue, holder })` after
@@ -630,6 +687,7 @@ function createAcquireSession({
   now = Date.now,
   awakeClock = awakeNow,
   onWaitState = () => {},
+  checkAbort = () => null,
   ...options
 }) {
   const runId = randomUUID();
@@ -680,6 +738,10 @@ function createAcquireSession({
 
   return {
     step() {
+      if (!tookMaybe) {
+        const earlyAbort = checkAbort();
+        if (earlyAbort) throw new WaitAbortedError(earlyAbort);
+      }
       let failure = null;
       let firstInQueue = false;
       let polled = false;
@@ -694,6 +756,8 @@ function createAcquireSession({
             recordHolder(cwd, held);
             return { done: true, sha: held };
           }
+          const abortAfterCheck = checkAbort();
+          if (abortAfterCheck) throw new WaitAbortedError(abortAfterCheck);
         }
         firstInQueue = queue.poll();
         polled = true;
@@ -701,12 +765,15 @@ function createAcquireSession({
         if (firstInQueue) {
           // Only the head polls the lease. It checks its place again before swapping a free or lapsed lease.
           tookMaybe = true;
+          let abortedBeforeTake = null;
           const sha = tryAcquire({
             ...lease,
             runId,
             now,
             watched,
             canTake: () => {
+              abortedBeforeTake = checkAbort();
+              if (abortedBeforeTake) return false;
               firstInQueue = queue.stillFirst();
               moved("head", queue.head());
               return firstInQueue;
@@ -718,7 +785,10 @@ function createAcquireSession({
           });
           tookMaybe = false;
           if (sha) return { done: true, sha };
+          if (abortedBeforeTake) throw new WaitAbortedError(abortedBeforeTake);
         }
+        const abortAfterPoll = checkAbort();
+        if (abortAfterPoll) throw new WaitAbortedError(abortAfterPoll);
         observed = true;
       } catch (error) {
         if (!(error instanceof RemoteFailure)) throw error;
@@ -1158,6 +1228,41 @@ function verifyPush({ cwd, remote, env = process.env, updates, now = Date.now })
  */
 function checkBudgetSeconds(leftMs, elapsedMs) {
   return Math.max(1, Math.floor((leftMs - LEASE_RESERVE_MS - elapsedMs) / 1000));
+}
+
+function readEnvCaseInsensitive(env, name) {
+  if (!env) return undefined;
+  if (Object.hasOwn(env, name)) return env[name];
+  const upper = name.toUpperCase();
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toUpperCase() === upper) return value;
+  }
+  return undefined;
+}
+
+function parsePositiveIntEnv(env, name) {
+  const raw = readEnvCaseInsensitive(env, name);
+  if (typeof raw !== "string" && typeof raw !== "number") return null;
+  const trimmed = String(raw).trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Resolves `CHECK_CHANGED_TEST_STEP_MAX`: pre-turn/speculative checks default to `TURN_MAX_MS / 1000` (10800s) or
+ * caller `CHECK_CHANGED_TEST_STEP_MAX` / `CHECK_CHANGED_TIMEOUT`; under-turn checks stay capped at lease `budgetSeconds`.
+ */
+function resolveTestStepMaxSeconds(budgetSeconds, env = process.env) {
+  const explicitMax = parsePositiveIntEnv(env, TEST_STEP_MAX_ENV);
+  if (typeof budgetSeconds === "number" && Number.isFinite(budgetSeconds)) {
+    const leaseBudget = Math.max(1, Math.floor(budgetSeconds));
+    return explicitMax !== null ? Math.min(explicitMax, leaseBudget) : leaseBudget;
+  }
+  if (explicitMax !== null) return explicitMax;
+  const explicitTimeout = parsePositiveIntEnv(env, CHECK_TIMEOUT_ENV);
+  if (explicitTimeout !== null) return explicitTimeout;
+  return PRE_TURN_TEST_STEP_MAX_SECONDS;
 }
 
 function stoppedRebase(cwd) {
@@ -2302,6 +2407,437 @@ function checkLocalWorktree(cwd) {
   return null;
 }
 
+function worktreeGitDir(cwd, env = process.env) {
+  const fromEnv = readEnvCaseInsensitive(env, "GIT_DIR");
+  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
+    return path.resolve(cwd, fromEnv.trim());
+  }
+  const result = git(cwd, ["rev-parse", "--path-format=absolute", "--git-dir"], {
+    allowFailure: true,
+  });
+  return result.ok && result.stdout ? result.stdout : null;
+}
+
+function worktreeLockPath(cwd, env = process.env) {
+  const gitDir = worktreeGitDir(cwd, env);
+  return gitDir ? path.join(gitDir, WORKTREE_LOCK_FILE) : null;
+}
+
+function writeJsonAtomic(filePath, data) {
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
+    fs.renameSync(tmp, filePath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // Ignore cleanup failure when tmp was never created or already renamed.
+    }
+    throw error;
+  }
+}
+
+const HARDLINK_UNSUPPORTED_CODES = new Set(["EPERM", "EXDEV", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
+
+function writeFileExclusiveAtomic(filePath, content) {
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, content, { flag: "wx" });
+    try {
+      fs.linkSync(tmp, filePath);
+    } catch (error) {
+      if (HARDLINK_UNSUPPORTED_CODES.has(error?.code)) {
+        fs.writeFileSync(filePath, content, { flag: "wx" });
+      } else {
+        throw error;
+      }
+    }
+  } finally {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // Best-effort cleanup of temp staging file.
+    }
+  }
+}
+
+function removeWorktreeLockIfTokenMatches(lockPath, token) {
+  let raw;
+  try {
+    raw = fs.readFileSync(lockPath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.token !== token) return;
+  } catch {
+    return;
+  }
+  fs.rmSync(lockPath, { force: true });
+}
+
+function defaultProbePid(pid) {
+  try {
+    // oxlint-disable-next-line t3code/no-raw-process-probe -- standalone CommonJS hook script without package imports
+    process.kill(pid, 0);
+    return "alive";
+  } catch (error) {
+    if (error?.code === "ESRCH") return "gone";
+    if (error?.code === "EPERM") return "eperm";
+    throw error;
+  }
+}
+
+function formatWorktreeLockError(marker) {
+  const branchLabel = marker.branch ? `branch ${marker.branch}` : "detached HEAD";
+  const headLabel = typeof marker.head === "string" ? marker.head.slice(0, 12) : "unknown";
+  return `landing turn: refusing to modify worktree while a landing is active (pid ${marker.pid}, ${branchLabel}, head ${headLabel}, started ${marker.startedAt}). Wait for the landing to finish or stop it before committing or moving HEAD.`;
+}
+
+/**
+ * Inspects a worktree's active-landing lock marker, automatically removing stale markers left behind by crashed,
+ * killed, recycled, rebooted, or expired landers so a worktree is never permanently wedged.
+ */
+function inspectWorktreeLock({
+  cwd,
+  env = process.env,
+  now = Date.now,
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- standalone CommonJS hook script; tests pass platform
+  platform = process.platform,
+  readHost,
+  readStarted,
+  probePid = defaultProbePid,
+}) {
+  const lockPath = worktreeLockPath(cwd, env);
+  if (!lockPath) return { locked: false, lockPath: null };
+  let raw;
+  try {
+    raw = fs.readFileSync(lockPath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return { locked: false, lockPath };
+    throw error;
+  }
+  let marker;
+  try {
+    marker = JSON.parse(raw);
+  } catch {
+    fs.rmSync(lockPath, { force: true });
+    return { locked: false, lockPath, clearedStale: "corrupt" };
+  }
+  if (
+    !marker ||
+    typeof marker !== "object" ||
+    !Number.isInteger(marker.pid) ||
+    marker.pid <= 0 ||
+    typeof marker.token !== "string" ||
+    marker.token.length === 0
+  ) {
+    fs.rmSync(lockPath, { force: true });
+    return { locked: false, lockPath, clearedStale: "corrupt" };
+  }
+  const envToken = readEnvCaseInsensitive(env, ACTIVE_TOKEN_ENV);
+  if (typeof envToken === "string" && envToken.length > 0 && envToken === marker.token) {
+    return { locked: false, lockPath, self: true, marker };
+  }
+  const startedMs = typeof marker.startedAt === "string" ? Date.parse(marker.startedAt) : NaN;
+  if (!Number.isFinite(startedMs) || now() - startedMs > WORKTREE_LOCK_MAX_AGE_MS) {
+    removeWorktreeLockIfTokenMatches(lockPath, marker.token);
+    return { locked: false, lockPath, clearedStale: "expired" };
+  }
+  const here = (readHost ?? (() => dirtyMarkerHost({ platform })))();
+  if (
+    here !== null &&
+    marker.hostScoped === true &&
+    typeof marker.host === "string" &&
+    marker.host !== here
+  ) {
+    removeWorktreeLockIfTokenMatches(lockPath, marker.token);
+    return { locked: false, lockPath, clearedStale: "host-changed" };
+  }
+  const state = probePid(marker.pid);
+  if (state === "gone") {
+    removeWorktreeLockIfTokenMatches(lockPath, marker.token);
+    return { locked: false, lockPath, clearedStale: "dead-pid" };
+  }
+  if (
+    (platform === "linux" || platform === "darwin") &&
+    typeof marker.started === "string" &&
+    marker.started.length > 0
+  ) {
+    const currentStarted = (readStarted ?? ((pid) => readProcessStarted(pid, { platform })))(
+      marker.pid,
+    );
+    if (currentStarted !== null && currentStarted !== marker.started) {
+      removeWorktreeLockIfTokenMatches(lockPath, marker.token);
+      return { locked: false, lockPath, clearedStale: "pid-reused" };
+    }
+  }
+  return { locked: true, lockPath, marker };
+}
+
+function isZeroOid(value) {
+  return typeof value === "string" && ZERO_OID_RE.test(value);
+}
+
+function resolveCommonGitDir(cwd, gitDir, env = process.env) {
+  const fromEnv = readEnvCaseInsensitive(env, "GIT_COMMON_DIR");
+  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
+    return path.resolve(cwd, fromEnv.trim());
+  }
+  if (!gitDir) return null;
+  try {
+    const rel = fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim();
+    if (rel) return path.resolve(gitDir, rel);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return gitDir;
+}
+
+function isFilesRefBackend(gitDir, commonDir) {
+  if (!gitDir) return false;
+  if (fs.existsSync(path.join(gitDir, "reftable"))) return false;
+  if (commonDir && fs.existsSync(path.join(commonDir, "reftable"))) return false;
+  return true;
+}
+
+function readPackedRef(commonDir, refName) {
+  if (!commonDir || !refName) return null;
+  let content;
+  try {
+    content = fs.readFileSync(path.join(commonDir, "packed-refs"), "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  for (const line of content.split(/\r?\n/)) {
+    if (!line || line[0] === "#" || line[0] === "^") continue;
+    const space = line.indexOf(" ");
+    if (space <= 0) continue;
+    if (line.slice(space + 1) === refName) {
+      const oid = line.slice(0, space);
+      return OBJECT_ID.test(oid) ? oid : null;
+    }
+  }
+  return null;
+}
+
+function readRefOid(commonDir, refName) {
+  if (!commonDir || !refName) return null;
+  try {
+    const loose = fs.readFileSync(path.join(commonDir, refName), "utf8").trim();
+    if (OBJECT_ID.test(loose)) return loose;
+  } catch (error) {
+    if (error?.code !== "ENOENT" && error?.code !== "EISDIR") throw error;
+  }
+  return readPackedRef(commonDir, refName);
+}
+
+function parseRefTransactionEntries(stdin) {
+  if (typeof stdin !== "string" || stdin.trim().length === 0) return [];
+  const entries = [];
+  for (const line of stdin.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(/\s+/);
+    if (parts.length >= 3) {
+      entries.push({ oldOid: parts[0], newOid: parts[1], ref: parts[2] });
+    } else if (parts.length > 0) {
+      entries.push({ oldOid: null, newOid: null, ref: parts.at(-1) });
+    }
+  }
+  return entries;
+}
+
+function refTransactionTargetsLockedWorktree(entries, marker, context = {}) {
+  const { gitDir = null, commonDir = null } = context;
+  const filesBackend = isFilesRefBackend(gitDir, commonDir);
+  const lockedBranchRef =
+    typeof marker?.branch === "string" && marker.branch.length > 0
+      ? `refs/heads/${marker.branch}`
+      : null;
+  const lockedHead =
+    typeof marker?.head === "string" && OBJECT_ID.test(marker.head) ? marker.head : null;
+
+  for (const rawEntry of entries) {
+    const entry =
+      typeof rawEntry === "string" ? { oldOid: null, newOid: null, ref: rawEntry } : rawEntry;
+    if (!entry || !entry.ref) continue;
+    if (entry.ref === "HEAD") {
+      // `git worktree add` from a locked checkout fires `reference-transaction prepared` with the
+      // invoking checkout's GIT_DIR and `0000... <target> HEAD`, locking only the new worktree's
+      // HEAD.lock. On the `files` backend, any real mutation to the locked worktree's own HEAD
+      // holds `<gitDir>/HEAD.lock` during `prepared`.
+      if (
+        filesBackend &&
+        isZeroOid(entry.oldOid) &&
+        !fs.existsSync(path.join(gitDir, "HEAD.lock"))
+      ) {
+        continue;
+      }
+      return true;
+    }
+    if (lockedBranchRef && entry.ref === lockedBranchRef) {
+      // Allow no-op `git pack-refs --all` / `git gc` packing and loose-ref pruning for the locked
+      // branch while still rejecting real branch deletions or moves.
+      if (filesBackend && commonDir && lockedHead) {
+        const packedRefsLockExists = fs.existsSync(path.join(commonDir, "packed-refs.lock"));
+        if (
+          isZeroOid(entry.oldOid) &&
+          entry.newOid === lockedHead &&
+          (packedRefsLockExists || readRefOid(commonDir, lockedBranchRef) === lockedHead)
+        ) {
+          continue;
+        }
+        if (
+          entry.oldOid === lockedHead &&
+          isZeroOid(entry.newOid) &&
+          !packedRefsLockExists &&
+          readPackedRef(commonDir, lockedBranchRef) === lockedHead
+        ) {
+          continue;
+        }
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+function checkWorktreeLock({
+  cwd,
+  env = process.env,
+  refTransaction = false,
+  stdin = "",
+  ...rest
+}) {
+  const state = inspectWorktreeLock({ cwd, env, ...rest });
+  if (!state.locked) return { ok: true, ...state };
+  if (refTransaction) {
+    const entries = parseRefTransactionEntries(stdin);
+    const gitDir = state.lockPath ? path.dirname(state.lockPath) : null;
+    const commonDir = resolveCommonGitDir(cwd, gitDir, env);
+    if (!refTransactionTargetsLockedWorktree(entries, state.marker, { gitDir, commonDir })) {
+      return { ok: true, ...state, ignoredRefs: entries.map((entry) => entry.ref) };
+    }
+  }
+  throw new Error(formatWorktreeLockError(state.marker));
+}
+
+function acquireWorktreeLock({
+  cwd,
+  branch = null,
+  head,
+  now = Date.now,
+  env = process.env,
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- standalone CommonJS script; tests pass platform
+  platform = process.platform,
+  readHost,
+  readStarted,
+  probePid,
+}) {
+  const lockPath = worktreeLockPath(cwd, env);
+  if (!lockPath) {
+    return { token: null, lockPath: null, marker: null, updateHead() {}, release() {} };
+  }
+  const bootHost = (readHost ?? (() => dirtyMarkerHost({ platform })))();
+  const marker = {
+    pid: process.pid,
+    host: bootHost ?? os.hostname(),
+    hostScoped: bootHost !== null,
+    started: (readStarted ?? ((pid) => readProcessStarted(pid, { platform })))(process.pid),
+    token: randomUUID(),
+    branch: branch || null,
+    head,
+    startedAt: new Date(now()).toISOString(),
+    owner: `pid:${process.pid}`,
+  };
+  const payload = `${JSON.stringify(marker, null, 2)}\n`;
+  const inspectEnv = withoutEnvKeys(env, [ACTIVE_TOKEN_ENV]);
+  let acquired = false;
+  for (let attempt = 0; attempt < WORKTREE_LOCK_ACQUIRE_ATTEMPTS; attempt += 1) {
+    try {
+      writeFileExclusiveAtomic(lockPath, payload);
+      acquired = true;
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const existing = inspectWorktreeLock({
+        cwd,
+        env: inspectEnv,
+        now,
+        platform,
+        readHost,
+        readStarted,
+        probePid,
+      });
+      if (existing.locked || existing.self) {
+        throw new Error(formatWorktreeLockError(existing.marker));
+      }
+    }
+  }
+  if (!acquired) {
+    const existing = inspectWorktreeLock({
+      cwd,
+      env: inspectEnv,
+      now,
+      platform,
+      readHost,
+      readStarted,
+      probePid,
+    });
+    if (existing.locked || existing.self) {
+      throw new Error(formatWorktreeLockError(existing.marker));
+    }
+    throw new Error(
+      `landing turn: could not acquire worktree lock at ${lockPath} after ${WORKTREE_LOCK_ACQUIRE_ATTEMPTS} attempts.`,
+    );
+  }
+  const key = normalizeLockKey(cwd);
+  const prevToken = activeWorktreeTokens.get(key);
+  activeWorktreeTokens.set(key, marker.token);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    if (prevToken === undefined) activeWorktreeTokens.delete(key);
+    else activeWorktreeTokens.set(key, prevToken);
+    for (const stopSignal of STOP_SIGNALS) process.removeListener(stopSignal, onStopSignal);
+    process.removeListener("exit", release);
+    try {
+      removeWorktreeLockIfTokenMatches(lockPath, marker.token);
+    } catch {
+      // Best-effort cleanup during exit or teardown.
+    }
+  };
+  function onStopSignal(stopSignal) {
+    release();
+    if (process.listenerCount(stopSignal) === 0) {
+      try {
+        process.kill(process.pid, stopSignal);
+      } catch {
+        process.exit(stopSignal === "SIGHUP" ? 129 : stopSignal === "SIGINT" ? 130 : 143);
+      }
+    }
+  }
+  for (const stopSignal of STOP_SIGNALS) process.on(stopSignal, onStopSignal);
+  process.once("exit", release);
+  return {
+    token: marker.token,
+    lockPath,
+    marker,
+    updateHead(nextHead) {
+      if (released || !nextHead || marker.head === nextHead) return;
+      marker.head = nextHead;
+      writeJsonAtomic(lockPath, marker);
+    },
+    release,
+  };
+}
+
 async function runLanding(
   {
     cwd,
@@ -2332,394 +2868,431 @@ async function runLanding(
   if (rebased && tip !== rebased.head) return { status: "head-moved" };
   const preflightIssue = checkLocalWorktree(cwd);
   if (preflightIssue) return preflightIssue;
-  // Before the wait, so a conflict stops the landing with no turn held. The CLI then lands the rebased commit again
-  // from its tree, so the wait runs that tree's copy of this script, checking against the base it rebased onto.
-  let checked = rebased?.base ?? (await fetchMain(cwd, remote, branch, randomUUID(), mainCall));
-  record.note({ base: checked });
-  // Before the rebase, so a conflict still shows it; the relaunch after a rebase listed it already.
-  if (!rebased) {
-    const overlap = formatOverlaps(overlappingWorktrees({ cwd, base: checked }));
-    if (overlap) report(overlap);
-  }
-  // Another process can move the checkout at any moment; each check below covers what it is now.
-  if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
-  if (!holds(cwd, checked)) {
-    if (rebased) return { status: "head-moved" };
-    await record.time("rebase", () => rebaseOnto(cwd, checked));
-    return { status: "rebased", base: checked, head: git(cwd, ["rev-parse", "HEAD"]).stdout };
-  }
-  // Before the wait too, so a failure holds no turn and the turn lasts for the push alone while main stays still.
-  let endSlotWait = null;
-  let preSlot;
+  // Lock this worktree's git dir so foreign commits / HEAD moves are refused while this landing is active.
+  // Always uses real wall-clock Date.now() for `startedAt` so hook processes agree on lock age even when tests
+  // inject a simulated `now` clock for lease expiry.
+  const worktreeLock = acquireWorktreeLock({ cwd, branch: topic || null, head: tip });
   try {
-    preSlot = await acquireCheckoutSlot({
-      cwd,
-      role: "preWait",
-      warmLimit,
-      now,
-      waitSlot,
-      localSlotPollMs,
-      onWaitStart: () => {
-        endSlotWait = record.begin("localSlotWait");
-      },
-    });
-  } finally {
-    endSlotWait?.();
-  }
-  const recordSlotWait = (ms) => record.add("checkSlotWait", ms);
-  try {
-    if (preSlot.waited) {
-      if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
-      if (stoppedRebase(cwd)) return { status: "rebase-in-progress" };
-      const uncommittedAfterWait = git(cwd, ["status", "--porcelain"]).stdout;
-      if (uncommittedAfterWait) {
-        return { status: "uncommitted", files: uncommittedAfterWait.split("\n") };
-      }
-      const markedAfterWait = markedFiles(cwd);
-      if (markedAfterWait.length > 0) return { status: "marked-files", files: markedAfterWait };
-      const latestBase = await fetchMain(cwd, remote, branch, randomUUID(), mainCall);
-      if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
-      if (latestBase !== checked) {
-        record.note({ base: latestBase });
-        if (!holds(cwd, latestBase)) {
-          await record.time("rebase", () => rebaseOnto(cwd, latestBase));
-          tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
-          record.note({ head: tip });
-          const problemAfterRebase = notesMergeProblem(cwd);
-          if (problemAfterRebase) throw new Error(problemAfterRebase);
-          const scriptsChanged = git(cwd, [
-            "diff",
-            "--name-only",
-            `${checked}..${latestBase}`,
-            "--",
-            ".github/scripts/",
-          ]).stdout;
-          if (scriptsChanged) {
-            return { status: "rebased", base: latestBase, head: tip };
-          }
+    // Before the wait, so a conflict stops the landing with no turn held. The CLI then lands the rebased commit again
+    // from its tree, so the wait runs that tree's copy of this script, checking against the base it rebased onto.
+    let checked = rebased?.base ?? (await fetchMain(cwd, remote, branch, randomUUID(), mainCall));
+    record.note({ base: checked });
+    // Before the rebase, so a conflict still shows it; the relaunch after a rebase listed it already.
+    if (!rebased) {
+      const overlap = formatOverlaps(overlappingWorktrees({ cwd, base: checked }));
+      if (overlap) report(overlap);
+    }
+    // Another process can move the checkout at any moment; each check below covers what it is now.
+    if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+    if (!holds(cwd, checked)) {
+      if (rebased) return { status: "head-moved" };
+      await record.time("rebase", () => rebaseOnto(cwd, checked));
+      const rebasedHead = git(cwd, ["rev-parse", "HEAD"]).stdout;
+      worktreeLock.updateHead(rebasedHead);
+      return { status: "rebased", base: checked, head: rebasedHead };
+    }
+    // Before the wait too, so a failure holds no turn and the turn lasts for the push alone while main stays still.
+    let endSlotWait = null;
+    let preSlot;
+    try {
+      preSlot = await acquireCheckoutSlot({
+        cwd,
+        role: "preWait",
+        warmLimit,
+        now,
+        waitSlot,
+        localSlotPollMs,
+        onWaitStart: () => {
+          endSlotWait = record.begin("localSlotWait");
+        },
+      });
+    } finally {
+      endSlotWait?.();
+    }
+    const recordSlotWait = (ms) => record.add("checkSlotWait", ms);
+    try {
+      if (preSlot.waited) {
+        if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+        if (stoppedRebase(cwd)) return { status: "rebase-in-progress" };
+        const uncommittedAfterWait = git(cwd, ["status", "--porcelain"]).stdout;
+        if (uncommittedAfterWait) {
+          return { status: "uncommitted", files: uncommittedAfterWait.split("\n") };
         }
-        checked = latestBase;
-      }
-    }
-    const preWaitPassed = await record.time("preWaitCheck", () =>
-      runInCheckoutSlot(preSlot, tip, (directory, checkoutContext) =>
-        check(null, checked, undefined, directory, undefined, {
-          ...checkoutContext,
-          recordSlotWait,
-        }),
-      ),
-    );
-    if (!preWaitPassed) return { status: "check-failed" };
-  } finally {
-    preSlot.release();
-  }
-  const checkUnderTurn = (turn, base, budgetSeconds, signal) =>
-    withPrivateCheckout(
-      { cwd, commit: tip, role: "underTurn", warmLimit, now },
-      (directory, checkoutContext) =>
-        check(turn, base, budgetSeconds, directory, signal, {
-          ...checkoutContext,
-          recordSlotWait,
-        }),
-    );
-  let specTask = null;
-  let lastSpecPromise = Promise.resolve();
-  const stopSpeculative = async (reason) => {
-    const active = specTask;
-    specTask = null;
-    if (active && !active.controller.signal.aborted) {
-      active.controller.abort(new Error(reason));
-    }
-    await lastSpecPromise;
-  };
-  const startSpeculative = (candidate) => {
-    const prevPromise = lastSpecPromise;
-    const controller = new AbortController();
-    const specSignal = controller.signal;
-    const task = {
-      candidate,
-      controller,
-      specTree: null,
-      checkingStarted: false,
-      passed: false,
-      settled: false,
-      promise: null,
-    };
-    const runPromise = (async () => {
-      try {
-        await prevPromise;
-        if (specSignal.aborted) return;
-        const specRef = `refs/worktree/landing-turn/spec-${randomUUID()}`;
-        let fetchedSha = null;
-        try {
-          const fetched = await gitAsync(
-            cwd,
-            [...FETCH_OBJECTS, "--refmap=", remote, `+${CANDIDATE_REF}:${specRef}`],
-            { allowFailure: true, signal: specSignal, timeoutMs: mainCallMs, after },
-          );
-          if (!fetched.ok || specSignal.aborted) return;
-          const parsed = git(cwd, ["rev-parse", "--verify", `${specRef}^{commit}`], {
-            allowFailure: true,
-          });
-          if (parsed.ok) fetchedSha = parsed.stdout;
-        } finally {
-          git(cwd, ["update-ref", "-d", specRef], { allowFailure: true });
-        }
-        if (specSignal.aborted || fetchedSha !== candidate) return;
-        if (git(cwd, ["merge-base", "--is-ancestor", candidate, tip], { allowFailure: true }).ok) {
-          return;
-        }
-        const scriptsChanged = git(
-          cwd,
-          ["diff", "--name-only", `${checked}..${candidate}`, "--", ".github/scripts/"],
-          { allowFailure: true },
-        );
-        if (!scriptsChanged.ok || scriptsChanged.stdout) return;
-        record.note({ speculativeReused: false });
-        await record.time("speculativeCheck", async () => {
-          const specSlot = await acquireCheckoutSlot({
-            cwd,
-            role: "preWait",
-            warmLimit,
-            now,
-            waitSlot,
-            localSlotPollMs,
-            signal: specSignal,
-          });
-          try {
-            if (specSignal.aborted) return;
-            const ok = await runInCheckoutSlot(
-              specSlot,
-              tip,
-              async (directory, checkoutContext) => {
-                if (specSignal.aborted) return false;
-                await rebaseOnto(directory, candidate, {
-                  signal: specSignal,
-                  trackChild: checkoutContext.trackChild,
-                });
-                if (specSignal.aborted) return false;
-                if (notesMergeProblem(directory)) return false;
-                const specTip = git(directory, ["rev-parse", "HEAD"]).stdout;
-                task.specTree = git(directory, ["rev-parse", "HEAD^{tree}"]).stdout;
-                if (specSignal.aborted) return false;
-                task.checkingStarted = true;
-                const specCheckoutContext = {
-                  ...checkoutContext,
-                  rebuild: (rebuildSignal) => checkoutContext.rebuild(rebuildSignal, specTip),
-                  recordSlotWait,
-                };
-                return await check(
-                  null,
-                  candidate,
-                  undefined,
-                  directory,
-                  specSignal,
-                  specCheckoutContext,
-                );
-              },
-              { signal: specSignal },
-            );
-            if (ok && !specSignal.aborted) task.passed = true;
-          } finally {
-            specSlot.release();
-          }
-        });
-      } catch {
-        // Speculative pre-check is best-effort; failures fall back to the normal under-turn check.
-      } finally {
-        task.settled = true;
-        onSpeculativeSettled({
-          candidate,
-          passed: task.passed,
-          checkingStarted: task.checkingStarted,
-          specTree: task.specTree,
-        });
-      }
-    })();
-    task.promise = runPromise;
-    lastSpecPromise = runPromise;
-    return task;
-  };
-  const onWaitState = ({ firstInQueue, holder }) => {
-    const candidate =
-      firstInQueue && typeof holder?.candidate === "string" && OBJECT_ID.test(holder.candidate)
-        ? holder.candidate
-        : null;
-    if (!candidate || candidate === checked) {
-      if (specTask && !specTask.controller.signal.aborted) {
-        specTask.controller.abort(
-          new Error(firstInQueue ? "candidate cleared" : "no longer first in queue"),
-        );
-      }
-      specTask = null;
-      return;
-    }
-    if (specTask?.candidate === candidate) return;
-    if (specTask && !specTask.controller.signal.aborted) {
-      specTask.controller.abort(new Error("candidate changed"));
-    }
-    specTask = startSpeculative(candidate);
-  };
-  record.note({ stage: "waiting" });
-  const waited = record.begin("waitForTurn");
-  let result;
-  let releaseConfirmed;
-  try {
-    ({ result, releaseConfirmed } = await runWithTurn(
-      { cwd, remote, now, mainCallMs, after, awakeClock, onWaitState, ...rest },
-      async (turn, signal, pushMain, publishCandidate) => {
-        try {
-          waited();
-          record.note({ stage: "under-turn" });
-          const turnStarted = turnClock();
-          const leftMs = turnEnd(JSON.parse(leaseLine(cwd, turn))) - now();
-          const lostTurn = () => ({ status: "lost-turn", reason: signal.reason.message });
-          const base = await fetchMain(cwd, remote, branch, turn, mainCall);
-          record.note({ base });
-          // The checks passed for this commit, not for one checked out during the wait or this fetch.
-          const headAfterFetch = git(cwd, ["rev-parse", "HEAD"]).stdout;
-          if (headAfterFetch !== tip) {
-            await stopSpeculative("head moved");
-            return { status: "head-moved", expected: tip, actual: headAfterFetch };
-          }
-          const rebasedUnderTurn = base !== checked;
-          if (!rebasedUnderTurn || !specTask || specTask.candidate !== base) {
-            await stopSpeculative("base does not match speculative candidate");
-          }
-          if (rebasedUnderTurn) {
-            await record.time("rebase", () => rebaseOnto(cwd, base));
+        const markedAfterWait = markedFiles(cwd);
+        if (markedAfterWait.length > 0) return { status: "marked-files", files: markedAfterWait };
+        const latestBase = await fetchMain(cwd, remote, branch, randomUUID(), mainCall);
+        if (git(cwd, ["rev-parse", "HEAD"]).stdout !== tip) return { status: "head-moved" };
+        if (latestBase !== checked) {
+          record.note({ base: latestBase });
+          if (!holds(cwd, latestBase)) {
+            await record.time("rebase", () => rebaseOnto(cwd, latestBase));
             tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+            worktreeLock.updateHead(tip);
             record.note({ head: tip });
+            const problemAfterRebase = notesMergeProblem(cwd);
+            if (problemAfterRebase) throw new Error(problemAfterRebase);
+            const scriptsChanged = git(cwd, [
+              "diff",
+              "--name-only",
+              `${checked}..${latestBase}`,
+              "--",
+              ".github/scripts/",
+            ]).stdout;
+            if (scriptsChanged) {
+              return { status: "rebased", base: latestBase, head: tip };
+            }
           }
-          if (signal.aborted) {
-            await stopSpeculative("turn lost");
-            return lostTurn();
+          checked = latestBase;
+        }
+      }
+      const preWaitPassed = await record.time("preWaitCheck", () =>
+        runInCheckoutSlot(preSlot, tip, (directory, checkoutContext) =>
+          check(null, checked, undefined, directory, undefined, {
+            ...checkoutContext,
+            recordSlotWait,
+          }),
+        ),
+      );
+      if (!preWaitPassed) return { status: "check-failed" };
+    } finally {
+      preSlot.release();
+    }
+    const checkHeadDrift = () => {
+      const res = git(cwd, ["rev-parse", "HEAD"], { allowFailure: true });
+      if (!res.ok || res.stdout !== tip) {
+        return { status: "head-moved", expected: tip, actual: res.ok ? res.stdout : null };
+      }
+      return null;
+    };
+    const checkUnderTurn = (turn, base, budgetSeconds, signal) =>
+      withPrivateCheckout(
+        { cwd, commit: tip, role: "underTurn", warmLimit, now },
+        (directory, checkoutContext) =>
+          check(turn, base, budgetSeconds, directory, signal, {
+            ...checkoutContext,
+            recordSlotWait,
+          }),
+      );
+    let specTask = null;
+    let lastSpecPromise = Promise.resolve();
+    const stopSpeculative = async (reason) => {
+      const active = specTask;
+      specTask = null;
+      if (active && !active.controller.signal.aborted) {
+        active.controller.abort(new Error(reason));
+      }
+      await lastSpecPromise;
+    };
+    const startSpeculative = (candidate) => {
+      const prevPromise = lastSpecPromise;
+      const controller = new AbortController();
+      const specSignal = controller.signal;
+      const task = {
+        candidate,
+        controller,
+        specTree: null,
+        checkingStarted: false,
+        passed: false,
+        settled: false,
+        promise: null,
+      };
+      const runPromise = (async () => {
+        try {
+          await prevPromise;
+          if (specSignal.aborted || checkHeadDrift()) return;
+          const specRef = `refs/worktree/landing-turn/spec-${randomUUID()}`;
+          let fetchedSha = null;
+          try {
+            const fetched = await gitAsync(
+              cwd,
+              [...FETCH_OBJECTS, "--refmap=", remote, `+${CANDIDATE_REF}:${specRef}`],
+              { allowFailure: true, signal: specSignal, timeoutMs: mainCallMs, after },
+            );
+            if (!fetched.ok || specSignal.aborted || checkHeadDrift()) return;
+            const parsed = git(cwd, ["rev-parse", "--verify", `${specRef}^{commit}`], {
+              allowFailure: true,
+            });
+            if (parsed.ok) fetchedSha = parsed.stdout;
+          } finally {
+            git(cwd, ["update-ref", "-d", specRef], { allowFailure: true });
           }
-          let speculativeReused = false;
-          let candidatePublished = false;
-          if (rebasedUnderTurn && specTask && specTask.candidate === base) {
-            const activeSpec = specTask;
-            const tipTree = git(cwd, ["rev-parse", "HEAD^{tree}"]).stdout;
-            if (activeSpec.passed && activeSpec.specTree === tipTree) {
-              specTask = null;
-              await activeSpec.promise;
-              if (signal.aborted) return lostTurn();
-              speculativeReused = true;
-              record.note({ speculativeReused: true });
-            } else if (
-              !activeSpec.settled &&
-              activeSpec.checkingStarted &&
-              activeSpec.specTree === tipTree
-            ) {
-              if (!signal.aborted) {
-                publishCandidate(tip);
-                candidatePublished = true;
+          if (specSignal.aborted || fetchedSha !== candidate || checkHeadDrift()) return;
+          if (
+            git(cwd, ["merge-base", "--is-ancestor", candidate, tip], { allowFailure: true }).ok
+          ) {
+            return;
+          }
+          const scriptsChanged = git(
+            cwd,
+            ["diff", "--name-only", `${checked}..${candidate}`, "--", ".github/scripts/"],
+            { allowFailure: true },
+          );
+          if (!scriptsChanged.ok || scriptsChanged.stdout) return;
+          record.note({ speculativeReused: false });
+          await record.time("speculativeCheck", async () => {
+            const specSlot = await acquireCheckoutSlot({
+              cwd,
+              role: "preWait",
+              warmLimit,
+              now,
+              waitSlot,
+              localSlotPollMs,
+              signal: specSignal,
+            });
+            try {
+              if (specSignal.aborted || checkHeadDrift()) return;
+              const ok = await runInCheckoutSlot(
+                specSlot,
+                tip,
+                async (directory, checkoutContext) => {
+                  if (specSignal.aborted || checkHeadDrift()) return false;
+                  await rebaseOnto(directory, candidate, {
+                    signal: specSignal,
+                    trackChild: checkoutContext.trackChild,
+                  });
+                  if (specSignal.aborted || checkHeadDrift()) return false;
+                  if (notesMergeProblem(directory)) return false;
+                  const specTip = git(directory, ["rev-parse", "HEAD"]).stdout;
+                  task.specTree = git(directory, ["rev-parse", "HEAD^{tree}"]).stdout;
+                  if (specSignal.aborted || checkHeadDrift()) return false;
+                  task.checkingStarted = true;
+                  const specCheckoutContext = {
+                    ...checkoutContext,
+                    rebuild: (rebuildSignal) => checkoutContext.rebuild(rebuildSignal, specTip),
+                    recordSlotWait,
+                  };
+                  return await check(
+                    null,
+                    candidate,
+                    undefined,
+                    directory,
+                    specSignal,
+                    specCheckoutContext,
+                  );
+                },
+                { signal: specSignal },
+              );
+              if (ok && !specSignal.aborted) task.passed = true;
+            } finally {
+              specSlot.release();
+            }
+          });
+        } catch {
+          // Speculative pre-check is best-effort; failures fall back to the normal under-turn check.
+        } finally {
+          task.settled = true;
+          onSpeculativeSettled({
+            candidate,
+            passed: task.passed,
+            checkingStarted: task.checkingStarted,
+            specTree: task.specTree,
+          });
+        }
+      })();
+      task.promise = runPromise;
+      lastSpecPromise = runPromise;
+      return task;
+    };
+    const onWaitState = ({ firstInQueue, holder }) => {
+      const candidate =
+        firstInQueue && typeof holder?.candidate === "string" && OBJECT_ID.test(holder.candidate)
+          ? holder.candidate
+          : null;
+      if (!candidate || candidate === checked) {
+        if (specTask && !specTask.controller.signal.aborted) {
+          specTask.controller.abort(
+            new Error(firstInQueue ? "candidate cleared" : "no longer first in queue"),
+          );
+        }
+        specTask = null;
+        return;
+      }
+      if (specTask?.candidate === candidate) return;
+      if (specTask && !specTask.controller.signal.aborted) {
+        specTask.controller.abort(new Error("candidate changed"));
+      }
+      specTask = startSpeculative(candidate);
+    };
+    record.note({ stage: "waiting" });
+    const waited = record.begin("waitForTurn");
+    let result;
+    let releaseConfirmed;
+    try {
+      ({ result, releaseConfirmed } = await runWithTurn(
+        {
+          cwd,
+          remote,
+          now,
+          mainCallMs,
+          after,
+          awakeClock,
+          onWaitState,
+          checkAbort: checkHeadDrift,
+          ...rest,
+        },
+        async (turn, signal, pushMain, publishCandidate) => {
+          try {
+            waited();
+            record.note({ stage: "under-turn" });
+            const turnStarted = turnClock();
+            const leftMs = turnEnd(JSON.parse(leaseLine(cwd, turn))) - now();
+            const lostTurn = () => ({ status: "lost-turn", reason: signal.reason.message });
+            const base = await fetchMain(cwd, remote, branch, turn, mainCall);
+            record.note({ base });
+            // The checks passed for this commit, not for one checked out during the wait or this fetch.
+            const headDrift = checkHeadDrift();
+            if (headDrift) {
+              await stopSpeculative("head moved");
+              return headDrift;
+            }
+            const rebasedUnderTurn = base !== checked;
+            if (!rebasedUnderTurn || !specTask || specTask.candidate !== base) {
+              await stopSpeculative("base does not match speculative candidate");
+            }
+            if (rebasedUnderTurn) {
+              await record.time("rebase", () => rebaseOnto(cwd, base));
+              tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+              worktreeLock.updateHead(tip);
+              record.note({ head: tip });
+            }
+            if (signal.aborted) {
+              await stopSpeculative("turn lost");
+              return lostTurn();
+            }
+            let speculativeReused = false;
+            let candidatePublished = false;
+            if (rebasedUnderTurn && specTask && specTask.candidate === base) {
+              const activeSpec = specTask;
+              const tipTree = git(cwd, ["rev-parse", "HEAD^{tree}"]).stdout;
+              if (activeSpec.passed && activeSpec.specTree === tipTree) {
+                specTask = null;
+                await activeSpec.promise;
+                if (signal.aborted) return lostTurn();
+                speculativeReused = true;
+                record.note({ speculativeReused: true });
+              } else if (
+                !activeSpec.settled &&
+                activeSpec.checkingStarted &&
+                activeSpec.specTree === tipTree
+              ) {
+                if (!signal.aborted) {
+                  publishCandidate(tip);
+                  candidatePublished = true;
+                  if (signal.aborted) return lostTurn();
+                }
+                const onTurnLost = () => {
+                  if (!activeSpec.controller.signal.aborted) {
+                    activeSpec.controller.abort(new Error("turn lost"));
+                  }
+                };
+                signal.addEventListener("abort", onTurnLost, { once: true });
+                if (signal.aborted) onTurnLost();
+                try {
+                  await activeSpec.promise;
+                } finally {
+                  signal.removeEventListener("abort", onTurnLost);
+                }
+                specTask = null;
+                if (signal.aborted) return lostTurn();
+                speculativeReused =
+                  activeSpec.passed &&
+                  activeSpec.candidate === base &&
+                  activeSpec.specTree === tipTree;
+                if (speculativeReused) record.note({ speculativeReused: true });
+              } else {
+                await stopSpeculative(
+                  activeSpec.settled
+                    ? "speculative check did not pass"
+                    : activeSpec.checkingStarted
+                      ? "speculative tree mismatch"
+                      : "speculative check not started before turn",
+                );
                 if (signal.aborted) return lostTurn();
               }
-              const onTurnLost = () => {
-                if (!activeSpec.controller.signal.aborted) {
-                  activeSpec.controller.abort(new Error("turn lost"));
-                }
-              };
-              signal.addEventListener("abort", onTurnLost, { once: true });
-              if (signal.aborted) onTurnLost();
-              try {
-                await activeSpec.promise;
-              } finally {
-                signal.removeEventListener("abort", onTurnLost);
-              }
-              specTask = null;
+            }
+            if (
+              !candidatePublished &&
+              ((rebasedUnderTurn && !speculativeReused) || Boolean(finalize)) &&
+              !signal.aborted
+            ) {
+              publishCandidate(tip);
+              candidatePublished = true;
               if (signal.aborted) return lostTurn();
-              speculativeReused =
-                activeSpec.passed &&
-                activeSpec.candidate === base &&
-                activeSpec.specTree === tipTree;
-              if (speculativeReused) record.note({ speculativeReused: true });
-            } else {
-              await stopSpeculative(
-                activeSpec.settled
-                  ? "speculative check did not pass"
-                  : activeSpec.checkingStarted
-                    ? "speculative tree mismatch"
-                    : "speculative check not started before turn",
+            }
+            const verifyUnchanged = async (expectedTip, expectedBase) => {
+              const currentHead = git(cwd, ["rev-parse", "HEAD"]).stdout;
+              if (currentHead !== expectedTip) {
+                return { status: "head-moved", expected: expectedTip, actual: currentHead };
+              }
+              const currentBase = await remoteBranchSha(cwd, remote, branch, mainCall);
+              if (signal.aborted) return lostTurn();
+              if (currentBase !== expectedBase) {
+                return { status: "base-moved", expected: expectedBase, actual: currentBase };
+              }
+              return null;
+            };
+            if (finalize) {
+              const finalizedTip = tip;
+              const finalizedBase = base;
+              const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
+              const approved = await record.time("finalize", () =>
+                withPrivateCheckout(
+                  { cwd, commit: finalizedTip, role: "underTurn", warmLimit, now },
+                  (directory, checkoutContext) =>
+                    finalize({
+                      turn,
+                      commit: finalizedTip,
+                      base: finalizedBase,
+                      rebased: rebasedUnderTurn,
+                      budgetSeconds: budget,
+                      directory,
+                      signal,
+                      trackChild: checkoutContext.trackChild,
+                      isStopping: checkoutContext.isStopping,
+                    }),
+                ),
               );
               if (signal.aborted) return lostTurn();
+              if (!approved) {
+                return { status: "finalize-failed", commit: finalizedTip, base: finalizedBase };
+              }
+              const drift = await verifyUnchanged(finalizedTip, finalizedBase);
+              if (drift) return drift;
             }
-          }
-          if (
-            !candidatePublished &&
-            ((rebasedUnderTurn && !speculativeReused) || Boolean(finalize)) &&
-            !signal.aborted
-          ) {
-            publishCandidate(tip);
-            candidatePublished = true;
-            if (signal.aborted) return lostTurn();
-          }
-          const verifyUnchanged = async (expectedTip, expectedBase) => {
-            const currentHead = git(cwd, ["rev-parse", "HEAD"]).stdout;
-            if (currentHead !== expectedTip) {
-              return { status: "head-moved", expected: expectedTip, actual: currentHead };
+            if (rebasedUnderTurn && !speculativeReused) {
+              const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
+              const passed = await record.time("underTurnCheck", () =>
+                checkUnderTurn(turn, base, budget, signal),
+              );
+              if (signal.aborted) return lostTurn();
+              if (!passed) return { status: "check-failed" };
+              const drift = await verifyUnchanged(tip, base);
+              if (drift) return drift;
+            } else if (rebasedUnderTurn && speculativeReused && !finalize) {
+              const drift = await verifyUnchanged(tip, base);
+              if (drift) return drift;
             }
-            const currentBase = await remoteBranchSha(cwd, remote, branch, mainCall);
-            if (signal.aborted) return lostTurn();
-            if (currentBase !== expectedBase) {
-              return { status: "base-moved", expected: expectedBase, actual: currentBase };
-            }
-            return null;
-          };
-          if (finalize) {
-            const finalizedTip = tip;
-            const finalizedBase = base;
-            const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
-            const approved = await record.time("finalize", () =>
-              withPrivateCheckout(
-                { cwd, commit: finalizedTip, role: "underTurn", warmLimit, now },
-                (directory, checkoutContext) =>
-                  finalize({
-                    turn,
-                    commit: finalizedTip,
-                    base: finalizedBase,
-                    rebased: rebasedUnderTurn,
-                    budgetSeconds: budget,
-                    directory,
-                    signal,
-                    trackChild: checkoutContext.trackChild,
-                    isStopping: checkoutContext.isStopping,
-                  }),
-              ),
-            );
-            if (signal.aborted) return lostTurn();
-            if (!approved) {
-              return { status: "finalize-failed", commit: finalizedTip, base: finalizedBase };
-            }
-            const drift = await verifyUnchanged(finalizedTip, finalizedBase);
-            if (drift) return drift;
+            if (!(await record.time("push", () => pushMain(branch, tip)))) return lostTurn();
+            return { status: "landed", commit: tip };
+          } finally {
+            await stopSpeculative("turn ended");
           }
-          if (rebasedUnderTurn && !speculativeReused) {
-            const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
-            const passed = await record.time("underTurnCheck", () =>
-              checkUnderTurn(turn, base, budget, signal),
-            );
-            if (signal.aborted) return lostTurn();
-            if (!passed) return { status: "check-failed" };
-            const drift = await verifyUnchanged(tip, base);
-            if (drift) return drift;
-          } else if (rebasedUnderTurn && speculativeReused && !finalize) {
-            const drift = await verifyUnchanged(tip, base);
-            if (drift) return drift;
-          }
-          if (!(await record.time("push", () => pushMain(branch, tip)))) return lostTurn();
-          return { status: "landed", commit: tip };
-        } finally {
-          await stopSpeculative("turn ended");
-        }
-      },
-    ));
+        },
+      ));
+    } catch (error) {
+      if (error instanceof WaitAbortedError) {
+        waited();
+        return error.result;
+      }
+      throw error;
+    } finally {
+      await stopSpeculative("landing finished");
+    }
+    record.note({ releaseConfirmed });
+    return releaseConfirmed ? result : { ...result, releaseConfirmed };
   } finally {
-    await stopSpeculative("landing finished");
+    worktreeLock.release();
   }
-  record.note({ releaseConfirmed });
-  return releaseConfirmed ? result : { ...result, releaseConfirmed };
 }
 
 const FINAL_COMMIT_ENV = "T3_LANDING_FINAL_COMMIT";
@@ -2752,15 +3325,17 @@ async function runTreeCommand(
 }
 
 /**
- * Shallow copy of `source` omitting `CHECK_CHANGED_METRICS_FILE` under any case variant so outer metrics paths never
- * leak into child commands or collide on case-insensitive Windows environments.
+ * Shallow copy of `source` omitting managed check env vars (`CHECK_CHANGED_METRICS_FILE`, `CHECK_CHANGED_TEST_STEP_MAX`,
+ * `T3_LANDING_TURN`, `T3_LANDING_ACTIVE_TOKEN`) under any case variant so outer values never leak or collide on
+ * case-insensitive Windows envs.
  */
-function withoutMetricsEnv(source = process.env) {
-  const cleaned = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (key.toUpperCase() !== CHECK_METRICS_FILE_ENV) cleaned[key] = value;
-  }
-  return cleaned;
+function withoutManagedCheckEnv(source = process.env) {
+  return withoutEnvKeys(source, [
+    CHECK_METRICS_FILE_ENV,
+    TEST_STEP_MAX_ENV,
+    TURN_ENV,
+    ACTIVE_TOKEN_ENV,
+  ]);
 }
 
 /**
@@ -2788,13 +3363,15 @@ async function runCheck(
     rebuild,
     trackChild,
     isStopping,
+    env: sourceEnv = process.env,
   } = {},
 ) {
+  const testStepMaxSeconds = resolveTestStepMaxSeconds(budgetSeconds, sourceEnv);
   const env = {
-    ...withoutMetricsEnv(),
+    ...withoutManagedCheckEnv(sourceEnv),
     // Unset before the wait: only the holder's checks take slots ahead of other runs.
     [TURN_ENV]: turn ?? undefined,
-    [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
+    [TEST_STEP_MAX_ENV]: String(testStepMaxSeconds),
   };
   const runStep = (step, stepEnv = env) =>
     runTreeCommand(step, {
@@ -2869,12 +3446,20 @@ async function runCheck(
 async function runFinalize(
   directory,
   { turn, commit, base, rebased, budgetSeconds, signal },
-  { command, stdio = "inherit", onSpawn = () => {}, trackChild, isStopping },
+  {
+    command,
+    stdio = "inherit",
+    onSpawn = () => {},
+    trackChild,
+    isStopping,
+    env: sourceEnv = process.env,
+  },
 ) {
+  const testStepMaxSeconds = resolveTestStepMaxSeconds(budgetSeconds, sourceEnv);
   const env = {
-    ...withoutMetricsEnv(),
+    ...withoutManagedCheckEnv(sourceEnv),
     [TURN_ENV]: turn,
-    [TEST_STEP_MAX_ENV]: budgetSeconds === undefined ? undefined : String(budgetSeconds),
+    [TEST_STEP_MAX_ENV]: String(testStepMaxSeconds),
     [FINAL_COMMIT_ENV]: commit,
     [FINAL_BASE_ENV]: base,
     [FINAL_REBASED_ENV]: rebased ? "1" : "0",
@@ -3613,227 +4198,235 @@ async function landRemote({
       status = preflightIssue.status;
       return preflightIssue;
     }
-    const rawOriginUrl = git(cwd, ["remote", "get-url", remote], {
-      allowFailure: true,
-    }).stdout;
-    const expectedOriginUrl = normalizeOriginUrl(rawOriginUrl);
-    if (!expectedOriginUrl) {
-      const originReason = rawOriginUrl
-        ? "could not normalize local origin URL"
-        : "missing local origin remote";
-      shouldRecord = false;
-      process.stderr.write(
-        `landing turn: remote landing unavailable (${originReason}); falling back to local landing.\n`,
-      );
-      return { status: "remote-unavailable", reason: originReason };
-    }
-    const effectiveProbe =
-      probeHost ??
-      (({ host, remoteDir: targetDir, expectedOriginUrl: originUrl }) =>
-        probeRemoteHost({
-          host,
-          remoteDir: targetDir,
-          expectedOriginUrl: originUrl,
-          probeTimeoutMs,
-          after,
-          execSsh,
-        }));
-    const { selected, reason } = await record.time("remoteProbe", () =>
-      selectRemoteHost({
-        hosts,
-        remoteDir,
-        expectedOriginUrl,
-        probeHost: effectiveProbe,
-      }),
-    );
-    if (!selected) {
-      shouldRecord = false;
-      process.stderr.write(
-        `landing turn: remote landing unavailable (${reason}); falling back to local landing.\n`,
-      );
-      return { status: "remote-unavailable", reason };
-    }
-    record.note({ remote: true, stage: "remote" });
-    const runId = randomUUID();
-    const stagingRef = `${STAGING_REF_PREFIX}${runId}`;
-
-    const activeChildren = new Set();
-    let stopping = false;
-    let cleanupPromise = null;
-    let stagingPushedOrStarted = false;
-
-    const trackChild = (entry) => {
-      activeChildren.add(entry);
-      if (stopping) {
-        try {
-          entry.stop();
-        } catch (error) {
-          warnLanding("stop active remote landing child", error);
-        }
+    const worktreeLock = acquireWorktreeLock({ cwd, branch: topic || null, head: tip });
+    try {
+      const rawOriginUrl = git(cwd, ["remote", "get-url", remote], {
+        allowFailure: true,
+      }).stdout;
+      const expectedOriginUrl = normalizeOriginUrl(rawOriginUrl);
+      if (!expectedOriginUrl) {
+        const originReason = rawOriginUrl
+          ? "could not normalize local origin URL"
+          : "missing local origin remote";
+        shouldRecord = false;
+        process.stderr.write(
+          `landing turn: remote landing unavailable (${originReason}); falling back to local landing.\n`,
+        );
+        return { status: "remote-unavailable", reason: originReason };
       }
-      let untracked = false;
-      return () => {
-        if (untracked) return;
-        untracked = true;
-        activeChildren.delete(entry);
-      };
-    };
+      const effectiveProbe =
+        probeHost ??
+        (({ host, remoteDir: targetDir, expectedOriginUrl: originUrl }) =>
+          probeRemoteHost({
+            host,
+            remoteDir: targetDir,
+            expectedOriginUrl: originUrl,
+            probeTimeoutMs,
+            after,
+            execSsh,
+          }));
+      const { selected, reason } = await record.time("remoteProbe", () =>
+        selectRemoteHost({
+          hosts,
+          remoteDir,
+          expectedOriginUrl,
+          probeHost: effectiveProbe,
+        }),
+      );
+      if (!selected) {
+        shouldRecord = false;
+        process.stderr.write(
+          `landing turn: remote landing unavailable (${reason}); falling back to local landing.\n`,
+        );
+        return { status: "remote-unavailable", reason };
+      }
+      record.note({ remote: true, stage: "remote" });
+      const runId = randomUUID();
+      const stagingRef = `${STAGING_REF_PREFIX}${runId}`;
 
-    const stopActiveChildren = async () => {
-      while (activeChildren.size > 0) {
-        const tracked = [...activeChildren];
-        for (const child of tracked) {
+      const activeChildren = new Set();
+      let stopping = false;
+      let cleanupPromise = null;
+      let stagingPushedOrStarted = false;
+
+      const trackChild = (entry) => {
+        activeChildren.add(entry);
+        if (stopping) {
           try {
-            child.stop();
+            entry.stop();
           } catch (error) {
             warnLanding("stop active remote landing child", error);
           }
         }
-        await Promise.allSettled(tracked.map((child) => child.done));
-        for (const child of tracked) activeChildren.delete(child);
-      }
-    };
+        let untracked = false;
+        return () => {
+          if (untracked) return;
+          untracked = true;
+          activeChildren.delete(entry);
+        };
+      };
 
-    const stopListening = () => {
-      for (const stopSignal of STOP_SIGNALS) process.removeListener(stopSignal, onStop);
-    };
+      const stopActiveChildren = async () => {
+        while (activeChildren.size > 0) {
+          const tracked = [...activeChildren];
+          for (const child of tracked) {
+            try {
+              child.stop();
+            } catch (error) {
+              warnLanding("stop active remote landing child", error);
+            }
+          }
+          await Promise.allSettled(tracked.map((child) => child.done));
+          for (const child of tracked) activeChildren.delete(child);
+        }
+      };
 
-    const cleanupOnce = () => {
-      if (cleanupPromise !== null) return cleanupPromise;
-      cleanupPromise = (async () => {
-        if (!stagingPushedOrStarted) return;
-        await cleanupStagingRef({ cwd, remote, stagingRef, after });
-      })();
-      return cleanupPromise;
-    };
+      const stopListening = () => {
+        for (const stopSignal of STOP_SIGNALS) process.removeListener(stopSignal, onStop);
+      };
 
-    function onStop(stopSignal) {
-      if (stopping) return;
-      stopping = true;
-      shouldRecord = false;
-      stopListening();
-      void (async () => {
-        try {
-          await stopActiveChildren();
-          await cleanupOnce();
-        } finally {
+      const cleanupOnce = () => {
+        if (cleanupPromise !== null) return cleanupPromise;
+        cleanupPromise = (async () => {
+          if (!stagingPushedOrStarted) return;
+          await cleanupStagingRef({ cwd, remote, stagingRef, after });
+        })();
+        return cleanupPromise;
+      };
+
+      function onStop(stopSignal) {
+        if (stopping) return;
+        stopping = true;
+        shouldRecord = false;
+        stopListening();
+        void (async () => {
           try {
-            process.kill(process.pid, stopSignal);
-          } catch {
-            process.exit(stopSignal === "SIGHUP" ? 129 : stopSignal === "SIGINT" ? 130 : 143);
+            await stopActiveChildren();
+            await cleanupOnce();
+          } finally {
+            worktreeLock.release();
+            try {
+              process.kill(process.pid, stopSignal);
+            } catch {
+              process.exit(stopSignal === "SIGHUP" ? 129 : stopSignal === "SIGINT" ? 130 : 143);
+            }
           }
-        }
-      })();
-    }
+        })();
+      }
 
-    const waitIfStopping = () => (stopping ? new Promise(() => {}) : Promise.resolve());
-    for (const stopSignal of STOP_SIGNALS) process.on(stopSignal, onStop);
+      const waitIfStopping = () => (stopping ? new Promise(() => {}) : Promise.resolve());
+      for (const stopSignal of STOP_SIGNALS) process.on(stopSignal, onStop);
 
-    try {
-      stagingPushedOrStarted = true;
-      await record.time("stagingPush", () =>
-        gitAsync(cwd, ["push", "--quiet", remote, `${tip}:${stagingRef}`], {
-          timeoutMs: mainCallMs,
-          after,
-          trackChild,
-        }),
-      );
-      await waitIfStopping();
-      const remoteCommand = buildRemoteLandCommand({
-        remoteDir: selected.dir,
-        stagingRef,
-        tip,
-        runId,
-        finalizeCommand,
-      });
-      const remoteExec = await record.time("remoteLand", () =>
-        runRemote
-          ? runRemote({
-              host: selected.host,
-              dir: selected.dir,
-              stagingRef,
-              tip,
-              runId,
-              finalizeCommand,
-              remoteCommand,
-              trackChild,
-            })
-          : execSsh({
-              host: selected.host,
-              remoteCommand,
-              streamStdout: true,
-              trackChild,
-            }),
-      );
-      await waitIfStopping();
-      const exitCode = remoteExec?.code ?? null;
-      const rawParsed =
-        remoteExec?.result ??
-        remoteExec?.lastResult ??
-        (typeof remoteExec?.stdout === "string" ? parseLastLandingResult(remoteExec.stdout) : null);
-      let parsed = isValidRemoteLandingResult(rawParsed) ? rawParsed : null;
-      if (exitCode === 255 || exitCode === null) {
-        parsed = null;
-      }
-      if (
-        parsed &&
-        parsed.status === "landed" &&
-        parsed.releaseConfirmed !== false &&
-        exitCode !== 0
-      ) {
-        parsed = null;
-      }
-      if (parsed) {
-        const finalResult = { ...parsed, remote: selected.host };
-        status = finalResult.status;
-        if (finalResult.status === "landed") {
-          record.note({ head: finalResult.commit });
-          record.note({ releaseConfirmed: finalResult.releaseConfirmed ?? true });
-          if (finalResult.releaseConfirmed !== false) {
-            await syncLocalAfterRemoteLand({
-              cwd,
-              remote,
-              branch,
-              tip,
-              topic,
-              landedCommit: finalResult.commit,
-              mainCallMs,
-              after,
-              trackChild,
-            });
-            await waitIfStopping();
-          }
-        }
-        return finalResult;
-      }
-      if (exitCode === 255 || exitCode === null) {
-        process.stderr.write(
-          `landing turn: SSH session to ${selected.host} disconnected after remote landing started; not falling back to local landing. Inspect ${remote}/${branch} before retrying.\n`,
+      try {
+        stagingPushedOrStarted = true;
+        await record.time("stagingPush", () =>
+          gitAsync(cwd, ["push", "--quiet", remote, `${tip}:${stagingRef}`], {
+            timeoutMs: mainCallMs,
+            after,
+            trackChild,
+          }),
         );
-        const disconnected = {
-          status: "remote-disconnected",
+        await waitIfStopping();
+        const remoteCommand = buildRemoteLandCommand({
+          remoteDir: selected.dir,
+          stagingRef,
+          tip,
+          runId,
+          finalizeCommand,
+        });
+        const remoteExec = await record.time("remoteLand", () =>
+          runRemote
+            ? runRemote({
+                host: selected.host,
+                dir: selected.dir,
+                stagingRef,
+                tip,
+                runId,
+                finalizeCommand,
+                remoteCommand,
+                trackChild,
+              })
+            : execSsh({
+                host: selected.host,
+                remoteCommand,
+                streamStdout: true,
+                trackChild,
+              }),
+        );
+        await waitIfStopping();
+        const exitCode = remoteExec?.code ?? null;
+        const rawParsed =
+          remoteExec?.result ??
+          remoteExec?.lastResult ??
+          (typeof remoteExec?.stdout === "string"
+            ? parseLastLandingResult(remoteExec.stdout)
+            : null);
+        let parsed = isValidRemoteLandingResult(rawParsed) ? rawParsed : null;
+        if (exitCode === 255 || exitCode === null) {
+          parsed = null;
+        }
+        if (
+          parsed &&
+          parsed.status === "landed" &&
+          parsed.releaseConfirmed !== false &&
+          exitCode !== 0
+        ) {
+          parsed = null;
+        }
+        if (parsed) {
+          const finalResult = { ...parsed, remote: selected.host };
+          status = finalResult.status;
+          if (finalResult.status === "landed") {
+            record.note({ head: finalResult.commit });
+            record.note({ releaseConfirmed: finalResult.releaseConfirmed ?? true });
+            if (finalResult.releaseConfirmed !== false) {
+              await syncLocalAfterRemoteLand({
+                cwd,
+                remote,
+                branch,
+                tip,
+                topic,
+                landedCommit: finalResult.commit,
+                mainCallMs,
+                after,
+                trackChild,
+              });
+              await waitIfStopping();
+            }
+          }
+          return finalResult;
+        }
+        if (exitCode === 255 || exitCode === null) {
+          process.stderr.write(
+            `landing turn: SSH session to ${selected.host} disconnected after remote landing started; not falling back to local landing. Inspect ${remote}/${branch} before retrying.\n`,
+          );
+          const disconnected = {
+            status: "remote-disconnected",
+            remote: selected.host,
+            exitCode,
+          };
+          status = disconnected.status;
+          return disconnected;
+        }
+        const failed = {
+          status: "remote-failed",
           remote: selected.host,
           exitCode,
         };
-        status = disconnected.status;
-        return disconnected;
-      }
-      const failed = {
-        status: "remote-failed",
-        remote: selected.host,
-        exitCode,
-      };
-      status = failed.status;
-      return failed;
-    } finally {
-      if (stopping) {
-        await new Promise(() => {});
-      }
-      try {
-        await cleanupOnce();
+        status = failed.status;
+        return failed;
       } finally {
-        stopListening();
+        if (stopping) {
+          await new Promise(() => {});
+        }
+        try {
+          await cleanupOnce();
+        } finally {
+          stopListening();
+        }
       }
+    } finally {
+      worktreeLock.release();
     }
   } catch (error) {
     status = error?.landingStatus ?? "error";
@@ -3846,7 +4439,7 @@ async function landRemote({
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
 // a real landing.
 const USAGE =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs> | land [--remote <host[,...]>] [--remote-dir <path>] [--local] [--finalize <command>]";
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | check-worktree-lock [--ref-transaction] | merge-budget <base> <ours> <theirs> | land [--remote <host[,...]>] [--remote-dir <path>] [--local] [--finalize <command>]";
 const ARGUMENTS = { push: 1, holder: 0, verify: 1, "merge-budget": 3 };
 
 function parseLandArgs(command, rest) {
@@ -3927,6 +4520,7 @@ async function main(
     probeHost,
     runRemote,
     probeTimeoutMs,
+    stdin,
   } = {},
 ) {
   const [command, ...rest] = argv;
@@ -3995,6 +4589,7 @@ async function main(
                 command: finalizeCommand,
                 trackChild: details.trackChild,
                 isStopping: details.isStopping,
+                env,
               })
           : undefined),
       check:
@@ -4002,6 +4597,7 @@ async function main(
         ((turn, base, budgetSeconds, directory, signal, checkoutContext) =>
           runCheck(directory, turn, base, budgetSeconds, signal, {
             ...checkoutContext,
+            env,
             onCheckMetrics: ({ slotWaitMs }) => checkoutContext?.recordSlotWait?.(slotWaitMs),
           })),
     });
@@ -4028,6 +4624,21 @@ async function main(
     }
     console.log(JSON.stringify(result));
     return result.status === "landed" && result.releaseConfirmed !== false ? 0 : 1;
+  }
+  if (command === "check-worktree-lock") {
+    if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--ref-transaction")) {
+      console.error(USAGE);
+      return 2;
+    }
+    const refTransaction = rest[0] === "--ref-transaction";
+    const refInput = stdin !== undefined ? stdin : refTransaction ? fs.readFileSync(0, "utf8") : "";
+    try {
+      checkWorktreeLock({ cwd, env, refTransaction, stdin: refInput });
+      return 0;
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
   }
   if (!Object.hasOwn(ARGUMENTS, command) || rest.length !== ARGUMENTS[command]) {
     console.error(USAGE);
@@ -4099,7 +4710,13 @@ module.exports = {
   STAGING_REF_PREFIX,
   TURN_ENV,
   RECORD_ENV,
+  TEST_STEP_MAX_ENV,
+  CHECK_TIMEOUT_ENV,
   CHECK_METRICS_FILE_ENV,
+  WORKTREE_LOCK_FILE,
+  ACTIVE_TOKEN_ENV,
+  WORKTREE_LOCK_MAX_AGE_MS,
+  PRE_TURN_TEST_STEP_MAX_SECONDS,
   REMOTE_HOST_ENV,
   REMOTE_DIR_ENV,
   FINAL_COMMIT_ENV,
@@ -4111,6 +4728,7 @@ module.exports = {
   LEASE_RESERVE_MS,
   MAX_WAIT_MS,
   checkBudgetSeconds,
+  resolveTestStepMaxSeconds,
   keepAwake,
   macAwakeMs,
   withTurn,
@@ -4130,6 +4748,15 @@ module.exports = {
     release,
     runCheck,
     runFinalize,
+    worktreeGitDir,
+    worktreeLockPath,
+    inspectWorktreeLock,
+    checkWorktreeLock,
+    acquireWorktreeLock,
+    gitCommand,
+    parseRefTransactionEntries,
+    refTransactionTargetsLockedWorktree,
+    withoutManagedCheckEnv,
     withPrivateCheckout,
     acquireCheckoutSlot,
     sweepCheckouts,

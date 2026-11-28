@@ -1,6 +1,20 @@
 #!/bin/sh
 # Git runs this file itself (core.hooksPath is this folder), without Vite+'s dispatcher, which put the
 # install's bin folder on PATH. A checkout with no install still commits: the pre-push gate checks main.
+if [ -n "$GIT_DIR" ]; then
+  git_dir=$GIT_DIR
+elif [ -d .git ]; then
+  git_dir=.git
+else
+  git_dir=$(git rev-parse --git-dir 2>/dev/null)
+fi
+if [ -n "$git_dir" ] && [ -f "$git_dir/t3-landing-active.json" ]; then
+  hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  script="$hook_dir/../.github/scripts/landing-turn.cjs"
+  if [ -f "$script" ]; then
+    node "$script" check-worktree-lock || exit 1
+  fi
+fi
 if [ ! -e node_modules/.bin/vp ]; then
   echo "pre-commit: no install in this checkout (run vp i), so staged files were not formatted."
   exit 0

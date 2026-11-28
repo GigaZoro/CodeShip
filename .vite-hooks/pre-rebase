@@ -1,0 +1,18 @@
+#!/bin/sh
+# core.hooksPath is this folder (machine-config.json), so git runs this hook itself: no install needed.
+# Refuse foreign rebases into a worktree with an active landing.
+if [ -n "$GIT_DIR" ]; then
+  git_dir=$GIT_DIR
+elif [ -d .git ]; then
+  git_dir=.git
+else
+  git_dir=$(git rev-parse --git-dir 2>/dev/null)
+fi
+if [ -n "$git_dir" ] && [ -f "$git_dir/t3-landing-active.json" ]; then
+  hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  script="$hook_dir/../.github/scripts/landing-turn.cjs"
+  if [ -f "$script" ]; then
+    exec node "$script" check-worktree-lock
+  fi
+fi
+exit 0

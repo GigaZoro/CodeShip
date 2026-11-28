@@ -109,6 +109,7 @@ async function endGroup(group) {
   }
   // Only wait on groups we still have permission to signal; EPERM means only another user's processes remain
   // (e.g. a recycled PGID), which will never respond to our SIGKILL.
+  let pollMs = 1;
   while (groups.some((each) => probeGroup(each) === "alive")) {
     if (performance.now() > deadline) {
       failure ??= new Error(
@@ -116,7 +117,8 @@ async function endGroup(group) {
       );
       break;
     }
-    await new Promise((resolve) => setTimeout(resolve, GONE_POLL_MS));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    pollMs = Math.min(GONE_POLL_MS, pollMs * 2);
   }
   if (failure) throw failure;
 }

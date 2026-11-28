@@ -129,7 +129,13 @@ test(
       assert.ok(worker > 0, "the middle process never started the worker");
       assert.equal(probeProcess(worker).state, "gone", "the worker outlived the check");
     } finally {
-      if (worker > 0 && probeProcess(worker).state === "alive") process.kill(worker, "SIGKILL");
+      if (worker > 0 && probeProcess(worker).state === "alive") {
+        try {
+          process.kill(worker, "SIGKILL");
+        } catch (error) {
+          if (error?.code !== "ESRCH") throw error;
+        }
+      }
       fs.rmSync(root, { recursive: true, force: true });
     }
   },
@@ -406,15 +412,20 @@ test("a renewal origin does not answer keeps the turn, is reported once and is t
 
 test("a lander gives up on a fetch of main that stops answering, and stops its transport", async () => {
   const { root, git, clone, commit } = setup();
+  let stopFetch = () => {};
+  const signals = await signalServer(root, (name) => name === "stalled" && stopFetch());
   try {
     const lander = clone("lander");
     commit(lander, "mine.txt");
-    // A remote that never answers: git waits for the transport's first line. The transport ends by itself only
-    // long after the call's limit, which leaves its start a wide margin.
+    // A remote that never answers: git waits for the transport's first line. Once the transport writes its pid
+    // and signals readiness, `after`'s callback stops the call immediately without waiting on wall-clock time.
     const pidFile = path.join(root, "transport.pid");
     fs.writeFileSync(
       path.join(root, "transport.cjs"),
-      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      `const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+spawn(${JSON.stringify(signals.command("stalled"))}, { shell: true, stdio: "ignore" });
 setTimeout(() => {}, 60_000);
 `,
     );
@@ -426,35 +437,53 @@ setTimeout(() => {}, 60_000);
           cwd: lander,
           remote: "stalled",
           mainCallMs: 5000,
+          after: (_ms, stop) => {
+            stopFetch = stop;
+            return () => {};
+          },
           check: () => assert.fail("checked"),
         }),
       /git fetch failed: did not finish within 5 seconds/,
     );
     assert.equal(running(Number(fs.readFileSync(pidFile, "utf8"))), false, "transport still runs");
   } finally {
+    await signals.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("a lander runs a fetch of main again when a Mac's sleep used up its time limit", async () => {
   const { root, origin, git, clone, commit } = setup();
+  let stopFetch = () => {};
+  const signals = await signalServer(root, (name) => name === "slept" && stopFetch());
   try {
     const lander = clone("lander");
     commit(lander, "mine.txt");
     // The first connection never answers, as one the Mac slept under; later ones reach origin.
     const slept = path.join(root, "slept").replaceAll("\\", "/");
-    git(lander, "config", "protocol.ext.allow", "always");
-    git(
-      lander,
-      "remote",
-      "add",
-      "sleepy",
-      `ext::sh -c if% test% -e% '${slept}';% then% exec% %S% '${origin.replaceAll("\\", "/")}';% fi;% touch% '${slept}';% exec% sleep% 30`,
+    const wrapper = path.join(root, "sleepy.sh").replaceAll("\\", "/");
+    fs.writeFileSync(
+      wrapper,
+      [
+        "#!/bin/sh",
+        `if test -e '${slept}'; then exec "$1" '${origin.replaceAll("\\", "/")}'; fi`,
+        `touch '${slept}'`,
+        `${signals.command("slept")}`,
+        "exit 1",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
     );
+    git(lander, "config", "protocol.ext.allow", "always");
+    git(lander, "remote", "add", "sleepy", `ext::sh ${wrapper.replaceAll(" ", "% ")} %S`);
     const result = await land({
       cwd: lander,
       remote: "sleepy",
       mainCallMs: 5000,
+      after: (_ms, stop) => {
+        stopFetch = stop;
+        return () => {};
+      },
       // No time awake passes, so every limit that runs out here ran out asleep.
       awakeClock: () => 0,
       check: () => true,
@@ -463,6 +492,7 @@ test("a lander runs a fetch of main again when a Mac's sleep used up its time li
     assert.equal(result.status, "landed");
     assert.equal(git(origin, "rev-parse", "main"), result.commit);
   } finally {
+    await signals.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

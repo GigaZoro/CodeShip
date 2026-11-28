@@ -1,3 +1,9 @@
+## 2026-11-28 — Harder landing worktree locks, dynamic pre-turn check budgets, and faster landing script tests
+
+- Maintainers: pre-turn and speculative `landing-turn.cjs` checks now receive a dynamic `CHECK_CHANGED_TEST_STEP_MAX` budget scaled to the landing turn cap (`10800s`, or explicit caller `CHECK_CHANGED_TEST_STEP_MAX` / `CHECK_CHANGED_TIMEOUT`) instead of falling back to `3600s`, while under-turn checks stay capped at the remaining lease budget.
+- Maintainers: active local and remote landings now guard their worktree with `<git-dir>/t3-landing-active.json`, `.vite-hooks/pre-commit`, `.vite-hooks/pre-rebase`, and `.vite-hooks/reference-transaction` (with stale-lock auto-cleanup, exclusive lock acquisition, and an internal token for the lander's own rebase and post-remote sync while keeping `git worktree add`, `pack-refs`, and `gc` working), and waiting landers abort immediately on worktree `HEAD` drift instead of waiting for the turn.
+- Maintainers: split the heaviest `.github/scripts/landing-turn.*.test.cjs` suites, fixed a speculative-check test deadlock, replaced wall-clock stalls with deterministic signals, and tightened `process-tree.cjs` exit polling so `node --test .github/scripts/*.test.cjs` runs more than 2× faster.
+
 ## 2026-11-28 — Hardened `check:changed` slot locking, pass caching, and launcher tests
 
 - Maintainers: `check:changed` budget slots, landing markers, and staged test-cache partition locks now treat transient `SQLITE_NOTADB` (26) as contended instead of failing, initialize 0-byte SQLite lock files with a committed header page on first acquisition, and warn once with a recovery hint if a slot stays unreadable across polls.

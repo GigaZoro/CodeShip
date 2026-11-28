@@ -167,17 +167,21 @@ async function signalServer(root, onSignal) {
     script,
     [
       'const net = require("node:net");',
-      "const [port, name] = process.argv.slice(2);",
-      'const socket = net.connect(Number(port), "127.0.0.1", () => socket.write(name + "\\n"));',
+      "const [port, name, mode] = process.argv.slice(2);",
+      'const socket = net.connect(Number(port), "127.0.0.1", () => {',
+      '  if (mode === "notify") socket.end(name + "\\n", () => process.exit(0));',
+      '  else socket.write(name + "\\n");',
+      "});",
       "setTimeout(() => process.exit(1), 20000).unref();",
       'socket.on("data", () => process.exit(0));',
-      'socket.on("close", () => process.exit(1));',
+      'socket.on("close", () => process.exit(mode === "notify" ? 0 : 1));',
       'socket.on("error", () => process.exit(1));',
     ].join("\n"),
   );
   const { port } = server.address();
   return {
     command: (name) => `"${process.execPath}" "${script}" ${port} ${name}`,
+    notifyCommand: (name) => `"${process.execPath}" "${script}" ${port} ${name} notify`,
     close: () => {
       for (const socket of sockets) socket.destroy();
       return new Promise((resolve) => server.close(resolve));
@@ -246,12 +250,125 @@ function running(pid) {
   return !/^\s*(Z|$)/.test(state);
 }
 
+/** Copies the lander's record when origin receives its push to main, which is what a waiter reads then. */
+function watchPushRecord(git, origin, lander) {
+  const hooks = path.join(origin, "hooks");
+  const seen = path.join(origin, "seen-record");
+  const records = path.join(lander, ".git", "landing-turn");
+  fs.mkdirSync(hooks, { recursive: true });
+  git(origin, "config", "core.hooksPath", hooks);
+  fs.writeFileSync(
+    path.join(hooks, "pre-receive"),
+    "#!/bin/sh\nwhile read old new ref; do\n" +
+      `  [ "$ref" = refs/heads/main ] && cat "${records.replaceAll("\\", "/")}"/* > "${seen.replaceAll("\\", "/")}"\n` +
+      "done\nexit 0\n",
+    { mode: 0o755 },
+  );
+  return () => JSON.parse(fs.readFileSync(seen, "utf8"));
+}
+
+/** The landing records in the lander's common Git folder, oldest first. */
+function readLandings(dir, git) {
+  const commonDir = git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const file = path.join(commonDir, "t3-landing", "landings.jsonl");
+  if (!fs.existsSync(file)) return [];
+  return fs
+    .readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+/** Sets up an origin + gated clone fixture with tracked landing scripts, real pre-push hook, and push log. */
+function setupGatedRepo({ extraHooks = [] } = {}) {
+  const env = setup();
+  const { root, origin, git, clone } = env;
+  const pushLog = path.join(root, "main-pushes.log");
+
+  const seed = clone("gated-seed");
+  const scriptsTarget = path.join(seed, ".github", "scripts");
+  fs.mkdirSync(scriptsTarget, { recursive: true });
+  for (const file of [
+    "landing-turn.cjs",
+    "landing-record.cjs",
+    "bounded-git.cjs",
+    "lease-queue.cjs",
+    "git-history.cjs",
+    "process-tree.cjs",
+    "release-notes.cjs",
+    "check-changed-receipt.cjs",
+  ]) {
+    fs.copyFileSync(path.join(__dirname, file), path.join(scriptsTarget, file));
+  }
+  const viteHooksTarget = path.join(seed, ".vite-hooks");
+  fs.mkdirSync(viteHooksTarget, { recursive: true });
+  for (const hook of ["pre-push", ...extraHooks]) {
+    const src = path.join(__dirname, "../../.vite-hooks", hook);
+    const dst = path.join(viteHooksTarget, hook);
+    fs.copyFileSync(src, dst);
+    fs.chmodSync(dst, 0o755);
+  }
+  fs.mkdirSync(path.join(seed, "docs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(seed, "docs", "release-notes.md"),
+    "## 2026-11-27 — Seed release\n\n- Initial gated fixture.\n",
+  );
+  git(seed, "add", ".");
+  git(seed, "commit", "-qm", "seed gated landing scripts and hooks");
+  git(seed, "push", "-q", "origin", "HEAD:main");
+
+  // Install after seed push so pushLog tracks only test-initiated main push attempts.
+  const hooksDir = path.join(origin, "hooks");
+  fs.mkdirSync(hooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(hooksDir, "pre-receive"),
+    `#!/bin/sh
+while IFS=' ' read -r old_sha new_sha ref_name; do
+  if [ "$ref_name" = "refs/heads/main" ]; then
+    printf '%s %s\\n' "$old_sha" "$new_sha" >> ${JSON.stringify(pushLog)}
+  fi
+done
+`,
+    { mode: 0o755 },
+  );
+
+  const cloneGated = (name) => {
+    const dir = clone(name);
+    git(dir, "config", "core.hooksPath", ".vite-hooks");
+    return dir;
+  };
+  const commitChange = (dir, file, noteTitle) => {
+    fs.writeFileSync(path.join(dir, file), `${file}\n`);
+    const notesPath = path.join(dir, "docs", "release-notes.md");
+    const existing = fs.readFileSync(notesPath, "utf8");
+    fs.writeFileSync(notesPath, `## 2026-11-27 — ${noteTitle}\n\n- Added ${file}.\n\n${existing}`);
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", noteTitle);
+  };
+  const readMainPushes = () =>
+    fs.existsSync(pushLog)
+      ? fs
+          .readFileSync(pushLog, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [oldSha, newSha] = line.split(" ");
+            return { oldSha, newSha };
+          })
+      : [];
+  return { ...env, cloneGated, commitChange, readMainPushes };
+}
+
 module.exports = {
   QUEUE_PREFIX,
   ELSEWHERE,
   ZERO,
   LANDING_UPDATES,
   setup,
+  setupGatedRepo,
+  watchPushRecord,
+  readLandings,
   loseNextAnswer,
   signalServer,
   logTransactions,

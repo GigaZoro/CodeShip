@@ -1,0 +1,17 @@
+#!/bin/sh
+# core.hooksPath is this folder (machine-config.json), so git runs this hook itself: no install needed.
+# Fast path: only inspect the lock during the `prepared` phase when this worktree's lock file exists,
+# avoiding any git or Node spawn during normal operations.
+[ "$1" = prepared ] || exit 0
+if [ -n "$GIT_DIR" ]; then
+  git_dir=$GIT_DIR
+elif [ -d .git ]; then
+  git_dir=.git
+else
+  git_dir=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+fi
+[ -n "$git_dir" ] && [ -f "$git_dir/t3-landing-active.json" ] || exit 0
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script="$hook_dir/../.github/scripts/landing-turn.cjs"
+[ -f "$script" ] || exit 0
+exec node "$script" check-worktree-lock --ref-transaction
