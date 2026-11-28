@@ -64,9 +64,49 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
   );
 }, Layer.unwrap);
 
-export const layerMemory = Layer.provideMerge(
-  layerSetup,
-  NodeSqliteClient.layer({ filename: ":memory:" }),
+const layerMemorySessionPragmas = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`PRAGMA busy_timeout = 5000;`;
+    yield* sql`PRAGMA foreign_keys = ON;`;
+    yield* sql`PRAGMA temp_store = MEMORY;`;
+  }).pipe(Effect.withSpan("Sqlite.memorySessionPragmas")),
+);
+
+let cachedMigratedMemorySnapshot: Uint8Array | null | undefined;
+
+export const layerMemoryFromSnapshot = (snapshot: Uint8Array) =>
+  Layer.provideMerge(
+    layerMemorySessionPragmas,
+    NodeSqliteClient.layer({ filename: ":memory:", initialSnapshot: snapshot }),
+  );
+
+export const layerMemory = Layer.unwrap(
+  Effect.sync(() => {
+    if (cachedMigratedMemorySnapshot instanceof Uint8Array) {
+      return layerMemoryFromSnapshot(cachedMigratedMemorySnapshot);
+    }
+    let serialize: (() => Uint8Array | undefined) | undefined;
+    const captureSnapshot = Layer.effectDiscard(
+      Effect.sync(() => {
+        if (cachedMigratedMemorySnapshot === undefined) {
+          cachedMigratedMemorySnapshot = serialize?.() ?? null;
+        }
+      }),
+    );
+    return Layer.provideMerge(
+      captureSnapshot,
+      Layer.provideMerge(
+        layerSetup,
+        NodeSqliteClient.layer({
+          filename: ":memory:",
+          onDatabaseOpen: (handle) => {
+            serialize = handle.serialize;
+          },
+        }),
+      ),
+    );
+  }),
 );
 
 export const layerConfig = Layer.unwrap(

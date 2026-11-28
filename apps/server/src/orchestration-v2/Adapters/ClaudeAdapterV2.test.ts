@@ -131,10 +131,91 @@ import {
   projectionFor,
 } from "../testkit/fixtures/shared.ts";
 
-vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
-  ...(await importOriginal<typeof ClaudeSdk>()),
-  resolveSettings: vi.fn(),
+const claudeSdkTestState = vi.hoisted(() => ({
+  realResolveSettings: undefined as typeof ClaudeSdk.resolveSettings | undefined,
+  envQueue: Promise.resolve(),
 }));
+
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof ClaudeSdk>();
+  claudeSdkTestState.realResolveSettings = actual.resolveSettings;
+  return {
+    ...actual,
+    resolveSettings: vi.fn(),
+  };
+});
+
+vi.mock("../../provider/Drivers/ClaudeWorker.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../provider/Drivers/ClaudeWorker.ts")>();
+  return {
+    ...actual,
+    runClaudeWorker: (input: {
+      readonly method: "forkSession" | "resolveSettings";
+      readonly input: string;
+      readonly options?: unknown;
+      readonly environment: NodeJS.ProcessEnv;
+    }) => {
+      if (input.method !== "resolveSettings") {
+        return actual.runClaudeWorker(input);
+      }
+      return Effect.tryPromise({
+        try: async () => {
+          const resolveSettings = claudeSdkTestState.realResolveSettings;
+          if (resolveSettings === undefined) {
+            throw new Error("Real ClaudeSdk.resolveSettings was not captured.");
+          }
+          const reads = JSON.parse(input.input) as ReadonlyArray<{
+            readonly cwd: string;
+            readonly settingSources: ReadonlyArray<"user" | "project" | "local">;
+          }>;
+          const run = async () => {
+            const hadConfigDir = Object.prototype.hasOwnProperty.call(
+              process.env,
+              "CLAUDE_CONFIG_DIR",
+            );
+            const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+            if (input.environment.CLAUDE_CONFIG_DIR === undefined) {
+              delete process.env.CLAUDE_CONFIG_DIR;
+            } else {
+              process.env.CLAUDE_CONFIG_DIR = input.environment.CLAUDE_CONFIG_DIR;
+            }
+            try {
+              const sources = await Promise.all(
+                reads.map(
+                  async (read) =>
+                    (
+                      await resolveSettings({
+                        cwd: read.cwd,
+                        settingSources: [...read.settingSources],
+                      })
+                    ).sources,
+                ),
+              );
+              return JSON.stringify(sources);
+            } finally {
+              if (!hadConfigDir || previousConfigDir === undefined) {
+                delete process.env.CLAUDE_CONFIG_DIR;
+              } else {
+                process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+              }
+            }
+          };
+          const result = claudeSdkTestState.envQueue.then(run, run);
+          claudeSdkTestState.envQueue = result.then(
+            () => undefined,
+            () => undefined,
+          );
+          return await result;
+        },
+        catch: (cause) =>
+          new actual.ClaudeWorkerError({
+            method: input.method,
+            cause,
+          }),
+      });
+    },
+  };
+});
 
 beforeEach(() => {
   vi.mocked(ClaudeSdk.resolveSettings).mockReset().mockResolvedValue({
@@ -200,10 +281,10 @@ const POLICY_HELPER_REASON =
   "Your organization computes Claude's settings with a policy helper, which T3.CodeShip cannot run.";
 
 const useRealResolver = Effect.fn(function* () {
-  const sdk = yield* Effect.promise(() =>
-    vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-  );
-  vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+  if (claudeSdkTestState.realResolveSettings === undefined) {
+    return yield* Effect.die("Real ClaudeSdk.resolveSettings was not captured.");
+  }
+  vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(claudeSdkTestState.realResolveSettings);
 });
 
 function makeClaudeTestAppThread(input: {
@@ -5560,11 +5641,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const sdk = yield* Effect.promise(() =>
-          vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-        );
         // --settings counts only once Claude's own engine accepts it.
-        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        yield* useRealResolver();
         const home = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-claude-tool-search-",
         });
@@ -10521,7 +10599,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           1,
         );
       }).pipe(
-        Effect.provide(layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness)),
+        Effect.provide(
+          layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness, {
+            inMemoryCheckpoints: true,
+          }),
+        ),
         provideDeterministicTestRuntime,
         Effect.scoped,
       );

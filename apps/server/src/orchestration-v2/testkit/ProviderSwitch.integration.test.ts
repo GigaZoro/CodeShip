@@ -63,10 +63,20 @@ import {
   GROK_MODEL_SELECTION,
 } from "./fixtures/shared.ts";
 import * as ProviderReplayHarness from "./ProviderReplayHarness.ts";
-import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { scratchWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+const layerSwitchHarness = <Error>(
+  scenario: Parameters<typeof ProviderReplayHarness.layerWithRegistry<Error>>[0],
+  adapterRegistryLayer: Parameters<typeof ProviderReplayHarness.layerWithRegistry<Error>>[1],
+  options?: Parameters<typeof ProviderReplayHarness.layerWithRegistry<Error>>[2],
+) =>
+  ProviderReplayHarness.layerWithRegistry(scenario, adapterRegistryLayer, {
+    ...options,
+    inMemoryCheckpoints: true,
+  });
 
 const threadId = ThreadId.make("thread:provider-switch");
 const projectId = ProjectId.make("project:provider-switch");
@@ -446,7 +456,7 @@ describe("orchestration v2 provider switching", () => {
   ] as const)("preserves handoffs through %s", (scenario) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace(`handoff-${scenario}`);
+        const cwd = yield* scratchWorkspace(`handoff-${scenario}`);
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
         const reasoningScenario = scenario.includes("reasoning-change");
@@ -1020,7 +1030,7 @@ describe("orchestration v2 provider switching", () => {
           }
         }).pipe(
           Effect.provide(
-            ProviderReplayHarness.layerWithRegistry(
+            layerSwitchHarness(
               {
                 name: `handoff-${scenario}`,
                 runtimePolicyOverride: {
@@ -1046,7 +1056,7 @@ describe("orchestration v2 provider switching", () => {
     (failure) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const cwd = yield* checkpointWorkspace(`handoff-retry-${failure}`);
+          const cwd = yield* scratchWorkspace(`handoff-retry-${failure}`);
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
           const failOnce = yield* Ref.make(true);
@@ -1203,7 +1213,7 @@ describe("orchestration v2 provider switching", () => {
             );
           }).pipe(
             Effect.provide(
-              ProviderReplayHarness.layerWithRegistry(
+              layerSwitchHarness(
                 {
                   name: `handoff-retry-${failure}`,
                   runtimePolicyOverride: {
@@ -1225,7 +1235,7 @@ describe("orchestration v2 provider switching", () => {
     (attempts) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const cwd = yield* checkpointWorkspace("resume-fallback-native-turns");
+          const cwd = yield* scratchWorkspace("resume-fallback-native-turns");
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const failResumeOnce = yield* Ref.make(false);
           const generation = yield* Ref.make(0);
@@ -1328,7 +1338,7 @@ describe("orchestration v2 provider switching", () => {
             assert.isTrue(turns[2]?.nativeThreadHasTurns);
           }).pipe(
             Effect.provide(
-              ProviderReplayHarness.layerWithRegistry(
+              layerSwitchHarness(
                 {
                   name: "resume-fallback-native-turns",
                   runtimePolicyOverride: {
@@ -1353,7 +1363,7 @@ describe("orchestration v2 provider switching", () => {
           // A run that fails before its provider turn starts is retried as a missed request.
           const missed = older === "a missed request";
           const name = `resume-fallback-handoff-order${missed ? "-missed" : ""}`;
-          const cwd = yield* checkpointWorkspace(name);
+          const cwd = yield* scratchWorkspace(name);
           const failStartOnce = yield* Ref.make(false);
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
@@ -1454,7 +1464,7 @@ describe("orchestration v2 provider switching", () => {
             assert.include(run4History, latestResult);
           }).pipe(
             Effect.provide(
-              ProviderReplayHarness.layerWithRegistry(
+              layerSwitchHarness(
                 {
                   name,
                   runtimePolicyOverride: {
@@ -1484,7 +1494,7 @@ describe("orchestration v2 provider switching", () => {
   ] as const)("keeps the native session after turns refused for %s", ([, refusalCause]) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace("refused-start-keeps-native");
+        const cwd = yield* scratchWorkspace("refused-start-keeps-native");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const refuseStarts = yield* Ref.make(0);
         const generation = yield* Ref.make(0);
@@ -1557,7 +1567,7 @@ describe("orchestration v2 provider switching", () => {
           assert.include(turns[1]?.text, "Request 3");
         }).pipe(
           Effect.provide(
-            ProviderReplayHarness.layerWithRegistry(
+            layerSwitchHarness(
               {
                 name: "refused-start-keeps-native",
                 runtimePolicyOverride: {
@@ -1592,7 +1602,7 @@ describe("orchestration v2 provider switching", () => {
   )("hands off %s", ([, { status, queued, returning, native }]) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace(`handoff-${status}-${queued}-${returning}`);
+        const cwd = yield* scratchWorkspace(`handoff-${status}-${queued}-${returning}`);
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
         const started = yield* Deferred.make<void>();
@@ -1740,7 +1750,7 @@ describe("orchestration v2 provider switching", () => {
           assert.notInclude(back.text, partialResponse);
         }).pipe(
           Effect.provide(
-            ProviderReplayHarness.layerWithRegistry(
+            layerSwitchHarness(
               {
                 name: `handoff-${status}-${queued}-${returning}`,
                 runtimePolicyOverride: {
@@ -1769,7 +1779,7 @@ describe("orchestration v2 provider switching", () => {
           { activeSupportsQueue: true, selectedSupportsQueue: false },
         ]) {
           const key = `active-${scenario.activeSupportsQueue}-selected-${scenario.selectedSupportsQueue}`;
-          const cwd = yield* checkpointWorkspace(`queued-capability-${key}`);
+          const cwd = yield* scratchWorkspace(`queued-capability-${key}`);
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const started = yield* Deferred.make<void>();
           const scenarioThreadId = ThreadId.make(`thread:queued-capability:${key}`);
@@ -1863,7 +1873,7 @@ describe("orchestration v2 provider switching", () => {
             assert.deepEqual(projection.thread.modelSelection, CODEX_MODEL_SELECTION);
           }).pipe(
             Effect.provide(
-              ProviderReplayHarness.layerWithRegistry(
+              layerSwitchHarness(
                 {
                   name: `queued-capability-${key}`,
                   runtimePolicyOverride: {
@@ -1888,7 +1898,7 @@ describe("orchestration v2 provider switching", () => {
   it.live("hands completed Grok steering context to earlier queued Codex and later Claude", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace("queued-steer-provider-switch");
+        const cwd = yield* scratchWorkspace("queued-steer-provider-switch");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const started = yield* Deferred.make<void>();
         const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
@@ -2056,7 +2066,7 @@ describe("orchestration v2 provider switching", () => {
           return yield* orchestrator.getThreadProjection(queuedThreadId);
         }).pipe(
           Effect.provide(
-            ProviderReplayHarness.layerWithRegistry(
+            layerSwitchHarness(
               {
                 name: "queued-steer-provider-switch",
                 runtimePolicyOverride: {
@@ -2100,7 +2110,7 @@ describe("orchestration v2 provider switching", () => {
   it.live("resumes a queued account switch without requiring a portable handoff", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace("queued-account-switch");
+        const cwd = yield* scratchWorkspace("queued-account-switch");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const started = yield* Deferred.make<void>();
         const alternateSelection: ModelSelection = {
@@ -2247,7 +2257,7 @@ describe("orchestration v2 provider switching", () => {
           return delivered;
         }).pipe(
           Effect.provide(
-            ProviderReplayHarness.layerWithRegistry(
+            layerSwitchHarness(
               {
                 name: "queued-account-switch",
                 runtimePolicyOverride: {
@@ -2283,7 +2293,7 @@ describe("orchestration v2 provider switching", () => {
   it.live("finishes earlier queued Codex turns before handing context to queued Claude", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace("queued-provider-switch");
+        const cwd = yield* scratchWorkspace("queued-provider-switch");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const started = yield* Deferred.make<void>();
         const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
@@ -2458,7 +2468,7 @@ describe("orchestration v2 provider switching", () => {
         }).pipe(
           Effect.provide(
             Layer.merge(
-              ProviderReplayHarness.layerWithRegistry(
+              layerSwitchHarness(
                 {
                   name: "queued-provider-switch",
                   runtimePolicyOverride: {
@@ -2530,7 +2540,7 @@ describe("orchestration v2 provider switching", () => {
     ([delivery, target]) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const cwd = yield* checkpointWorkspace(`pr-wake-${delivery}`);
+          const cwd = yield* scratchWorkspace(`pr-wake-${delivery}`);
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const started = yield* Deferred.make<void>();
           const release = yield* Deferred.make<void>();
@@ -2740,7 +2750,7 @@ describe("orchestration v2 provider switching", () => {
             );
           }).pipe(
             Effect.provide(
-              ProviderReplayHarness.layerWithRegistry(
+              layerSwitchHarness(
                 { name: `pr-wake-${delivery}`, runtimePolicyOverride: { cwd } },
                 layerRegistry,
               ),
@@ -2762,7 +2772,7 @@ describe("orchestration v2 provider switching", () => {
         Effect.gen(function* () {
           const name = `usage-limit-move-${path}`;
           const withWaitingMessage = path !== "send";
-          const cwd = yield* checkpointWorkspace(name);
+          const cwd = yield* scratchWorkspace(name);
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const started = yield* Deferred.make<void>();
           const release = yield* Deferred.make<void>();
@@ -3005,7 +3015,7 @@ describe("orchestration v2 provider switching", () => {
   it.live("fails an unsupported queued handoff and advances to the next queued provider", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const cwd = yield* checkpointWorkspace("queued-handoff-rejection");
+        const cwd = yield* scratchWorkspace("queued-handoff-rejection");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const started = yield* Deferred.make<void>();
         const rejectedThreadId = ThreadId.make("thread:queued-handoff-rejection");
@@ -3166,7 +3176,7 @@ describe("orchestration v2 provider switching", () => {
           return yield* orchestrator.getThreadProjection(rejectedThreadId);
         }).pipe(
           Effect.provide(
-            ProviderReplayHarness.layerWithRegistry(
+            layerSwitchHarness(
               {
                 name: "queued-handoff-rejection",
                 runtimePolicyOverride: {
@@ -3221,7 +3231,7 @@ describe("orchestration v2 provider switching", () => {
         const importedProjectId = ProjectId.make("project:provider-switch:legacy-import");
         const failedPrompt = "This first provider attempt should fail.";
         const recoveryPrompt = "What was the imported release marker?";
-        const cwd = yield* checkpointWorkspace("provider-switch-legacy-import");
+        const cwd = yield* scratchWorkspace("provider-switch-legacy-import");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const firstTurnStarted = yield* Deferred.make<void>();
         const releaseFirstTurn = yield* Deferred.make<void>();
@@ -3262,7 +3272,7 @@ describe("orchestration v2 provider switching", () => {
         const layerMaintenanceProvided = ProjectionMaintenance.layer.pipe(
           Layer.provide(layerStoresProvided),
         );
-        const layerOrchestratorProvided = ProviderReplayHarness.layerWithRegistry(
+        const layerOrchestratorProvided = layerSwitchHarness(
           {
             name: "provider-switch-legacy-import",
             runtimePolicyOverride: {

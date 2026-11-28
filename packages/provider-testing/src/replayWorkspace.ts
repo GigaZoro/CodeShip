@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - Process exit cleanup removes the worker-local git template synchronously.
+import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -41,26 +43,56 @@ function runGit(
 
 export type ReplayWorkspaceFiles = Readonly<Record<string, string>>;
 
+let cachedTemplateDir: string | undefined;
+
+const getOrCreateTemplateWorkspace = Effect.fn("getOrCreateTemplateWorkspace")(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  if (cachedTemplateDir !== undefined && (yield* fs.exists(cachedTemplateDir))) {
+    return cachedTemplateDir;
+  }
+  const templateDir = yield* fs.makeTempDirectory({
+    prefix: "t3-orchestrator-v2-template-",
+  });
+  yield* runGit(templateDir, ["init"]);
+  yield* runGit(templateDir, ["config", "user.name", "T3.CodeShip Test"]);
+  yield* runGit(templateDir, ["config", "user.email", "t3code-test@example.com"]);
+  yield* fs.writeFileString(path.join(templateDir, "README.md"), "# replay-workspace\n");
+  yield* runGit(templateDir, ["add", "README.md"]);
+  yield* runGit(templateDir, ["commit", "-m", "initial"]);
+  cachedTemplateDir = templateDir;
+  process.once("exit", () => {
+    try {
+      NodeFS.rmSync(templateDir, { recursive: true, force: true });
+    } catch {
+      // Ignore best-effort temp cleanup errors on exit.
+    }
+  });
+  return templateDir;
+});
+
 const makeCheckpointWorkspaceEffect = Effect.fn("makeCheckpointWorkspace")(function* (
   fixtureName: string,
   files: ReplayWorkspaceFiles = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const templateDir = yield* getOrCreateTemplateWorkspace();
   const cwd = yield* fs.makeTempDirectory({
     prefix: `t3-orchestrator-v2-${fixtureName}-`,
   });
-  yield* runGit(cwd, ["init"]);
-  yield* runGit(cwd, ["config", "user.name", "T3.CodeShip Test"]);
-  yield* runGit(cwd, ["config", "user.email", "t3code-test@example.com"]);
-  yield* fs.writeFileString(path.join(cwd, "README.md"), `# ${fixtureName}\n`);
-  for (const [relativePath, contents] of Object.entries(files)) {
-    const filePath = path.join(cwd, relativePath);
-    yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
-    yield* fs.writeFileString(filePath, contents);
+  yield* fs.copy(templateDir, cwd, { overwrite: true });
+  const extraFiles = Object.keys(files);
+  if (extraFiles.length > 0) {
+    yield* fs.writeFileString(path.join(cwd, "README.md"), `# ${fixtureName}\n`);
+    for (const [relativePath, contents] of Object.entries(files)) {
+      const filePath = path.join(cwd, relativePath);
+      yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
+      yield* fs.writeFileString(filePath, contents);
+    }
+    yield* runGit(cwd, ["add", "README.md", ...extraFiles]);
+    yield* runGit(cwd, ["commit", "--amend", "-m", "initial"]);
   }
-  yield* runGit(cwd, ["add", "README.md", ...Object.keys(files)]);
-  yield* runGit(cwd, ["commit", "-m", "initial"]);
   return cwd;
 });
 
@@ -74,6 +106,11 @@ const removeCheckpointWorkspaceEffect = Effect.fn("removeCheckpointWorkspace")(f
 export const checkpointWorkspace = (fixtureName: string, files?: ReplayWorkspaceFiles) =>
   Effect.acquireRelease(makeCheckpointWorkspaceEffect(fixtureName, files), (cwd) =>
     removeCheckpointWorkspaceEffect(cwd).pipe(Effect.orDie),
+  ).pipe(Effect.provide(NodeServices.layer));
+
+export const scratchWorkspace = (fixtureName: string) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.makeTempDirectoryScoped({ prefix: `t3-orchestrator-v2-${fixtureName}-` }),
   ).pipe(Effect.provide(NodeServices.layer));
 
 export async function makeCheckpointWorkspace(

@@ -662,6 +662,104 @@ describe("cachedTestTasks", () => {
     }
   });
 
+  it("schedules apps/server chains by duration-weighted LPT from shardWeights.json without changing commands or cache keys", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-test-lpt-"));
+    try {
+      const serverDir = NodePath.join(directory, "apps", "server");
+      await NodeFSP.mkdir(NodePath.join(serverDir, "src", "testUtils"), { recursive: true });
+      await NodeFSP.writeFile(
+        NodePath.join(serverDir, "package.json"),
+        JSON.stringify({ name: "server", scripts: { test: "vp test run" } }),
+      );
+      const weights: Record<string, number> = {
+        "src/a-heavy.test.ts": 25,
+        "src/b-small.test.ts": 2,
+        "src/c-heavy.test.ts": 20,
+        "src/d-small.test.ts": 2,
+        "src/e-small.test.ts": 2,
+        "src/f-small.test.ts": 2,
+        "src/g-small.test.ts": 2,
+      };
+      // Include one unrecorded file to confirm fallback weight works alongside recorded weights.
+      const files = [
+        ...Object.keys(weights).map((file) => `apps/server/${file}`),
+        "apps/server/src/h-unrecorded.test.ts",
+      ];
+      const request = NodePath.join(directory, "request.json");
+      await NodeFSP.writeFile(
+        request,
+        JSON.stringify({
+          files,
+          groupSize: 1,
+          serverChains: 2,
+        }),
+      );
+      vi.stubEnv("T3_CHECK_CHANGED_TEST_REQUEST", request);
+
+      // Baseline without shardWeights.json: commands, keys, and cache configs must stay identical.
+      const unweighted = cachedTestTasks(undefined, directory, "linux");
+
+      await NodeFSP.writeFile(
+        NodePath.join(serverDir, "src", "testUtils", "shardWeights.json"),
+        JSON.stringify(weights),
+      );
+      const weighted = cachedTestTasks(undefined, directory, "linux");
+
+      const keys = weighted["test-cache"]!.dependsOn!;
+      expect(keys).toEqual(unweighted["test-cache"]!.dependsOn!);
+      for (const key of keys) {
+        expect(weighted[key]!.command).toBe(unweighted[key]!.command);
+        expect(weighted[key]!.cache).toEqual(unweighted[key]!.cache);
+      }
+
+      const fileOf = (key: string) => {
+        const match = weighted[key]!.command.match(/'\.\/([^']+\.test\.ts)'/);
+        if (match?.[1] === undefined) {
+          throw new Error(`Expected test file in command: ${weighted[key]!.command}`);
+        }
+        return match[1];
+      };
+      const weightOf = (file: string) => weights[file] ?? 0.6;
+
+      // Both heavy suites must start as roots on separate chains (file-count scheduling would put
+      // indices 0 and 2 — both heavy suites — on the same chain).
+      const roots = keys.filter((key) => weighted[key]!.dependsOn === undefined);
+      expect(roots).toHaveLength(2);
+      expect(roots.map(fileOf).toSorted()).toEqual(["src/a-heavy.test.ts", "src/c-heavy.test.ts"]);
+
+      const chainWeights: Array<number> = [];
+      const visited = new Set<string>();
+      for (const root of roots) {
+        let current: string | undefined = root;
+        let total = 0;
+        while (current !== undefined) {
+          expect(visited.has(current)).toBe(false);
+          visited.add(current);
+          total += weightOf(fileOf(current));
+          const next = keys.filter((key) => weighted[key]!.dependsOn?.[0] === current);
+          expect(next.length).toBeLessThanOrEqual(1);
+          current = next[0];
+        }
+        chainWeights.push(total);
+      }
+      expect(visited.size).toBe(keys.length);
+      // Optimal 2-way LPT split of [25, 20, 2, 2, 2, 2, 2, 0.6]: 27.6s vs 28.0s (spread 0.4s vs 21s naive).
+      expect(Math.max(...chainWeights)).toBeLessThanOrEqual(29);
+      expect(Math.max(...chainWeights) - Math.min(...chainWeights)).toBeLessThanOrEqual(2);
+
+      // Corrupt weights file degrades safely to default weights without throwing.
+      await NodeFSP.writeFile(
+        NodePath.join(serverDir, "src", "testUtils", "shardWeights.json"),
+        "{not-json",
+      );
+      const fallback = cachedTestTasks(undefined, directory, "linux");
+      expect(fallback["test-cache"]!.dependsOn!).toEqual(keys);
+    } finally {
+      vi.unstubAllEnvs();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   // Each `vp run` boots Vitest per task, so every behaviour is its own test with its own time budget.
   const withFixture = async (
     body: (fixture: {

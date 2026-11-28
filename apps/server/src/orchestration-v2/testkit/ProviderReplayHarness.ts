@@ -1,5 +1,6 @@
 import * as ProviderSkillsTestkit from "../../provider/ProviderSkills.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import type { CheckpointRef } from "@t3tools/contracts/baseSchemas";
 import type { ManagedPolicyDocument } from "@t3tools/contracts/managedPolicy";
 import type { ProviderReplayTranscript } from "@t3tools/contracts/orchestrationV2";
 import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
@@ -102,6 +103,60 @@ export interface OrchestratorV2ProviderReplayHarness<
   >;
 }
 
+const makeMemoryCheckpointStoreLayer = (): Layer.Layer<CheckpointStore.CheckpointStore> =>
+  Layer.sync(CheckpointStore.CheckpointStore, () => {
+    const refsByCwd = new Map<string, Set<CheckpointRef>>();
+    const refsFor = (cwd: string) => {
+      let refs = refsByCwd.get(cwd);
+      if (refs === undefined) {
+        refs = new Set<CheckpointRef>();
+        refsByCwd.set(cwd, refs);
+      }
+      return refs;
+    };
+    return CheckpointStore.CheckpointStore.of({
+      isGitRepository: Effect.fn("CheckpointStore.CheckpointStore.isGitRepository")(function* (
+        cwd: string,
+      ) {
+        return cwd.trim().length > 0;
+      }),
+      captureCheckpoint: Effect.fn("CheckpointStore.CheckpointStore.captureCheckpoint")(function* ({
+        cwd,
+        checkpointRef,
+      }) {
+        refsFor(cwd).add(checkpointRef);
+      }),
+      hasCheckpointRef: Effect.fn("CheckpointStore.CheckpointStore.hasCheckpointRef")(function* ({
+        cwd,
+        checkpointRef,
+      }) {
+        return refsByCwd.get(cwd)?.has(checkpointRef) ?? false;
+      }),
+      restoreCheckpoint: Effect.fn("CheckpointStore.CheckpointStore.restoreCheckpoint")(function* ({
+        cwd,
+        checkpointRef,
+        fallbackToHead,
+      }) {
+        return (refsByCwd.get(cwd)?.has(checkpointRef) ?? false) || fallbackToHead === true;
+      }),
+      diffCheckpoints: Effect.fn("CheckpointStore.CheckpointStore.diffCheckpoints")(function* () {
+        return "";
+      }),
+      listAuthoredPaths: Effect.fn("CheckpointStore.CheckpointStore.listAuthoredPaths")(
+        function* () {
+          return null;
+        },
+      ),
+      deleteCheckpointRefs: Effect.fn("CheckpointStore.CheckpointStore.deleteCheckpointRefs")(
+        function* ({ cwd, checkpointRefs }) {
+          const refs = refsByCwd.get(cwd);
+          if (refs === undefined) return;
+          for (const ref of checkpointRefs) refs.delete(ref);
+        },
+      ),
+    });
+  });
+
 export function runOrchestratorV2ProviderReplayScenario<
   Transcript extends ProviderReplayTranscript,
   Error,
@@ -118,6 +173,7 @@ export function runOrchestratorV2ProviderReplayScenario<
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
     readonly managedPolicy?: ManagedPolicyDocument;
+    readonly inMemoryCheckpoints?: boolean;
   } = {},
 ): Effect.Effect<
   OrchestratorV2ScenarioResult,
@@ -162,6 +218,7 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
     readonly continueThreadsAfterServerUpdate?: boolean;
     readonly managedPolicy?: ManagedPolicyDocument;
     readonly replayGate?: ProviderReplayGate;
+    readonly inMemoryCheckpoints?: boolean;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
@@ -197,6 +254,7 @@ export function layerWithRegistry<Error>(
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
     readonly managedPolicy?: ManagedPolicyDocument;
+    readonly inMemoryCheckpoints?: boolean;
     /**
      * Real MCP credentials, and the review read broker when the layer has one. Without it the
      * session manager configures no MCP and refuses every restricted review.
@@ -281,15 +339,19 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
-  const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(
-    Layer.provide(VcsProcess.layer),
-    Layer.provide(layerServerConfig),
-    Layer.provide(NodeServices.layer),
-  );
-  const layerCheckpointStore = CheckpointStore.layer.pipe(
-    Layer.provide(layerVcsDriverRegistry),
-    Layer.provide(NodeServices.layer),
-  );
+  const layerCheckpointStore =
+    options.inMemoryCheckpoints === true
+      ? makeMemoryCheckpointStoreLayer()
+      : CheckpointStore.layer.pipe(
+          Layer.provide(
+            VcsDriverRegistry.layer.pipe(
+              Layer.provide(VcsProcess.layer),
+              Layer.provide(layerServerConfig),
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+          Layer.provide(NodeServices.layer),
+        );
   const layerCheckpointServiceProvided = CheckpointService.layer.pipe(
     Layer.provide(Layer.mergeAll(layerCheckpointStore, IdAllocator.layer)),
   );

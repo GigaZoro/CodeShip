@@ -1,3 +1,8 @@
+## 2026-11-28 — Duration-weighted server test scheduling and faster server test runs
+
+- Maintainers: `scripts/lib/cached-tests.ts` now assigns `apps/server` test files to parallel chains using duration-weighted Longest Processing Time (LPT) scheduling from `apps/server/src/testUtils/shardWeights.json`, keeping the slowest server test files off the same chain while preserving commands and cache keys.
+- Maintainers: cut combined runtime of the 7 slowest `apps/server` test files by ~3x (442.7s → 142.5s across all 864 tests) via per-worker SQLite `:memory:` migration snapshot caching, event-driven scenario waits, in-memory checkpointing and scratch workspaces for non-git replay tests, pre-initialized git/worktree templates, in-process Claude settings worker resolution in `ClaudeAdapterV2.test.ts`, and immediate turn-interrupted completion in `SteeringCompletion.integration.test.ts`.
+
 ## 2026-11-28 — Explicit domain subpath exports for `@t3tools/contracts`
 
 - Maintainers: `@t3tools/contracts` now exports each domain module as an explicit subpath (`@t3tools/contracts/<module>`), decouples shared leaf primitives (`settingsPrimitives`, `wsMethods`, `serverUpdate`), migrates shared packages, provider/source-control/secret-provider adapters, `infra/relay`, `scripts/mobile-behavior`, and all `apps/server` source and test files off the root barrel (zero root-barrel server imports, preserving `@t3tools/contracts` for backward compatibility), and enforces the boundary via a `vite.config.ts` `no-restricted-imports` lint rule so isolated contract edits no longer invalidate unrelated package and server test caches across rebases.

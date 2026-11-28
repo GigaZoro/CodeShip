@@ -39,7 +39,7 @@ import {
 } from "./fixtures/shared.ts";
 import * as ProviderReplayHarness from "./ProviderReplayHarness.ts";
 import { type OrchestratorV2Scenario, runOrchestratorV2Scenario } from "./OrchestratorScenario.ts";
-import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { scratchWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { readProviderReplayTranscript } from "@t3tools/provider-testing/replayTranscript";
 
 const SCENARIO = "claude_background_subagent_after_root";
@@ -179,7 +179,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
   readonly continueThreadsAfterServerUpdate: boolean;
 }) {
   const transcript = yield* readRestartTranscript(input.resumedPrompts);
-  const workspace = yield* checkpointWorkspace(SCENARIO);
+  const workspace = yield* scratchWorkspace(SCENARIO);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const tempDir = yield* Effect.acquireRelease(
@@ -202,9 +202,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
   const phase1Steps = materialized.steps.slice(0, firstIdle + 1);
   const phase2Steps = materialized.steps.slice(firstIdle + 1);
   const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript);
-  const layerDatabase = SqlitePersistence.layerFromPath(path.join(tempDir, "state.sqlite")).pipe(
-    Layer.provide(NodeServices.layer),
-  );
+  const layerDatabase = SqlitePersistence.layerMemory;
   const snapshotPath = path.join(tempDir, "restart-state.sqlite");
   const scenario = (name: string, steps: typeof materialized.steps) => ({
     name: `${SCENARIO}:${name}`,
@@ -255,14 +253,15 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
         Layer.merge(
           ProviderReplayHarness.layerProviderReplay(beforeScenario, harness, {
             databaseLayer: layerDatabase,
+            inMemoryCheckpoints: true,
           }),
           layerDatabase,
         ),
       ),
     ),
   );
-  const snapshotDatabase = SqlitePersistence.layerFromPath(snapshotPath).pipe(
-    Layer.provide(NodeServices.layer),
+  const snapshotDatabase = SqlitePersistence.layerMemoryFromSnapshot(
+    yield* fs.readFile(snapshotPath),
   );
   const settled = projectionFor(before, SCENARIO);
   assert.equal(settled.runs[0]?.status, "completed");
@@ -275,6 +274,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
         databaseLayer: snapshotDatabase,
         recoverOnStartup: true,
         continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
+        inMemoryCheckpoints: true,
       }),
     ),
   );
@@ -491,7 +491,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
     input.resumedPrompts,
     input.release === undefined && !stop ? "idle" : false,
   );
-  const workspace = yield* checkpointWorkspace(scenarioName);
+  const workspace = yield* scratchWorkspace(scenarioName);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const tempDir = yield* Effect.acquireRelease(
@@ -522,9 +522,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
     replayGate,
     closeEndsProcess: stop,
   });
-  const layerDatabase = SqlitePersistence.layerFromPath(path.join(tempDir, "state.sqlite")).pipe(
-    Layer.provide(NodeServices.layer),
-  );
+  const layerDatabase = SqlitePersistence.layerMemory;
   const snapshotPath = path.join(tempDir, "restart-state.sqlite");
   const scenario = (name: string, steps: typeof materialized.steps) => ({
     name: `${scenarioName}:${name}`,
@@ -609,6 +607,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
           ProviderReplayHarness.layerProviderReplay(beforeScenario, harness, {
             databaseLayer: layerDatabase,
             continueThreadsAfterServerUpdate: wakeWithoutRestart,
+            inMemoryCheckpoints: true,
           }),
           layerDatabase,
         ),
@@ -640,8 +639,8 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
     return { recovered: lost, after: lost };
   }
 
-  const snapshotDatabase = SqlitePersistence.layerFromPath(snapshotPath).pipe(
-    Layer.provide(NodeServices.layer),
+  const snapshotDatabase = SqlitePersistence.layerMemoryFromSnapshot(
+    yield* fs.readFile(snapshotPath),
   );
   const next = scenario("after-restart", phase3Steps);
   const result = yield* replayAfterRestart(lostRun, next).pipe(
@@ -650,6 +649,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
         databaseLayer: snapshotDatabase,
         recoverOnStartup: true,
         continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
+        inMemoryCheckpoints: true,
       }),
     ),
   );
@@ -667,7 +667,7 @@ const runLostTaskDuringTurn = Effect.gen(function* () {
     [`${LOST_NOTE}\n\nUser message:\n${QUESTION_AFTER_FAILURE}`],
     { duringTurn: QUESTION_AFTER_LOSS },
   );
-  const workspace = yield* checkpointWorkspace(LOST_SCENARIO);
+  const workspace = yield* scratchWorkspace(LOST_SCENARIO);
   const materialized = yield* materializeFixtureInput({
     scenario: LOST_SCENARIO,
     fixtureInput: {
@@ -710,6 +710,7 @@ const runLostTaskDuringTurn = Effect.gen(function* () {
       Effect.provide(
         ProviderReplayHarness.layerProviderReplay(settledScenario, harness, {
           continueThreadsAfterServerUpdate: true,
+          inMemoryCheckpoints: true,
         }),
       ),
     ),

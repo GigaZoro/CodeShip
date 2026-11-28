@@ -6,7 +6,7 @@ import {
   type ProviderReplayEntry,
 } from "@t3tools/contracts/orchestrationV2";
 import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
-import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { scratchWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as Effect from "effect/Effect";
 
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
@@ -66,7 +66,7 @@ describe("Claude Agent SDK replay fixtures", () => {
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
       const scenario = {
         name: "subagent/claudeAgent:read-only-child",
-        runtimePolicyOverride: { cwd: yield* checkpointWorkspace("subagent-read-only-child") },
+        runtimePolicyOverride: { cwd: yield* scratchWorkspace("subagent-read-only-child") },
         transcript,
         commands: materialized.commands,
         steps: materialized.steps,
@@ -105,7 +105,9 @@ describe("Claude Agent SDK replay fixtures", () => {
         assert.deepEqual(after.messages, child.messages);
       }).pipe(
         Effect.provide(
-          ProviderReplayHarness.layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness),
+          ProviderReplayHarness.layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness, {
+            inMemoryCheckpoints: true,
+          }),
         ),
         provideDeterministicTestRuntime,
       );

@@ -43,7 +43,7 @@ import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { delegatedCompletionUpdated } from "./testkit/DelegatedCompletionCohort.ts";
-import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { scratchWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const driver = ProviderDriverKind.make("codex");
@@ -71,7 +71,7 @@ it.effect.each(
 )("delivers $label when completion wins $timing", ({ mailbox, timing }) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const cwd = yield* checkpointWorkspace(`steering-completion-${timing.replaceAll(" ", "-")}`);
+      const cwd = yield* scratchWorkspace(`steering-completion-${timing.replaceAll(" ", "-")}`);
       const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
       const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
       const steerEntered = yield* Deferred.make<void>();
@@ -475,7 +475,7 @@ it.effect.each(
           ProviderReplayHarness.layerWithRegistry(
             { name: `steering-completion-${timing}` },
             ProviderAdapterRegistry.layerSingle(adapter),
-            { runEffectWorker: false },
+            { runEffectWorker: false, inMemoryCheckpoints: true },
           ),
         ),
       );
@@ -500,7 +500,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   canSteer = true,
   interruptTurn: Effect.Effect<void> = Effect.void,
 ) {
-  const cwd = yield* checkpointWorkspace(name);
+  const cwd = yield* scratchWorkspace(name);
   const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
   const started: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
   const steered: string[] = [];
@@ -524,27 +524,50 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     openSession: (input) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
+        const runningTurns = new Map<
+          ProviderTurnId,
+          {
+            readonly turn: ProviderAdapter.ProviderAdapterV2TurnInput;
+            readonly providerTurn: {
+              readonly id: ProviderTurnId;
+              readonly providerThreadId: ProviderThreadId;
+              readonly nodeId: ProviderAdapter.ProviderAdapterV2TurnInput["rootNodeId"];
+              readonly runAttemptId: ProviderAdapter.ProviderAdapterV2TurnInput["attemptId"];
+              readonly nativeTurnRef: {
+                readonly driver: typeof driver;
+                readonly nativeId: string;
+                readonly strength: "strong";
+              };
+              readonly ordinal: number;
+              readonly status: "running";
+              readonly startedAt: DateTime.Utc;
+              readonly completedAt: null;
+            };
+          }
+        >();
         const startTurn = (turn: ProviderAdapter.ProviderAdapterV2TurnInput) =>
           Effect.gen(function* () {
             started.push(turn);
+            const providerTurn = {
+              id: ProviderTurnId.make(`provider-turn:${turn.attemptId}`),
+              providerThreadId: turn.providerThread.id,
+              nodeId: turn.rootNodeId,
+              runAttemptId: turn.attemptId,
+              nativeTurnRef: {
+                driver,
+                nativeId: `native:${turn.attemptId}`,
+                strength: "strong" as const,
+              },
+              ordinal: turn.providerTurnOrdinal,
+              status: "running" as const,
+              startedAt: now,
+              completedAt: null,
+            };
+            runningTurns.set(providerTurn.id, { turn, providerTurn });
             yield* Queue.offer(events, {
               type: "provider_turn.updated",
               driver,
-              providerTurn: {
-                id: ProviderTurnId.make(`provider-turn:${turn.attemptId}`),
-                providerThreadId: turn.providerThread.id,
-                nodeId: turn.rootNodeId,
-                runAttemptId: turn.attemptId,
-                nativeTurnRef: {
-                  driver,
-                  nativeId: `native:${turn.attemptId}`,
-                  strength: "strong",
-                },
-                ordinal: turn.providerTurnOrdinal,
-                status: "running",
-                startedAt: now,
-                completedAt: null,
-              },
+              providerTurn,
             });
           });
         return {
@@ -604,9 +627,33 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
                   steered.push(turn.message.text);
                 }),
           interruptTurn: ({ providerTurnId }) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               interrupted.push(providerTurnId);
-            }).pipe(Effect.andThen(interruptTurn)),
+              yield* interruptTurn;
+              const active = runningTurns.get(providerTurnId);
+              if (active === undefined) return;
+              runningTurns.delete(providerTurnId);
+              const completedAt = yield* DateTime.now;
+              yield* Queue.offer(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: {
+                  ...active.providerTurn,
+                  status: "interrupted",
+                  completedAt,
+                },
+              });
+              yield* Queue.offer(events, {
+                type: "turn.terminal",
+                driver,
+                providerThreadId: active.providerTurn.providerThreadId,
+                providerTurnId,
+                runOrdinal: active.turn.runOrdinal,
+                status: "interrupted",
+                failure: null,
+                threadDisposition: "reusable",
+              });
+            }),
           respondToRuntimeRequest: () => Effect.void,
           readThreadSnapshot: () => Effect.die("unused"),
           rollbackThread: () => Effect.die("unused"),
@@ -617,7 +664,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const layer = ProviderReplayHarness.layerWithRegistry(
     { name },
     ProviderAdapterRegistry.layerSingle(adapter),
-    { runEffectWorker: false },
+    { runEffectWorker: false, inMemoryCheckpoints: true },
   );
   const createThread = Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

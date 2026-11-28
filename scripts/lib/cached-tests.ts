@@ -575,6 +575,36 @@ export function countServerTestGroups(
   ).length;
 }
 
+// Median duration (ms) of an unrecorded apps/server test file, matching WeightedShardSequencer.
+const UNRECORDED_SERVER_FILE_WEIGHT_MS = 600;
+const SERVER_SHARD_WEIGHTS_RELATIVE = NodePath.join(
+  "apps",
+  "server",
+  "src",
+  "testUtils",
+  "shardWeights.json",
+);
+
+function loadServerTestWeightsMs(root: string): ReadonlyMap<string, number> {
+  const raw = unlessAbsent(() =>
+    NodeFS.readFileSync(NodePath.join(root, SERVER_SHARD_WEIGHTS_RELATIVE), "utf8"),
+  );
+  const weights = new Map<string, number>();
+  if (raw === undefined) return weights;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return weights;
+    for (const [file, seconds] of Object.entries(parsed)) {
+      if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) {
+        weights.set(file, Math.max(1, Math.round(seconds * 1_000)));
+      }
+    }
+  } catch {
+    return weights;
+  }
+  return weights;
+}
+
 export function cachedTestTasks(
   raw: string | undefined,
   root = workspaceRoot,
@@ -674,26 +704,45 @@ export function cachedTestTasks(
       uncachedFiles,
     );
     const server = changed && directory === NodePath.join(normalizedRoot, "apps", "server");
-    const serverChainLast: Array<string | undefined> = Array.from(
-      { length: serverChains },
-      () => undefined,
-    );
-    const serverChainLoad: Array<number> = Array.from({ length: serverChains }, () => 0);
-    for (const group of groups) {
-      const key = NodeCrypto.createHash("sha256").update(group.join("\0")).digest("hex");
-      const task = `test-cache:${key}`;
-      if (skip.has(task)) continue;
-      let dependsOn: Array<string> | undefined;
-      if (server) {
+    const activeGroups = groups
+      .map((group) => {
+        const key = NodeCrypto.createHash("sha256").update(group.join("\0")).digest("hex");
+        return { group, task: `test-cache:${key}` };
+      })
+      .filter(({ task }) => !skip.has(task));
+    const serverDependsOn = new Map<string, Array<string>>();
+    if (server && activeGroups.length > 0) {
+      // Schedule server groups onto K serial chains using duration-weighted LPT so heavy suites
+      // start first on separate chains without changing group membership, commands, or cache keys.
+      const weightsMs = loadServerTestWeightsMs(normalizedRoot);
+      const weightedGroups = activeGroups
+        .map(({ group, task }, index) => ({
+          task,
+          index,
+          weight: group.reduce((total, file) => {
+            const key = relativeTestPath(directory, NodePath.join(normalizedRoot, file));
+            return total + (weightsMs.get(key) ?? UNRECORDED_SERVER_FILE_WEIGHT_MS);
+          }, 0),
+        }))
+        .toSorted((left, right) => right.weight - left.weight || left.index - right.index);
+      const serverChainLast: Array<string | undefined> = Array.from(
+        { length: serverChains },
+        () => undefined,
+      );
+      const serverChainLoad: Array<number> = Array.from({ length: serverChains }, () => 0);
+      for (const { task, weight } of weightedGroups) {
         let chain = 0;
         for (let index = 1; index < serverChains; index += 1) {
           if (serverChainLoad[index]! < serverChainLoad[chain]!) chain = index;
         }
         const previous = serverChainLast[chain];
-        if (previous) dependsOn = [previous];
+        if (previous) serverDependsOn.set(task, [previous]);
         serverChainLast[chain] = task;
-        serverChainLoad[chain]! += group.length;
+        serverChainLoad[chain]! += weight;
       }
+    }
+    for (const { group, task } of activeGroups) {
+      const dependsOn = serverDependsOn.get(task);
       const uncachedGroup = uncachedFiles.has(group[0]!);
       // Vite+ reports VITE_CACHE_PATH to Vite's loadEnv and keys the group by it, so it is set
       // empty here and removed again in each test by packages/shared/src/testing/providerEnv.ts.

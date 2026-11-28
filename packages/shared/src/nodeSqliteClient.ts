@@ -37,6 +37,18 @@ export interface SqliteClientConfig {
   readonly readerWorker?: boolean | undefined;
   /** Ignored for in-memory databases. */
   readonly checkpointWorker?: boolean | undefined;
+  /**
+   * Pre-populated SQLite image to deserialize into an in-memory database on open.
+   * Ignored for file-backed databases.
+   */
+  readonly initialSnapshot?: Uint8Array | undefined;
+  /**
+   * Invoked once an in-memory database opens, exposing a serializer for capturing
+   * an immutable template snapshot before callers mutate the database.
+   */
+  readonly onDatabaseOpen?:
+    | ((handle: { readonly serialize: () => Uint8Array | undefined }) => void)
+    | undefined;
 }
 
 // SqlClient masks transaction acquisition, so readOnly carries the caller's interruption policy.
@@ -871,6 +883,25 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
   return { check, runWithAdmission };
 });
 
+interface SerializableDatabaseSync {
+  serialize(database?: string): Uint8Array;
+  deserialize(buffer: Uint8Array, options?: { readonly database?: string }): void;
+}
+
+const asSerializableDatabase = (
+  db: NodeSqlite.DatabaseSync,
+): SerializableDatabaseSync | undefined => {
+  if (
+    "serialize" in db &&
+    typeof db.serialize === "function" &&
+    "deserialize" in db &&
+    typeof db.deserialize === "function"
+  ) {
+    return db as unknown as SerializableDatabaseSync;
+  }
+  return undefined;
+};
+
 const make = Effect.fn("makeWithDatabase")(function* (
   options: SqliteClientConfig,
 ): Effect.fn.Return<Client.SqlClient, SqlError, Scope.Scope | Reactivity.Reactivity> {
@@ -882,11 +913,25 @@ const make = Effect.fn("makeWithDatabase")(function* (
   const makeConnection = Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const db = yield* Effect.try({
-      try: () =>
-        new NodeSqlite.DatabaseSync(options.filename, {
+      try: () => {
+        const opened = new NodeSqlite.DatabaseSync(options.filename, {
           readOnly: options.readonly ?? false,
           allowExtension: false,
-        }),
+        });
+        if (!isFileDatabase && options.initialSnapshot !== undefined) {
+          try {
+            const serializable = asSerializableDatabase(opened);
+            if (serializable === undefined) {
+              throw new Error("Node sqlite DatabaseSync.deserialize is unavailable");
+            }
+            serializable.deserialize(options.initialSnapshot);
+          } catch (cause) {
+            opened.close();
+            throw cause;
+          }
+        }
+        return opened;
+      },
       catch: (cause) =>
         new SqlError({
           reason: classifyError(cause, "Failed to open database", "open"),
@@ -902,6 +947,12 @@ const make = Effect.fn("makeWithDatabase")(function* (
           }),
       }).pipe(Effect.orDie),
     );
+    if (!isFileDatabase && options.onDatabaseOpen !== undefined) {
+      const serializable = asSerializableDatabase(db);
+      options.onDatabaseOpen({
+        serialize: () => serializable?.serialize(),
+      });
+    }
     // Started after the close finalizer, so the worker stops before the writer closes.
     const checkpoint =
       options.checkpointWorker && isFileDatabase

@@ -42,7 +42,7 @@ import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { ServerActivation } from "./serverActivation.ts";
-import { describe, expect, it } from "@effect/vitest";
+import { afterAll, describe, expect, it } from "@effect/vitest";
 import {
   EventId,
   ProjectId,
@@ -331,6 +331,66 @@ const underWorktrees = (
   relative: string,
 ) => NodePath.resolve(fixture.config.worktreesDir, relative);
 
+const cleanupTemplateRepos = new Map<
+  boolean,
+  { readonly root: string; readonly repo: string; readonly worktree: string }
+>();
+
+const toGitMetadataPath = (filePath: string) => filePath.replaceAll("\\", "/");
+
+afterAll(async () => {
+  for (const template of cleanupTemplateRepos.values()) {
+    await NodeFSP.rm(template.root, { recursive: true, force: true, maxRetries: 3 });
+  }
+  cleanupTemplateRepos.clear();
+});
+
+const getCleanupTemplateRepo = (
+  fs: FileSystem.FileSystem,
+  command: (
+    cwd: string,
+    args: string[],
+  ) => Effect.Effect<{ readonly stdout: string }, GitCommandError>,
+  managedLayout: boolean,
+) =>
+  Effect.gen(function* () {
+    const existing = cleanupTemplateRepos.get(managedLayout);
+    if (
+      existing !== undefined &&
+      (yield* fs.exists(existing.repo)) &&
+      (yield* fs.exists(existing.worktree))
+    ) {
+      return existing;
+    }
+    const root = yield* fs.realPath(
+      yield* fs.makeTempDirectory({ prefix: "cleanup-repo-template-" }),
+    );
+    const templateRepo = NodePath.join(root, "repo");
+    const templateWorktree = NodePath.join(root, "feature");
+    yield* fs.makeDirectory(templateRepo, { recursive: true });
+    yield* command(templateRepo, ["init", "-b", "main"]);
+    yield* command(templateRepo, ["config", "user.email", "cleanup@example.test"]);
+    yield* command(templateRepo, ["config", "user.name", "Cleanup test"]);
+    yield* fs.writeFileString(`${templateRepo}/tracked.txt`, "original\n");
+    yield* fs.writeFileString(`${templateRepo}/.gitignore`, ".env\ndist/\nnode_modules/\n");
+    yield* command(templateRepo, ["add", "."]);
+    yield* command(templateRepo, ["commit", "-m", "initial"]);
+    if (managedLayout) {
+      const base = (yield* command(templateRepo, ["rev-parse", "HEAD"])).stdout.trim();
+      yield* command(templateRepo, [
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        "160000," + base + ",vendor/empty",
+      ]);
+      yield* command(templateRepo, ["commit", "-m", "Record an uninitialized gitlink"]);
+    }
+    yield* command(templateRepo, ["worktree", "add", "-b", "feature", templateWorktree]);
+    const template = { root, repo: templateRepo, worktree: templateWorktree };
+    cleanupTemplateRepos.set(managedLayout, template);
+    return template;
+  });
+
 const cleanupFixture = (
   storageCleanup: StorageCleanupSettings = {
     ...DEFAULT_SERVER_SETTINGS.storageCleanup,
@@ -346,29 +406,25 @@ const cleanupFixture = (
     const repo = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-repo-" }));
     const command = (cwd: string, args: string[]) =>
       git.execute({ operation: "cleanup-test", cwd, args });
-    yield* command(repo, ["init", "-b", "main"]);
-    yield* command(repo, ["config", "user.email", "cleanup@example.test"]);
-    yield* command(repo, ["config", "user.name", "Cleanup test"]);
-    yield* fs.writeFileString(`${repo}/tracked.txt`, "original\n");
-    yield* fs.writeFileString(`${repo}/.gitignore`, ".env\ndist/\nnode_modules/\n");
-    yield* command(repo, ["add", "."]);
-    yield* command(repo, ["commit", "-m", "initial"]);
-    if (managedLayout) {
-      const base = (yield* command(repo, ["rev-parse", "HEAD"])).stdout.trim();
-      yield* command(repo, [
-        "update-index",
-        "--add",
-        "--cacheinfo",
-        "160000," + base + ",vendor/empty",
-      ]);
-      yield* command(repo, ["commit", "-m", "Record an uninitialized gitlink"]);
-    }
+    const template = yield* getCleanupTemplateRepo(fs, command, managedLayout);
+    yield* fs.copy(template.repo, repo, { overwrite: true });
     yield* fs.makeDirectory(config.worktreesDir, { recursive: true });
     const worktree = NodePath.resolve(
       config.worktreesDir,
       ...(managedLayout ? ["project", "feature"] : ["feature"]),
     );
-    yield* command(repo, ["worktree", "add", "-b", "feature", worktree]);
+    yield* fs.makeDirectory(NodePath.dirname(worktree), { recursive: true });
+    yield* fs.copy(template.worktree, worktree, { overwrite: true });
+    const realWorktree = yield* fs.realPath(worktree);
+    yield* overwriteGitFile(
+      fs,
+      NodePath.join(worktree, ".git"),
+      `gitdir: ${toGitMetadataPath(NodePath.join(repo, ".git", "worktrees", "feature"))}\n`,
+    );
+    yield* fs.writeFileString(
+      NodePath.join(repo, ".git", "worktrees", "feature", "gitdir"),
+      `${toGitMetadataPath(NodePath.join(realWorktree, ".git"))}\n`,
+    );
     let settings: ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,
       storageCleanup,

@@ -2,8 +2,10 @@ import * as NodeSqlite from "node:sqlite";
 import type * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -650,3 +652,162 @@ it.effect("resets the WAL once an outside reader that stopped TRUNCATE closes", 
 
 const countBlobs = (sql: SqlClient.SqlClient) =>
   Effect.map(sql<{ count: number }>`SELECT COUNT(*) AS count FROM blobs`, (rows) => rows[0]?.count);
+
+it.effect("roundtrips an in-memory database via onDatabaseOpen and initialSnapshot", () =>
+  Effect.gen(function* () {
+    let serialize: (() => Uint8Array | undefined) | undefined;
+    const snapshot = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT NOT NULL)`;
+      yield* sql`INSERT INTO items VALUES (1, 'alpha'), (2, 'beta')`;
+      return serialize?.();
+    }).pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          filename: ":memory:",
+          onDatabaseOpen: (handle) => {
+            serialize = handle.serialize;
+          },
+        }),
+      ),
+    );
+
+    assert.instanceOf(snapshot, Uint8Array);
+
+    const rows = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO items VALUES (3, 'gamma')`;
+      return yield* sql<{ readonly id: number; readonly name: string }>`
+        SELECT id, name FROM items ORDER BY id
+      `;
+    }).pipe(
+      Effect.provide(SqliteClient.layer({ filename: ":memory:", initialSnapshot: snapshot })),
+    );
+
+    assert.deepEqual(rows, [
+      { id: 1, name: "alpha" },
+      { id: 2, name: "beta" },
+      { id: 3, name: "gamma" },
+    ]);
+
+    const cleanRows = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql<{ readonly id: number; readonly name: string }>`
+        SELECT id, name FROM items ORDER BY id
+      `;
+    }).pipe(
+      Effect.provide(SqliteClient.layer({ filename: ":memory:", initialSnapshot: snapshot })),
+    );
+
+    assert.deepEqual(cleanRows, [
+      { id: 1, name: "alpha" },
+      { id: 2, name: "beta" },
+    ]);
+  }),
+);
+
+it.effect("ignores initialSnapshot and onDatabaseOpen for file-backed databases", () =>
+  Effect.gen(function* () {
+    let serialize: (() => Uint8Array | undefined) | undefined;
+    const snapshot = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE seeded(id INTEGER PRIMARY KEY)`;
+      yield* sql`INSERT INTO seeded VALUES (1)`;
+      return serialize?.();
+    }).pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          filename: ":memory:",
+          onDatabaseOpen: (handle) => {
+            serialize = handle.serialize;
+          },
+        }),
+      ),
+    );
+    assert.instanceOf(snapshot, Uint8Array);
+
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-file-guard-" });
+    const filename = path.join(directory, "state.sqlite");
+    let onDatabaseOpenCalls = 0;
+
+    const tables = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'seeded'
+      `;
+    }).pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          filename,
+          initialSnapshot: snapshot,
+          onDatabaseOpen: () => {
+            onDatabaseOpenCalls++;
+          },
+        }),
+      ),
+    );
+
+    assert.equal(onDatabaseOpenCalls, 0);
+    assert.deepEqual(tables, []);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("closes the database handle when deserialize fails or onDatabaseOpen throws", () =>
+  Effect.gen(function* () {
+    using closeSpy = vi.spyOn(NodeSqlite.DatabaseSync.prototype, "close");
+
+    // Empty buffer throws synchronously inside DatabaseSync.deserialize().
+    const deserializeError = yield* Effect.void.pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          filename: ":memory:",
+          initialSnapshot: new Uint8Array(0),
+        }),
+      ),
+      Effect.flip,
+    );
+    assert.equal(deserializeError._tag, "SqlError");
+    assert.equal(deserializeError.reason.operation, "open");
+    assert.equal(closeSpy.mock.calls.length, 1);
+
+    closeSpy.mockClear();
+
+    // Non-empty invalid bytes fail lazily on first schema read and still close cleanly on exit.
+    const corruptError = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql`SELECT name FROM sqlite_schema`;
+    }).pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          filename: ":memory:",
+          initialSnapshot: new Uint8Array([1, 2, 3, 4]),
+        }),
+      ),
+      Effect.flip,
+    );
+    assert.equal(corruptError._tag, "SqlError");
+    assert.include(String(corruptError.reason.cause), "file is not a database");
+    assert.equal(closeSpy.mock.calls.length, 1);
+
+    closeSpy.mockClear();
+
+    const callbackExit = yield* Effect.void.pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          filename: ":memory:",
+          onDatabaseOpen: () => {
+            throw new Error("onDatabaseOpen boom");
+          },
+        }),
+      ),
+      Effect.exit,
+    );
+    assert.isTrue(Exit.isFailure(callbackExit));
+    if (Exit.isFailure(callbackExit)) {
+      assert.include(String(Cause.squash(callbackExit.cause)), "onDatabaseOpen boom");
+    }
+    assert.equal(closeSpy.mock.calls.length, 1);
+  }),
+);

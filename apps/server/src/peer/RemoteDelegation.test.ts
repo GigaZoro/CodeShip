@@ -851,7 +851,7 @@ const makeLaptop = (
       ProviderReplayHarness.layerWithRegistry(
         { name: "remote-delegation-laptop" },
         adapterRegistry,
-        { databaseLayer: layerDatabase, runEffectWorker: false },
+        { databaseLayer: layerDatabase, runEffectWorker: false, inMemoryCheckpoints: true },
       ),
     ).pipe(
       Layer.provide(

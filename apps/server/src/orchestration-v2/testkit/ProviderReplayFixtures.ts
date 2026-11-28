@@ -9,7 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { checkpointWorkspace, scratchWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { readProviderReplayTranscript } from "@t3tools/provider-testing/replayTranscript";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import { ORCHESTRATOR_REPLAY_FIXTURES } from "./fixtures/index.ts";
@@ -127,7 +127,18 @@ const runFixtureProvider = Effect.fn("runOrchestratorReplayFixture")(function* <
     { driver: input.driver.driver, model: input.driver.modelSelection.model },
   );
   const fixtureInput = input.buildInput();
-  const workspace = yield* checkpointWorkspace(input.fixtureName, fixtureInput.workspaceFiles);
+  // Background-subagent fixtures that assert cross-fiber ordering across run 1's checkpoint
+  // and concurrent background subagent frames require real checkpoint timing.
+  const needsRealGitWorkspace =
+    input.fixtureName === "claude_background_subagent_after_root" ||
+    input.fixtureName === "opencode2_nested_background" ||
+    fixtureInput.workspaceFiles !== undefined ||
+    input.driver.expectedAbsentWorkspacePaths !== undefined ||
+    input.materializeWorkspace !== undefined ||
+    fixtureInput.steps.some((step) => step.type === "rollback");
+  const workspace = needsRealGitWorkspace
+    ? yield* checkpointWorkspace(input.fixtureName, fixtureInput.workspaceFiles)
+    : yield* scratchWorkspace(input.fixtureName);
   const transcript = yield* input.harness.decodeTranscript(
     input.materializeWorkspace === undefined
       ? replayTranscript
@@ -154,6 +165,7 @@ const runFixtureProvider = Effect.fn("runOrchestratorReplayFixture")(function* <
   const result = yield* runOrchestratorV2ProviderReplayScenario(scenario, input.harness, {
     ...(input.driver.runContinuationWorker === true ? { runContinuationWorker: true } : {}),
     ...(input.databaseLayer === undefined ? {} : { databaseLayer: input.databaseLayer }),
+    ...(!needsRealGitWorkspace ? { inMemoryCheckpoints: true } : {}),
   }).pipe(provideDeterministicTestRuntime);
   input.driver.assertOutput(result, transcript);
   assertProviderNativeSubagentRootTurns(result);

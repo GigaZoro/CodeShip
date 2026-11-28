@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -96,3 +97,78 @@ it.effect("drops planner statistics a database already has", () => {
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
   );
 });
+
+const readMemorySessionPragmas = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const foreignKeys = yield* sql`PRAGMA foreign_keys`.values;
+  const busyTimeout = yield* sql`PRAGMA busy_timeout`.values;
+  const tempStore = yield* sql`PRAGMA temp_store`.values;
+  return {
+    foreignKeys: foreignKeys[0]?.[0],
+    busyTimeout: busyTimeout[0]?.[0],
+    tempStore: tempStore[0]?.[0],
+  };
+});
+
+it.effect("applies session pragmas on layerMemory and layerMemoryFromSnapshot", () =>
+  Effect.gen(function* () {
+    const expected = { foreignKeys: 1, busyTimeout: 5000, tempStore: 2 };
+
+    // First instantiation warms the cached migrated snapshot; second exercises deserialization.
+    assert.deepEqual(
+      yield* readMemorySessionPragmas.pipe(Effect.provide(SqlitePersistence.layerMemory)),
+      expected,
+    );
+    assert.deepEqual(
+      yield* readMemorySessionPragmas.pipe(Effect.provide(SqlitePersistence.layerMemory)),
+      expected,
+    );
+
+    const seed = new NodeSqlite.DatabaseSync(":memory:");
+    let snapshot: Uint8Array;
+    try {
+      seed.exec("CREATE TABLE seeded_rows(id INTEGER PRIMARY KEY, label TEXT NOT NULL)");
+      seed.exec("INSERT INTO seeded_rows VALUES (1, 'from-snapshot')");
+      snapshot = (seed as unknown as { serialize(): Uint8Array }).serialize();
+    } finally {
+      seed.close();
+    }
+
+    const fromSnapshot = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const pragmas = yield* readMemorySessionPragmas;
+      const rows = yield* sql<{ readonly id: number; readonly label: string }>`
+        SELECT id, label FROM seeded_rows
+      `;
+      return { pragmas, rows };
+    }).pipe(Effect.provide(SqlitePersistence.layerMemoryFromSnapshot(snapshot)));
+
+    assert.deepEqual(fromSnapshot.pragmas, expected);
+    assert.deepEqual(fromSnapshot.rows, [{ id: 1, label: "from-snapshot" }]);
+  }),
+);
+
+it.effect("isolates mutations across separate layerMemory instantiations", () =>
+  Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO shared_setting_versions (setting_key, kind, value_json, updated_at, origin, pending)
+        VALUES ('theme', 'local', '"dark"', '2026-11-28T00:00:00.000Z', 'db-1', 0)
+      `;
+      yield* sql`CREATE TABLE db1_only(id INTEGER PRIMARY KEY)`;
+      const count = yield* sql`SELECT COUNT(*) FROM shared_setting_versions`.values;
+      assert.deepEqual(count, [[1]]);
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory));
+
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const count = yield* sql`SELECT COUNT(*) FROM shared_setting_versions`.values;
+      assert.deepEqual(count, [[0]]);
+      const leakedTables = yield* sql`
+        SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'db1_only'
+      `.values;
+      assert.deepEqual(leakedTables, []);
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory));
+  }),
+);
