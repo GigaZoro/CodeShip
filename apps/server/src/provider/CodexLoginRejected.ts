@@ -1,4 +1,4 @@
-import { ProviderSetupError } from "@t3tools/contracts";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import * as Schema from "effect/Schema";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 

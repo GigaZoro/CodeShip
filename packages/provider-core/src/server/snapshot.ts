@@ -1,8 +1,6 @@
-import type {
-  ProviderUsageLimitsUpdate,
-  ServerProvider,
-  ServerSettingsError,
-} from "@t3tools/contracts";
+import type { ProviderUsageLimitsUpdate } from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import type { ServerSettingsError } from "@t3tools/contracts/settings";
 import type * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import type * as Stream from "effect/Stream";

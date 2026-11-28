@@ -1,13 +1,10 @@
-import {
-  type OrchestrationV2ThreadProjection,
-  type OrchestrationV2ThreadShell,
-  ProjectId,
-  type ProviderInteractionMode,
-  ProviderInstanceId,
-  RunId,
-  type RuntimeMode,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { ProjectId, RunId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

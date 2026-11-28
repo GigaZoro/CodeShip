@@ -1,9 +1,6 @@
-import {
-  ModelSelection,
-  OrchestrationV2ThreadProjection,
-  ProviderSessionId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { ProviderSessionId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

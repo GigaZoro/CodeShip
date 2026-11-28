@@ -13,7 +13,7 @@ import {
   type VisualStudioStatusResult,
   VisualStudioUnavailableError,
   VisualStudioWindow,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/visualStudio";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

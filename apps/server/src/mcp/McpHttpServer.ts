@@ -13,15 +13,11 @@ import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { AiError, McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import {
-  DeviceToolError,
-  OrchestratorMcpFailure,
-  PreviewAutomationError,
-  ProviderInteractionMode,
-  type RunId,
-  RuntimeMode,
-  ThreadId,
-} from "@t3tools/contracts";
+import { type RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { DeviceToolError } from "@t3tools/contracts/device";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { PreviewAutomationError } from "@t3tools/contracts/previewAutomation";
+import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import packageJson from "../../package.json" with { type: "json" };

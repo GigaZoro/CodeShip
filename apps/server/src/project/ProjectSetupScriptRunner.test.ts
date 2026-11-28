@@ -1,14 +1,14 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ProjectScript } from "@t3tools/contracts/project";
+import type { T3ProjectFile } from "@t3tools/contracts/t3ProjectFile";
 import {
-  ProjectId,
-  type ProjectScript,
-  type T3ProjectFile,
   TerminalNotRunningError,
   type TerminalEvent,
   type TerminalSessionSnapshot,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/terminal";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

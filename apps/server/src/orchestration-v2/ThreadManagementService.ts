@@ -1,25 +1,27 @@
-import type {
-  OrchestrationV2SearchThreadInput,
-  OrchestrationV2SearchThreadResult,
-} from "@t3tools/contracts";
-import type {
-  ProjectionRecordField,
-  ProjectionRecordFilter,
-  ProjectionRecords,
-  ShellSnapshotOptions,
-} from "./ProjectionStore.ts";
+import {
+  CommandId,
+  MessageId,
+  ProjectId,
+  type ProviderSessionId,
+  RunId,
+  type ScheduledTaskId,
+  ThreadId,
+  type TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
 import {
   type ChatAttachment,
-  CommandId,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+} from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  type OrchestrationV2SearchThreadInput,
+  type OrchestrationV2SearchThreadResult,
   isListedThreadLineage,
-  isProviderInstanceBackgroundAllowed,
-  MessageId,
   OrchestrationV2StopWorkflowError,
   type OrchestrationV2StopWorkflowInput,
   OrchestrationV2ForceStopThreadError,
   type OrchestrationV2ForceStopThreadInput,
   type OrchestrationV2ForceStopThreadResult,
-  type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
@@ -33,18 +35,20 @@ import {
   type OrchestrationV2ThreadTranscript,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
-  ProjectId,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-  ProviderInstanceId,
-  type ProviderSessionId,
-  resolveProjectProviderInstanceEnabled,
-  RunId,
-  type ScheduledTaskId,
-  ThreadId,
-  type TurnItemId,
   isOrchestrationV2TerminalRunStatus,
   type OrchestrationV2TerminalRunStatus,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import {
+  isProviderInstanceBackgroundAllowed,
+  resolveProjectProviderInstanceEnabled,
+} from "@t3tools/contracts/settings";
+import type {
+  ProjectionRecordField,
+  ProjectionRecordFilter,
+  ProjectionRecords,
+  ShellSnapshotOptions,
+} from "./ProjectionStore.ts";
 import {
   delegatedTaskProgress,
   delegatedWorkPending,

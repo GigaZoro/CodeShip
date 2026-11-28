@@ -1,11 +1,10 @@
-import {
-  CommandId,
-  MessageId,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2RuntimeRequest,
-  type OrchestrationV2Run,
-  type OrchestrationV2Subagent,
-} from "@t3tools/contracts";
+import { CommandId, MessageId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2RuntimeRequest,
+  OrchestrationV2Run,
+  OrchestrationV2Subagent,
+} from "@t3tools/contracts/orchestrationV2";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

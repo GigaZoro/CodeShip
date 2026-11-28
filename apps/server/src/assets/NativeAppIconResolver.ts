@@ -1,4 +1,4 @@
-import type { ToolActivityNativeAppReference } from "@t3tools/contracts";
+import type { ToolActivityNativeAppReference } from "@t3tools/contracts/providerRuntime";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";

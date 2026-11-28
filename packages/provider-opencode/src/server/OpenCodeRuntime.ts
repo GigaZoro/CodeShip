@@ -1,6 +1,7 @@
 import * as NodeURL from "node:url";
 
-import type { ChatAttachment, ProviderApprovalDecision } from "@t3tools/contracts";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { ProviderApprovalDecision } from "@t3tools/contracts/providerPolicy";
 import {
   createOpencodeClient,
   type Agent,

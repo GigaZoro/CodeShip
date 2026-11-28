@@ -4,23 +4,24 @@ import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
-  ClaudeSettings,
   CommandId,
   EnvironmentId,
-  isProviderNativeSubagentThread,
   MessageId,
-  type ModelSelection,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ProviderOptionDescriptor } from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { isProviderNativeSubagentThread } from "@t3tools/contracts/orchestrationV2";
+import {
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpReviewAssignmentResult,
   OrchestratorMcpThreadInterruptResult,
   OrchestratorMcpThreadSendResult,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ProviderOptionDescriptor,
-  type ServerProvider,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { ClaudeSettings } from "@t3tools/contracts/settings";
 import * as Crypto from "effect/Crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";

@@ -1,10 +1,9 @@
+import type { ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
 import type {
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 
 /**
  * Every window stops at the byte budget. A window that holds a user turn also

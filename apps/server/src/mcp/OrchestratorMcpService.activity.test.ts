@@ -1,16 +1,17 @@
 import {
   EnvironmentId,
   NodeId,
-  type OrchestrationV2ThreadProjection,
-  type OrchestrationV2ThreadShell,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
   ScheduledTaskId,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

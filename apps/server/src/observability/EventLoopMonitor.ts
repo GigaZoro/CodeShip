@@ -2,7 +2,7 @@
 import * as NodeOS from "node:os";
 import * as NodePerfHooks from "node:perf_hooks";
 
-import type { ServerEventLoopStall } from "@t3tools/contracts";
+import type { ServerEventLoopStall } from "@t3tools/contracts/server";
 import { eventLoopBlocked } from "@t3tools/shared/AwakeTime";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import * as Context from "effect/Context";

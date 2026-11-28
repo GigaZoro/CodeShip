@@ -13,12 +13,12 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import { RELAY_HOOK_DELIVERY_TYP, signRelayJwt } from "@t3tools/shared/relayJwt";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { EnvironmentHttpApi } from "@t3tools/contracts/environmentHttp";
 import {
-  EnvironmentHttpApi,
-  EnvironmentId,
   ScheduledTaskWebhookDeliveryId,
   ScheduledTaskError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/scheduledTask";
 import {
   ScheduledTaskService,
   type WebhookTriggerRequest,

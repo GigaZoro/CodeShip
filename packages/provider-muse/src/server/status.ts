@@ -1,4 +1,4 @@
-import { ServerProviderModel } from "@t3tools/contracts";
+import { ServerProviderModel } from "@t3tools/contracts/provider";
 import { MuseSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";

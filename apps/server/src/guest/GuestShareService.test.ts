@@ -1,24 +1,27 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
-  ChatAttachmentId,
   CommandId,
-  DEFAULT_GUEST_SHARE_LIFETIME,
   EventId,
-  type GuestShareAccess,
   GuestShareId,
-  type GuestShareLifetime,
-  type GuestStreamEvent,
   MessageId,
-  type OrchestrationV2ThreadHistoryPage,
-  type OrchestrationV2TurnItem,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachmentId } from "@t3tools/contracts/chatAttachment";
+import {
+  DEFAULT_GUEST_SHARE_LIFETIME,
+  type GuestShareAccess,
+  type GuestShareLifetime,
+} from "@t3tools/contracts/guestShare";
+import type { GuestStreamEvent } from "@t3tools/contracts/guestStream";
+import type {
+  OrchestrationV2ThreadHistoryPage,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

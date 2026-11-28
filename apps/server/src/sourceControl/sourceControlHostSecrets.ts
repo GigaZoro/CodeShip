@@ -1,10 +1,10 @@
+import type { SecretReference } from "@t3tools/contracts/secretReference";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 import {
   isSecretReference,
   secretReferencesInSettings,
   secretSettingsFields,
-  type SecretReference,
-  type ServerSettings,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settingsSecretValue";
 import type * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as Effect from "effect/Effect";
 

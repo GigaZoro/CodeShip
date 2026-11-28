@@ -1,10 +1,10 @@
+import { MessageId } from "@t3tools/contracts/baseSchemas";
 import {
   type ManualStepDecision,
   ManualStepStartChatError,
   type ManualStepStartChatFailure,
   type ManualStepStartChatInput,
-  MessageId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/manualSteps";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

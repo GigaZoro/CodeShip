@@ -1,5 +1,5 @@
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  type EnvironmentId,
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpFailure,
@@ -10,9 +10,8 @@ import {
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
-  PEER_LINK_AGENTS_ONLY_NOTE,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import { PEER_LINK_AGENTS_ONLY_NOTE } from "@t3tools/contracts/peerLink";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

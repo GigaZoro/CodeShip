@@ -3,20 +3,21 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
-  type ModelSelection,
   NodeId,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2ThreadProjection,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2ProviderThread,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

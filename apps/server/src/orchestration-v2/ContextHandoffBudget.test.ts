@@ -2,17 +2,18 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import { assert, describe, it } from "@effect/vitest";
 import {
   ContextHandoffId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderThreadId,
   RunId,
   ThreadId,
   TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts/chatAttachment";
+import {
   OrchestrationV2ContextHandoff,
   type OrchestrationV2HistoricalMessage,
   type OrchestrationV2ProviderThread,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

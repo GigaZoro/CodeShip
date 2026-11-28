@@ -1,15 +1,14 @@
+import { CommandId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
 import {
-  type ChatAttachment,
-  CommandId,
   type OrchestrationV2Command,
   OrchestrationV2ProviderCapabilities,
   type OrchestrationV2GoalCommand,
   type OrchestrationV2ProviderGoalStatus,
   type OrchestrationV2Run,
   OrchestrationV2ThreadProjection,
-  ProviderInstanceId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -61,7 +60,9 @@ type MessageDispatchMode = Extract<
 export function isNativeMaintenanceCommand(message: {
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
-  readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
+  readonly context?:
+    | import("@t3tools/contracts/composerContext").OrchestrationMessageContext
+    | undefined;
 }): boolean {
   return (
     message.attachments.length === 0 &&

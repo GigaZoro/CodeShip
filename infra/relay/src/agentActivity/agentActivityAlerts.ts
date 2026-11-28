@@ -1,4 +1,4 @@
-import type { ThreadNotificationLevel } from "@t3tools/contracts";
+import type { ThreadNotificationLevel } from "@t3tools/contracts/threadPreferences";
 import { shouldNotifyThread } from "@t3tools/shared/threadNotifications";
 import type {
   RelayAgentActivityAggregateRow,

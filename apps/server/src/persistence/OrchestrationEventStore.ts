@@ -2,18 +2,22 @@ import {
   ApplicationEventMetadata,
   ApplicationProjectEvent,
   type ApplicationStoredEvent,
+} from "@t3tools/contracts/applicationEvent";
+import {
   CommandId,
   EventId,
   IsoDateTime,
-  isKnownOrchestrationV2EventType,
   NonNegativeInt,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  isKnownOrchestrationV2EventType,
   OrchestrationV2DomainEventJson,
   OrchestrationV2StoredEvent,
-  ProjectId,
-  StoredProjectIcon,
-  ThreadId,
   type OrchestrationV2DomainEvent,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { StoredProjectIcon } from "@t3tools/contracts/project";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/sql/SqlClient";

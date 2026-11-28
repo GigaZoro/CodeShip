@@ -1,11 +1,10 @@
+import { type AuthEnvironmentScope, AuthStandardClientScopes } from "@t3tools/contracts/auth";
+import { PortSchema } from "@t3tools/contracts/baseSchemas";
 import {
-  type AuthEnvironmentScope,
-  AuthStandardClientScopes,
   ENVIRONMENT_DESCRIPTOR_PATH,
   ExecutionEnvironmentDescriptor,
   ORCHESTRATION_PROTOCOL_VERSION,
-  PortSchema,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/environment";
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";

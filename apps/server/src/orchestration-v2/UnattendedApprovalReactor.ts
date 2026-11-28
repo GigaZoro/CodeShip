@@ -1,8 +1,6 @@
-import {
-  CommandId,
-  type OrchestrationV2DomainEvent,
-  ProviderRequestKind,
-} from "@t3tools/contracts";
+import { CommandId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2DomainEvent } from "@t3tools/contracts/orchestrationV2";
+import { ProviderRequestKind } from "@t3tools/contracts/providerPolicy";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

@@ -1,3 +1,4 @@
+import { PreviewTabId } from "@t3tools/contracts/preview";
 import {
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
@@ -19,14 +20,13 @@ import {
   PreviewAutomationTargetNotEditableError,
   PreviewAutomationTimeoutError,
   PreviewAutomationUnsupportedClientError,
-  PreviewTabId,
   type PreviewAutomationError,
   type PreviewAutomationOperation,
   type PreviewAutomationHost,
   type PreviewAutomationHostFocus,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/previewAutomation";
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";

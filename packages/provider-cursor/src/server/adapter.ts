@@ -10,11 +10,11 @@ import type {
 } from "@cursor/sdk";
 import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivity";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
   isOrchestrationV2WorkActive,
-  defaultInstanceIdForDriver,
-  type ChatAttachment,
-  type ModelSelection,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2PlanArtifact,
@@ -26,10 +26,12 @@ import {
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import {
+  defaultInstanceIdForDriver,
   type ProviderInstanceId,
-  type ServerProviderModel,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

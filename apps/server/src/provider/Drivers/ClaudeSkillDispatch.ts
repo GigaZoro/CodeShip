@@ -1,4 +1,4 @@
-import type { ServerProviderSkill } from "@t3tools/contracts";
+import type { ServerProviderSkill } from "@t3tools/contracts/server";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 
 /**

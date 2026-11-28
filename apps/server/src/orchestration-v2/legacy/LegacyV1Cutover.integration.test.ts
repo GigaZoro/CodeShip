@@ -3,16 +3,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   MessageId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   ThreadId,
   TurnItemId,
-  type OrchestrationV2ProviderSession,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ProviderSession,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

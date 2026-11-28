@@ -13,7 +13,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
 import { RelayApi, type RelayHookDeliveryProofPayload } from "@t3tools/contracts/relay";
 import {
   normalizeRelayIssuer,

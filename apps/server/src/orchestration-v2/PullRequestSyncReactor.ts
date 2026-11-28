@@ -1,16 +1,17 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { CommandId, type ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
   isOrchestrationV2WorkActive,
   type OrchestrationV2TurnItem,
-  type PullRequestSummary,
-  type ThreadId,
-  type ThreadPullRequestKey,
-  type ThreadPullRequestLink,
-  type ThreadPullRequestSnapshot,
-  type ThreadPullRequestStack,
   isOrchestrationV2TerminalRunStatus,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { PullRequestSummary } from "@t3tools/contracts/pullRequest";
+import type {
+  ThreadPullRequestKey,
+  ThreadPullRequestLink,
+  ThreadPullRequestSnapshot,
+  ThreadPullRequestStack,
+} from "@t3tools/contracts/threadPullRequest";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import {
   threadPullRequestKeyOf,

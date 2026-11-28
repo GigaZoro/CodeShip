@@ -7,10 +7,12 @@ import {
   AuthStandardClientScopes,
   EnvironmentAuthorizationError,
   mcpClientScopes,
+} from "@t3tools/contracts/auth";
+import {
   OrchestratorMcpFailure,
   OrchestratorMcpLinkBackResult,
-  type PeerLink,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLink } from "@t3tools/contracts/peerLink";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

@@ -1,12 +1,12 @@
+import type { HostPowerSnapshot } from "@t3tools/contracts/background";
 import type {
   DesktopHostTelemetrySnapshot,
-  HostPowerSnapshot,
   ResourceMonitorSnapshotEvent,
   ResourceTelemetryHealth,
   ResourceTelemetryHistoryInput,
   ResourceTelemetryRetryResult,
   ResourceTelemetrySnapshot,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/resourceTelemetry";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

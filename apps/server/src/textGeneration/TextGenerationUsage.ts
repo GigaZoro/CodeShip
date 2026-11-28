@@ -1,4 +1,4 @@
-import type { ThreadId } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
 import * as Context from "effect/Context";
 
 /** One model's tokens in one provider call. Null is unknown, never zero; input includes cache. */

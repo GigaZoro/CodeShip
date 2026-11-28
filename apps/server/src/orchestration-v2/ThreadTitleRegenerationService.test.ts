@@ -1,19 +1,17 @@
 import { assert, describe, it, vi } from "@effect/vitest";
 import {
   CommandId,
-  ChatAttachmentId,
-  type ChatAttachment,
   EventId,
   MessageId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderSetupError,
   ProviderThreadId,
   RunId,
-  TextGenerationError,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachmentId, type ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";

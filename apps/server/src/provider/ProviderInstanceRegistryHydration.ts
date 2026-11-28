@@ -2,13 +2,15 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceId,
-  providerInstanceConfigEnabledFlag,
-  resolveProviderInstanceEnabled,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
+} from "@t3tools/contracts/providerInstance";
+import {
+  providerInstanceConfigEnabledFlag,
+  resolveProviderInstanceEnabled,
   ServerSettings,
   type ServerSettingsPatch,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";

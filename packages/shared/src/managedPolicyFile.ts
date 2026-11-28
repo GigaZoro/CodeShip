@@ -1,4 +1,4 @@
-import { ManagedPolicyDocument } from "@t3tools/contracts";
+import { ManagedPolicyDocument } from "@t3tools/contracts/managedPolicy";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";

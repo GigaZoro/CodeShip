@@ -1,4 +1,4 @@
-import type { ThreadId } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 

@@ -1,4 +1,5 @@
-import { type ServerProviderAuth, type ServerProviderModel } from "@t3tools/contracts";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import type { ServerProviderAuth } from "@t3tools/contracts/server";
 import type { FxSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";

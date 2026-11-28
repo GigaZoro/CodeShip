@@ -1,11 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off -- A check resolves `~/` with the target system's path rules, win32 or posix.
 import * as NodePath from "node:path";
 
+import { managedRuntimeModeDenial } from "@t3tools/contracts/managedPolicy";
 import {
   RUN_CONDITION_SKIP_EXIT_CODE,
   type ScheduledTaskRunCheck,
-  managedRuntimeModeDenial,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/scheduledTask";
 import { splitQuotedCommandLine } from "@t3tools/shared/commandLine";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";

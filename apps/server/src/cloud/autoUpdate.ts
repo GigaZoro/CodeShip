@@ -1,4 +1,7 @@
-import { ServerSelfUpdateError, type ServerSelfUpdateOutcome } from "@t3tools/contracts";
+import {
+  ServerSelfUpdateError,
+  type ServerSelfUpdateOutcome,
+} from "@t3tools/contracts/serverUpdate";
 import { cliReleaseChannelOf, type CliReleaseChannel } from "@t3tools/shared/cliRelease";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import {

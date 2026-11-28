@@ -8,23 +8,21 @@ import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
 import { vi } from "vite-plus/test";
 import {
   CommandId,
-  type ChatAttachment,
-  ChatAttachmentId,
+  EventId,
   GuestMessageId,
   GuestShareId,
   MessageId,
-  EventId,
   NodeId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   ThreadId,
   TurnItemId,
-  type ModelSelection,
-  type OrchestrationV2DomainEvent,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { type ChatAttachment, ChatAttachmentId } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2DomainEvent } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

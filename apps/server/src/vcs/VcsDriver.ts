@@ -1,14 +1,14 @@
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
+import { CheckpointRef } from "@t3tools/contracts/baseSchemas";
+import type { VcsInitInput } from "@t3tools/contracts/git";
 import type {
   VcsError,
-  VcsInitInput,
   VcsListRemotesResult,
   VcsListWorkspaceFilesResult,
   VcsRepositoryIdentity,
-} from "@t3tools/contracts";
-import { CheckpointRef } from "@t3tools/contracts";
+} from "@t3tools/contracts/vcs";
 import * as VcsProcess from "./VcsProcess.ts";
 
 export interface VcsCaptureCheckpointInput {

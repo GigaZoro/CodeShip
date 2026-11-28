@@ -2,17 +2,14 @@ import * as DocumentText from "../provider/DocumentText.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  EnvironmentId,
-  type OrchestrationV2Run,
-  type OrchestrationV2ThreadShell,
-  PEER_LINK_AGENTS_ONLY_NOTE,
-  type SourceControlCloneRepositoryInput,
-  ProjectId,
-  ProviderInstanceId,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2Run,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import { PEER_LINK_AGENTS_ONLY_NOTE } from "@t3tools/contracts/peerLink";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { SourceControlCloneRepositoryInput } from "@t3tools/contracts/sourceControl";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";

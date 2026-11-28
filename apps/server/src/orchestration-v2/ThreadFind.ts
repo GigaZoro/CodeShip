@@ -1,12 +1,11 @@
+import { ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
 import {
   OrchestrationV2TurnItemJson,
   type OrchestrationV2ProjectedTurnItem,
   OrchestrationV2SearchThreadInput,
   type OrchestrationV2SearchThreadResult,
   type OrchestrationV2TurnItem,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import { searchableMessageSegments, searchablePlanSegments } from "@t3tools/shared/threadFindText";
 import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
 import * as Cache from "effect/Cache";

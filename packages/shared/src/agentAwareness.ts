@@ -1,11 +1,10 @@
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   isListedThreadLineage,
-  type EnvironmentId,
   type OrchestrationV2ThreadShell,
-  type Project,
-  type ThreadId,
-  type ThreadNotificationLevel,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { Project } from "@t3tools/contracts/project";
+import type { ThreadNotificationLevel } from "@t3tools/contracts/threadPreferences";
 import * as DateTime from "effect/DateTime";
 
 import { backgroundWorkHoldsCompletion } from "./orchestrationV2PendingBackgroundWork.ts";

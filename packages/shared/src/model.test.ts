@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderInstanceId, type ModelCapabilities } from "@t3tools/contracts";
+import type { ModelCapabilities } from "@t3tools/contracts/model";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 
 import {
   acceptedOptionSelections,

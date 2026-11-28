@@ -5,7 +5,8 @@ import {
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderInstanceId, type ProviderReplayEntry } from "@t3tools/contracts";
+import type { ProviderReplayEntry } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

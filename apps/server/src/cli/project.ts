@@ -1,12 +1,7 @@
-import {
-  AuthStandardClientScopes,
-  CommandId,
-  EnvironmentHttpApi,
-  EnvironmentHttpCommonError,
-  type ProjectMutation,
-  type ProjectSnapshot,
-  ProjectId,
-} from "@t3tools/contracts";
+import { AuthStandardClientScopes } from "@t3tools/contracts/auth";
+import { CommandId, ProjectId } from "@t3tools/contracts/baseSchemas";
+import { EnvironmentHttpApi, EnvironmentHttpCommonError } from "@t3tools/contracts/environmentHttp";
+import type { ProjectMutation, ProjectSnapshot } from "@t3tools/contracts/project";
 import * as Console from "effect/Console";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";

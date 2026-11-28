@@ -6,11 +6,8 @@ import type {
   ProviderMaintenanceCapabilities,
   ProviderMaintenanceCommandAction,
 } from "@t3tools/provider-core/server/maintenance";
-import {
-  ProviderDriverKind,
-  type ServerProvider,
-  type ServerProviderVersionAdvisory,
-} from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider, ServerProviderVersionAdvisory } from "@t3tools/contracts/server";
 import { compareSemverVersions, satisfiesSemverRange } from "@t3tools/shared/semver";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { causeErrorTag } from "@t3tools/shared/observability";

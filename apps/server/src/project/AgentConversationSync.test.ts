@@ -1,14 +1,9 @@
 import { expect, it } from "@effect/vitest";
-import {
-  AgentSessionImportProjectNotFoundError,
-  DEFAULT_SERVER_SETTINGS,
-  EventId,
-  ProjectId,
-  ThreadId,
-  type ApplicationStoredEvent,
-  type OrchestrationProjectShell,
-  type ServerSettings,
-} from "@t3tools/contracts";
+import { AgentSessionImportProjectNotFoundError } from "@t3tools/contracts/agentSessions";
+import type { ApplicationStoredEvent } from "@t3tools/contracts/applicationEvent";
+import { EventId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import { DEFAULT_SERVER_SETTINGS, type ServerSettings } from "@t3tools/contracts/settings";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

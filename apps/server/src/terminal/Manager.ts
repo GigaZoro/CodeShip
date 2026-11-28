@@ -2,6 +2,9 @@
 import * as NodeCrypto from "node:crypto";
 
 import { withWorkspaceLease, withWorkspaceProcessStart } from "../workspace/workspaceLease.ts";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ResourceMonitorProcessTableEntry } from "@t3tools/contracts/resourceTelemetry";
+import { ClaudeSettings, CodexSettings } from "@t3tools/contracts/settings";
 import {
   DEFAULT_TERMINAL_ID,
   DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
@@ -26,15 +29,11 @@ import {
   type TerminalOpenInput,
   type TerminalObserveInput,
   type TerminalResizeInput,
-  type ResourceMonitorProcessTableEntry,
   type TerminalSessionSnapshot,
   type TerminalSessionStatus,
   type TerminalSummary,
   type TerminalWriteInput,
-  ClaudeSettings,
-  CodexSettings,
-  ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/terminal";
 import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { AgentScope } from "@t3tools/shared/AgentScope";

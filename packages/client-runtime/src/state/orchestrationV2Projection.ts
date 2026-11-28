@@ -1,11 +1,11 @@
 import { applyThreadPullRequestLinkUpdate } from "../threadPullRequests.ts";
-import type {
-  OrchestrationV2DomainEvent,
-  OrchestrationV2Run,
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
-import { orchestrationV2RuntimeRequestUpdateApplies } from "@t3tools/contracts";
+import {
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2TurnItem,
+  orchestrationV2RuntimeRequestUpdateApplies,
+} from "@t3tools/contracts/orchestrationV2";
 import {
   restoreSubagentBodies,
   restoreTurnItemBodies,

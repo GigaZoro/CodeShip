@@ -1,9 +1,9 @@
 import { assert, it } from "@effect/vitest";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
-  type ModelSelection,
   type ProviderInstanceEnvironment,
   ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Effect from "effect/Effect";

@@ -1,4 +1,4 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import { refineUnknownRemoteProvider } from "@t3tools/source-control-core/server/discovery";
 import { processOutput } from "@t3tools/source-control-testing/TestSourceControlHost";

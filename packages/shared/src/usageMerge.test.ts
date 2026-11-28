@@ -1,12 +1,12 @@
+import type { EnvironmentId } from "@t3tools/contracts/baseSchemas";
 import {
   USAGE_CONTRACT_VERSION,
   USAGE_MERGE_COMPATIBLE_SINCE,
-  type EnvironmentId,
   type UsageBucket,
   type UsageDay,
   type UsageProviderKind,
   UsageSummary,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/usage";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 

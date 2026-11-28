@@ -1,16 +1,14 @@
-import type {
-  ThreadId,
-  WorktreeSetupSnapshot,
-  WorktreeSetupStage,
-  WorktreeSetupStageId,
-  WorktreeSetupStageStatus,
-} from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
+  type WorktreeSetupSnapshot,
+  type WorktreeSetupStage,
+  type WorktreeSetupStageId,
+  type WorktreeSetupStageStatus,
   WORKTREE_SETUP_DETAIL_MAX_LENGTH,
   WORKTREE_SETUP_ERROR_MAX_LENGTH,
   WORKTREE_SETUP_STAGE_ORDER,
   WORKTREE_SETUP_TAIL_LINE_MAX_LENGTH,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/worktreeSetup";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

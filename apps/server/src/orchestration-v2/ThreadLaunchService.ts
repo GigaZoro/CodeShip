@@ -3,13 +3,21 @@ import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
-  type AutoRoutingConstraints,
-  type AutoRoutingDegradationReason,
   CommandId,
-  type ChatAttachment,
-  GitCommandError,
   type MessageId,
-  type ModelSelection,
+  ProjectId,
+  type RunId,
+  type ScheduledTaskId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import { GitCommandError } from "@t3tools/contracts/git";
+import type {
+  AutoRoutingConstraints,
+  AutoRoutingDegradationReason,
+  ModelSelection,
+} from "@t3tools/contracts/modelSelection";
+import {
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
   type OrchestrationV2DelegatedFrom,
@@ -18,17 +26,11 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadLaunchWorkspaceStrategy,
   orchestrationV2RunAwaitsMemory,
-  type ProviderDriverKind,
-  type ProviderInstanceId,
-  type ProviderInteractionMode,
-  ProjectId,
-  type RunId,
-  type RuntimeMode,
-  type ScheduledTaskId,
-  ThreadId,
-  type ThreadFolder,
-  type ThreadTag,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
+import type { ThreadFolder } from "@t3tools/contracts/threadFolders";
+import type { ThreadTag } from "@t3tools/contracts/threadTags";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -77,7 +79,9 @@ export interface ThreadLaunchInitialMessage {
   readonly senderThreadId?: ThreadId;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
-  readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
+  readonly context?:
+    | import("@t3tools/contracts/composerContext").OrchestrationMessageContext
+    | undefined;
 }
 
 export interface ThreadLaunchInput {

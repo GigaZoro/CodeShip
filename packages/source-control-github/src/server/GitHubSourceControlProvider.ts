@@ -1,4 +1,11 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
+import {
+  SourceControlProviderKind,
+  SourceControlProviderError,
+  type ChangeRequest,
+  type SourceControlProviderDiscoveryItem,
+  type SourceControlRepositoryCloneUrls,
+} from "@t3tools/contracts/sourceControl";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -14,13 +21,6 @@ import * as Option from "effect/Option";
 import * as RequestResolver from "effect/RequestResolver";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import {
-  SourceControlProviderError,
-  TrimmedNonEmptyString,
-  type ChangeRequest,
-  type SourceControlProviderDiscoveryItem,
-  type SourceControlRepositoryCloneUrls,
-} from "@t3tools/contracts";
 import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";

@@ -1,10 +1,8 @@
 import type * as EffectAcpSchema from "effect-acp/compat";
-import {
-  type ModelSelection,
-  type ProviderOptionDescriptor,
-  ProviderDriverKind,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+import type { ProviderOptionDescriptor } from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import type { FxSettings } from "../settings.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import type * as Crypto from "effect/Crypto";

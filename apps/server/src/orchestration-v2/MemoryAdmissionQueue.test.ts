@@ -2,15 +2,14 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
-  type MemoryShortage,
   MessageId,
-  type OrchestrationV2StoredEvent,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   type RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { MemoryShortage } from "@t3tools/contracts/hostMemory";
+import type { OrchestrationV2StoredEvent } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

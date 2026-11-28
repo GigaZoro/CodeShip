@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { ScheduledTaskRunCheck } from "@t3tools/contracts";
+import type { ScheduledTaskRunCheck } from "@t3tools/contracts/scheduledTask";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

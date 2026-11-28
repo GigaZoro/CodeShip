@@ -2,17 +2,17 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
+import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@t3tools/contracts/chatAttachment";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import type { PreviewTabId } from "@t3tools/contracts/preview";
 import {
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PREVIEW_HEADLESS_NOTE,
   PREVIEW_RECORDING_STOP_TIMEOUT_MS,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
   PreviewAutomationRecordingArtifact,
   PreviewAutomationActInputs,
-  OrchestratorMcpFailure,
-  type ToolActivityIcon,
-  type ThreadId,
   type PreviewAutomationOperation,
   type PreviewAutomationOpenInput,
   type PreviewAutomationRecordingStatus,
@@ -20,8 +20,8 @@ import {
   type PreviewAutomationSetColorSchemeResult,
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
-  type PreviewTabId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/previewAutomation";
+import type { ToolActivityIcon } from "@t3tools/contracts/providerRuntime";
 
 import {
   parseAttachmentUuid,
@@ -57,7 +57,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   tabId?: PreviewTabId,
 ): Effect.fn.Return<
   { result: A; headless: boolean; toolIcon?: ToolActivityIcon },
-  import("@t3tools/contracts").PreviewAutomationError,
+  import("@t3tools/contracts/previewAutomation").PreviewAutomationError,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
   const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");

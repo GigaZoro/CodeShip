@@ -2,14 +2,16 @@ import {
   EventId,
   MessageId,
   ProjectId,
-  ProviderInstanceId,
-  type OrchestrationV2ThreadProjection,
   ThreadId,
   RunId,
   TurnItemId,
-  type OrchestrationV2ThreadStreamItem,
-  type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2ThreadStreamItem,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

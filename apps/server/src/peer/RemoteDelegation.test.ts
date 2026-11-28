@@ -4,28 +4,29 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
-  ENVIRONMENT_DESCRIPTOR_PATH,
   EventId,
-  type HostResourcesSnapshot,
   MessageId,
-  type ModelSelection,
   NodeId,
-  type OrchestrationV2Run,
-  type OrchestratorMcpThreadReadInput,
   PlanId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
-  RuntimeRequestId,
   ProviderThreadId,
-  type Project,
-  type ServerProvider,
-  type RepositoryIdentity,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import {
+  ENVIRONMENT_DESCRIPTOR_PATH,
+  type RepositoryIdentity,
+} from "@t3tools/contracts/environment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2Run } from "@t3tools/contracts/orchestrationV2";
+import type { OrchestratorMcpThreadReadInput } from "@t3tools/contracts/orchestratorMcp";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { HostResourcesSnapshot } from "@t3tools/contracts/resourceTelemetry";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Context from "effect/Context";

@@ -6,7 +6,7 @@ import {
   DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
   MIN_AUTOMATIC_GIT_FETCH_INTERVAL,
   type ServerSettings,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import * as Duration from "effect/Duration";
 
 export interface ResolvedBackgroundActivitySettings {

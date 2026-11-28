@@ -22,22 +22,17 @@ import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { assert, describe, it } from "@effect/vitest";
+import { MessageId, NodeId, ProjectId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2Run } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderMcpServer } from "@t3tools/contracts/providerMcp";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import {
   DEFAULT_SERVER_SETTINGS,
-  MessageId,
-  type ModelSelection,
-  NodeId,
-  type OrchestrationV2Run,
-  type ProviderMcpServer,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  RunId,
   type CodexCreditSpending,
-  type ServerProvider,
   type ServerSettings as ServerSettingsValue,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 
 import {
   type AccountRoutingContext,

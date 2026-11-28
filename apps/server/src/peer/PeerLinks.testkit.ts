@@ -1,12 +1,9 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  EnvironmentHttpApi,
-  EnvironmentId,
-  type AuthMcpClientAccess,
-  type AuthMcpTokenError,
-  type ExecutionEnvironmentDescriptor,
-} from "@t3tools/contracts";
+import type { AuthMcpClientAccess, AuthMcpTokenError } from "@t3tools/contracts/auth";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts/environment";
+import { EnvironmentHttpApi } from "@t3tools/contracts/environmentHttp";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

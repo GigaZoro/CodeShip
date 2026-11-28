@@ -3,7 +3,7 @@ import type {
   AutomatedStartMemoryGuard,
   MemoryPressureLevel,
   MemoryShortage,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/hostMemory";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";

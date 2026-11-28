@@ -1,11 +1,10 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import {
-  CommandId,
-  MessageId,
-  type OrchestrationV2Command,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2Run,
-} from "@t3tools/contracts";
+import { CommandId, MessageId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2Command,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2Run,
+} from "@t3tools/contracts/orchestrationV2";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

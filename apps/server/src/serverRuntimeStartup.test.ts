@@ -1,14 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  ProjectId,
-  ProviderInstanceId,
-  ProviderDriverKind,
-  CommandId,
-  EnvironmentId,
-  type ServerLifecycleStreamEvent,
-} from "@t3tools/contracts";
+import { ProjectId, CommandId, EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ServerLifecycleStreamEvent } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { HttpServer } from "effect/http";

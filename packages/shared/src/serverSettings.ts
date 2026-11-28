@@ -1,31 +1,37 @@
-import type { AutoModeModel, ModelPreferences } from "@t3tools/contracts/settings";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts/baseSchemas";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  type ModelCapabilities,
+} from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  isProviderAvailable,
+  isProviderTextGenerationCapable,
+  type ServerProviderModel,
+} from "@t3tools/contracts/provider";
+import {
   defaultInstanceIdForDriver,
-  type EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import {
   globalIdleCompaction,
   type IdleCompactionMode,
-  isProviderAvailable,
   isProviderInstanceBackgroundAllowed,
   isUnconfiguredDefaultInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
-  isProviderTextGenerationCapable,
-  type ModelCapabilities,
-  type ModelSelection,
-  type ProjectId,
   type ProjectScopedServerSettingKey,
   ProjectSettingsOverrides,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProvider,
-  type ServerProviderModel,
   ServerSettings,
   type ServerSettingsPatch,
   withIdleCompaction,
-} from "@t3tools/contracts";
+  type AutoModeModel,
+  type ModelPreferences,
+} from "@t3tools/contracts/settings";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";

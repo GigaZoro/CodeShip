@@ -1,4 +1,5 @@
-import { EnvironmentId, PEER_LINK_AGENTS_ONLY_NOTE } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { PEER_LINK_AGENTS_ONLY_NOTE } from "@t3tools/contracts/peerLink";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 

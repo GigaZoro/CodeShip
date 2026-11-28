@@ -13,12 +13,11 @@ import {
   EnvironmentId,
   EventId,
   NodeId,
-  type OrchestratorMcpRunCommandInput,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type MemoryShortage,
   type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { MemoryShortage } from "@t3tools/contracts/hostMemory";
+import type { OrchestratorMcpRunCommandInput } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";

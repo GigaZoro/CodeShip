@@ -1,10 +1,8 @@
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
-import {
-  AntigravitySettings,
-  ProviderDriverKind,
-  ProviderSetupError,
-  ServerProviderUpdateError,
-} from "@t3tools/contracts";
+import { ServerProviderUpdateError } from "@t3tools/contracts/provider";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import { AntigravitySettings } from "@t3tools/contracts/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import {

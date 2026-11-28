@@ -1,34 +1,27 @@
-import type {
-  GuestShareId,
-  OrchestrationV2SearchThreadInput,
-  OrchestrationV2SearchThreadResult,
-  OrchestrationV2ThreadHistoryPage,
-} from "@t3tools/contracts";
 import {
-  isContinuableFailure,
-  latestExecutedRun,
-  latestRootProviderFailure,
-  limitRecoveryDeclined,
-  runRanAfter,
-  snoozeHoldsStop,
-  usageLimitBlockedRun,
-} from "@t3tools/shared/orchestrationV2ThreadError";
-import { originalDemandId } from "./demandId.ts";
-import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
-import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
+  type GuestShareId,
+  CommandId,
+  type GuestMessageId,
+  MessageId,
+  NodeId,
+  type ProviderSessionId,
+  type RunAttemptId,
+  RunId,
+  ThreadId,
+  TurnItemId,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import { isReadOnlyGuestShare } from "@t3tools/contracts/guestShare";
+import { managedRuntimeModeCeilingMessage } from "@t3tools/contracts/managedPolicy";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
-  normalizeThreadPullRequestKey,
-  visibleThreadPullRequests,
-  threadPullRequestKeysEqual,
-  legacyThreadPullRequestKey,
-} from "../sourceControl/threadPullRequests.ts";
-import {
+  type OrchestrationV2SearchThreadInput,
+  type OrchestrationV2SearchThreadResult,
+  type OrchestrationV2ThreadHistoryPage,
   DELEGATED_REVIEW_ROUND_LIMIT,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-  type ChatAttachment,
-  CommandId,
-  type GuestMessageId,
   isAppOwnedTaskWork,
   idleCompactionOf,
   isCompactionCommandMessage,
@@ -36,15 +29,10 @@ import {
   isProviderNativeSubagentThread,
   MAX_THREAD_STARRED_MESSAGES,
   OrchestrationV2MessageStarRejection,
-  MessageId,
-  NodeId,
-  type ModelSelection,
   OrchestrationV2Command,
   type OrchestrationV2InternalCommand,
   type OrchestrationV2LimitRecoveryUpdate,
   type OrchestrationV2ServerCommand,
-  type ThreadPullRequestLink,
-  type ThreadPullRequestWatch,
   type OrchestrationV2AppThread,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ContextSourcePoint,
@@ -73,26 +61,44 @@ import {
   orchestrationV2RunAwaitsMemory,
   orchestrationV2RunWorkStartedAt,
   orchestrationV2WorktreePending,
-  ProviderInstanceId,
+  isOrchestrationV2TerminalRunStatus,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import {
   ProviderInteractionMode,
   ProviderRequestKind,
-  isOrchestrationV2TerminalRunStatus,
-  isProviderInstanceBackgroundAllowed,
-  isReadOnlyGuestShare,
   isRuntimeModeAbove,
+  RuntimeMode,
+} from "@t3tools/contracts/providerPolicy";
+import {
+  isProviderInstanceBackgroundAllowed,
   resolveProviderInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
-  type ProviderSessionId,
-  type RunAttemptId,
-  RunId,
-  RuntimeMode,
+} from "@t3tools/contracts/settings";
+import { sameThreadFolder } from "@t3tools/contracts/threadFolders";
+import {
+  type ThreadPullRequestLink,
+  type ThreadPullRequestWatch,
   ThreadLinkedPullRequest,
-  ThreadId,
-  TurnItemId,
-  TrimmedNonEmptyString,
-  managedRuntimeModeCeilingMessage,
-  sameThreadFolder,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/threadPullRequest";
+import {
+  isContinuableFailure,
+  latestExecutedRun,
+  latestRootProviderFailure,
+  limitRecoveryDeclined,
+  runRanAfter,
+  snoozeHoldsStop,
+  usageLimitBlockedRun,
+} from "@t3tools/shared/orchestrationV2ThreadError";
+import { originalDemandId } from "./demandId.ts";
+import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
+import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
+import {
+  normalizeThreadPullRequestKey,
+  visibleThreadPullRequests,
+  threadPullRequestKeysEqual,
+  legacyThreadPullRequestKey,
+} from "../sourceControl/threadPullRequests.ts";
 import {
   composerModelPicksEqual,
   modelPicksEqual,
@@ -5689,7 +5695,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly messageId: OrchestrationV2ConversationMessage["id"];
     readonly text: string;
     readonly attachments: ReadonlyArray<ChatAttachment>;
-    readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
+    readonly context?:
+      | import("@t3tools/contracts/composerContext").OrchestrationMessageContext
+      | undefined;
     readonly createdBy: OrchestrationV2ConversationMessage["createdBy"];
     readonly creationSource: OrchestrationV2ConversationMessage["creationSource"];
     readonly scheduledTaskId?: OrchestrationV2ConversationMessage["scheduledTaskId"];

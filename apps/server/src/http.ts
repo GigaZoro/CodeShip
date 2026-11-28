@@ -1,12 +1,11 @@
 import * as Mime from "effect/http/Mime";
+import { AuthOrchestrationOperateScope, AuthOrchestrationReadScope } from "@t3tools/contracts/auth";
 import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
   DESKTOP_RESTART_HOLD_PATH,
   DESKTOP_UPDATE_CONTROL_PATH,
-  DesktopUpdateControlPost,
-  EnvironmentHttpApi,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/desktopBootstrap";
+import { EnvironmentHttpApi } from "@t3tools/contracts/environmentHttp";
+import { DesktopUpdateControlPost } from "@t3tools/contracts/resourceTelemetry";
 import { isValidDesktopControlToken } from "@t3tools/shared/desktopBootstrapToken";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { injectMcpAppCookieBootstrap, injectMcpAppThemeBootstrap } from "@t3tools/shared/mcpApp";

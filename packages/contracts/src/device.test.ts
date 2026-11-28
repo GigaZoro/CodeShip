@@ -8,7 +8,7 @@ import {
   EasDeviceHostConfigs,
   SshDeviceHostConfigs,
 } from "./device.ts";
-import { secretSettingsFields } from "./settings.ts";
+import { secretSettingsFields } from "./settingsSecretValue.ts";
 
 const decodeSshHosts = Schema.decodeUnknownSync(SshDeviceHostConfigs);
 const decodeEas = Schema.decodeUnknownSync(EasDeviceHostConfigs);

@@ -1,9 +1,6 @@
-import {
-  ContextHandoffId,
-  MessageId,
-  ProviderInstanceId,
-  type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+import { ContextHandoffId, MessageId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { describe, expect, it } from "vite-plus/test";
 
 import { modelSwitchSince } from "./modelSwitch.ts";

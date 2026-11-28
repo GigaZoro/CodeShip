@@ -1,4 +1,6 @@
-import { DEFAULT_SERVER_SETTINGS, ProjectId, type ProjectScript } from "@t3tools/contracts";
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ProjectScript } from "@t3tools/contracts/project";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

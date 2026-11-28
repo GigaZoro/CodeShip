@@ -1,23 +1,24 @@
+import { IsoDateTime, MessageId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
 import {
-  IsoDateTime,
-  MessageId,
-  OrchestrationThreadSearchSource,
   OrchestrationV2AppThreadJson,
   OrchestrationV2ThreadOpens,
-  ThreadLinkedPullRequest,
-  ThreadPullRequestLink,
-  type OrchestrationSearchThreadsInput,
-  type OrchestrationSearchThreadsResult,
   type OrchestrationV2SearchThreadsInput,
   type OrchestrationV2SearchThreadsResult,
   type OrchestrationV2ThreadShellSnapshot,
   ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_DEFAULT,
-  type OrchestrationProjectShell,
   type OrchestrationV2ArchivedThreadsCursor,
   type OrchestrationV2GetArchivedShellSnapshotInput,
-  ProjectId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import {
+  ThreadLinkedPullRequest,
+  ThreadPullRequestLink,
+} from "@t3tools/contracts/threadPullRequest";
+import {
+  OrchestrationThreadSearchSource,
+  type OrchestrationSearchThreadsInput,
+  type OrchestrationSearchThreadsResult,
+} from "@t3tools/contracts/threadSearch";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";

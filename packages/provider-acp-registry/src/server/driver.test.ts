@@ -1,4 +1,5 @@
-import { AcpRegistryOperationError, ProviderInstanceId } from "@t3tools/contracts";
+import { AcpRegistryOperationError } from "@t3tools/contracts/acpRegistry";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { AcpRegistrySettings } from "../settings.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";

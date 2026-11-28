@@ -1,12 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { GitCommandError } from "@t3tools/contracts/git";
 import {
   DEFAULT_SERVER_SETTINGS,
-  GitCommandError,
   type ServerSettings,
   type ServerSettingsPatch,
-  VcsProcessExitError,
-  VcsProcessSpawnError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts/vcs";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import * as Context from "effect/Context";

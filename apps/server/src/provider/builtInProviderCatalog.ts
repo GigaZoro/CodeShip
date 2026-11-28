@@ -1,4 +1,5 @@
-import type { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
+import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import type * as Stream from "effect/Stream";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 

@@ -1,7 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac or timingSafeEqual.
 import * as NodeCrypto from "node:crypto";
 
-import { ThreadNotificationLevel } from "@t3tools/contracts";
+import { ThreadNotificationLevel } from "@t3tools/contracts/threadPreferences";
 import {
   RelayAgentActivityAggregateState,
   RelayAgentAwarenessPhase,

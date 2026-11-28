@@ -1,7 +1,7 @@
 import type {
   DesktopSshEnvironmentBootstrap,
   DesktopSshEnvironmentTarget,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/ipc";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
 import { runtimePromotion } from "@t3tools/shared/runtimePromotion";
 import { cliReleaseDownloadBaseUrl } from "@t3tools/shared/cliRelease";

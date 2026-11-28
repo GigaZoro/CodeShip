@@ -1,23 +1,23 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import type { ManagedPolicyDocument, ManagedPolicySummary } from "@t3tools/contracts/managedPolicy";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   DEFAULT_SERVER_SETTINGS,
-  EnvironmentId,
   globalIdleCompaction,
-  MACHINE_SHARED_SETTING_KEYS,
-  type ManagedPolicyDocument,
-  type ManagedPolicySummary,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
+} from "@t3tools/contracts/settings";
+import {
+  MACHINE_SHARED_SETTING_KEYS,
   SHARED_SETTING_VALUE_MAX_BYTES,
   SHARED_SETTINGS_RESPONSE_MAX_BYTES,
   type SharedSettingsShare,
   type SharedSettingsWriteShare,
   type SharedSettingVersion,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sharedSettings";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";

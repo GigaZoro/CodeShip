@@ -28,33 +28,39 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  ChatAttachmentId,
-  type ChatAttachment,
-  ChatFileAttachment,
-  ChatImageAttachment,
   CheckpointId,
-  ClaudeSettings,
   EnvironmentId,
   MessageId,
-  type ModelSelection,
   NodeId,
-  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2PendingBackgroundTask,
-  type OrchestrationV2PinnedSystemInstructions,
-  OrchestrationV2ProviderThread,
   ProjectId,
-  ProviderInstanceId,
-  type ResolvedProviderInstanceEnvironment,
-  ProviderDriverKind,
-  type ProviderReplayTranscript,
-  type ProviderApprovalDecision,
   ProviderSessionId,
   ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import {
+  type ChatAttachment,
+  ChatAttachmentId,
+  ChatFileAttachment,
+  ChatImageAttachment,
+} from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  type OrchestrationV2AppThread,
+  type OrchestrationV2PendingBackgroundTask,
+  type OrchestrationV2PinnedSystemInstructions,
+  OrchestrationV2ProviderThread,
+  type ProviderReplayTranscript,
+} from "@t3tools/contracts/orchestrationV2";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ResolvedProviderInstanceEnvironment,
+} from "@t3tools/contracts/providerInstance";
+import type { ProviderApprovalDecision } from "@t3tools/contracts/providerPolicy";
+import { ClaudeSettings } from "@t3tools/contracts/settings";
 import { assert, describe, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

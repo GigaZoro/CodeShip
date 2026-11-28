@@ -2,18 +2,17 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
-  type ExecutionEnvironmentDescriptor,
-  type ManualStepStartChatInput,
   MessageId,
-  type ModelSelection,
-  type OrchestrationV2ConversationMessage,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
-  type ServerProvider,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts/environment";
+import type { ManualStepStartChatInput } from "@t3tools/contracts/manualSteps";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2ConversationMessage } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

@@ -1,8 +1,11 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  SourceControlProviderKind,
+  SourceControlProviderError,
+  type ChangeRequest,
+} from "@t3tools/contracts/sourceControl";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { SourceControlProviderError, type ChangeRequest } from "@t3tools/contracts";
 import {
   parseGitRemoteHost,
   unknownRemoteProvider as unknownHostProvider,

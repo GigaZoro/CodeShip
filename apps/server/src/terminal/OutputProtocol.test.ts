@@ -1,9 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
+import { WS_METHODS } from "@t3tools/contracts/wsMethods";
 import {
   type TerminalAttachStreamEvent,
   TerminalAttachStreamEvent as TerminalAttachStreamEventSchema,
-  WS_METHODS,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/terminal";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

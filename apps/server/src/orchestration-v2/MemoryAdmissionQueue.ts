@@ -1,9 +1,8 @@
-import {
-  CommandId,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ServerCommand,
-  type RunId,
-} from "@t3tools/contracts";
+import { CommandId, type RunId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ServerCommand,
+} from "@t3tools/contracts/orchestrationV2";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";

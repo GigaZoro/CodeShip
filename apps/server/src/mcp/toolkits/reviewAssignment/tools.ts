@@ -1,4 +1,4 @@
-import { OrchestratorMcpFailure, ReviewMaterialRead } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, ReviewMaterialRead } from "@t3tools/contracts/orchestratorMcp";
 import { REVIEW_ASSIGNMENT_TOOL } from "@t3tools/provider-core/server/mcpSession";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";

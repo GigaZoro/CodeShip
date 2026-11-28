@@ -2,7 +2,10 @@ import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Equal from "effect/Equal";
 import * as Hash from "effect/Hash";
-import { PullRequestOperationError, PullRequestUnavailableError } from "@t3tools/contracts";
+import {
+  PullRequestOperationError,
+  PullRequestUnavailableError,
+} from "@t3tools/contracts/pullRequest";
 import * as Crypto from "effect/Crypto";
 import * as Hex from "effect/encoding/Hex";
 import * as Context from "effect/Context";

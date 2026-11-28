@@ -1,12 +1,7 @@
-import {
-  CommandId,
-  MessageId,
-  type ModelSelection,
-  ThreadId,
-  OrchestratorMcpFailure,
-  type OrchestrationV2ThreadShell,
-  ProjectId,
-} from "@t3tools/contracts";
+import { CommandId, MessageId, ThreadId, ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";

@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderAuthState } from "@t3tools/contracts/providerSetup";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

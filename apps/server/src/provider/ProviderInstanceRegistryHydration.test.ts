@@ -1,11 +1,10 @@
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
 import {
-  DEFAULT_SERVER_SETTINGS,
-  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceConfigMap,
-  type ServerSettings,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import { DEFAULT_SERVER_SETTINGS, type ServerSettings } from "@t3tools/contracts/settings";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";

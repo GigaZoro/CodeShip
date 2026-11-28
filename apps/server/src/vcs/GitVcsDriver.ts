@@ -10,22 +10,15 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { ChildProcessSpawner } from "effect/process";
 
+import type { WorktreeSubmodules } from "@t3tools/contracts/environment";
 import {
   GitCommandError,
-  VcsProcessExitError,
-  VcsUnsupportedOperationError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
   type VcsCreateRefInput,
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
-  type ReviewBranchCommitsInput,
-  type ReviewBranchCommitsResult,
-  type ReviewDiffPreviewInput,
-  type ReviewDiffPreviewResult,
-  type ReviewDiffFileContentsInput,
-  type ReviewDiffFileContentsResult,
   type VcsInitInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
@@ -33,8 +26,16 @@ import {
   type VcsRemoveWorktreeInput,
   type VcsStatusInput,
   type VcsStatusResult,
-  type WorktreeSubmodules,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/git";
+import type {
+  ReviewBranchCommitsInput,
+  ReviewBranchCommitsResult,
+  ReviewDiffPreviewInput,
+  ReviewDiffPreviewResult,
+  ReviewDiffFileContentsInput,
+  ReviewDiffFileContentsResult,
+} from "@t3tools/contracts/review";
+import { VcsProcessExitError, VcsUnsupportedOperationError } from "@t3tools/contracts/vcs";
 import { isMissingExecutable } from "@t3tools/source-control-core/server/discovery";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {

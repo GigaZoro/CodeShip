@@ -1,12 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  CommandId,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  VcsProcessSpawnError,
-} from "@t3tools/contracts";
+import { CommandId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { VcsProcessSpawnError } from "@t3tools/contracts/vcs";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

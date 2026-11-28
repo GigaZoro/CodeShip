@@ -1,16 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  DEFAULT_SERVER_SETTINGS,
   DeviceBootError,
   DeviceId,
   DeviceOperationError,
   LOCAL_DEVICE_HOST_ID,
-  ThreadId,
   type DeviceSummary,
-  type MemoryShortage,
-  type ServerSettings as Settings,
   type SshDeviceHostConfig,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/device";
+import type { MemoryShortage } from "@t3tools/contracts/hostMemory";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type ServerSettings as Settings,
+} from "@t3tools/contracts/settings";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";

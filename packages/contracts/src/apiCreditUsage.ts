@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { ServerProviderApiCredit } from "./server.ts";
+import { ServerProviderApiCredit } from "./provider.ts";
 
 export const ApiCreditUsageRow = Schema.Struct({
   planInstanceId: ProviderInstanceId,

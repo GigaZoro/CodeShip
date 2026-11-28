@@ -1,15 +1,13 @@
+import { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { isReadOnlyGuestShare } from "@t3tools/contracts/guestShare";
+import { managedRuntimeModeCeilingMessage } from "@t3tools/contracts/managedPolicy";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
-  isReadOnlyGuestShare,
-  isRuntimeModeAbove,
-  managedRuntimeModeCeilingMessage,
-  ModelSelection,
   OrchestrationV2AppThread,
   type OrchestrationV2Run,
-  ProjectId,
-  ProviderInstanceId,
-  RuntimeMode,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { isRuntimeModeAbove, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

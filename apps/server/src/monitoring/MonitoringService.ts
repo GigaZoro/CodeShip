@@ -1,3 +1,4 @@
+import type { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   MONITORING_FIX_CHAT_MAX_CHATS,
   MonitoringError,
@@ -14,11 +15,11 @@ import {
   type MonitoringOverviewResult,
   type MonitoringThreadAnswer,
   type MonitoringUnanalyzed,
+} from "@t3tools/contracts/monitoring";
+import {
   type OrchestrationV2AppThread,
   isListedThreadLineage,
-  type ProjectId,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";

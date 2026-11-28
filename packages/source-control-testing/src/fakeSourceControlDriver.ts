@@ -1,8 +1,8 @@
-import {
-  SourceControlProviderKind,
-  type PullRequestReviewCapabilities,
-  type PullRequestReviewerCapabilities,
-} from "@t3tools/contracts";
+import type {
+  PullRequestReviewCapabilities,
+  PullRequestReviewerCapabilities,
+} from "@t3tools/contracts/pullRequest";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import {
   providerAuth,
   type SourceControlProviderDiscoverySpec,

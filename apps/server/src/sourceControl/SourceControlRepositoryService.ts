@@ -6,11 +6,10 @@ import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
+import { GitCommandError, type GitCommandFailureReason } from "@t3tools/contracts/git";
 import {
-  GitCommandError,
   SourceControlProviderError,
   SourceControlRepositoryError,
-  type GitCommandFailureReason,
   type SourceControlCloneRepositoryInput,
   type SourceControlCloneRepositoryResult,
   type SourceControlCloneProtocol,
@@ -20,7 +19,7 @@ import {
   type SourceControlRepositoryCloneUrls,
   type SourceControlRepositoryInfo,
   type SourceControlRepositoryLookupInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
 
 import * as ServerConfig from "../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";

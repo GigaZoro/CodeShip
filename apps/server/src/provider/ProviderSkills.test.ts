@@ -1,13 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import {
   PROVIDER_SKILL_MAX_BYTES,
   PROVIDER_SKILL_MAX_FILES,
-  ProviderInstanceId,
-  ProviderDriverKind,
   type ProviderSkillFile,
-  type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerSkills";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

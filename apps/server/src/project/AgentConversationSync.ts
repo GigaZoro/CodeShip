@@ -1,4 +1,5 @@
-import type { AgentConversationSyncResult, ServerSettings } from "@t3tools/contracts";
+import type { AgentConversationSyncResult } from "@t3tools/contracts/agentSessions";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import {
   agentConversationImportPolicy,

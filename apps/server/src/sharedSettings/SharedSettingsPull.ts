@@ -1,8 +1,6 @@
-import {
-  OrchestratorMcpSharedSettingsResult,
-  type PeerLink,
-  SHARED_SETTINGS_RESPONSE_MAX_BYTES,
-} from "@t3tools/contracts";
+import { OrchestratorMcpSharedSettingsResult } from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLink } from "@t3tools/contracts/peerLink";
+import { SHARED_SETTINGS_RESPONSE_MAX_BYTES } from "@t3tools/contracts/sharedSettings";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";

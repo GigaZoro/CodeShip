@@ -1,14 +1,14 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
-import * as Cache from "effect/Cache";
-import * as Duration from "effect/Duration";
-import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import type {
   PullRequestCapabilities,
   PullRequestReaction,
   PullRequestReviewDecision,
   PullRequestViewerPermissions,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
+import * as Cache from "effect/Cache";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 
 import * as GitLabPullRequestCli from "./GitLabPullRequestCli.ts";
 import {

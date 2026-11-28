@@ -14,16 +14,14 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Socket } from "effect/socket";
 import { RpcClient, RpcSerialization } from "effect/rpc";
+import { CommandId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   ORCHESTRATION_PROTOCOL_VERSION,
   ORCHESTRATION_PROTOCOL_HEADER,
-  CommandId,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  WsRpcGroup,
-  type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/environment";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { WsRpcGroup } from "@t3tools/contracts/rpc";
 import {
   holdProcessGroup,
   ownProcessGroup,

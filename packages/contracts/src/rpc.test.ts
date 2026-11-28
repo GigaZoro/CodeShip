@@ -3,7 +3,8 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
-import { WS_METHODS, WsRpcGroup } from "./rpc.ts";
+import { WsRpcGroup } from "./rpc.ts";
+import { WS_METHODS } from "./wsMethods.ts";
 
 describe("WebSocket RPC contracts", () => {
   it("rejects server-internal commands sent to dispatchCommand", () => {

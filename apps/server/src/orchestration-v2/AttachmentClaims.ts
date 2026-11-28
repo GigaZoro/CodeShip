@@ -3,7 +3,7 @@ import {
   ChatAttachmentId,
   getProviderAttachmentLimitError,
   type ChatAttachment,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/chatAttachment";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { isSvgAttachment } from "@t3tools/shared/image";

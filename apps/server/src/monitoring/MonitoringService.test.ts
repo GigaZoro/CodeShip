@@ -1,21 +1,19 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
-import type {
-  MonitoringChange,
-  MonitoringOverviewInput,
-  MonitoringThreadSummary,
-  OrchestrationV2AppThread,
-  OrchestrationV2DomainEvent,
-} from "@t3tools/contracts";
+import { EventId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  EventId,
+  type MonitoringChange,
+  type MonitoringOverviewInput,
+  type MonitoringThreadSummary,
   MONITORING_FIX_CHAT_MAX_CHATS,
   MonitoringError,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  UsageReadError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/monitoring";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2DomainEvent,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { UsageReadError } from "@t3tools/contracts/usage";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

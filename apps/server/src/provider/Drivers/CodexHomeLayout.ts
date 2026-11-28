@@ -3,7 +3,8 @@ import * as NodeFSP from "node:fs/promises";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - SHA-256 fingerprints compare bounded file contents, not filesystem timestamps.
 import * as NodeCrypto from "node:crypto";
 
-import { ProviderDriverKind, type CodexSettings } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { CodexSettings } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

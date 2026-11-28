@@ -1,4 +1,5 @@
-import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Schema from "effect/Schema";
 import { providerAuthReturnUrl } from "./providerAuthReturnUrl.ts";
 

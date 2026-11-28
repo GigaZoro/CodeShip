@@ -3,12 +3,14 @@ import {
   CheckpointRef,
   CheckpointScopeId,
   NodeId,
-  OrchestrationV2Checkpoint,
-  OrchestrationV2CheckpointScope,
   ProviderThreadId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import {
+  OrchestrationV2Checkpoint,
+  OrchestrationV2CheckpointScope,
+} from "@t3tools/contracts/orchestrationV2";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

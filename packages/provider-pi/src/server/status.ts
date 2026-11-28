@@ -1,8 +1,6 @@
-import {
-  type CustomModelSetting,
-  type ServerProvider,
-  type ServerProviderModel,
-} from "@t3tools/contracts";
+import type { CustomModelSetting } from "@t3tools/contracts/model";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import type { PiSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { causeErrorTag } from "@t3tools/shared/observability";

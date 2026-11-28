@@ -1,4 +1,4 @@
-import type { EnvironmentStartup } from "@t3tools/contracts";
+import type { EnvironmentStartup } from "@t3tools/contracts/environment";
 import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";

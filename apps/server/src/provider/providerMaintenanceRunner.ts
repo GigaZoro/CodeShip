@@ -1,12 +1,14 @@
+import { ServerProviderUpdateError } from "@t3tools/contracts/provider";
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
-  ServerProviderUpdateError,
   type ProviderInstanceId,
-  type ServerProvider,
-  type ServerProviderUpdatedPayload,
-  type ServerProviderUpdateState,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import type {
+  ServerProvider,
+  ServerProviderUpdatedPayload,
+  ServerProviderUpdateState,
+} from "@t3tools/contracts/server";
 import { invalidateCommandResolutions, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";

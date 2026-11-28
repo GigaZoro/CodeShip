@@ -2,15 +2,17 @@ import {
   AuthMcpClientAccess,
   AuthMcpRegistrationError,
   AuthMcpTokenError,
-  EnvironmentHttpApi,
-  EnvironmentId,
-  type ExecutionEnvironmentCapabilities,
   MCP_PEER_LINK_SOFTWARE_ID,
+} from "@t3tools/contracts/auth";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import type { ExecutionEnvironmentCapabilities } from "@t3tools/contracts/environment";
+import { EnvironmentHttpApi } from "@t3tools/contracts/environmentHttp";
+import {
   type PeerLink,
   type PeerLinkCreateInput,
   PeerLinkError,
   type PeerLinkSummary,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/peerLink";
 import type * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";

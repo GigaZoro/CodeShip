@@ -1,3 +1,7 @@
+## 2026-11-28 — Explicit domain subpath exports for `@t3tools/contracts`
+
+- Maintainers: `@t3tools/contracts` now exports each domain module as an explicit subpath (`@t3tools/contracts/<module>`), decouples shared leaf primitives (`settingsPrimitives`, `wsMethods`, `serverUpdate`), migrates shared packages, provider/source-control/secret-provider adapters, `infra/relay`, `scripts/mobile-behavior`, and all `apps/server` source and test files off the root barrel (zero root-barrel server imports, preserving `@t3tools/contracts` for backward compatibility), and enforces the boundary via a `vite.config.ts` `no-restricted-imports` lint rule so isolated contract edits no longer invalidate unrelated package and server test caches across rebases.
+
 ## 2026-11-28 — Remote landing defaults, self-host skipping, and `~/Projects/CodeShip` auto-discovery
 
 - Maintainers: `landing-turn.cjs land` now auto-discovers `~/Projects/CodeShip` alongside `~/projects/CodeShip` on case-sensitive POSIX hosts, skips remote candidates matching the current machine (hostname, short hostname, or loopback) to land locally without SSH overhead, supports validated `t3.landingRemoteHost` and `t3.landingRemoteDir` Git config defaults (`--local` > `--remote` > env > Git config), and always passes `--local` to the remote lander so remote Git config cannot recurse.

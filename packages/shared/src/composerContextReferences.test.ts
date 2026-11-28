@@ -1,9 +1,5 @@
-import {
-  ComposerContextId,
-  type ComposerContextRecord,
-  EnvironmentId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ComposerContextId, type ComposerContextRecord } from "@t3tools/contracts/composerContext";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

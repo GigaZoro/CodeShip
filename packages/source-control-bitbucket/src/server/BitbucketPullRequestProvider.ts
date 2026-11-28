@@ -1,6 +1,10 @@
-import { resolvePullRequestAuthorFilter, SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  resolvePullRequestAuthorFilter,
+  type PullRequestCapabilities,
+  type PullRequestViewerPermissions,
+} from "@t3tools/contracts/pullRequest";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import * as Effect from "effect/Effect";
-import type { PullRequestCapabilities, PullRequestViewerPermissions } from "@t3tools/contracts";
 
 import * as BitbucketApi from "./BitbucketApi.ts";
 import * as BitbucketPullRequestApi from "./BitbucketPullRequestApi.ts";

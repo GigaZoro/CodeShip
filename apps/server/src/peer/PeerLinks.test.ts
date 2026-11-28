@@ -2,7 +2,8 @@
 import * as NodeHttp from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
-import { type ExecutionEnvironmentDescriptor, OrchestratorMcpFailure } from "@t3tools/contracts";
+import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts/environment";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";

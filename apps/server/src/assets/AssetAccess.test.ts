@@ -7,9 +7,8 @@ import {
   AssetCreateUrlInput,
   AssetPreviewTypeValidationError,
   SOURCE_CONTROL_MEDIA_ASSET,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/assets";
+import { ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { MCP_APP_MAX_HTML_BYTES } from "@t3tools/shared/mcpApp";
 import { describe, expect, it } from "@effect/vitest";

@@ -1,12 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { CommandId, MessageId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
   isProviderNativeSubagentThread,
-  MessageId,
-  ProviderDriverKind,
   type ProviderReplayEntry,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as Effect from "effect/Effect";
 

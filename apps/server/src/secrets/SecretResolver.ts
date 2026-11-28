@@ -1,5 +1,5 @@
 import * as SecretResolverCore from "@t3tools/secret-provider-core/server/SecretResolver";
-import type { ServerSettings } from "@t3tools/contracts";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 

@@ -1,4 +1,4 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import { assert, describe, expect, it } from "@effect/vitest";
 
 import {

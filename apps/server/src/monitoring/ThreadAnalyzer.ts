@@ -1,3 +1,4 @@
+import type { ProjectId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import type {
   MonitoringCommandGroup,
   MonitoringCommandPhase,
@@ -15,11 +16,8 @@ import type {
   MonitoringThreadKind,
   MonitoringThreadSummary,
   MonitoringTimeBuckets,
-  ProjectId,
-  ProviderInstanceId,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/monitoring";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 

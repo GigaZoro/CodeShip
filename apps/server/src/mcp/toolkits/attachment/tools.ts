@@ -3,12 +3,10 @@ import {
   AttachmentCreateUploadUrlInput,
   AttachmentCreateUploadUrlResult,
   AttachmentDeleteInput,
-  MessageId,
-  RunId,
-  ThreadId,
-  OrchestrationV2RunStatus,
-  OrchestratorMcpFailure,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/assets";
+import { MessageId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { OrchestrationV2RunStatus } from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import * as Crypto from "effect/Crypto";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";

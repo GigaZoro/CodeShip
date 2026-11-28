@@ -6,16 +6,15 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it } from "@effect/vitest";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { PreviewTabId } from "@t3tools/contracts/preview";
 import {
-  type BrowserRecordingFrameRate,
-  EnvironmentId,
-  PreviewTabId,
-  ProviderInstanceId,
-  ThreadId,
   PREVIEW_HEADLESS_NOTE,
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/previewAutomation";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { BrowserRecordingFrameRate } from "@t3tools/contracts/settingsPrimitives";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

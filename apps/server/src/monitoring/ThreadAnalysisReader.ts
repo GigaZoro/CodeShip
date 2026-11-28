@@ -1,10 +1,10 @@
 import {
   NonNegativeInt,
   type ProjectId,
-  type ProviderInstanceId,
   type RunId,
   type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";

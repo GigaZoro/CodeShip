@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 

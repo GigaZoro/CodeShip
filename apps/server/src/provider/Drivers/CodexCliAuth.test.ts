@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderAuthState } from "@t3tools/contracts/providerSetup";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";

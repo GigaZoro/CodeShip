@@ -1,8 +1,6 @@
-import {
-  AuthOrchestrationReadScope,
-  EnvironmentHttpApi,
-  type OrchestrationProjectShell,
-} from "@t3tools/contracts";
+import { AuthOrchestrationReadScope } from "@t3tools/contracts/auth";
+import { EnvironmentHttpApi } from "@t3tools/contracts/environmentHttp";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";

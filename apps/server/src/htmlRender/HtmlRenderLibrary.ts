@@ -1,11 +1,10 @@
+import { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   OrchestrationV2ListHtmlRendersError,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
   type OrchestrationV2HtmlRenderList,
   type OrchestrationV2ListHtmlRendersInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { HTML_RENDER_TOOL_NAME, type HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";

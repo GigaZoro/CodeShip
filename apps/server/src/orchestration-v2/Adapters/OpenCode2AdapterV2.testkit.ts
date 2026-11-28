@@ -1,11 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ProviderSessionId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  ProviderInstanceId,
   ProviderReplayEntry,
-  ProviderSessionId,
-  ThreadId,
   type ProviderReplayTranscript,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";

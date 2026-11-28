@@ -1,15 +1,12 @@
+import { CommandId, MessageId, type RunId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
-  CommandId,
   isListedThreadLineage,
-  MessageId,
-  type ModelSelection,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadProjection,
-  type RunId,
-  type ServerProvider,
-  type ServerSettings as ServerSettingsValue,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import type { ServerSettings as ServerSettingsValue } from "@t3tools/contracts/settings";
 import { autoModePick } from "@t3tools/shared/serverSettings";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

@@ -1,16 +1,16 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   boundedProviderMcpMessage,
   displayProviderMcpCommand,
   displayProviderMcpUrl,
   ProviderMcpError,
-  type ProviderInstanceId,
   type ProviderMcpOperation,
   type ProviderMcpServer,
   type ProviderMcpServerConfig,
   type ProviderMcpServerOrigin,
   type ProviderMcpServerStatus,
   type ProviderMcpTransport,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerMcp";
 import type { ProviderMcpManagement } from "@t3tools/provider-core/server/driver";
 import {
   query as claudeQuery,

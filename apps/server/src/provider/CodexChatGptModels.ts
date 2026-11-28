@@ -1,8 +1,6 @@
-import {
-  ProviderSetupError,
-  type ProviderInstanceId,
-  type ServerProviderModel,
-} from "@t3tools/contracts";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";

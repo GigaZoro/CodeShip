@@ -1,14 +1,11 @@
+import { CommandId, MessageId, type ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
-  MessageId,
   type MonitoringFindingCode,
   MonitoringFixChatError,
   type MonitoringFixChatFailure,
   type MonitoringFixChatInput,
   type MonitoringThreadSummary,
-  type ProjectId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/monitoring";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { redactSensitiveText } from "@t3tools/shared/redaction";
 import * as Context from "effect/Context";

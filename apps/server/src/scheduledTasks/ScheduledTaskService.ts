@@ -1,10 +1,22 @@
 import {
-  AutoRoutingConstraints,
   CommandId,
   EnvironmentId,
   MessageId,
-  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProjectId,
+  ScheduledTaskId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts/chatAttachment";
+import { repositoryGroupingKeyOf, repositoryMatchRank } from "@t3tools/contracts/environment";
+import { MemoryShortage } from "@t3tools/contracts/hostMemory";
+import {
+  managedPolicyDeniedMessage,
+  managedRuntimeModeDenial,
+} from "@t3tools/contracts/managedPolicy";
+import { AutoRoutingConstraints, type ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestratorMcpSharedScheduledTasksResult } from "@t3tools/contracts/orchestratorMcp";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import {
   RepoCapExemption,
   ScheduledTask,
   ScheduledTaskChangedBy,
@@ -15,23 +27,17 @@ import {
   ScheduledTaskProjectMachineOrder,
   compareScheduledTaskSharedRevisions,
   defaultScheduledTaskMachineOrder,
-  repositoryGroupingKeyOf,
-  repositoryMatchRank,
   scheduledTaskSharedProjectKey,
-  type OrchestratorMcpSharedScheduledTasksResult,
   type ScheduledTaskApplySharedInput,
   type ScheduledTaskApplySharedResult,
   type ScheduledTaskSharedRevision,
   ScheduledTaskError,
-  ScheduledTaskId,
-  ThreadId,
   ScheduledTaskWebhookDeliveryId,
   DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
   DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS,
   RUN_CONDITION_FAILING_STREAK,
   MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
   defaultCatchUpMissedRun,
-  type ModelSelection,
   type ScheduledTaskListRunsInput,
   type ScheduledTaskListRunsResult,
   ScheduledTaskDelegateProviders,
@@ -44,7 +50,6 @@ import {
   type ScheduledTaskRunSkipReason,
   ScheduledTaskRunFailover,
   ScheduledTaskRunUsageLimit,
-  MemoryShortage,
   type ScheduledTaskRunTrigger,
   type ScheduledTaskDeleteInput,
   type ScheduledTaskDeleteResult,
@@ -64,7 +69,6 @@ import {
   type ScheduledTaskSetEnabledInput,
   type ScheduledTaskSetFollowsDefaultModelInput,
   type ScheduledTaskSetFollowsDefaultModelResult,
-  type ScheduledTaskPlacement,
   type ScheduledTaskReorderPinnedInput,
   type ScheduledTaskReorderPinnedResult,
   type ScheduledTaskSetPlacementInput,
@@ -72,15 +76,15 @@ import {
   type ScheduledTaskSetGroupInput,
   type ScheduledTaskSetGroupPausedInput,
   type ScheduledTaskSetGroupPausedResult,
-  type ServerSettings as ServerSettingsValue,
   type ScheduledTaskUpsertInput,
-  type ProviderDriverKind,
-  managedPolicyDeniedMessage,
+} from "@t3tools/contracts/scheduledTask";
+import {
+  type ServerSettings as ServerSettingsValue,
   isProviderInstanceBackgroundAllowed,
   resolveProjectProviderInstanceEnabled,
-  managedRuntimeModeDenial,
-  sameThreadFolder,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import type { ScheduledTaskPlacement } from "@t3tools/contracts/settingsPrimitives";
+import { sameThreadFolder } from "@t3tools/contracts/threadFolders";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";

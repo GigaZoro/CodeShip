@@ -1,4 +1,5 @@
-import { PROVIDER_DISPLAY_NAMES, type ProviderDriverKind } from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts/model";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as Predicate from "effect/Predicate";
 import * as SqlError from "effect/sql/SqlError";
 

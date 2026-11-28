@@ -1,8 +1,8 @@
-import {
-  type AcpRegistryAcceptUrlAuthInput,
-  type AcpRegistryUrlAuthAction,
-  type ProviderInstanceId,
-} from "@t3tools/contracts";
+import type {
+  AcpRegistryAcceptUrlAuthInput,
+  AcpRegistryUrlAuthAction,
+} from "@t3tools/contracts/acpRegistry";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";

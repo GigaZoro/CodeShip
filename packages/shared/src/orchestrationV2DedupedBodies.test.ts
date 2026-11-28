@@ -4,11 +4,13 @@ import {
   MessageId,
   NodeId,
   ThreadId,
-  type OrchestrationV2ThreadProjection,
   TurnItemId,
-  type OrchestrationV2Subagent,
-  type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2Subagent,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

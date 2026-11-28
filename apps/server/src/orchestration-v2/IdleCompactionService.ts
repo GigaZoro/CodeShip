@@ -1,13 +1,10 @@
+import { CommandId, MessageId, type RunId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import { IDLE_COMPACTION_TEXT } from "@t3tools/contracts/orchestrationV2";
 import {
-  CommandId,
-  IDLE_COMPACTION_TEXT,
   isProviderInstanceBackgroundAllowed,
-  MessageId,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
-  type RunId,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import type { EnvironmentStartup } from "@t3tools/contracts";
+import type { EnvironmentStartup } from "@t3tools/contracts/environment";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

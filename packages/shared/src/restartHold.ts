@@ -1,7 +1,7 @@
 import type {
   OrchestrationV2RestartHold,
   OrchestrationV2RestartHoldWork,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 

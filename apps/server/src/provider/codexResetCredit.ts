@@ -1,4 +1,4 @@
-import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import { usageAccountKey } from "@t3tools/provider-core/server/usageLimits";

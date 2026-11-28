@@ -1,4 +1,5 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import { resolveAvailableProviderSkills } from "./providerSkills.ts";

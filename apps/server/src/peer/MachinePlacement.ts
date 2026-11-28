@@ -1,19 +1,21 @@
 import * as NodeOS from "node:os";
+import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  type EnvironmentId,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2LinkOrigin,
-  type OrchestratorMcpDelegateTaskInput,
-  type OrchestratorMcpMachineCapacity,
-  type OrchestratorMcpProviderCapability,
-  type PeerLinkSummary,
-  type ProjectId,
-  type ProviderInstanceId,
   type RepositoryIdentity,
-  type ThreadId,
   repositoryKeysOf,
   repositoryMatchRank,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/environment";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2LinkOrigin,
+} from "@t3tools/contracts/orchestrationV2";
+import type {
+  OrchestratorMcpDelegateTaskInput,
+  OrchestratorMcpMachineCapacity,
+  OrchestratorMcpProviderCapability,
+} from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLinkSummary } from "@t3tools/contracts/peerLink";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

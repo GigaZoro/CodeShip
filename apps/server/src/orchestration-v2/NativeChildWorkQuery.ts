@@ -3,7 +3,7 @@ import {
   OrchestrationV2GetNativeChildWorkError,
   type OrchestrationV2GetNativeChildWorkInput,
   type OrchestrationV2GetNativeChildWorkResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";

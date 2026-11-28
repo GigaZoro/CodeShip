@@ -1,4 +1,4 @@
-import type { UsageTokenTotals } from "@t3tools/contracts";
+import type { UsageTokenTotals } from "@t3tools/contracts/usage";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 

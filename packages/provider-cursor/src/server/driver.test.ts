@@ -3,17 +3,17 @@ import type { AgentOptions, SDKModel } from "@cursor/sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
-  DEFAULT_SERVER_SETTINGS,
   MessageId,
   NodeId,
   ProjectId,
-  ProviderInstanceId,
   ProviderSessionId,
   RunAttemptId,
   RunId,
-  type ServerProvider,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";

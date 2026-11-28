@@ -21,14 +21,12 @@ import {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
 } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import { ScheduledTaskPlacement } from "./settingsPrimitives.ts";
 import { ThreadFolder } from "./threadFolders.ts";
 
 const TimeOfDay = TrimmedNonEmptyString.check(
   Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/),
 ).pipe(Schema.annotateEncoded({ description: "Local time as HH:MM, such as 09:30." }));
-
-export const ScheduledTaskPlacement = Schema.Literals(["none", "chat", "pinned"]);
-export type ScheduledTaskPlacement = typeof ScheduledTaskPlacement.Type;
 
 /** Free text such as "Machine care"; tasks whose labels match form one group, the folder of their chats. */
 export const ScheduledTaskGroupLabel = ThreadFolder;

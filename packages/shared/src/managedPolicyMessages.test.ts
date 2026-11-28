@@ -1,4 +1,5 @@
-import { ProviderDriverKind, type ManagedPolicySummary } from "@t3tools/contracts";
+import type { ManagedPolicySummary } from "@t3tools/contracts/managedPolicy";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import { describe, expect, it } from "vite-plus/test";
 
 import { managedInstanceLocks } from "./managedPolicyMessages.ts";

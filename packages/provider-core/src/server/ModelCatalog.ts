@@ -1,8 +1,6 @@
-import type {
-  ModelCapabilities,
-  ProviderDriverKind,
-  ServerProviderModel,
-} from "@t3tools/contracts";
+import type { ModelCapabilities } from "@t3tools/contracts/model";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 

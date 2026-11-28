@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { CommandId, type Project, ProjectId } from "@t3tools/contracts";
+import { CommandId, ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { Project } from "@t3tools/contracts/project";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

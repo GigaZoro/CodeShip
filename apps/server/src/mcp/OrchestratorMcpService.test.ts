@@ -5,38 +5,40 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
-  type PeerLinkSummary,
-  GitCommandError,
   MessageId,
-  type ModelSelection,
   NodeId,
+  PlanId,
+  ScheduledTaskId,
+  ProjectId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RunId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import type { RepositoryIdentity } from "@t3tools/contracts/environment";
+import { GitCommandError } from "@t3tools/contracts/git";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2ThreadShell,
+  OrchestrationV2AppThread,
+  OrchestrationV2ServerCommand,
+  OrchestrationV2StoredEvent,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts/orchestrationV2";
+import {
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   OrchestratorMcpCapabilitiesResult,
   type OrchestratorMcpFailure,
   OrchestratorMcpProviderCapability,
   OrchestratorMcpModelOption,
   OrchestratorMcpTarget,
-  PlanId,
-  type OrchestrationV2ThreadShell,
-  type ScheduledTask,
-  ScheduledTaskId,
-  type ScheduledTaskUpsertInput,
-  type Project,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderThreadId,
-  ProviderTurnId,
-  RunId,
-  ThreadId,
-  TurnItemId,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2ServerCommand,
-  type OrchestrationV2StoredEvent,
-  type OrchestrationV2ThreadProjection,
-  type RepositoryIdentity,
-  type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLinkSummary } from "@t3tools/contracts/peerLink";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ScheduledTask, ScheduledTaskUpsertInput } from "@t3tools/contracts/scheduledTask";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";

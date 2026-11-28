@@ -8,15 +8,14 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   NodeId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   RunAttemptId,
   RunId,
   ThreadId,
-  type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { AgentScope, type AgentScopeShape } from "@t3tools/shared/AgentScope";

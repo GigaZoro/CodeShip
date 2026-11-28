@@ -2,7 +2,7 @@ import * as NodeEvents from "node:events";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - expectations use the host platform path and delimiter, which Effect Path does not expose.
 import * as NodePath from "node:path";
 
-import { INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts";
+import { INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts/browserProfile";
 import { chromium, type Browser, type BrowserContext, type BrowserType } from "playwright-core";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 

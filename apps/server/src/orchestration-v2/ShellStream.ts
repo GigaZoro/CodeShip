@@ -1,25 +1,24 @@
-import type {
-  ApplicationStoredEvent,
-  OrchestrationProjectShell,
-  OrchestrationV2OlderSettledCount,
-  OrchestrationV2OlderSettledFolderCount,
-  OrchestrationV2OlderSettledThreads,
-  OrchestrationV2ShellSnapshot,
-  OrchestrationV2ThreadShell,
-  OrchestrationV2ThreadShellSnapshot,
-  OrchestrationV2ShellStreamItem,
-  OrchestrationV2StoredEvent,
-  ProjectId,
-  ThreadId,
-} from "@t3tools/contracts";
+import type { ApplicationStoredEvent } from "@t3tools/contracts/applicationEvent";
+import type { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
+  type OrchestrationProjectShell,
+  OrchestrationProjectShell as ProjectShellSchema,
+} from "@t3tools/contracts/orchestrationProject";
+import {
+  type OrchestrationV2OlderSettledCount,
+  type OrchestrationV2OlderSettledFolderCount,
+  type OrchestrationV2OlderSettledThreads,
+  type OrchestrationV2ShellSnapshot,
+  type OrchestrationV2ThreadShell,
+  type OrchestrationV2ThreadShellSnapshot,
+  type OrchestrationV2ShellStreamItem,
+  type OrchestrationV2StoredEvent,
   countOlderSettledFolders,
   isListedThreadLineage,
   isLiveSubagentShell,
   isOlderSettledThreadShell,
-  OrchestrationProjectShell as ProjectShellSchema,
   OrchestrationV2ThreadShell as ThreadShellSchema,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type * as Arr from "effect/Array";
 import type * as Cause from "effect/Cause";

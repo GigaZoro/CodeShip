@@ -1,4 +1,7 @@
-import type { ProviderUserInputAnswers, UserInputAttachments } from "@t3tools/contracts";
+import type {
+  ProviderUserInputAnswers,
+  UserInputAttachments,
+} from "@t3tools/contracts/providerPolicy";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

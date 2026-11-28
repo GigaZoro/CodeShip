@@ -1,18 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
-  DEFAULT_SERVER_SETTINGS,
   EventId,
   MessageId,
-  type OrchestrationV2ThreadProjection,
   NodeId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

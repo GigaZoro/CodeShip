@@ -1,10 +1,7 @@
-import {
-  ANTIGRAVITY_DEFAULT_MODEL,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type OrchestrationV2ProviderCapabilities,
-  type ProviderSetupError,
-} from "@t3tools/contracts";
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts/model";
+import type { OrchestrationV2ProviderCapabilities } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import type { SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import { sleepAwake } from "@t3tools/shared/AwakeTime";
 import * as Crypto from "effect/Crypto";

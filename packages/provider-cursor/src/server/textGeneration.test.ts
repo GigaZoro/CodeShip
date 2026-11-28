@@ -1,5 +1,7 @@
 import type { RunResult } from "@cursor/sdk";
-import { ProviderInstanceId, ProviderSetupError, TextGenerationError } from "@t3tools/contracts";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import { OnDispatch } from "@t3tools/provider-core/server/textGenerationOperations";
 import { CursorSettings } from "../settings.ts";
 import { describe, expect, it } from "@effect/vitest";

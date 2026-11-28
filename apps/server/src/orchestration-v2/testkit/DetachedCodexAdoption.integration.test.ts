@@ -7,14 +7,10 @@ import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import {
-  CodexSettings,
-  ProviderDriverKind,
-  type OrchestrationV2Command,
-  type RunId,
-  type RuntimeRequestId,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { RunId, RuntimeRequestId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2Command } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { isProcessAlive } from "@t3tools/shared/processProbe";

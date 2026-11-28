@@ -1,12 +1,12 @@
 import {
   officialAcpRegistryIconUrlForAgentId,
-  ProviderDriverKind,
   resolveOfficialAcpRegistryIconUrl,
-  TextGenerationError,
   type AcpRegistryOperationError,
-  type ServerProvider,
-  type ServerProviderModel,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/acpRegistry";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { AcpRegistrySettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";

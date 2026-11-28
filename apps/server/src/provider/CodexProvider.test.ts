@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { CodexSettings } from "@t3tools/contracts";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

@@ -1,12 +1,9 @@
-import type {
-  BranchNamingOptions,
-  ChatAttachment,
-  ManualStepKind,
-  ManualStepSolution,
-  ModelSelection,
-  PullRequestReviewGuide,
-  TextGenerationError,
-} from "@t3tools/contracts";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { TextGenerationError } from "@t3tools/contracts/git";
+import type { ManualStepKind, ManualStepSolution } from "@t3tools/contracts/manualSteps";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { PullRequestReviewGuide } from "@t3tools/contracts/pullRequestReviewGuide";
+import type { BranchNamingOptions } from "@t3tools/contracts/settings";
 import type * as Effect from "effect/Effect";
 
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";

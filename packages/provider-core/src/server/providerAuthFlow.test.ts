@@ -1,12 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  ProviderInstanceId,
   ProviderSetupError,
   type ProviderAuthInteraction,
   type ProviderAuthResponse,
   type ProviderAuthState,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerSetup";
 import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";

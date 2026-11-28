@@ -4,24 +4,25 @@ import {
   AuthFilesystemReadScope,
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
-  DEFAULT_SERVER_SETTINGS,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  SecretProviderId,
-  ThreadId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSourceControlWriteScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
+} from "@t3tools/contracts/auth";
+import {
+  ThreadId,
   CommandId,
   MessageId,
-  ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ScheduledTaskId,
-  WS_METHODS,
-  WsRpcGroup,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ORCHESTRATION_V2_WS_METHODS } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { WsRpcGroup } from "@t3tools/contracts/rpc";
+import { WS_METHODS } from "@t3tools/contracts/wsMethods";
+import { SecretProviderId } from "@t3tools/contracts/secretReference";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

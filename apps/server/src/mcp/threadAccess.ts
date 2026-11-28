@@ -1,14 +1,9 @@
 import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.ts";
-import {
-  CommandId,
-  OrchestratorMcpFailure,
-  type ProjectId,
-  type ProviderInstanceId,
-  type ProviderInteractionMode,
-  type RuntimeMode,
-  ThreadId,
-  type OrchestrationV2ThreadShell,
-} from "@t3tools/contracts";
+import { CommandId, type ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 

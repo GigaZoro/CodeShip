@@ -4,7 +4,7 @@ import {
   connectReachabilityHelpUrl,
   type EnvironmentConnectReachability,
   formatConnectReachable,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/environmentHttp";
 import { readTailscaleExitNode, type TailscaleExitNode } from "@t3tools/tailscale";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

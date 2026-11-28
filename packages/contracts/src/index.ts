@@ -32,6 +32,7 @@ export * from "./model.ts";
 export * from "./keybindings.ts";
 export * from "./server.ts";
 export * from "./settings.ts";
+export * from "./settingsPrimitives.ts";
 export * from "./sharedSettings.ts";
 export * from "./deviceSettingsProfile.ts";
 export * from "./managedPolicy.ts";
@@ -86,4 +87,6 @@ export * from "./secretReference.ts";
 export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";
 
+export * from "./serverUpdate.ts";
+export * from "./wsMethods.ts";
 export * from "./apiCreditUsage.ts";

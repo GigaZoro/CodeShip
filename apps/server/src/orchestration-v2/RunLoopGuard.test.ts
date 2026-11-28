@@ -1,9 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
-  DEFAULT_RUN_LOOP_GUARD_SETTINGS,
   EnvironmentId,
   NodeId,
-  ProviderDriverKind,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
@@ -11,8 +9,10 @@ import {
   ScheduledTaskId,
   ThreadId,
   TurnItemId,
-  type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2TurnItem } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import { DEFAULT_RUN_LOOP_GUARD_SETTINGS } from "@t3tools/contracts/runLoopGuard";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 

@@ -1,4 +1,7 @@
-import type { ServerProviderUsageLimits, ServerProviderUsageWindow } from "@t3tools/contracts";
+import type {
+  ServerProviderUsageLimits,
+  ServerProviderUsageWindow,
+} from "@t3tools/contracts/providerUsageLimits";
 import type { AcpSessionRuntime } from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
   makeUnavailableUsageLimits,

@@ -1,10 +1,7 @@
-import {
-  type DelegatedTaskRole,
-  type EnvironmentId,
-  OrchestratorMcpFailure,
-  type ProjectId,
-  repositoryKeysOf,
-} from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { DelegatedTaskRole } from "@t3tools/contracts/delegatedTaskRole";
+import { repositoryKeysOf } from "@t3tools/contracts/environment";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";

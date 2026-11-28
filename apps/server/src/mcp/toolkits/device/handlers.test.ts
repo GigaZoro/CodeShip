@@ -1,4 +1,4 @@
-import type { DeviceHostSummary } from "@t3tools/contracts";
+import type { DeviceHostSummary } from "@t3tools/contracts/device";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "@effect/vitest";
 

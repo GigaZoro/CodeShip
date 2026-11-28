@@ -1,12 +1,11 @@
 import {
   defaultInstanceIdForDriver,
-  ProviderSetupError,
-  type ClaudeSettings,
-  type CodexSettings,
   type ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ClaudeSettings, CodexSettings } from "@t3tools/contracts/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Crypto from "effect/Crypto";
 import * as Hex from "effect/encoding/Hex";

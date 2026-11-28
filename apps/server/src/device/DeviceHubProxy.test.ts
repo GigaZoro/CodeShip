@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
-  AuthSessionId,
-  LOCAL_DEVICE_HOST_ID,
   type AuthEnvironmentScope,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/auth";
+import { AuthSessionId } from "@t3tools/contracts/baseSchemas";
+import { LOCAL_DEVICE_HOST_ID } from "@t3tools/contracts/device";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientResponse, HttpRouter } from "effect/http";

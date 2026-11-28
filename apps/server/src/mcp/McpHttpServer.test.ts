@@ -5,17 +5,15 @@ import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  DeviceId,
-  DeviceOperationError,
   EnvironmentId,
   OrchestratorMcpEnvironmentTarget,
-  OrchestratorMcpFailure,
-  PreviewTabId,
-  ProviderInstanceId,
-  ProviderInteractionMode,
-  RuntimeMode,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { DeviceId, DeviceOperationError } from "@t3tools/contracts/device";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { PreviewTabId } from "@t3tools/contracts/preview";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";

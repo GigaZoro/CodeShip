@@ -5,7 +5,6 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
-  ChatAttachmentId,
   CommandId,
   EventId,
   GuestMessageId,
@@ -13,11 +12,14 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
-  type OrchestrationV2Command,
-  type OrchestrationV2ServerCommand,
-  type OrchestrationV2StoredEvent,
-  type UserInputAttachments,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachmentId } from "@t3tools/contracts/chatAttachment";
+import type {
+  OrchestrationV2Command,
+  OrchestrationV2ServerCommand,
+  OrchestrationV2StoredEvent,
+} from "@t3tools/contracts/orchestrationV2";
+import type { UserInputAttachments } from "@t3tools/contracts/providerPolicy";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

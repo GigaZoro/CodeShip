@@ -1,10 +1,7 @@
 import { it, expect } from "vite-plus/test";
-import {
-  ProviderInstanceId,
-  ProviderDriverKind,
-  type ServerProvider,
-  type ServerProviderApiCredit,
-} from "@t3tools/contracts";
+import type { ServerProviderApiCredit } from "@t3tools/contracts/provider";
+import { ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { apiCreditUsageRows } from "./ApiCreditUsage.ts";
 
 it("joins API accounts by plan identity and retains unlinked plans with known grants", () => {

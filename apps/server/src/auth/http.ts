@@ -3,6 +3,10 @@ import {
   AuthAccessWriteScope,
   AuthStandardClientScopes,
   AuthGrantScope,
+  type AuthEnvironmentScope,
+} from "@t3tools/contracts/auth";
+import type { DpopFailureReason } from "@t3tools/contracts/baseSchemas";
+import {
   EnvironmentAuthInvalidError,
   type EnvironmentAuthInvalidReason,
   EnvironmentHttpApi,
@@ -17,8 +21,7 @@ import {
   EnvironmentScopeRequiredError,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
-} from "@t3tools/contracts";
-import type { AuthEnvironmentScope, DpopFailureReason } from "@t3tools/contracts";
+} from "@t3tools/contracts/environmentHttp";
 import { parseOAuthScope } from "@t3tools/shared/oauthScope";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Clock from "effect/Clock";

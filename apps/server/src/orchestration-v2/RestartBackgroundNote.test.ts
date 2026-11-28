@@ -6,9 +6,11 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
-  type OrchestrationV2RestartCancelledBackgroundWork as Work,
-  type OrchestrationV2Run,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2RestartCancelledBackgroundWork as Work,
+  OrchestrationV2Run,
+} from "@t3tools/contracts/orchestrationV2";
 import * as DateTime from "effect/DateTime";
 
 import {

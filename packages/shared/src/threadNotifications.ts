@@ -1,4 +1,4 @@
-import type { ThreadNotificationLevel } from "@t3tools/contracts";
+import type { ThreadNotificationLevel } from "@t3tools/contracts/threadPreferences";
 
 export function shouldNotifyThread(
   globalEnabled: boolean,

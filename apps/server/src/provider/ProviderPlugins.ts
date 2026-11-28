@@ -1,7 +1,7 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   PROVIDER_PLUGINS_PAGE_SIZE,
   ProviderPluginError,
-  type ProviderInstanceId,
   type ProviderPlugin,
   type ProviderPluginAddMarketplaceInput,
   type ProviderPluginAddMarketplaceResult,
@@ -11,7 +11,7 @@ import {
   type ProviderPluginSetEnabledInput,
   type ProviderPluginsListInput,
   type ProviderPluginsListResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerPlugins";
 import type {
   ProviderPluginCatalog,
   ProviderPluginManagement,

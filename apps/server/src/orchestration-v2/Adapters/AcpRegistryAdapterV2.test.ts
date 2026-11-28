@@ -7,11 +7,11 @@ import {
   ProjectId,
   RunAttemptId,
   RunId,
-  type ModelSelection,
-  ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveSelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeRuntime";
 import * as Exit from "effect/Exit";

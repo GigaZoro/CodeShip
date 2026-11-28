@@ -1,7 +1,12 @@
 import {
   CommandId,
-  type OrchestrationV2DomainEvent,
   type ProviderThreadId,
+  ProviderSessionId,
+  type RunId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2RestartHold,
   type OrchestrationV2RestartHoldTurn,
@@ -10,10 +15,7 @@ import {
   isAppOwnedTaskWork,
   isOrchestrationV2WorkActive,
   orchestrationV2RunAwaitsMemory,
-  ProviderSessionId,
-  type RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

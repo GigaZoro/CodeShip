@@ -1,12 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Connection, type DuplexTransport } from "@muse-code/sdk";
 import {
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderReplayEntry,
   type ProviderReplayEntry as ProviderReplayEntryType,
   type ProviderReplayTranscript,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { MuseSettings } from "@t3tools/provider-muse/settings";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

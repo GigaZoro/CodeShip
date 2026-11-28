@@ -1,11 +1,11 @@
+import type { EnvironmentId } from "@t3tools/contracts/baseSchemas";
 import {
-  type EnvironmentId,
   linkOriginIsFenced,
-  OrchestratorMcpFailure,
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ThreadShell,
-  peerLinkAccessAllowsLinkBack,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { peerLinkAccessAllowsLinkBack } from "@t3tools/contracts/peerLink";
 import * as Effect from "effect/Effect";
 
 import { clientModeCeiling, type McpInvocationScope } from "./McpInvocationContext.ts";

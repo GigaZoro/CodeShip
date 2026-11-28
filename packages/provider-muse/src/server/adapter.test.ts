@@ -5,23 +5,24 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MspError } from "@muse-code/sdk";
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
-  MUSE_DEFAULT_MODEL,
   EnvironmentId,
   MessageId,
   NodeId,
   ProjectId,
-  ProviderInstanceId,
-  ProviderDriverKind,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import { MUSE_DEFAULT_MODEL } from "@t3tools/contracts/model";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { WindowsJobHost } from "@t3tools/shared/windowsJob";

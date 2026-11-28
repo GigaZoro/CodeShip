@@ -1,10 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import {
-  type DesktopBackendEndpoint,
-  type OrchestrationV2RestartHold,
-  ThreadId,
-} from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2RestartHold } from "@t3tools/contracts/orchestrationV2";
+import type { DesktopBackendEndpoint } from "@t3tools/contracts/resourceTelemetry";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

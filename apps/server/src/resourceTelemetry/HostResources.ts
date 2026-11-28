@@ -1,7 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Effect's FileSystem has no statfs for free disk space.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
-import type { HostResourcesSnapshot, HostSpaceUsage } from "@t3tools/contracts";
+import type { HostResourcesSnapshot, HostSpaceUsage } from "@t3tools/contracts/resourceTelemetry";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";

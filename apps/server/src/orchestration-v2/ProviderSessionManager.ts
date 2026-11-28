@@ -4,8 +4,13 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
+  ProviderSessionId,
+  ThreadId,
+  type ProviderThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
   isOrchestrationV2WorkActive,
-  ModelSelection,
   OrchestrationV2DomainEvent,
   type OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderSession,
@@ -13,12 +18,8 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   OrchestrationV2RuntimeRequest,
-  ProviderInstanceId,
-  type ProviderDriverKind,
-  ProviderSessionId,
-  ThreadId,
-  type ProviderThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId, type ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";

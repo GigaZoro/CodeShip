@@ -1,11 +1,7 @@
 import type { SDKModel, SDKUser } from "@cursor/sdk";
-import type {
-  ModelCapabilities,
-  ProviderOptionDescriptor,
-  ServerProviderAuth,
-  ServerProviderModel,
-  ServerProviderState,
-} from "@t3tools/contracts";
+import type { ModelCapabilities, ProviderOptionDescriptor } from "@t3tools/contracts/model";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import type { ServerProviderAuth, ServerProviderState } from "@t3tools/contracts/server";
 import type { CursorSettings } from "../settings.ts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";

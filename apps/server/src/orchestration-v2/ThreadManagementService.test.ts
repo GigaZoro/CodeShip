@@ -3,24 +3,25 @@ import {
   CommandId,
   EnvironmentId,
   MessageId,
-  type ModelSelection,
   NodeId,
-  type OrchestrationV2Command,
-  type OrchestrationV2Run,
-  type OrchestrationV2ServerCommand,
   ProviderThreadId,
   ProviderSessionId,
-  type OrchestrationV2StoredEvent,
-  type OrchestrationV2ThreadProjection,
-  type OrchestrationV2ThreadShell,
-  DEFAULT_SERVER_SETTINGS,
-  ProviderDriverKind,
   ProjectId,
-  ProviderInstanceId,
   RunId,
   ScheduledTaskId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2Command,
+  OrchestrationV2Run,
+  OrchestrationV2ServerCommand,
+  OrchestrationV2StoredEvent,
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";

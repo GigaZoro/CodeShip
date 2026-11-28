@@ -1,9 +1,9 @@
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@t3tools/contracts/chatAttachment";
 import {
-  EnvironmentId,
   ORCHESTRATION_PROTOCOL_VERSION,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type ExecutionEnvironmentDescriptor,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/environment";
 import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";

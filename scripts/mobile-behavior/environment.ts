@@ -11,17 +11,21 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   CommandId,
   EnvironmentId,
-  ExecutionEnvironmentDescriptor,
   MessageId,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  ExecutionEnvironmentDescriptor,
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION,
+} from "@t3tools/contracts/environment";
+import {
   OrchestrationV2ShellSnapshot,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  WsRpcGroup,
   type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { WsRpcGroup } from "@t3tools/contracts/rpc";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

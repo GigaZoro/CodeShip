@@ -3,27 +3,31 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
-  ChatAttachmentId,
-  ChatFileAttachment,
-  ChatImageAttachment,
   CheckpointId,
   EnvironmentId,
   MessageId,
   NodeId,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
-  type ModelSelection,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2ProviderFailure,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2ProviderTurn,
-  type ProviderReplayEntry,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import {
+  ChatAttachmentId,
+  ChatFileAttachment,
+  ChatImageAttachment,
+} from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2ProviderFailure,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderTurn,
+  ProviderReplayEntry,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

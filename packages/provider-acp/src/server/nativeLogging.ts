@@ -1,4 +1,5 @@
-import type { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";

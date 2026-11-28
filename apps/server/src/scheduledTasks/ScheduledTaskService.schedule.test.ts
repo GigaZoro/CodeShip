@@ -4,19 +4,14 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
-import {
-  type MemoryShortage,
-  type ModelSelection,
-  type OrchestrationV2AppThread,
-  type Project,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ScheduledTask,
-  type ServerProvider,
-  ScheduledTaskUpsertInput,
-  ThreadId,
-} from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { MemoryShortage } from "@t3tools/contracts/hostMemory";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2AppThread } from "@t3tools/contracts/orchestrationV2";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { type ScheduledTask, ScheduledTaskUpsertInput } from "@t3tools/contracts/scheduledTask";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

@@ -1,13 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import {
-  ANTIGRAVITY_DEFAULT_MODEL,
-  AntigravitySettings,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderSetupError,
-  type ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts/model";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ServerProviderUsageLimits } from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { AntigravitySettings } from "@t3tools/contracts/settings";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -24,7 +22,6 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderHostLive from "./ProviderHostLive.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
-import type { ServerProvider } from "@t3tools/contracts";
 import {
   buildAntigravityModelsFromSession,
   makeAntigravityProvider,

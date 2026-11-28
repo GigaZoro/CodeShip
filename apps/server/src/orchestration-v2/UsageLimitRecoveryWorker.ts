@@ -1,16 +1,15 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { CommandId, MessageId, type RunId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ServerCommand,
+} from "@t3tools/contracts/orchestrationV2";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  CommandId,
   isProviderInstanceBackgroundAllowed,
-  MessageId,
-  type ModelSelection,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ServerCommand,
-  type ProviderInstanceId,
-  type RunId,
   type ServerSettings as ServerSettingsValue,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { canAccountRun } from "@t3tools/shared/serverSettings";

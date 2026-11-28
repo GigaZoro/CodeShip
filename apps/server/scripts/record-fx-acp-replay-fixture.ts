@@ -5,7 +5,8 @@
  *   node scripts/record-fx-acp-replay-fixture.ts --scenario simple
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderInstanceId, type ProviderReplayEntry } from "@t3tools/contracts";
+import type { ProviderReplayEntry } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { FxSettings } from "@t3tools/provider-fx/settings";
 import { FX_DRIVER_KIND, makeFxAcpRuntime, makeFxAdapterV2 } from "@t3tools/provider-fx/testing";
 import * as HostProcess from "@t3tools/shared/HostProcess";

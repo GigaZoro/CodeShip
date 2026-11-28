@@ -1,15 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   DEFAULT_TERMINAL_ID,
   type TerminalAttachStreamEvent,
   type TerminalEvent,
   type TerminalOpenInput,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProjectId,
   TerminalProviderInstanceNotFoundError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/terminal";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";

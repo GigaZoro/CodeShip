@@ -1,11 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import {
-  SecretProviderId,
-  SecretProviderKind,
-  type SecretReference,
-  type ServerSettings,
-} from "@t3tools/contracts";
+import { SecretProviderId, type SecretReference } from "@t3tools/contracts/secretReference";
+import { SecretProviderKind, type ServerSettings } from "@t3tools/contracts/settings";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

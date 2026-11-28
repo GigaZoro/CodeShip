@@ -1,11 +1,11 @@
 import {
-  ANTIGRAVITY_DEFAULT_MODEL,
-  type AntigravityAuthMethod,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  type ProviderSendTurnInput,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/chatAttachment";
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts/model";
+import type { ProviderSendTurnInput } from "@t3tools/contracts/provider";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
+import type { AntigravityAuthMethod } from "@t3tools/contracts/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";

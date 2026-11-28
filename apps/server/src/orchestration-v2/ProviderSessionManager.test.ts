@@ -4,22 +4,23 @@ import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   EnvironmentId,
-  type ModelSelection,
-  type OrchestrationV2AppThread,
   MessageId,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2PendingBackgroundTask,
-  type OrchestrationV2ProviderCapabilities,
-  type OrchestrationV2ProviderSession,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2Run,
-  type Project,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   type ProviderSessionId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2ProviderCapabilities,
+  OrchestrationV2ProviderSession,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2Run,
+} from "@t3tools/contracts/orchestrationV2";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

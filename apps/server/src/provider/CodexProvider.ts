@@ -17,26 +17,23 @@ import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexSchema from "effect-codex-app-server/schema";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
+import {
+  type CustomModelSetting,
+  type ModelCapabilities,
+  type ProviderOptionDescriptor,
+  PREFERRED_DEFAULT_CODEX_MODELS,
+} from "@t3tools/contracts/model";
+import { type ServerProviderModel, ServerProviderUpdateError } from "@t3tools/contracts/provider";
+import { type ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import { ProviderSkillError } from "@t3tools/contracts/providerSkills";
 import type {
-  ProviderInstanceId,
-  CodexSettings,
-  CustomModelSetting,
   ServerProvider,
   ServerProviderState,
-  ModelCapabilities,
-  ProviderOptionDescriptor,
-  ServerProviderModel,
   ServerProviderSkill,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/server";
+import { type CodexSettings, ServerSettingsError } from "@t3tools/contracts/settings";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type { ProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenance";
-import {
-  PREFERRED_DEFAULT_CODEX_MODELS,
-  ProviderDriverKind,
-  ProviderSkillError,
-  ServerSettingsError,
-  ServerProviderUpdateError,
-} from "@t3tools/contracts";
 
 import {
   codexModelFamily,

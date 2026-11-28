@@ -14,7 +14,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { lock } from "proper-lockfile";
 
-import { CodexSettings } from "@t3tools/contracts";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CodexShadowHomePathConflictError,

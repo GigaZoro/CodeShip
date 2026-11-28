@@ -3,6 +3,7 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
 import type {
   PullRequestActor,
   PullRequestCheck,
@@ -12,15 +13,14 @@ import type {
   PullRequestLabel,
   PullRequestMergeability,
   PullRequestMergeCapabilities,
-  PullRequestMergeMethod,
   PullRequestReaction,
   PullRequestReactionContent,
   PullRequestReviewDecision,
   PullRequestReviewThread,
   PullRequestReviewerCandidate,
   PullRequestState,
-} from "@t3tools/contracts";
-import { TrimmedNonEmptyString } from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import type { PullRequestMergeMethod } from "@t3tools/contracts/settingsPrimitives";
 import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 

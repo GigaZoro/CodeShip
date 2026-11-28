@@ -1,4 +1,7 @@
-import { SourceControlProviderError, SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  SourceControlProviderError,
+  SourceControlProviderKind,
+} from "@t3tools/contracts/sourceControl";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ServerConfig from "../config.ts";
 import * as GitManager from "../git/GitManager.ts";

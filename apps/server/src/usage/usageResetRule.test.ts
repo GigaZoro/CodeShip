@@ -2,7 +2,7 @@ import type {
   ServerProviderResetCredit,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerUsageLimits";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 

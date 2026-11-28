@@ -3,9 +3,9 @@ import {
   managedRuntimeModeCeilingFor,
   type ManagedCapability,
   type ManagedPolicySummary,
-  type ProviderDriverKind,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/managedPolicy";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 
 import { msg, t, type Message } from "./i18n.ts";
 

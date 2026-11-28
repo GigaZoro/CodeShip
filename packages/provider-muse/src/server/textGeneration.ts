@@ -1,10 +1,10 @@
+import { TextGenerationError } from "@t3tools/contracts/git";
 import {
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   MUSE_DEFAULT_MODEL,
-  type ModelSelection,
-  type ServerProviderModel,
-  TextGenerationError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
 import type { MuseSettings } from "../settings.ts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";

@@ -7,7 +7,7 @@ import type {
   DevicePlatform,
   DevicePlatformAvailability,
   DeviceSummary,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/device";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

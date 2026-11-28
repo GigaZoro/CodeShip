@@ -7,7 +7,7 @@ import type {
   ProviderConsumeResetCreditOutcome,
   ServerProviderResetKind,
   ServerProviderResetKindUnknownReason,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerUsageLimits";
 import * as DateTime from "effect/DateTime";
 
 const SEPARATOR = " · ";

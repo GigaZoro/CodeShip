@@ -1,14 +1,8 @@
-import {
-  type CommandId,
-  type EventId,
-  MAX_SCRIPT_ID_LENGTH,
-  type ModelSelection,
-  type ProjectIconOverride,
-  ProjectId,
-  type ProjectScript,
-  SCRIPT_RUN_COMMAND_PATTERN,
-  type ThreadEnvMode,
-} from "@t3tools/contracts";
+import { type CommandId, type EventId, ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ThreadEnvMode } from "@t3tools/contracts/environment";
+import { MAX_SCRIPT_ID_LENGTH, SCRIPT_RUN_COMMAND_PATTERN } from "@t3tools/contracts/keybindings";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { ProjectIconOverride, ProjectScript } from "@t3tools/contracts/project";
 import * as DateTime from "effect/DateTime";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";

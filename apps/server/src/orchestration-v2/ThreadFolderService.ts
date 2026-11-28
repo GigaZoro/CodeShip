@@ -1,16 +1,15 @@
+import { CommandId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
   MAX_SAVED_THREAD_FOLDERS,
   ThreadFolderError,
   type ThreadFolderRenameInput,
   type ThreadFolderRenameResult,
   type ThreadFolderSaveInput,
   type ThreadFolderSaveResult,
-  ThreadId,
   renameSavedThreadFolder,
   sameThreadFolder,
   saveThreadFolders,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/threadFolders";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";

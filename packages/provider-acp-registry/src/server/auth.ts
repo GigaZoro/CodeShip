@@ -1,8 +1,5 @@
-import {
-  ProviderSetupError,
-  type ProviderAuthMethod,
-  type ProviderInstanceId,
-} from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError, type ProviderAuthMethod } from "@t3tools/contracts/providerSetup";
 import type { AcpRegistrySettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";

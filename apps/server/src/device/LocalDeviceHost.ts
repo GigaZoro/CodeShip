@@ -1,13 +1,13 @@
 import { pruneLocalDeviceTools } from "./deviceToolMaintenance.ts";
-import { deviceToolInstallMessage } from "@t3tools/contracts";
-// The hub runs at origin root; T3 strips its prefix and the Device panel derives stream URLs from it.
 import {
+  deviceToolInstallMessage,
   type DeviceHostSummary,
   type DevicePlatform,
   type DevicePlatformAvailability,
   LOCAL_DEVICE_HOST_ID,
   LOCAL_DEVICE_HOST_LABEL,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/device";
+// The hub runs at origin root; T3 strips its prefix and the Device panel derives stream URLs from it.
 import { waitForHttpReady } from "@t3tools/shared/httpReadiness";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {

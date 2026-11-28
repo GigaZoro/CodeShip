@@ -1,12 +1,11 @@
 import {
   type EnvironmentId,
-  type OrchestrationV2LinkOrigin,
   OrchestratorMcpEnvironmentTarget,
-  OrchestratorMcpFailure,
-  type ProviderInteractionMode,
-  type RuntimeMode,
   type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2LinkOrigin } from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";

@@ -1,3 +1,4 @@
+import type { ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
 import {
   McpAppRequestError,
   type McpAppCallToolInput,
@@ -7,10 +8,8 @@ import {
   type McpAppToolInfo,
   type McpAppToolInfoInput,
   type McpAppUpdateModelContextInput,
-  type OrchestrationV2AppThread,
-  type ThreadId,
-  type TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/mcpApps";
+import type { OrchestrationV2AppThread } from "@t3tools/contracts/orchestrationV2";
 import { mcpAppToolCallableByApp, type McpAppReference } from "@t3tools/shared/mcpApp";
 import { mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Context from "effect/Context";

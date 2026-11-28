@@ -1,4 +1,4 @@
-import { SecretProviderKind } from "@t3tools/contracts";
+import { SecretProviderKind } from "@t3tools/contracts/settings";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Schema from "effect/Schema";
 

@@ -1,10 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
-import {
-  AuthSessionId,
-  RpcClientId,
-  type HostPowerSnapshot,
-  type ClientActivityReportInput,
-} from "@t3tools/contracts";
+import type { HostPowerSnapshot, ClientActivityReportInput } from "@t3tools/contracts/background";
+import { AuthSessionId, RpcClientId } from "@t3tools/contracts/baseSchemas";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

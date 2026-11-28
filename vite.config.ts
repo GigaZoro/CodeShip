@@ -93,6 +93,12 @@ const SERVER_RESTRICTED_IMPORT_PATTERNS = [
   },
 ];
 
+const RESTRICTED_CONTRACTS_ROOT_IMPORT = {
+  name: "@t3tools/contracts",
+  message:
+    "Import from '@t3tools/contracts/<module>' instead of the root '@t3tools/contracts' barrel so Vite+ cache invalidation stays scoped.",
+};
+
 const RESTRICTED_CLAUDE_SETTINGS_RESOLVER = {
   name: "@anthropic-ai/claude-agent-sdk",
   importNames: ["resolveSettings"],
@@ -451,6 +457,31 @@ export default defineConfig({
         rules: { "eslint/no-restricted-imports": ["error", { paths: RESTRICTED_IMPORT_PATHS }] },
       },
       {
+        files: [
+          "apps/server/**/*.{ts,tsx,mts,cts}",
+          "packages/shared/**/*.{ts,tsx,mts,cts}",
+          "packages/ssh/**/*.{ts,tsx,mts,cts}",
+          "packages/tailscale/**/*.{ts,tsx,mts,cts}",
+          "packages/provider-*/**/*.{ts,tsx,mts,cts}",
+          "packages/source-control-*/**/*.{ts,tsx,mts,cts}",
+          "packages/secret-provider-*/**/*.{ts,tsx,mts,cts}",
+          "infra/relay/**/*.{ts,tsx,mts,cts}",
+          "scripts/mobile-behavior/**/*.{ts,tsx,mts,cts}",
+        ],
+        rules: {
+          "eslint/no-restricted-imports": [
+            "error",
+            {
+              paths: [
+                ...RESTRICTED_IMPORT_PATHS,
+                RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS,
+                RESTRICTED_CONTRACTS_ROOT_IMPORT,
+              ],
+            },
+          ],
+        },
+      },
+      {
         // The server and every client load a forge's shared definition, so a UI runtime
         // imported there would break the server; client-only forge code goes in `src/client/`.
         files: ["packages/source-control-*/src/shared/**"],
@@ -458,7 +489,11 @@ export default defineConfig({
           "eslint/no-restricted-imports": [
             "error",
             {
-              paths: [...RESTRICTED_IMPORT_PATHS, RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS],
+              paths: [
+                ...RESTRICTED_IMPORT_PATHS,
+                RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS,
+                RESTRICTED_CONTRACTS_ROOT_IMPORT,
+              ],
               patterns: [
                 {
                   group: [
@@ -496,6 +531,7 @@ export default defineConfig({
               paths: [
                 ...RESTRICTED_IMPORT_PATHS,
                 RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS,
+                RESTRICTED_CONTRACTS_ROOT_IMPORT,
                 RESTRICTED_CLAUDE_SETTINGS_RESOLVER,
               ],
               patterns: SERVER_RESTRICTED_IMPORT_PATTERNS,
@@ -514,7 +550,11 @@ export default defineConfig({
           "eslint/no-restricted-imports": [
             "error",
             {
-              paths: [...RESTRICTED_IMPORT_PATHS, RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS],
+              paths: [
+                ...RESTRICTED_IMPORT_PATHS,
+                RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS,
+                RESTRICTED_CONTRACTS_ROOT_IMPORT,
+              ],
               patterns: SERVER_RESTRICTED_IMPORT_PATTERNS,
             },
           ],

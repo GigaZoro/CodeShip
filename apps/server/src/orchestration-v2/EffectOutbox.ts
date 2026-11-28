@@ -6,14 +6,16 @@ import {
   NodeId,
   ProviderSessionId,
   RunAttemptId,
-  ProviderApprovalDecision,
-  ProviderUserInputAnswers,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
   RuntimeRequestId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import {
+  ProviderApprovalDecision,
+  ProviderUserInputAnswers,
+} from "@t3tools/contracts/providerPolicy";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";

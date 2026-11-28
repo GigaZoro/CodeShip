@@ -1,11 +1,10 @@
 import { expect, it } from "@effect/vitest";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  EnvironmentId,
   McpCapabilityUnavailableError,
   PreviewAutomationUnavailableError,
-  ProviderInstanceId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/previewAutomation";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";

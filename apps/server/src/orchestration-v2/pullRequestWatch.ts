@@ -1,10 +1,10 @@
+import type { OrchestrationV2Notification } from "@t3tools/contracts/orchestrationV2";
 import type {
-  OrchestrationV2Notification,
   PullRequestCheck,
   PullRequestComment,
   PullRequestDetail,
-  ThreadPullRequestWatch,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import type { ThreadPullRequestWatch } from "@t3tools/contracts/threadPullRequest";
 import * as DateTime from "effect/DateTime";
 
 /** Bounds consecutive comment-only wakes to stop bot reply loops; check, conflict, or push news resets it. */

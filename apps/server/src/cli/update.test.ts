@@ -2,7 +2,7 @@
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import type { ManagedUpdatesPolicy } from "@t3tools/contracts";
+import type { ManagedUpdatesPolicy } from "@t3tools/contracts/managedPolicy";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Duration from "effect/Duration";

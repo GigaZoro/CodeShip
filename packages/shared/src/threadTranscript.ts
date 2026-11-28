@@ -1,4 +1,5 @@
-import type { EnvironmentId, OrchestrationV2ThreadTranscript } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadTranscript } from "@t3tools/contracts/orchestrationV2";
 import * as DateTime from "effect/DateTime";
 
 export function threadTranscriptHeader(

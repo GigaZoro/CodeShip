@@ -2,7 +2,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceEnvironment,
   type ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";

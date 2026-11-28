@@ -11,25 +11,26 @@ import {
   CheckpointScopeId,
   ContextHandoffId,
   ContextTransferId,
-  GitCommandError,
   MessageId,
   NodeId,
-  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderSetupError,
   RunAttemptId,
   RunId,
   ThreadId,
   TurnItemId,
   ProjectId,
+} from "@t3tools/contracts/baseSchemas";
+import { GitCommandError } from "@t3tools/contracts/git";
+import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import { AwakeSinceWake } from "@t3tools/shared/AwakeTime";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";

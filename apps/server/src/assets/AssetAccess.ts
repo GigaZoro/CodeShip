@@ -1,5 +1,5 @@
-import type { AssetResource } from "@t3tools/contracts";
 import {
+  type AssetResource,
   AssetAttachmentNotFoundError,
   AssetSourceControlMediaUrlValidationError,
   AssetPreviewTypeValidationError,
@@ -14,10 +14,9 @@ import {
   AssetWorkspaceResolutionError,
   AssetWorkspaceRootNormalizationError,
   SOURCE_CONTROL_MEDIA_ASSET,
-  ThreadId,
-  ToolActivityNativeAppReference,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/assets";
+import { ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import { ToolActivityNativeAppReference } from "@t3tools/contracts/providerRuntime";
 import {
   hostPreviewMimeTypeFromExtension,
   isWorkspaceAudioPreviewPath,

@@ -3,7 +3,7 @@ import {
   SourceControlSignInError,
   type SourceControlSignInFailure,
   type SourceControlSignInPrompt,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import { readSourceControlHostSettings } from "@t3tools/source-control-core/shared/definition";
 import * as Clock from "effect/Clock";

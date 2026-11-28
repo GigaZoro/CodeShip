@@ -1,4 +1,4 @@
-import { EnvironmentThemeFile } from "@t3tools/contracts";
+import { EnvironmentThemeFile } from "@t3tools/contracts/server";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";

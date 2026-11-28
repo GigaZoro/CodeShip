@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ThreadNotificationLevel } from "@t3tools/contracts";
+import { ThreadNotificationLevel } from "@t3tools/contracts/threadPreferences";
 import { NotificationMode } from "@t3tools/contracts/settings";
 import { shouldNotifyThread } from "./threadNotifications.ts";
 

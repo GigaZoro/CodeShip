@@ -1,10 +1,10 @@
+import type { DesktopUpdateState } from "@t3tools/contracts/ipc";
+import type { DesktopUpdateStatusReport } from "@t3tools/contracts/resourceTelemetry";
 import {
   ServerSelfUpdateError,
-  type DesktopUpdateState,
-  type DesktopUpdateStatusReport,
   type ServerSelfUpdateProgressStage,
   type ServerSelfUpdateResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/serverUpdate";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";

@@ -1,8 +1,5 @@
-import type {
-  PullRequestAction,
-  PullRequestMergeMethod,
-  PullRequestStackHead,
-} from "@t3tools/contracts";
+import type { PullRequestAction, PullRequestStackHead } from "@t3tools/contracts/pullRequest";
+import type { PullRequestMergeMethod } from "@t3tools/contracts/settingsPrimitives";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import { GraphQLClient, GraphQLClientError, GraphQLResolver } from "effect/graphql";

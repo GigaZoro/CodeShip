@@ -1,15 +1,15 @@
 import {
-  providerInstanceConfigEnabledFlag,
   ProviderInstanceId,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   type ProviderInstanceEnvironment,
   type ProviderDriverKind,
   type ResolvedProviderInstanceEnvironment,
-  type SecretReference,
-  secretReferencesInSettings,
-  type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import type { SecretReference } from "@t3tools/contracts/secretReference";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { providerInstanceConfigEnabledFlag } from "@t3tools/contracts/settings";
+import { secretReferencesInSettings } from "@t3tools/contracts/settingsSecretValue";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";

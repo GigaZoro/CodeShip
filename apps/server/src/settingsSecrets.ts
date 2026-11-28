@@ -1,15 +1,13 @@
+import { EasDeviceHostConfig, SimlockDeviceHostConfig } from "@t3tools/contracts/device";
 import {
   AntigravitySettings,
   ClaudeSettings,
   CodexSettings,
-  EasDeviceHostConfig,
   type ServerSettings,
-  SimlockDeviceHostConfig,
   ThreadPageSettings,
   UsageLimitSourceConfig,
-  isSecretReference,
-  secretSettingsFields,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import { isSecretReference, secretSettingsFields } from "@t3tools/contracts/settingsSecretValue";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
 import { cursorClient } from "@t3tools/provider-cursor/client";
 import { grokClient } from "@t3tools/provider-grok/client";

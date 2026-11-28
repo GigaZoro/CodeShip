@@ -1,4 +1,4 @@
-import { ModelSelection } from "@t3tools/contracts";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
 import type { UsageSpeed } from "@t3tools/provider-core/server/usage";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";

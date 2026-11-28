@@ -1,9 +1,6 @@
-import {
-  ProviderSetupError,
-  type ProviderAuthMethod,
-  type ProviderInstanceId,
-  type ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError, type ProviderAuthMethod } from "@t3tools/contracts/providerSetup";
+import type { ServerProviderUsageLimits } from "@t3tools/contracts/providerUsageLimits";
 import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import { errorTag } from "@t3tools/shared/observability";

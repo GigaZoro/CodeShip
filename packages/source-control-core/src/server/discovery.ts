@@ -1,11 +1,11 @@
 import * as NodeUtil from "node:util";
-import {
-  VcsProcessSpawnError,
-  type SourceControlProviderAuth,
-  type SourceControlProviderDiscoveryItem,
-  type SourceControlProviderInfo,
-  type SourceControlProviderKind,
-} from "@t3tools/contracts";
+import type {
+  SourceControlProviderAuth,
+  SourceControlProviderDiscoveryItem,
+  SourceControlProviderInfo,
+  SourceControlProviderKind,
+} from "@t3tools/contracts/sourceControl";
+import { VcsProcessSpawnError } from "@t3tools/contracts/vcs";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import type * as Cause from "effect/Cause";

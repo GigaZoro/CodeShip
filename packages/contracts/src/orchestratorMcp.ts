@@ -1,4 +1,3 @@
-import { ServerProviderApiCredit } from "./server.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -6,12 +5,14 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { AuthMcpClientAccess } from "./auth.ts";
 import { DelegatedTaskRole } from "./delegatedTaskRole.ts";
 import {
+  clampedPositiveInt,
   ContextTransferId,
   EnvironmentId,
   IsoDateTime,
   MessageId,
   NodeId,
   NonNegativeInt,
+  OrchestratorMcpEnvironmentTarget,
   PositiveInt,
   ProjectId,
   RunId,
@@ -22,6 +23,7 @@ import {
   TrimmedNonEmptyString,
   TurnItemId,
 } from "./baseSchemas.ts";
+import { ServerProviderApiCredit } from "./provider.ts";
 import {
   RepoCapExemption,
   RUN_CONDITION_FAILING_STREAK,
@@ -30,7 +32,6 @@ import {
   ScheduledTaskGroupLabel,
   ScheduledTaskFailingCheck,
   ScheduledTaskNoWorkSkip,
-  ScheduledTaskPlacement,
   ScheduledTaskPromptFile,
   ScheduledTaskPromptFilePath,
   ScheduledTaskRecentRunCounts,
@@ -45,6 +46,7 @@ import {
   ScheduledTaskSharedDeletion,
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
+import { ScheduledTaskPlacement } from "./settingsPrimitives.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
 import {
   ProviderCreditGrant,
@@ -546,13 +548,6 @@ const OrchestratorMcpProjectTarget = Schema.optional(
   ),
 );
 
-/**
- * A linked environment to act in; the call is forwarded there, under the link's access and the
- * caller's own modes. No description: over forty tools take it, and the orchestration
- * instructions every provider with T3 tools gets explain it once.
- */
-export const OrchestratorMcpEnvironmentTarget = Schema.optional(EnvironmentId);
-
 export const OrchestratorMcpThreadListInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
@@ -622,20 +617,6 @@ export const OrchestratorMcpThreadListResult = Schema.Struct({
   total: NonNegativeInt,
 });
 export type OrchestratorMcpThreadListResult = typeof OrchestratorMcpThreadListResult.Type;
-
-// Codex hides `minimum` and `maximum` from the model, so a value above the maximum clamps on
-// decode instead of failing the call; pagination returns the rest. Values below 1 still fail:
-// 0 asks for nothing, and answering it with one item would be a different request.
-export const clampedPositiveInt = (maximum: number) =>
-  PositiveInt.pipe(
-    Schema.decodeTo(
-      PositiveInt.check(Schema.isLessThanOrEqualTo(maximum)),
-      SchemaTransformation.transform({
-        decode: (value) => Math.min(value, maximum),
-        encode: (value) => value,
-      }),
-    ),
-  );
 
 export const OrchestratorMcpThreadReadInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,

@@ -1,13 +1,10 @@
-import {
-  ANTIGRAVITY_DEFAULT_MODEL,
-  ProviderDriverKind,
-  type AntigravitySettings,
-  type ProviderSetupError,
-  type ServerProvider,
-  type ServerProviderModel,
-  type ServerProviderSlashCommand,
-  type ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts/model";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ServerProviderUsageLimits } from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider, ServerProviderSlashCommand } from "@t3tools/contracts/server";
+import type { AntigravitySettings } from "@t3tools/contracts/settings";
 import { antigravityModelFamily, createModelCapabilities } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

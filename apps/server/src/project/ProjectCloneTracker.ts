@@ -1,19 +1,19 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
-import type {
-  ProjectCloneSnapshot,
-  ProjectCloneStage,
-  ProjectCloneStartInput,
-  ProjectCloneStartResult,
-  ProjectId,
-  SourceControlCloneProtocol,
-  SourceControlRepositoryInfo,
-} from "@t3tools/contracts";
+import type { ProjectId } from "@t3tools/contracts/baseSchemas";
+import { OrchestrationDispatchCommandError } from "@t3tools/contracts/orchestrationDispatch";
 import {
-  OrchestrationDispatchCommandError,
+  type ProjectCloneSnapshot,
+  type ProjectCloneStage,
+  type ProjectCloneStartInput,
+  type ProjectCloneStartResult,
   PROJECT_CLONE_DETAIL_MAX_LENGTH,
   PROJECT_CLONE_ERROR_MAX_LENGTH,
+} from "@t3tools/contracts/projectClone";
+import {
+  SourceControlProviderKind,
+  type SourceControlCloneProtocol,
+  type SourceControlRepositoryInfo,
   SourceControlRepositoryError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

@@ -2,14 +2,11 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  EnvironmentId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProvider,
-  UsageLimitSourceId,
-} from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
+import { UsageLimitSourceId } from "@t3tools/contracts/usageLimitSourceId";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

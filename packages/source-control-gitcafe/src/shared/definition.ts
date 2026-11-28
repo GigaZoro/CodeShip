@@ -1,8 +1,6 @@
-import {
-  makeProviderSettingsSchema,
-  SettingsSecretValue,
-  SourceControlProviderKind,
-} from "@t3tools/contracts";
+import { makeProviderSettingsSchema } from "@t3tools/contracts/settings";
+import { SettingsSecretValue } from "@t3tools/contracts/settingsSecretValue";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {

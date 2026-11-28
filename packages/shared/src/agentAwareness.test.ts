@@ -1,12 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import type {
-  EnvironmentId,
-  OrchestrationV2ThreadShell,
-  Project,
-  ThreadId,
-} from "@t3tools/contracts";
-import { ProviderInstanceId, RuntimeRequestId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type ThreadId,
+  RuntimeRequestId,
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 
 import { projectThreadAwarenessV2 } from "./agentAwareness.ts";

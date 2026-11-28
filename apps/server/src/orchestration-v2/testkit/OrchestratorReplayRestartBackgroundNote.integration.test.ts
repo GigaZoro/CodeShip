@@ -1,14 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { CommandId, EventId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
-  EventId,
   isOrchestrationV2WorkActive,
   type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2Run,
-  ProviderDriverKind,
   type ProviderReplayEntry,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

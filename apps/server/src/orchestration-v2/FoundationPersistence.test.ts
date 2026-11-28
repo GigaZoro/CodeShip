@@ -9,17 +9,8 @@ import {
   ContextTransferId,
   EventId,
   MessageId,
-  type ModelSelection,
   NodeId,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2Run,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2ThreadProjection,
-  type OrchestrationV2TurnItem,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -28,7 +19,17 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2Run,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";

@@ -20,17 +20,18 @@ import {
   CheckpointId,
   EnvironmentId,
   MessageId,
-  type ModelSelection,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   RunId,
   ThreadId,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2TurnItem,
-  type ProviderOptionDescriptor,
-  type ProviderUserInputAnswers,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ProviderOptionDescriptor } from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2ProviderThread,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderUserInputAnswers } from "@t3tools/contracts/providerPolicy";
 import { GrokSettings } from "@t3tools/provider-grok/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";

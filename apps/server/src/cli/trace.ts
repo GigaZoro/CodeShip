@@ -1,4 +1,4 @@
-import { PositiveInt } from "@t3tools/contracts";
+import { PositiveInt } from "@t3tools/contracts/baseSchemas";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";

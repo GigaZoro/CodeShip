@@ -1,9 +1,9 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   ProviderMcpError,
   providerMcpServerSettings,
   providerMcpBearerTokenError,
   resolveProviderMcpServerEdit,
-  type ProviderInstanceId,
   type ProviderMcpAddInput,
   type ProviderMcpCompleteSignInInput,
   type ProviderMcpEditInput,
@@ -16,8 +16,8 @@ import {
   type ProviderMcpServerInput,
   type ProviderMcpSetEnabledInput,
   type ProviderMcpSignInState,
-  type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerMcp";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import type {
   ProviderMcpManagement,
   ProviderMcpSignIn,

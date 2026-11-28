@@ -2,15 +2,17 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
-  type OrchestrationV2ProviderCapabilities,
-  type OrchestrationV2ThreadProjection,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   RunAttemptId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ProviderCapabilities,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";

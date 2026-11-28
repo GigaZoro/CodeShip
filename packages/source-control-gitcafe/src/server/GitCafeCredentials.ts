@@ -1,4 +1,4 @@
-import { settingsSecretLiteral } from "@t3tools/contracts";
+import { settingsSecretLiteral } from "@t3tools/contracts/settingsSecretValue";
 import { normalizeHost } from "@t3tools/source-control-core/server/pullRequestUtils";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";

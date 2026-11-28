@@ -31,18 +31,45 @@ import {
   type ChatGptSharingLimitReading,
   type CodexRateLimitSnapshot,
 } from "../../provider/codexUsageLimits.ts";
+import type { ProviderThreadId, ProviderTurnId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
-  CodexSettings,
-  defaultInstanceIdForDriver,
   isOrchestrationV2WorkActive,
   type OrchestrationV2GoalCommand,
   OrchestrationV2ProviderGoal,
   parseGoalCommand,
+  type OrchestrationV2AppThread,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2ExecutionNode,
+  type OrchestrationV2PlanArtifact,
+  type OrchestrationV2ProviderCapabilities,
+  type OrchestrationV2ProviderFailure,
+  type OrchestrationV2ProviderRetry,
+  type OrchestrationV2ProviderSession,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2PlanStep,
+  type OrchestrationV2RuntimeRequest,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import {
+  defaultInstanceIdForDriver,
   ProviderDriverKind,
-  ProviderSetupError,
-  type ServerProviderCompatibilityAdvisory,
-} from "@t3tools/contracts";
+  type ProviderInstanceId,
+} from "@t3tools/contracts/providerInstance";
+import type {
+  ProviderUserInputAnswers,
+  ProviderApprovalDecision,
+  ProviderApprovalOption,
+  ProviderRequestKind,
+  RuntimeMode,
+} from "@t3tools/contracts/providerPolicy";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ServerProviderCompatibilityAdvisory } from "@t3tools/contracts/server";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { CHATGPT_APP_CAP_CODE } from "@t3tools/shared/usageLimits";
@@ -56,33 +83,6 @@ import {
 import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
 import { appendGeneratedImageEmbeds } from "@t3tools/shared/generatedImageMarkdown";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import type {
-  ChatAttachment,
-  OrchestrationV2AppThread,
-  OrchestrationV2ConversationMessage,
-  OrchestrationV2ExecutionNode,
-  ModelSelection,
-  OrchestrationV2PlanArtifact,
-  OrchestrationV2ProviderCapabilities,
-  OrchestrationV2ProviderFailure,
-  OrchestrationV2ProviderRetry,
-  OrchestrationV2ProviderSession,
-  OrchestrationV2ProviderThread,
-  OrchestrationV2ProviderTurn,
-  OrchestrationV2PlanStep,
-  OrchestrationV2RuntimeRequest,
-  OrchestrationV2Subagent,
-  OrchestrationV2TurnItem,
-  ProviderUserInputAnswers,
-  ProviderApprovalDecision,
-  ProviderApprovalOption,
-  ProviderRequestKind,
-  ProviderThreadId,
-  ProviderTurnId,
-  ProviderInstanceId,
-  RuntimeMode,
-  ThreadId,
-} from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexSchema from "effect-codex-app-server/schema";

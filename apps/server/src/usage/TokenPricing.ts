@@ -1,4 +1,4 @@
-import type { UsageReadError, UsageTokenTotals } from "@t3tools/contracts";
+import type { UsageReadError, UsageTokenTotals } from "@t3tools/contracts/usage";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 

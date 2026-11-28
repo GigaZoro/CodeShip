@@ -1,11 +1,11 @@
+import type { ServerSelfUpdateCapability } from "@t3tools/contracts/environment";
 import {
   ServerSelfUpdateError,
-  type ServerSelfUpdateCapability,
   type ServerSelfUpdateInput,
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateProgressStage,
   type ServerSelfUpdateResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/serverUpdate";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";

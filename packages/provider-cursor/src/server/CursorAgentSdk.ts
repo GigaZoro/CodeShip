@@ -7,11 +7,9 @@ import type {
   SDKUserMessage,
   SendOptions,
 } from "@cursor/sdk";
-import {
-  type OrchestrationV2ProviderSession,
-  ProviderDriverKind,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ProviderSession } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

@@ -1,4 +1,5 @@
-import { NodeId, ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/contracts";
+import { NodeId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2TurnItem } from "@t3tools/contracts/orchestrationV2";
 import {
   MAX_TOOL_OUTPUT_IMAGE_BASE64_LENGTH,
   MAX_TOOL_OUTPUT_IMAGES,

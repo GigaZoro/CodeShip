@@ -1,15 +1,6 @@
 import {
   NodeId,
   CommandId,
-  OrchestrationV2DomainEvent,
-  OrchestrationV2StoredEvent,
-  type OrchestrationV2PendingBackgroundTask,
-  type OrchestrationV2PlanArtifact,
-  type OrchestrationV2Run,
-  type OrchestrationV2Subagent,
-  type OrchestrationV2ThreadProjection,
-  type ModelSelection,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -17,8 +8,19 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2StoredEvent,
+  type OrchestrationV2PendingBackgroundTask,
+  type OrchestrationV2PlanArtifact,
+  type OrchestrationV2Run,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2ThreadProjection,
   isOrchestrationV2WorkActive,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

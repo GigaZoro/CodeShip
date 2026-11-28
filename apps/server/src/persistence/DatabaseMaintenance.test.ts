@@ -1,13 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import {
-  EventId,
-  type OrchestrationV2DomainEvent,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+import { EventId, ProjectId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2DomainEvent } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";

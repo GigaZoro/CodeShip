@@ -1,14 +1,10 @@
-import {
-  EventId,
-  type ModelSelection,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ProviderThread,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderThreadId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EventId, ProjectId, ProviderThreadId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ProviderThread,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";

@@ -1,11 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import {
-  ANTIGRAVITY_DEFAULT_MODEL,
-  EnvironmentId,
-  ProviderInstanceId,
-  type AntigravitySettings,
-} from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts/model";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { AntigravitySettings } from "@t3tools/contracts/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { collectLimitAccounts } from "@t3tools/shared/usageLimits";
 import { markWindowsJobSpawner } from "@t3tools/shared/windowsJobSpawner";

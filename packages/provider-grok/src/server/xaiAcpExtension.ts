@@ -1,4 +1,5 @@
-import type { ProviderUserInputAnswers, UserInputQuestion } from "@t3tools/contracts";
+import type { ProviderUserInputAnswers } from "@t3tools/contracts/providerPolicy";
+import type { UserInputQuestion } from "@t3tools/contracts/providerRuntime";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

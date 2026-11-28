@@ -1,19 +1,17 @@
-import type {
-  HostPowerSnapshot,
-  ResourceMonitorCapabilities,
-  ResourceMonitorCommand,
-  ResourceMonitorEvent,
-  ResourceMonitorExternalProcess,
-  ResourceMonitorHelloEvent,
-  ResourceMonitorProcessTableEntry,
-  ResourceMonitorSnapshotEvent,
-  ResourceTelemetrySourceStatus,
-} from "@t3tools/contracts";
+import type { HostPowerSnapshot } from "@t3tools/contracts/background";
 import {
+  type ResourceMonitorCapabilities,
+  type ResourceMonitorCommand,
+  type ResourceMonitorEvent,
+  type ResourceMonitorExternalProcess,
+  type ResourceMonitorHelloEvent,
+  type ResourceMonitorProcessTableEntry,
+  type ResourceMonitorSnapshotEvent,
+  type ResourceTelemetrySourceStatus,
   RESOURCE_MONITOR_PROTOCOL_VERSION,
   ResourceMonitorCommand as ResourceMonitorCommandSchema,
   ResourceMonitorEvent as ResourceMonitorEventSchema,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/resourceTelemetry";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";

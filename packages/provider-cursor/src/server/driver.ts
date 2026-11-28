@@ -1,10 +1,8 @@
-import {
-  ProviderDriverKind,
-  ProviderSetupError,
-  type ServerProvider,
-  type ServerProviderModel,
-  type ServerSettings,
-} from "@t3tools/contracts";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 import { CursorSettings } from "../settings.ts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";

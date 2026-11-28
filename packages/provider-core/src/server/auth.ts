@@ -1,11 +1,11 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import type {
   ChatGptReconnectProfile,
   ChatGptTransferredProfile,
   ProviderAuthRespondInput,
   ProviderAuthState,
-  ProviderInstanceId,
   ProviderSetupError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerSetup";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";

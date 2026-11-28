@@ -1,10 +1,7 @@
-import {
-  type EnvironmentId,
-  OrchestratorMcpFailure,
-  type PeerLinkError,
-  type ProviderInteractionMode,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLinkError } from "@t3tools/contracts/peerLink";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

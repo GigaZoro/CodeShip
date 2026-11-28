@@ -1,8 +1,8 @@
 import type {
   ProviderInstanceConfig,
   ProviderInstanceId,
-  ServerSettings,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 
 import { stableStringify } from "./relaySigning.ts";
 

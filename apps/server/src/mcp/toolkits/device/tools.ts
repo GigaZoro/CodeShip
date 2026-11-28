@@ -1,5 +1,4 @@
 import {
-  OrchestratorMcpFailure,
   DeviceToolCloseInput,
   DeviceToolError,
   DeviceToolListResult,
@@ -7,7 +6,8 @@ import {
   DeviceToolOpenResult,
   DeviceToolScreenshotResult,
   DeviceToolTargetInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/device";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";

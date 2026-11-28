@@ -1,8 +1,5 @@
-import {
-  OrchestratorMcpFailure,
-  ProviderMcpNewServerName,
-  type ProviderMcpError,
-} from "@t3tools/contracts";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderMcpNewServerName, type ProviderMcpError } from "@t3tools/contracts/providerMcp";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 

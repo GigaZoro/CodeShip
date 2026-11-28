@@ -1,4 +1,100 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import {
+  AcpRegistryOperationError,
+  type AcpRegistryImportSessionInput,
+  type AcpRegistryDeleteSessionInput,
+  type AcpRegistryDisableProviderInput,
+  type AcpRegistryListProvidersInput,
+  type AcpRegistryListSessionsInput,
+  type AcpRegistrySetProviderInput,
+} from "@t3tools/contracts/acpRegistry";
+import type { ApplicationStoredEvent } from "@t3tools/contracts/applicationEvent";
+import {
+  AssetWorkspaceContextNotFoundError,
+  AssetWorkspaceContextResolutionError,
+  SOURCE_CONTROL_MEDIA_ASSET,
+} from "@t3tools/contracts/assets";
+import {
+  authScopeResponse,
+  AuthAccessStreamError,
+  type AuthAccessStreamEvent,
+  AuthOrchestrationOperateScope,
+  type AuthEnvironmentScope,
+  EnvironmentAuthorizationError,
+} from "@t3tools/contracts/auth";
+import {
+  CommandId,
+  AuthSessionId,
+  ClientConnectionMethod,
+  ClientDeviceType,
+  ClientOs,
+  ClientSurface,
+  ClientWebDeployment,
+  type MessageId,
+  RpcClientId,
+  type ProjectId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachmentId, PersistChatAttachmentsError } from "@t3tools/contracts/chatAttachment";
+import {
+  OrchestrationGetFullThreadDiffError,
+  OrchestrationGetTurnDiffError,
+} from "@t3tools/contracts/checkpointDiff";
+import type { EditorId, FileManagerRevealKind } from "@t3tools/contracts/editor";
+import {
+  ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+  ORCHESTRATION_PROTOCOL_VERSION,
+} from "@t3tools/contracts/environment";
+import { type FilesystemBrowseFailure, FilesystemBrowseError } from "@t3tools/contracts/filesystem";
+import type { GitActionProgressEvent, GitManagerServiceError } from "@t3tools/contracts/git";
+import { ManualStepStartChatError } from "@t3tools/contracts/manualSteps";
+import { MonitoringFixChatError } from "@t3tools/contracts/monitoring";
+import { OrchestrationDispatchCommandError } from "@t3tools/contracts/orchestrationDispatch";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import {
+  type OrchestrationV2Command,
+  OrchestrationV2SearchThreadError,
+  ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationV2DispatchCommandError,
+  OrchestrationV2GetShellSnapshotError,
+  OrchestrationV2RestartHoldError,
+  OrchestrationV2GetThreadProjectionError,
+  OrchestrationV2ThreadLaunchError,
+  type OrchestrationV2ShellSnapshot,
+  type OrchestrationV2ThreadStreamItem,
+} from "@t3tools/contracts/orchestrationV2";
+import type { DiscoveredLocalServerList } from "@t3tools/contracts/preview";
+import {
+  type ProjectEntriesFailure,
+  type ProjectFileFailure,
+  type ProjectFileOperation,
+  type ProjectMutation,
+  ProjectListEntriesError,
+  ProjectReadFileError,
+  ProjectSearchContentsError,
+  ProjectSearchEntriesError,
+  ProjectWriteFileError,
+  ProjectMutationError,
+} from "@t3tools/contracts/project";
+import { ProviderUploadFeedbackError } from "@t3tools/contracts/provider";
+import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { PullRequestRef } from "@t3tools/contracts/pullRequest";
+import {
+  RelayClientInstallFailedError,
+  type RelayClientInstallProgressEvent,
+} from "@t3tools/contracts/relayClient";
+import { WsRpcGroup } from "@t3tools/contracts/rpc";
+import { WS_METHODS } from "@t3tools/contracts/wsMethods";
+import type { ScheduledTaskListResult } from "@t3tools/contracts/scheduledTask";
+import type {
+  ServerConfig as ClientServerConfig,
+  ServerConfigStreamEvent,
+  ServerLifecycleStreamEvent,
+  ServerProvider,
+} from "@t3tools/contracts/server";
+import type { ServerSettingsPatch } from "@t3tools/contracts/settings";
+import type { TerminalMetadataStreamEvent } from "@t3tools/contracts/terminal";
+import { OrchestrationSearchThreadsError } from "@t3tools/contracts/threadSearch";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -22,89 +118,6 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
-import {
-  AcpRegistryOperationError,
-  CommandId,
-  ManualStepStartChatError,
-  MonitoringFixChatError,
-  authScopeResponse,
-  AuthAccessStreamError,
-  type AuthAccessStreamEvent,
-  AuthOrchestrationOperateScope,
-  type AuthEnvironmentScope,
-  type ScheduledTaskListResult,
-  AuthSessionId,
-  ClientConnectionMethod,
-  ClientDeviceType,
-  ClientOs,
-  ClientSurface,
-  ClientWebDeployment,
-  type DiscoveredLocalServerList,
-  type EditorId,
-  type FileManagerRevealKind,
-  type OrchestrationV2Command,
-  type GitActionProgressEvent,
-  type GitManagerServiceError,
-  type MessageId,
-  type AcpRegistryImportSessionInput,
-  type AcpRegistryDeleteSessionInput,
-  type AcpRegistryDisableProviderInput,
-  type AcpRegistryListProvidersInput,
-  type AcpRegistryListSessionsInput,
-  type AcpRegistrySetProviderInput,
-  OrchestrationGetFullThreadDiffError,
-  OrchestrationSearchThreadsError,
-  OrchestrationV2SearchThreadError,
-  OrchestrationGetTurnDiffError,
-  ORCHESTRATION_V2_WS_METHODS,
-  ORCHESTRATION_PROTOCOL_QUERY_PARAM,
-  ORCHESTRATION_PROTOCOL_VERSION,
-  OrchestrationV2DispatchCommandError,
-  OrchestrationV2GetShellSnapshotError,
-  OrchestrationV2RestartHoldError,
-  OrchestrationV2GetThreadProjectionError,
-  OrchestrationV2ThreadLaunchError,
-  type OrchestrationProjectShell,
-  type OrchestrationV2ShellSnapshot,
-  type OrchestrationV2ThreadStreamItem,
-  type ApplicationStoredEvent,
-  type ProjectEntriesFailure,
-  type ProjectFileFailure,
-  type ProjectFileOperation,
-  type ProjectMutation,
-  ProjectListEntriesError,
-  ProjectReadFileError,
-  ProjectSearchContentsError,
-  ProjectSearchEntriesError,
-  ProjectWriteFileError,
-  ProjectMutationError,
-  ProviderUploadFeedbackError,
-  ProviderSetupError,
-  RelayClientInstallFailedError,
-  type RelayClientInstallProgressEvent,
-  type ServerConfig as ClientServerConfig,
-  type ServerConfigStreamEvent,
-  type ServerLifecycleStreamEvent,
-  type ServerProvider,
-  type FilesystemBrowseFailure,
-  FilesystemBrowseError,
-  AssetWorkspaceContextNotFoundError,
-  AssetWorkspaceContextResolutionError,
-  SOURCE_CONTROL_MEDIA_ASSET,
-  ChatAttachmentId,
-  PersistChatAttachmentsError,
-  RpcClientId,
-  EnvironmentAuthorizationError,
-  type ProjectId,
-  type ProviderDriverKind,
-  type ProviderInstanceId,
-  ThreadId,
-  type TerminalMetadataStreamEvent,
-  type PullRequestRef,
-  type ServerSettingsPatch,
-  WS_METHODS,
-  WsRpcGroup,
-} from "@t3tools/contracts";
 import {
   HttpRouter,
   HttpServerRequest,

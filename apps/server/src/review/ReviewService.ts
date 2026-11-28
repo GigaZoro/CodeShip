@@ -5,17 +5,16 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import {
-  VcsRepositoryDetectionError,
-  VcsUnsupportedOperationError,
-  type ReviewBranchCommitsInput,
-  type ReviewBranchCommitsResult,
-  type ReviewDiffFileContentsInput,
-  type ReviewDiffFileContentsResult,
-  type ReviewDiffPreviewError,
-  type ReviewDiffPreviewInput,
-  type ReviewDiffPreviewResult,
-} from "@t3tools/contracts";
+import type {
+  ReviewBranchCommitsInput,
+  ReviewBranchCommitsResult,
+  ReviewDiffFileContentsInput,
+  ReviewDiffFileContentsResult,
+  ReviewDiffPreviewError,
+  ReviewDiffPreviewInput,
+  ReviewDiffPreviewResult,
+} from "@t3tools/contracts/review";
+import { VcsRepositoryDetectionError, VcsUnsupportedOperationError } from "@t3tools/contracts/vcs";
 
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";

@@ -1,8 +1,6 @@
-import {
-  DESKTOP_RESTART_HOLD_PATH,
-  type DesktopBackendEndpoint,
-  OrchestrationV2RestartHold,
-} from "@t3tools/contracts";
+import { DESKTOP_RESTART_HOLD_PATH } from "@t3tools/contracts/desktopBootstrap";
+import { OrchestrationV2RestartHold } from "@t3tools/contracts/orchestrationV2";
+import type { DesktopBackendEndpoint } from "@t3tools/contracts/resourceTelemetry";
 import { currentDesktopControlToken } from "@t3tools/shared/desktopBootstrapToken";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";

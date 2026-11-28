@@ -1,28 +1,33 @@
 import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_BY_PROVIDER,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
-  isRuntimeModeAbove,
   AgentSessionImportProjectChangedError,
   AgentSessionImportProjectNotFoundError,
   AgentSessionScanError,
   AgentSessionSource,
-  EventId,
-  MessageId,
-  ProjectId,
-  ProviderDriverKind,
-  ThreadId,
-  TurnItemId,
   type AgentConversationSyncResult,
   type AgentSessionImportInput,
   type AgentSessionImportResult,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2ConversationMessage,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/agentSessions";
+import {
+  EventId,
+  MessageId,
+  ProjectId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import { DEFAULT_MODEL, DEFAULT_MODEL_BY_PROVIDER } from "@t3tools/contracts/model";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2ConversationMessage,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import {
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  isRuntimeModeAbove,
+} from "@t3tools/contracts/providerPolicy";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";

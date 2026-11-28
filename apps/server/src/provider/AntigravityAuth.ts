@@ -1,8 +1,5 @@
-import {
-  ProviderSetupError,
-  type ProviderAuthState,
-  type ProviderInstanceId,
-} from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError, type ProviderAuthState } from "@t3tools/contracts/providerSetup";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";

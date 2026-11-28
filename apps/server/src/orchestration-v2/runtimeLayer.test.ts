@@ -1,11 +1,46 @@
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
+import type { ApplicationStoredEvent } from "@t3tools/contracts/applicationEvent";
+import {
+  CheckpointId,
+  CheckpointRef,
+  CheckpointScopeId,
+  CommandId,
+  ContextTransferId,
+  EventId,
+  MessageId,
+  NodeId,
+  RuntimeRequestId,
+  TurnItemId,
+  ProjectId,
+  ProviderSessionId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RunAttemptId,
+  RunId,
+  ScheduledTaskId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-  SourceControlProviderKind,
   orchestrationV2RunAwaitsMemory,
-} from "@t3tools/contracts";
+  MAX_THREAD_STARRED_MESSAGES,
+  type OrchestrationV2Command,
+  type OrchestrationV2Run,
+  type OrchestrationV2ShellSnapshot,
+  type OrchestrationV2RuntimeRequest,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import {
+  type PullRequestDetail,
+  type PullRequestComment,
+  PullRequestOperationError,
+} from "@t3tools/contracts/pullRequest";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import { evidenceKey, makeDispatchRecorder } from "./StopDecisionEvidence.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import { AccountRouting, autoRoute, runLiftsScope } from "./AccountRouting.ts";
@@ -15,40 +50,6 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
-import {
-  type ApplicationStoredEvent,
-  CheckpointId,
-  CheckpointRef,
-  CheckpointScopeId,
-  CommandId,
-  ContextTransferId,
-  DEFAULT_SERVER_SETTINGS,
-  EventId,
-  MAX_THREAD_STARRED_MESSAGES,
-  MessageId,
-  NodeId,
-  RuntimeRequestId,
-  TurnItemId,
-  type ModelSelection,
-  type OrchestrationV2Command,
-  type OrchestrationV2Run,
-  type OrchestrationV2ShellSnapshot,
-  type OrchestrationV2RuntimeRequest,
-  ProjectId,
-  type PullRequestDetail,
-  type PullRequestComment,
-  PullRequestOperationError,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderSessionId,
-  ProviderThreadId,
-  ProviderTurnId,
-  RunAttemptId,
-  RunId,
-  ScheduledTaskId,
-  type ServerProvider,
-  ThreadId,
-} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

@@ -1,9 +1,6 @@
 // Shared with the client settings form; keep schema code browser-safe.
-import {
-  CustomModelSetting,
-  makeBinaryPathSetting,
-  makeProviderSettingsSchema,
-} from "@t3tools/contracts";
+import { CustomModelSetting } from "@t3tools/contracts/model";
+import { makeBinaryPathSetting, makeProviderSettingsSchema } from "@t3tools/contracts/settings";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 

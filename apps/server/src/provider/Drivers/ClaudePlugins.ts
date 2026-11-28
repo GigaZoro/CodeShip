@@ -1,11 +1,11 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   boundedProviderPluginDescription,
   ProviderPluginError,
   splitProviderPluginId,
-  type ProviderInstanceId,
   type ProviderPlugin,
   type ProviderPluginOperation,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerPlugins";
 import type {
   ProviderPluginCatalog,
   ProviderPluginManagement,

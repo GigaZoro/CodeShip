@@ -1,7 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import type { ReviewMaterialReceipt } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ReviewMaterialReceipt } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

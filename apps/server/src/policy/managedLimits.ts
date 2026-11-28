@@ -4,11 +4,8 @@
  *
  * @module managedLimits
  */
-import type {
-  ManagedPolicyClient,
-  ManagedPolicyDocument,
-  ServerAuthPolicy,
-} from "@t3tools/contracts";
+import type { ServerAuthPolicy } from "@t3tools/contracts/auth";
+import type { ManagedPolicyClient, ManagedPolicyDocument } from "@t3tools/contracts/managedPolicy";
 import {
   disableTailscaleServe,
   disableTailscaleServeTcp,

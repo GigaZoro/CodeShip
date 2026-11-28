@@ -1,8 +1,8 @@
+import type { ServerProvider } from "@t3tools/contracts/server";
 import {
   DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
-  type ServerProvider,
   ServerSettingsError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Clock from "effect/Clock";

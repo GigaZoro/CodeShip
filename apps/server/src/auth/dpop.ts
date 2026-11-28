@@ -2,7 +2,7 @@ import {
   type DpopVerificationFailureCode as DpopVerificationFailureCodeType,
   verifyDpopProof,
 } from "@t3tools/shared/dpop";
-import type { DpopFailureReason } from "@t3tools/contracts";
+import type { DpopFailureReason } from "@t3tools/contracts/baseSchemas";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

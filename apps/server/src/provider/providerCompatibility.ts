@@ -1,10 +1,10 @@
-import {
-  TrimmedNonEmptyString,
-  ServerProviderCompatibilityStatus,
-  type ProviderDriverKind,
-  type ServerProvider,
-  type ServerProviderCompatibilityAdvisory,
-} from "@t3tools/contracts";
+import { TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
+import { ServerProviderCompatibilityStatus } from "@t3tools/contracts/provider";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type {
+  ServerProvider,
+  ServerProviderCompatibilityAdvisory,
+} from "@t3tools/contracts/server";
 import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 import packageJson from "../../package.json" with { type: "json" };

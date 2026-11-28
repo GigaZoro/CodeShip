@@ -1,8 +1,5 @@
-import {
-  type PullRequestCheck,
-  PullRequestComment,
-  ThreadPullRequestWatch,
-} from "@t3tools/contracts";
+import { type PullRequestCheck, PullRequestComment } from "@t3tools/contracts/pullRequest";
+import { ThreadPullRequestWatch } from "@t3tools/contracts/threadPullRequest";
 import { assert, describe, it } from "@effect/vitest";
 
 import {

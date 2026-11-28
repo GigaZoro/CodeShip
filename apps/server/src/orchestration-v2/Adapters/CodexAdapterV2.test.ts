@@ -10,35 +10,36 @@ import {
 } from "./ProviderTextDeltaCoalescer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
   CommandId,
   CheckpointId,
-  CodexSettings,
   EnvironmentId,
-  ProviderDriverKind,
   MessageId,
-  type ModelSelection,
   NodeId,
+  ProjectId,
+  ProviderSessionId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RunAttemptId,
+  RunId,
+  RuntimeRequestId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
-  ProjectId,
-  type ProviderApprovalDecision,
-  ProviderInstanceId,
-  ProviderSessionId,
-  ProviderSetupError,
-  ProviderThreadId,
-  ProviderTurnId,
-  type ProviderUsageLimitsUpdate,
-  RunAttemptId,
-  RunId,
-  RuntimeRequestId,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderApprovalDecision } from "@t3tools/contracts/providerPolicy";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ProviderUsageLimitsUpdate } from "@t3tools/contracts/providerUsageLimits";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import { assert, describe, it } from "@effect/vitest";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexReplay from "effect-codex-app-server/replay";

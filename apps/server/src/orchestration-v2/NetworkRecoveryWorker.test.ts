@@ -1,13 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
-import {
-  CommandId,
-  MessageId,
-  type OrchestrationV2Command,
-  type OrchestrationV2Run,
-  ProviderInstanceId,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, MessageId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2Command,
+  OrchestrationV2Run,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

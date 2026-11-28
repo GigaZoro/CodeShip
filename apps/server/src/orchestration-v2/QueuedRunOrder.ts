@@ -1,4 +1,7 @@
-import type { OrchestrationV2Run, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import type {
+  OrchestrationV2Run,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts/orchestrationV2";
 
 export function isAutomaticCompletionRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,

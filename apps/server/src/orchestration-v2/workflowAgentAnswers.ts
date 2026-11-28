@@ -1,4 +1,4 @@
-import type { OrchestrationV2WorkflowAgent } from "@t3tools/contracts";
+import type { OrchestrationV2WorkflowAgent } from "@t3tools/contracts/orchestrationV2";
 
 import { field, text } from "./unknownField.ts";
 

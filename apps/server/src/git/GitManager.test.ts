@@ -1,6 +1,27 @@
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  EventId,
+  MessageId,
+  ProjectId,
+  RunId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  type GitActionProgressEvent,
+  type GitPreparePullRequestThreadInput,
+  GitCommandError,
+  TextGenerationError,
+} from "@t3tools/contracts/git";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
+import {
+  SourceControlProviderKind,
+  type ChangeRequest,
+  SourceControlProviderError as SourceControlProviderFailure,
+} from "@t3tools/contracts/sourceControl";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -22,27 +43,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
-import type {
-  ChangeRequest,
-  GitActionProgressEvent,
-  GitPreparePullRequestThreadInput,
-  ModelSelection,
-} from "@t3tools/contracts";
 
-import {
-  DEFAULT_SERVER_SETTINGS,
-  EventId,
-  GitCommandError,
-  MessageId,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  RunId,
-  SourceControlProviderError as SourceControlProviderFailure,
-  TextGenerationError,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { TextGenerationAttribution } from "../textGeneration/TextGenerationUsage.ts";

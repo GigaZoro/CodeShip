@@ -9,7 +9,7 @@ import type {
   PullRequestReaction,
   PullRequestReactionContent,
   PullRequestReviewThread,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
 import type { ProviderChangeRequest } from "@t3tools/source-control-core/server/PullRequestProvider";
 import { dedupeChecks } from "@t3tools/source-control-core/server/pullRequestChecks";
 

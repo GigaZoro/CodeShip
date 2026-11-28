@@ -1,4 +1,5 @@
-import type { ProviderDriverKind, ServerProviderUpdateError } from "@t3tools/contracts";
+import type { ServerProviderUpdateError } from "@t3tools/contracts/provider";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import type * as Effect from "effect/Effect";
 
 export interface ProviderMaintenanceCapabilities {

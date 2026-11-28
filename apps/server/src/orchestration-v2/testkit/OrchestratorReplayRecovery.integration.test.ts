@@ -7,11 +7,9 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as CodexReplay from "effect-codex-app-server/replay";
-import {
-  type OrchestrationV2ThreadProjection,
-  ProviderDriverKind,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 
 import {
   ClaudeOrchestratorReplayHarness,

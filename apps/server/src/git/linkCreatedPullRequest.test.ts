@@ -1,13 +1,9 @@
-import {
-  CommandId,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  type GitRunStackedActionResult,
-  type OrchestrationV2ServerCommand as OrchestrationCommand,
-  type OrchestrationProjectShell,
-  SourceControlProviderKind,
-} from "@t3tools/contracts";
+import { CommandId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { GitRunStackedActionResult } from "@t3tools/contracts/git";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import type { OrchestrationV2ServerCommand as OrchestrationCommand } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

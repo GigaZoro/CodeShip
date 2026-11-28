@@ -1,4 +1,5 @@
-import { ProviderDriverKind, RunId, ThreadId } from "@t3tools/contracts";
+import { RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import { describe, expect, it } from "@effect/vitest";
 
 import { compactLegacyId, compactLegacyIdsInJson, encodeIdPart } from "./compactId.ts";

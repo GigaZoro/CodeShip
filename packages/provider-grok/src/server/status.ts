@@ -1,11 +1,10 @@
-import {
-  type CustomModelSetting,
-  type ModelCapabilities,
-  type ServerProvider,
-  type ServerProviderAuth,
-  type ServerProviderModel,
-  type ServerProviderSlashCommand,
-} from "@t3tools/contracts";
+import type { CustomModelSetting, ModelCapabilities } from "@t3tools/contracts/model";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import type {
+  ServerProvider,
+  ServerProviderAuth,
+  ServerProviderSlashCommand,
+} from "@t3tools/contracts/server";
 import type { GrokSettings } from "../settings.ts";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import { causeErrorTag } from "@t3tools/shared/observability";

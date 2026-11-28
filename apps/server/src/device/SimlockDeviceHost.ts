@@ -12,7 +12,7 @@ import {
   type DevicePlatform,
   type DevicePlatformAvailability,
   type SimlockDeviceHostConfig,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/device";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";

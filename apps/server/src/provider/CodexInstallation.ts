@@ -1,9 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest.
-import {
-  ProviderDriverKind,
-  type ProviderInstallState,
-  type ServerProviderCompatibilityAdvisory,
-} from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ProviderInstallState } from "@t3tools/contracts/providerSetup";
+import type { ServerProviderCompatibilityAdvisory } from "@t3tools/contracts/server";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import { cliArchiveTarCommand } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";

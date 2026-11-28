@@ -1,10 +1,7 @@
 import { expect, it } from "@effect/vitest";
-import {
-  EnvironmentId,
-  OrchestratorMcpFailure,
-  SCHEDULED_TASK_CLAIM_PROTOCOL,
-  ScheduledTaskId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ScheduledTaskId } from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { SCHEDULED_TASK_CLAIM_PROTOCOL } from "@t3tools/contracts/scheduledTask";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

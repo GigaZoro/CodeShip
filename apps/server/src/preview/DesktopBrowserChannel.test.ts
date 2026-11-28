@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { DesktopBrowserCommand, DesktopBrowserEvent } from "@t3tools/contracts";
+import type { DesktopBrowserCommand, DesktopBrowserEvent } from "@t3tools/contracts/desktopBrowser";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";

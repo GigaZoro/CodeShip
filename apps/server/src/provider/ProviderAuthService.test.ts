@@ -1,16 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderSessionId,
-  ProviderSetupError,
-  ProviderThreadId,
-  ServerSettingsError,
-  ThreadId,
-  type OrchestrationV2ProviderSession,
-  type OrchestrationV2ThreadShell,
-  type ProviderAuthState,
-} from "@t3tools/contracts";
+import { ProviderSessionId, ProviderThreadId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ProviderSession,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError, type ProviderAuthState } from "@t3tools/contracts/providerSetup";
+import { ServerSettingsError } from "@t3tools/contracts/settings";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import * as DateTime from "effect/DateTime";

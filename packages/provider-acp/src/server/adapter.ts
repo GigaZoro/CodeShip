@@ -1,10 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off
 
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
-  type ChatAttachment,
   MessageId,
-  type ModelSelection,
+  type RunId,
+  type ProviderThreadId,
+  type RuntimeRequestId,
+  type ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2PlanArtifact,
@@ -18,26 +24,22 @@ import {
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
-  type RunId,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserInputQuestion,
   type OrchestrationV2WebSearchResult,
+} from "@t3tools/contracts/orchestrationV2";
+import type { ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import {
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
-  type ProviderInstanceId,
   type ProviderInteractionMode,
-  type ProviderDriverKind,
   type ProviderRequestKind,
-  type ProviderThreadId,
   type ProviderUserInputAnswers,
   type RuntimeMode,
-  type RuntimeRequestId,
-  type ThreadTokenUsageSnapshot,
-  type ThreadId,
   isRuntimeModeAbove,
-  type TurnTokenUsage,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerPolicy";
+import type { ThreadTokenUsageSnapshot, TurnTokenUsage } from "@t3tools/contracts/providerRuntime";
 import { AgentScope, AgentScopeThreadId } from "@t3tools/shared/AgentScope";
 import { HTML_RENDER_TOOL_NAME } from "@t3tools/shared/htmlRender";
 import { modelSelectionsEqual } from "@t3tools/shared/model";

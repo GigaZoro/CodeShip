@@ -1,4 +1,4 @@
-import type { ProviderApprovalDecision } from "@t3tools/contracts";
+import type { ProviderApprovalDecision } from "@t3tools/contracts/providerPolicy";
 import * as Schema from "effect/Schema";
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));

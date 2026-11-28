@@ -1,13 +1,13 @@
+import type { EnvironmentId } from "@t3tools/contracts/baseSchemas";
 import {
   USAGE_MERGE_COMPATIBLE_SINCE,
-  type EnvironmentId,
   type UsageBucket,
   type UsageProviderKind,
   type UsageSource,
   type UsageSourceFingerprint,
   type UsageSummary,
   type UsageTokenTotals,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/usage";
 
 export interface EnvironmentUsage {
   readonly environmentId: EnvironmentId;

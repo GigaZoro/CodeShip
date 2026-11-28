@@ -1,10 +1,10 @@
+import type { ResourceTelemetryProcessCategory } from "@t3tools/contracts/resourceTelemetry";
 import type {
-  ResourceTelemetryProcessCategory,
   ServerProcessDiagnosticsEntry,
   ServerProcessDiagnosticsResult,
   ServerProcessSignal,
   ServerSignalProcessResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

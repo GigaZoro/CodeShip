@@ -6,7 +6,7 @@
  */
 import * as NodeModule from "node:module";
 
-import { ManagedPolicyDocument, type ManagedPolicySummary } from "@t3tools/contracts";
+import { ManagedPolicyDocument, type ManagedPolicySummary } from "@t3tools/contracts/managedPolicy";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";

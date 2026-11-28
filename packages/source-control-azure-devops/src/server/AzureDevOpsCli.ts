@@ -4,13 +4,9 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import {
-  NonNegativeInt,
-  TrimmedNonEmptyString,
-  type SourceControlRepositoryVisibility,
-  type VcsError,
-  type VcsProcessExitFailureKind,
-} from "@t3tools/contracts";
+import { NonNegativeInt, TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
+import type { SourceControlRepositoryVisibility } from "@t3tools/contracts/sourceControl";
+import type { VcsError, VcsProcessExitFailureKind } from "@t3tools/contracts/vcs";
 
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import {

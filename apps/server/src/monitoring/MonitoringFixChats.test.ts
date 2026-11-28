@@ -1,23 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  CommandId,
-  GitCommandError,
-  MessageId,
-  type MonitoringFinding,
-  type MonitoringFixChatInput,
-  type MonitoringThreadSummary,
-  type OrchestrationV2ThreadShell,
-  type Project as ProjectRecord,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  RunId,
-  type ServerProvider,
-  type ServerSettings as ServerSettingsValue,
-  type T3ProjectFile,
-  ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, MessageId, ProjectId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { GitCommandError } from "@t3tools/contracts/git";
+import type {
+  MonitoringFinding,
+  MonitoringFixChatInput,
+  MonitoringThreadSummary,
+} from "@t3tools/contracts/monitoring";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import type { Project as ProjectRecord } from "@t3tools/contracts/project";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import type { ServerSettings as ServerSettingsValue } from "@t3tools/contracts/settings";
+import type { T3ProjectFile } from "@t3tools/contracts/t3ProjectFile";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";

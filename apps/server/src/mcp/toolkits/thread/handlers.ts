@@ -2,11 +2,13 @@ import {
   type CommandId,
   type RuntimeRequestId,
   ThreadId,
-  type OrchestrationV2ThreadProjection,
   type RunId,
-  OrchestratorMcpFailure,
-  type OrchestrationV2Command,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2Command,
+} from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 

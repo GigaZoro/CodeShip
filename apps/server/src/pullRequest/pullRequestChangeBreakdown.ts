@@ -1,4 +1,4 @@
-import type { PullRequestChangeBreakdown } from "@t3tools/contracts";
+import type { PullRequestChangeBreakdown } from "@t3tools/contracts/pullRequest";
 import { summarizeChangedFiles } from "@t3tools/shared/changedFileKind";
 import type { ProviderFileStats } from "@t3tools/source-control-core/server/PullRequestProvider";
 

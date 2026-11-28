@@ -1,8 +1,5 @@
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProviderUsageLimits } from "@t3tools/contracts/providerUsageLimits";
 import { exhaustedUsageWindow, usageWindowLimitEnd } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";

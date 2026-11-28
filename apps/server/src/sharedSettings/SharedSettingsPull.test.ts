@@ -1,9 +1,9 @@
 import { expect, it } from "@effect/vitest";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
 import {
-  EnvironmentId,
   OrchestratorMcpFailure,
   type OrchestratorMcpSharedSettingsResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

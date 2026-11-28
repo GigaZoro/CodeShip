@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { UsageModelFilter } from "./settingsPrimitives.ts";
 
 /** Bump for incompatible UsageSummary changes; skipped unknown array variants need no bump. */
 export const USAGE_CONTRACT_VERSION = 6 as const;
@@ -108,23 +109,6 @@ export const UsagePricing = Schema.Struct({
   knownModels: NonNegativeInt,
 });
 export type UsagePricing = typeof UsagePricing.Type;
-
-/**
- * Matches a provider's original model ID, before usage model aliases apply. Omit provider to
- * match any; a string provider lets older clients carry selectors for providers they lack.
- */
-export const UsageModelSelector = Schema.Struct({
-  provider: Schema.optional(TrimmedNonEmptyString),
-  model: TrimmedNonEmptyString,
-});
-export type UsageModelSelector = typeof UsageModelSelector.Type;
-
-/** Keeps records matching `include` (all when omitted) and not matching `exclude`. */
-export const UsageModelFilter = Schema.Struct({
-  include: Schema.optional(Schema.Array(UsageModelSelector)),
-  exclude: Schema.optional(Schema.Array(UsageModelSelector)),
-});
-export type UsageModelFilter = typeof UsageModelFilter.Type;
 
 export const UsageSummaryInput = Schema.Struct({
   sinceDay: UsageDay,

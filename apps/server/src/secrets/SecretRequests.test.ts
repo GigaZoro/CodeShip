@@ -2,13 +2,8 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import {
-  ProjectId,
-  type OrchestrationV2ServerCommand,
-  SecretRef,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+import { ProjectId, SecretRef, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ServerCommand } from "@t3tools/contracts/orchestrationV2";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";

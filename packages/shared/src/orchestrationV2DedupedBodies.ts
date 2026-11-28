@@ -1,13 +1,11 @@
+import type { CheckpointId, MessageId, NodeId } from "@t3tools/contracts/baseSchemas";
 import {
   OrchestrationV2CheckpointFileSummary,
-  type CheckpointId,
-  type MessageId,
-  type NodeId,
   type OrchestrationV2Checkpoint,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as Schema from "effect/Schema";
 
 /**

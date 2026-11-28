@@ -10,19 +10,21 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { RepositoryIdentity } from "@t3tools/contracts/environment";
 import {
   PullRequestOperationError,
   type PullRequestDetail,
   type PullRequestRef,
-  type PullRequestReviewGuide,
-  type PullRequestReviewGuideInput,
-  type PullRequestReviewGuideResult,
-  type PullRequestReviewGuideRun,
   type PullRequestStack,
-  ProjectId,
-  type RepositoryIdentity,
-  type ThreadPullRequestKey,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import type {
+  PullRequestReviewGuide,
+  PullRequestReviewGuideInput,
+  PullRequestReviewGuideResult,
+  PullRequestReviewGuideRun,
+} from "@t3tools/contracts/pullRequestReviewGuide";
+import type { ThreadPullRequestKey } from "@t3tools/contracts/threadPullRequest";
 import type { ReviewGuideStackLayer } from "@t3tools/provider-core/server/textGeneration";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";

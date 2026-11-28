@@ -4,7 +4,10 @@ import * as NodeChildProcess from "node:child_process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createUuidV7Mint } from "@muse-code/sdk";
-import type { ProviderReplayEntry, ProviderReplayTranscript } from "@t3tools/contracts";
+import type {
+  ProviderReplayEntry,
+  ProviderReplayTranscript,
+} from "@t3tools/contracts/orchestrationV2";
 import * as Console from "effect/Console";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

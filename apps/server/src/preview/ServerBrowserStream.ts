@@ -1,10 +1,9 @@
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
+import { AuthOrchestrationReadScope, AuthPreviewOperateScope } from "@t3tools/contracts/auth";
 import {
-  AuthOrchestrationReadScope,
-  AuthPreviewOperateScope,
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
   PreviewStreamHostSetup,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/preview";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";

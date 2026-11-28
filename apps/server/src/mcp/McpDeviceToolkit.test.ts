@@ -1,12 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  DeviceHostUnavailableError,
-  DeviceId,
-  EnvironmentId,
-  ProviderInstanceId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { DeviceHostUnavailableError, DeviceId } from "@t3tools/contracts/device";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";

@@ -1,12 +1,8 @@
-import {
-  MessageId,
-  NodeId,
-  RunId,
-  ThreadId,
-  TurnItemId,
-  type OrchestrationV2ProjectedTurnItem,
-  type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+import { MessageId, NodeId, RunId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ProjectedTurnItem,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 

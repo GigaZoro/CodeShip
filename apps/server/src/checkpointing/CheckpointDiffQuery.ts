@@ -1,11 +1,11 @@
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   OrchestrationGetTurnDiffResult,
   type OrchestrationGetFullThreadDiffInput,
   type OrchestrationGetFullThreadDiffResult,
   type OrchestrationGetTurnDiffInput,
   type OrchestrationGetTurnDiffResult as OrchestrationGetTurnDiffResultType,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/checkpointDiff";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";

@@ -1,9 +1,9 @@
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
   isCompactionCommandMessage,
-  type ModelSelection,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 

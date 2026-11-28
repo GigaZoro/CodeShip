@@ -1,19 +1,21 @@
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { isAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
   CommandId,
-  OrchestrationV2ProviderFailure,
-  ProviderSetupError,
-  TextGenerationError,
-  type ChatAttachment,
   type MessageId,
+  type RunId,
+  type ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
+  OrchestrationV2ProviderFailure,
   type OrchestrationV2AppThread,
   type OrchestrationV2ConversationMessage,
-  type RunId,
-  type ServerSettingsError,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ServerSettingsError } from "@t3tools/contracts/settings";
 import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import {
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,

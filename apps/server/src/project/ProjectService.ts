@@ -1,13 +1,11 @@
-import {
-  CommandId,
-  type OrchestrationProjectShell,
-  ProjectId,
-  type Project,
-  type ProjectCreatePayload,
-  type ProjectUpdatePayload,
-  type ProjectSnapshot,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, ProjectId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import type {
+  Project,
+  ProjectCreatePayload,
+  ProjectUpdatePayload,
+  ProjectSnapshot,
+} from "@t3tools/contracts/project";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

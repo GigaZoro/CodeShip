@@ -2,7 +2,6 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import {
-  isReadOnlyGuestShare,
   MessageId,
   type NodeId,
   ProviderSessionId,
@@ -10,7 +9,8 @@ import {
   ProviderTurnId,
   RunAttemptId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { isReadOnlyGuestShare } from "@t3tools/contracts/guestShare";
 import * as Clock from "effect/Clock";
 import type * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";

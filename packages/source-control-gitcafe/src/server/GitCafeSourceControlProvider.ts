@@ -1,16 +1,15 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { PositiveInt, TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
+import {
+  SourceControlProviderKind,
+  SourceControlProviderError,
+  type ChangeRequest,
+} from "@t3tools/contracts/sourceControl";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
-import {
-  PositiveInt,
-  SourceControlProviderError,
-  TrimmedNonEmptyString,
-  type ChangeRequest,
-} from "@t3tools/contracts";
 import {
   probeSourceControlProvider,
   providerAuth,

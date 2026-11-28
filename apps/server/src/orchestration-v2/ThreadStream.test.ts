@@ -2,16 +2,18 @@ import {
   ContextHandoffId,
   ContextTransferId,
   EventId,
-  OrchestrationV2ThreadStreamItem,
   ProviderThreadId,
   RunId,
   ThreadId,
   TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  OrchestrationV2ThreadStreamItem,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import { describe, expect, it } from "vite-plus/test";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";

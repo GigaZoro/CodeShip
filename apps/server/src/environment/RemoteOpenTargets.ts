@@ -1,4 +1,4 @@
-import { type RemoteOpenTarget } from "@t3tools/contracts";
+import type { RemoteOpenTarget } from "@t3tools/contracts/editor";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import { readTailscaleSshEnabled, readTailscaleStatus } from "@t3tools/tailscale";

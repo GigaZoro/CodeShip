@@ -1,6 +1,7 @@
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import { appendUserInputAttachmentPaths } from "../provider/userInputAttachments.ts";
-import type { ChatAttachment, OrchestrationV2Command } from "@t3tools/contracts";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { OrchestrationV2Command } from "@t3tools/contracts/orchestrationV2";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
@@ -97,7 +98,8 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
     yield* AttachmentClaims.validateAttachmentLimits(Object.values(incomingByQuestionId).flat());
     const claimedPaths: string[] = [];
     const prepared = yield* Effect.gen(function* () {
-      const attachmentsByQuestionId: import("@t3tools/contracts").UserInputAttachments = {};
+      const attachmentsByQuestionId: import("@t3tools/contracts/providerPolicy").UserInputAttachments =
+        {};
       for (const [questionId, attachments] of Object.entries(incomingByQuestionId)) {
         const claimed = yield* AttachmentClaims.claimPendingAttachments({
           threadId: command.threadId,

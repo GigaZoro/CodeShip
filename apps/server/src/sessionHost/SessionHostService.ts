@@ -6,7 +6,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { probeProcess } from "@t3tools/shared/processProbe";

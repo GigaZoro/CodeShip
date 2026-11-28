@@ -1,8 +1,8 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  type ProviderInstanceId,
   type ServerProvider,
   ServerProvider as ServerProviderSchema,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/server";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

@@ -1,8 +1,6 @@
-import {
-  ProviderInstanceId,
-  ProviderSetupError,
-  type OrchestrationV2ProviderCapabilities,
-} from "@t3tools/contracts";
+import type { OrchestrationV2ProviderCapabilities } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

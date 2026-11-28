@@ -1,18 +1,16 @@
+import { EnvironmentId, ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ProviderOptionDescriptor } from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { SecretProviderId } from "@t3tools/contracts/secretReference";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import {
   DEFAULT_SERVER_SETTINGS,
-  EnvironmentId,
-  type ModelSelection,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ProviderOptionDescriptor,
-  SecretProviderId,
   SecretProviderKind,
   ServerSettings,
   ServerSettingsPatch,
-  UsageLimitSourceId,
-  type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import { UsageLimitSourceId } from "@t3tools/contracts/usageLimitSourceId";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";

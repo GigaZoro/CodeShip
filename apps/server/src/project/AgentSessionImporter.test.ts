@@ -1,16 +1,13 @@
 import { expect, it } from "@effect/vitest";
-import {
-  type AgentSessionSource,
-  type ServerSettingsError,
-  EventId,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ThreadId,
-  type ApplicationStoredEvent,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2ProviderThread,
-} from "@t3tools/contracts";
+import type { AgentSessionSource } from "@t3tools/contracts/agentSessions";
+import type { ApplicationStoredEvent } from "@t3tools/contracts/applicationEvent";
+import { EventId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2ProviderThread,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerSettingsError } from "@t3tools/contracts/settings";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

@@ -1,10 +1,8 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   PROVIDER_SKILL_MAX_BYTES,
   PROVIDER_SKILL_MAX_FILES,
   ProviderSkillError,
-  type ProviderInstanceId,
-  type ServerSettings,
-  providerInstanceConfigEnabledFlag,
   type ProviderSkillErrorReason,
   type ProviderSkillExportInput,
   type ProviderSkillExportResult,
@@ -13,7 +11,11 @@ import {
   type ProviderSkillInstallResult,
   type ProviderSkillOperation,
   type ProviderSkillSetEnabledInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerSkills";
+import {
+  type ServerSettings,
+  providerInstanceConfigEnabledFlag,
+} from "@t3tools/contracts/settings";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

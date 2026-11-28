@@ -1,13 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderSessionId,
-  ThreadId,
-  ProviderSetupError,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { ProviderSessionId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

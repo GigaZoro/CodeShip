@@ -4,7 +4,7 @@ import {
   type UsageResolution,
   type UsageSource,
   type UsageSummaryInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/usage";
 
 import { getFormattingLocale, t } from "./i18n.ts";
 import {

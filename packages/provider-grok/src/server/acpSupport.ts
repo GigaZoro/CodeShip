@@ -1,10 +1,7 @@
 import type * as EffectAcpSchema from "effect-acp/compat";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  type ProviderApprovalOption,
-  ProviderDriverKind,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ProviderApprovalOption, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import type { GrokSettings } from "../settings.ts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";

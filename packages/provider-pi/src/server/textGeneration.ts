@@ -4,7 +4,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import { TextGenerationError } from "@t3tools/contracts";
+import { TextGenerationError } from "@t3tools/contracts/git";
 import type { PiSettings } from "../settings.ts";
 
 import { makePiRpcConnection, parsePiModelSlug, piRecordString } from "./rpc.ts";

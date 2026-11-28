@@ -12,7 +12,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { type ClaudeSettings, TextGenerationError } from "@t3tools/contracts";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import type { ClaudeSettings } from "@t3tools/contracts/settings";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 

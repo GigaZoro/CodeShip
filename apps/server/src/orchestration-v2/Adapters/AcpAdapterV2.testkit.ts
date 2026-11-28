@@ -1,17 +1,18 @@
 import {
   MessageId,
-  type ModelSelection,
   NodeId,
   ProjectId,
-  type ProviderInstanceId,
   RunAttemptId,
   RunId,
-  type OrchestrationV2ProviderThread,
   type ThreadId,
-  ProviderDriverKind,
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  type OrchestrationV2ProviderThread,
   ProviderReplayEntry,
   type ProviderReplayTranscript,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { type ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import type * as DateTime from "effect/DateTime";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";

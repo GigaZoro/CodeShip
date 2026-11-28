@@ -10,7 +10,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { VcsRef, VcsListRefsResult } from "@t3tools/contracts";
+import { VcsRef, VcsListRefsResult } from "@t3tools/contracts/git";
 import { defaultWorktreeStrategy } from "./defaultWorktreeStrategy.ts";
 import { makeGitVcsDriverCore } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";

@@ -28,9 +28,9 @@ import {
 import {
   DESKTOP_RESTART_HOLD_PATH,
   DESKTOP_UPDATE_CONTROL_PATH,
-  type DesktopBackendEndpoint,
-  ORCHESTRATION_PROTOCOL_HEADER,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/desktopBootstrap";
+import { ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts/environment";
+import type { DesktopBackendEndpoint } from "@t3tools/contracts/resourceTelemetry";
 import {
   currentDesktopBootstrapToken,
   currentDesktopControlToken,

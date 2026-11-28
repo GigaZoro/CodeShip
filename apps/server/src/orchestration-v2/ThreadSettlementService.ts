@@ -5,14 +5,13 @@ import {
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import { CommandId, type ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
   isListedThreadLineage,
   isOrchestrationV2WorkActive,
-  type ThreadId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -347,7 +346,9 @@ export class ThreadSettlementServiceV2 extends Context.Service<
   }
 >()("t3/orchestration-v2/ThreadSettlementService/ThreadSettlementServiceV2") {}
 
-function autoSettlementConfigured(settings: import("@t3tools/contracts").ServerSettings): boolean {
+function autoSettlementConfigured(
+  settings: import("@t3tools/contracts/settings").ServerSettings,
+): boolean {
   if (settings.sidebarAutoSettleOnMerge || settings.sidebarAutoSettleAfterDays !== null) {
     return true;
   }
@@ -360,7 +361,7 @@ function autoSettlementConfigured(settings: import("@t3tools/contracts").ServerS
 
 /** @internal Exported for tests. */
 export function autoSettlementSettingsKey(
-  settings: import("@t3tools/contracts").ServerSettings,
+  settings: import("@t3tools/contracts/settings").ServerSettings,
 ): string {
   return JSON.stringify([
     settings.sidebarAutoSettleScheduledThreads,

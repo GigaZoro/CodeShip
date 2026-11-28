@@ -1,15 +1,14 @@
 import {
-  AuthSessionId,
   AuthStandardClientScopes,
   AuthEnvironmentScopes,
   type AuthClientMetadata,
   type AuthClientSession,
   type AuthEnvironmentScope,
   AuthWebSocketTicketUse,
-  EnvironmentId,
-  RuntimeMode,
   type ServerAuthSessionMethod,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/auth";
+import { AuthSessionId, EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

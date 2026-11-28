@@ -1,11 +1,8 @@
 import type { RunResult } from "@cursor/sdk";
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProvider,
-  TextGenerationError,
-  ThreadId,
-} from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { OnDispatch } from "@t3tools/provider-core/server/textGenerationOperations";
 import * as CursorSdk from "@t3tools/provider-cursor/server/CursorSdk";

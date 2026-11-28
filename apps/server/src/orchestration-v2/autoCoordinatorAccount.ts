@@ -1,11 +1,8 @@
 import type { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
-import {
-  isProviderInstanceBackgroundAllowed,
-  type ModelSelection,
-  ProviderDriverKind,
-  type ProviderInstanceId,
-  type ProjectId,
-} from "@t3tools/contracts";
+import type { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { isProviderInstanceBackgroundAllowed } from "@t3tools/contracts/settings";
 import { createModelSelection, offeredOptionSelections } from "@t3tools/shared/model";
 import {
   autoModeModelFor,

@@ -6,10 +6,12 @@ import {
   MAX_KEYBINDINGS_COUNT,
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
-  type ServerRemoveKeybindingInput,
-  type ServerUpsertKeybindingInput,
-  type ServerConfigIssue,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/keybindings";
+import type {
+  ServerRemoveKeybindingInput,
+  ServerUpsertKeybindingInput,
+  ServerConfigIssue,
+} from "@t3tools/contracts/server";
 import * as Array from "effect/Array";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";

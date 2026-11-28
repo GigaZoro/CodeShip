@@ -6,7 +6,7 @@ import {
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as DateTime from "effect/DateTime";
 
 type ErrorTurnItem = Extract<OrchestrationV2TurnItem, { type: "error" }>;

@@ -23,18 +23,16 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import {
-  GitCommandError,
-  MIN_AUTOMATIC_GIT_FETCH_INTERVAL,
-  type GitCommandFailureReason,
-  T3_PROJECT_FILE_NAME,
-  type ReviewBranchCommitsInput,
-  type ReviewDiffFileContentsInput,
-  type ReviewDiffPreviewInput,
-  type ReviewDiffFileStat,
-  type ReviewDiffPreviewSource,
-  type VcsRef,
-} from "@t3tools/contracts";
+import { GitCommandError, type GitCommandFailureReason, type VcsRef } from "@t3tools/contracts/git";
+import type {
+  ReviewBranchCommitsInput,
+  ReviewDiffFileContentsInput,
+  ReviewDiffPreviewInput,
+  ReviewDiffFileStat,
+  ReviewDiffPreviewSource,
+} from "@t3tools/contracts/review";
+import { MIN_AUTOMATIC_GIT_FETCH_INTERVAL } from "@t3tools/contracts/settings";
+import { T3_PROJECT_FILE_NAME } from "@t3tools/contracts/t3ProjectFile";
 import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
 import { summarizeChangedFiles } from "@t3tools/shared/changedFileKind";
 import * as HostProcess from "@t3tools/shared/HostProcess";

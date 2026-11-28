@@ -92,14 +92,19 @@ import {
   formatClaudeResumeCompactionQuestion,
 } from "@t3tools/shared/claudeCompaction";
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
+  TrimmedNonEmptyString,
+  type ProviderThreadId,
+  type RunId,
+  type ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import {
   type ChatAttachment,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-  ClaudeSettings,
-  TrimmedNonEmptyString,
-  defaultInstanceIdForDriver,
+} from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   isCompactionCommandMessage,
-  type ModelSelection,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderCapabilities,
@@ -122,18 +127,20 @@ import {
   type OrchestrationV2TurnItem,
   type OrchestrationV2SystemNotice,
   type OrchestrationV2WebSearchResult,
-  type ProviderApprovalDecision,
-  type ProviderApprovalFullAccessOverride,
-  type ProviderApprovalOption,
+} from "@t3tools/contracts/orchestrationV2";
+import {
+  defaultInstanceIdForDriver,
   ProviderDriverKind,
   type ProviderInstanceId,
-  type ProviderRequestKind,
-  type ProviderUserInputAnswers,
-  type ProviderThreadId,
-  type RunId,
-  type ThreadId,
-  resolveIdleCompaction,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import type {
+  ProviderApprovalDecision,
+  ProviderApprovalFullAccessOverride,
+  ProviderApprovalOption,
+  ProviderRequestKind,
+  ProviderUserInputAnswers,
+} from "@t3tools/contracts/providerPolicy";
+import { ClaudeSettings, resolveIdleCompaction } from "@t3tools/contracts/settings";
 
 import { FILE_HEADERS_ONLY, formatPatch, structuredPatch } from "diff";
 import * as Cause from "effect/Cause";

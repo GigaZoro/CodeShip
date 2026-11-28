@@ -8,18 +8,16 @@ import * as NodeFS from "node:fs";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
 import {
-  EnvironmentId,
-  type ClaudeSettings,
-  type CodexSettings,
   ProviderDriverKind,
   type ProviderInstanceConfigMap,
   type ResolvedProviderInstanceEnvironment,
   ProviderInstanceId,
-  SecretProviderId,
-  SettingsSecretValue,
-  type SecretReference,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import { SecretProviderId, type SecretReference } from "@t3tools/contracts/secretReference";
+import type { ClaudeSettings, CodexSettings } from "@t3tools/contracts/settings";
+import { SettingsSecretValue } from "@t3tools/contracts/settingsSecretValue";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as HostProcess from "@t3tools/shared/HostProcess";

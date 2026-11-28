@@ -1,12 +1,11 @@
+import type { ManagedPolicySetting } from "@t3tools/contracts/managedPolicy";
+import { isRuntimeModeAbove, type RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import {
   DEFAULT_SERVER_SETTINGS,
-  isRuntimeModeAbove,
-  type ManagedPolicySetting,
   ProjectSettingsOverrides,
-  type RuntimeMode,
   ServerSettings,
   withIdleCompaction,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 

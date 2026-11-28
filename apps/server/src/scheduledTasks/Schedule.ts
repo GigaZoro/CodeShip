@@ -1,4 +1,7 @@
-import { MIN_SCHEDULED_TASK_INTERVAL_MS, type ScheduledTaskSchedule } from "@t3tools/contracts";
+import {
+  MIN_SCHEDULED_TASK_INTERVAL_MS,
+  type ScheduledTaskSchedule,
+} from "@t3tools/contracts/scheduledTask";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 

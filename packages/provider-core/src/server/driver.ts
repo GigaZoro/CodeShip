@@ -1,27 +1,34 @@
 // Context tags are runtime singletons; drivers need multiple instances.
 import type {
-  ProviderConsumeResetCreditResult,
   AcpRegistryListSessionsResult,
   AcpRegistryListProvidersResult,
   AcpRegistryOperationError,
   AcpRegistrySetProviderInput,
-  ModelSelection,
+} from "@t3tools/contracts/acpRegistry";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
   ProviderDriverKind,
   ResolvedProviderInstanceEnvironment,
   ProviderInstanceId,
+} from "@t3tools/contracts/providerInstance";
+import type {
+  ProviderMcpError,
+  ProviderMcpServer,
+  ProviderMcpServerConfig,
+} from "@t3tools/contracts/providerMcp";
+import type {
   ProviderPlugin,
   ProviderPluginAddMarketplaceResult,
   ProviderPluginError,
   ProviderPluginInstallResult,
   ProviderPluginMarketplace,
-  ProviderMcpError,
-  ProviderMcpServer,
-  ProviderMcpServerConfig,
-  ProviderSkillError,
-  ServerProvider,
+} from "@t3tools/contracts/providerPlugins";
+import type { ProviderSkillError } from "@t3tools/contracts/providerSkills";
+import type {
+  ProviderConsumeResetCreditResult,
   ServerProviderResetKind,
-  ServerProviderWorkspaceSnapshot,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider, ServerProviderWorkspaceSnapshot } from "@t3tools/contracts/server";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";

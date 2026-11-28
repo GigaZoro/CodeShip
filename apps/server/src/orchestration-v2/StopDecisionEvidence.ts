@@ -3,11 +3,13 @@ import * as NodeCrypto from "node:crypto";
 import type {
   MessageId,
   ProviderTurnId,
-  OrchestrationV2ServerCommand,
-  OrchestrationV2StoredEvent,
   RunAttemptId,
   RunId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ServerCommand,
+  OrchestrationV2StoredEvent,
+} from "@t3tools/contracts/orchestrationV2";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

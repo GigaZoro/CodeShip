@@ -1,5 +1,6 @@
 import type { ModelSelection as CursorSdkModelSelection, ModelParameterValue } from "@cursor/sdk";
-import type { ModelSelection, ServerProviderModel } from "@t3tools/contracts";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 
 const CURSOR_SDK_PARAMETER_TO_PROVIDER_OPTION: Readonly<Record<string, string>> = {

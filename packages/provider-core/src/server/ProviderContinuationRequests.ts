@@ -1,12 +1,12 @@
 import {
-  type OrchestrationV2Notification,
   MessageId,
-  ProviderDriverKind,
   ProviderSessionId,
   ProviderThreadId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2Notification } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

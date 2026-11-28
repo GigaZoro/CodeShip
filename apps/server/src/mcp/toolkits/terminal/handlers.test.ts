@@ -1,15 +1,10 @@
 import { expect, it } from "@effect/vitest";
-import {
-  type AgentTerminalAccess,
-  DEFAULT_SERVER_SETTINGS,
-  type Project,
-  EnvironmentId,
-  ProjectId,
-  ProviderInstanceId,
-  type RuntimeMode,
-  type TerminalEvent,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
+import { type AgentTerminalAccess, DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
+import type { TerminalEvent } from "@t3tools/contracts/terminal";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

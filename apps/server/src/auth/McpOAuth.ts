@@ -13,11 +13,11 @@ import {
   type AuthEnvironmentScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
-  EnvironmentId,
   MCP_PEER_LINK_SOFTWARE_ID,
   mcpClientScopes,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/auth";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";

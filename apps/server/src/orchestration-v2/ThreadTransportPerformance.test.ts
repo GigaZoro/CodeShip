@@ -1,12 +1,10 @@
+import { EventId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
 import {
-  EventId,
   OrchestrationV2RpcSchemas,
-  ThreadId,
-  TurnItemId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import type * as RpcMessage from "effect/rpc/RpcMessage";

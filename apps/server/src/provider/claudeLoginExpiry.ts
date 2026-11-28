@@ -10,7 +10,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import type { ClaudeSettings } from "@t3tools/contracts";
+import type { ClaudeSettings } from "@t3tools/contracts/settings";
 import { claudeOAuthTokenExpiry } from "./claudeOAuthToken.ts";
 
 const KEYCHAIN_SERVICE = "Claude Code-credentials";

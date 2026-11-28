@@ -2,12 +2,16 @@ import {
   AuthRelayReadScope,
   AuthRelayWriteScope,
   type AuthEnvironmentScope,
+} from "@t3tools/contracts/auth";
+import {
   type EnvironmentConnectReachability,
   EnvironmentHttpApi,
   formatConnectReachable,
-  type RelayClientInstallProgressEvent,
-  type RelayClientInstallProgressStage,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/environmentHttp";
+import type {
+  RelayClientInstallProgressEvent,
+  RelayClientInstallProgressStage,
+} from "@t3tools/contracts/relayClient";
 import { RelayOkResponse } from "@t3tools/contracts/relay";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";

@@ -1,12 +1,8 @@
-import {
-  CommandId,
-  DEFAULT_READER_LANGUAGE,
-  type OrchestrationProjectShell,
-  type OrchestrationV2ThreadShell,
-  type SourceControlProviderKind,
-  type ThreadId,
-  type ThreadPullRequestLink,
-} from "@t3tools/contracts";
+import { CommandId, DEFAULT_READER_LANGUAGE, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import type { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
+import type { ThreadPullRequestLink } from "@t3tools/contracts/threadPullRequest";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";

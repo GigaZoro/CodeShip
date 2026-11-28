@@ -1,19 +1,19 @@
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { expect, it } from "@effect/vitest";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import {
   DEFAULT_SERVER_SETTINGS,
-  EnvironmentId,
-  MACHINE_SHARED_SETTING_KEYS,
-  type MachineSharedSettingKey,
-  ProviderInstanceId,
-  ProviderDriverKind,
   ServerSettingsError,
   type ServerSettingsPatch,
-  type ServerProvider,
-  ThreadId,
-  type OrchestrationV2ThreadShell,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import {
+  MACHINE_SHARED_SETTING_KEYS,
+  type MachineSharedSettingKey,
+} from "@t3tools/contracts/sharedSettings";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

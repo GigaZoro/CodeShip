@@ -1,4 +1,4 @@
-import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
+import type { OrchestrationV2TurnItem } from "@t3tools/contracts/orchestrationV2";
 import {
   MAX_TOOL_OUTPUT_IMAGE_BASE64_LENGTH,
   readToolOutputImage,

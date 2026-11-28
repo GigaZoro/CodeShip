@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import { MAX_SAVED_THREAD_FOLDERS, ScheduledTaskId } from "@t3tools/contracts";
+import { ScheduledTaskId } from "@t3tools/contracts/baseSchemas";
+import { MAX_SAVED_THREAD_FOLDERS } from "@t3tools/contracts/threadFolders";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";

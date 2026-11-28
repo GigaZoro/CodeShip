@@ -1,4 +1,5 @@
-import { OrchestrationV2TurnItem, RunId, ThreadId, TurnItemId } from "@t3tools/contracts";
+import { RunId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import { OrchestrationV2TurnItem } from "@t3tools/contracts/orchestrationV2";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

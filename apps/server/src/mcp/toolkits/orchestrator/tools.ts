@@ -1,3 +1,5 @@
+import { OrchestratorMcpEnvironmentTarget } from "@t3tools/contracts/baseSchemas";
+import { OrchestrationV2StopWorkflowInput } from "@t3tools/contracts/orchestrationV2";
 import {
   OrchestratorMcpAskUserInput,
   OrchestratorMcpAskUserResult,
@@ -7,7 +9,6 @@ import {
   OrchestratorMcpClaimScheduledTaskOccurrenceResult,
   OrchestratorMcpReportScheduledRunInput,
   OrchestratorMcpReportScheduledRunResult,
-  OrchestrationV2StopWorkflowInput,
   OrchestratorMcpEnvironmentLinkInput,
   OrchestratorMcpEnvironmentLinkResult,
   OrchestratorMcpEnvironmentLinksResult,
@@ -21,7 +22,6 @@ import {
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpDeleteScheduledTaskInput,
   OrchestratorMcpDeleteScheduledTaskResult,
-  OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpRequestSecretInput,
   OrchestratorMcpRequestSecretResult,
   OrchestratorMcpRunCommandInput,
@@ -49,9 +49,11 @@ import {
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
+} from "@t3tools/contracts/orchestratorMcp";
+import {
   ThreadMetadataMcpUpdateInput,
   ThreadMetadataMcpUpdateResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/threadMetadataMcp";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";

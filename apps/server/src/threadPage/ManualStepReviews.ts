@@ -1,11 +1,11 @@
+import type { TextGenerationError } from "@t3tools/contracts/git";
 import {
   type ManualStepReview,
   ManualStepReviewError,
   type ManualStepReviewFailure,
   type ManualStepReviewInput,
   type ManualStepsListError,
-  type TextGenerationError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/manualSteps";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

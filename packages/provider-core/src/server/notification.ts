@@ -1,12 +1,11 @@
+import type { RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import type {
-  RunId,
   OrchestrationV2ConversationMessage,
   OrchestrationV2Notification,
   OrchestrationV2NotificationSource,
   OrchestrationV2Subagent,
   OrchestrationV2TurnItem,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 
 type NotificationOutcome = OrchestrationV2Notification["outcome"];
 

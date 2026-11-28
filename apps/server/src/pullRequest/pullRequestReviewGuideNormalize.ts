@@ -1,4 +1,7 @@
-import type { PullRequestReviewGuideExcerpt, PullRequestReviewGuideStop } from "@t3tools/contracts";
+import type {
+  PullRequestReviewGuideExcerpt,
+  PullRequestReviewGuideStop,
+} from "@t3tools/contracts/pullRequestReviewGuide";
 import type { ReviewGuideGenerationResult } from "@t3tools/provider-core/server/textGeneration";
 import { unquoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 

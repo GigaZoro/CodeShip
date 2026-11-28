@@ -1,4 +1,12 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import type { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import {
+  type PullRequestReviewCapabilities,
+  type PullRequestReviewerCapabilities,
+  PullRequestOperationError,
+} from "@t3tools/contracts/pullRequest";
+import { type ServerSettings, DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import { assert, expect, it } from "@effect/vitest";
@@ -11,16 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import type {
-  OrchestrationProjectShell,
-  ProjectId,
-  PullRequestReviewCapabilities,
-  PullRequestReviewerCapabilities,
-} from "@t3tools/contracts";
-import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
-import type { ServerSettings } from "@t3tools/contracts";
 import * as ServerSettingsService from "../serverSettings.ts";
-import { PullRequestOperationError } from "@t3tools/contracts";
 
 import * as ProjectService from "../project/ProjectService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";

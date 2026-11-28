@@ -1,19 +1,23 @@
+import type { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { isManagedSettingPath } from "@t3tools/contracts/managedPolicy";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
-  type EnvironmentId,
-  isMachineSharedSettingKey,
-  isManagedSettingPath,
-  isNewerSharedSetting,
-  isSharedQuotaAwareSelection,
-  type MachineSharedSettingKey,
-  MACHINE_SHARED_SETTING_KEYS,
-  type ModelSelection,
   ProviderInstanceId,
   type ProviderInstanceMutation,
-  providerInstanceDriver,
+} from "@t3tools/contracts/providerInstance";
+import {
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsOperation,
   ServerSettingsPatch,
+} from "@t3tools/contracts/settings";
+import {
+  isMachineSharedSettingKey,
+  isNewerSharedSetting,
+  isSharedQuotaAwareSelection,
+  type MachineSharedSettingKey,
+  MACHINE_SHARED_SETTING_KEYS,
+  providerInstanceDriver,
   SHARED_SETTING_SEED_UPDATED_AT,
   SHARED_SETTING_VALUE_MAX_BYTES,
   SHARED_SETTINGS_RESPONSE_MAX_BYTES,
@@ -28,7 +32,7 @@ import {
   type SharedSettingsWriteShare,
   type SharedSettingValue,
   type SharedSettingVersion,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sharedSettings";
 import { isModelSelectionProviderEnabled } from "@t3tools/shared/serverSettings";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

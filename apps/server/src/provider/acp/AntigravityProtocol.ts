@@ -1,8 +1,8 @@
 import type {
   ProviderApprovalOption,
   ProviderUserInputAnswers,
-  UserInputQuestion,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerPolicy";
+import type { UserInputQuestion } from "@t3tools/contracts/providerRuntime";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";

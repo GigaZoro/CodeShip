@@ -2,7 +2,7 @@ import {
   managedNightlyDeniedMessage,
   managedUpdatesMessage,
   type ManagedPolicyDocument,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/managedPolicy";
 import type { CliReleaseChannel } from "@t3tools/shared/cliRelease";
 
 /**

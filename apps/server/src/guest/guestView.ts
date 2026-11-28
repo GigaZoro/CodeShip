@@ -1,9 +1,6 @@
-import type {
-  GuestShareView,
-  GuestThreadModel,
-  OrchestrationV2AppThread,
-  ServerProvider,
-} from "@t3tools/contracts";
+import type { GuestShareView, GuestThreadModel } from "@t3tools/contracts/guestStream";
+import type { OrchestrationV2AppThread } from "@t3tools/contracts/orchestrationV2";
+import type { ServerProvider } from "@t3tools/contracts/server";
 
 /** The thread's model as the owner's composer labels it, from the configured providers. */
 export function guestThreadModel(

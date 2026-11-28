@@ -1,13 +1,13 @@
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import type {
-  ChatAttachment,
-  ModelSelection,
   OrchestrationV2ThreadProjection,
-  ThreadTokenUsageSnapshot,
   OrchestrationV2ContextHandoff,
   OrchestrationV2HistoricalMessage,
   OrchestrationV2ProviderThread,
   OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { ThreadTokenUsageSnapshot } from "@t3tools/contracts/providerRuntime";
 
 import * as Config from "effect/Config";
 

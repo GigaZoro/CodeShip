@@ -1,10 +1,8 @@
 import * as ProviderSkillsTestkit from "../../provider/ProviderSkills.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type {
-  ManagedPolicyDocument,
-  ProviderDriverKind,
-  ProviderReplayTranscript,
-} from "@t3tools/contracts";
+import type { ManagedPolicyDocument } from "@t3tools/contracts/managedPolicy";
+import type { ProviderReplayTranscript } from "@t3tools/contracts/orchestrationV2";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";

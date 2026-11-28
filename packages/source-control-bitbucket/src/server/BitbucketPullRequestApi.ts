@@ -15,14 +15,14 @@ import type {
   PullRequestComment,
   PullRequestCommit,
   PullRequestListState,
-  PullRequestMergeMethod,
   PullRequestMergeability,
   PullRequestReviewCommentDraft,
   PullRequestReviewPosition,
   PullRequestReviewThread,
   PullRequestReviewVerdict,
   PullRequestReviewerCandidateList,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import type { PullRequestMergeMethod } from "@t3tools/contracts/settingsPrimitives";
 
 import * as BitbucketApi from "./BitbucketApi.ts";
 import { parseDiffFileRevisions } from "@t3tools/source-control-core/server/diffFileRevisions";

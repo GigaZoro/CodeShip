@@ -2,8 +2,6 @@ import { assert, it, vi } from "@effect/vitest";
 import {
   MessageId,
   NodeId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -12,10 +10,13 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
-  type OrchestrationV2RestartHold,
-  type OrchestrationV2StoredEvent,
-  type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2RestartHold,
+  OrchestrationV2StoredEvent,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

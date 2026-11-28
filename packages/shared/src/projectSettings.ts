@@ -1,19 +1,21 @@
+import type { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ThreadEnvMode } from "@t3tools/contracts/environment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
   isProviderInstanceBackgroundAllowed,
-  type ModelSelection,
-  PROJECT_FILE_BACKED_SETTINGS,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
-  type ProjectFileBackedSettingKey,
-  type ProjectId,
   type ProjectScopedServerSettingKey,
   type ProjectSettingsOverrides,
   resolveProjectProviderInstanceEnabled,
-  type ResolvedServerSettings,
   type ServerSettings,
-  type T3ProjectFile,
-  type ThreadEnvMode,
   type WorktreeCleanupRules,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import {
+  PROJECT_FILE_BACKED_SETTINGS,
+  type ProjectFileBackedSettingKey,
+  type ResolvedServerSettings,
+  type T3ProjectFile,
+} from "@t3tools/contracts/t3ProjectFile";
 import { normalizeProjectPathForComparison } from "./path.ts";
 import { fallbackTextGenerationModelSelection } from "./serverSettings.ts";
 

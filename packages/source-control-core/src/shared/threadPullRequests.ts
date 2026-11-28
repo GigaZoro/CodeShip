@@ -1,9 +1,9 @@
+import type { OrchestrationV2AppThread } from "@t3tools/contracts/orchestrationV2";
 import type {
-  OrchestrationV2AppThread,
   ThreadLinkedPullRequest,
   ThreadPullRequestKey,
   ThreadPullRequestLink,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/threadPullRequest";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
 import type { SourceControlDefinitionRegistry } from "./definition.ts";

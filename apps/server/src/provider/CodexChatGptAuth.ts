@@ -2,12 +2,12 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
 import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   ProviderSetupError,
   type ChatGptReconnectProfile,
   type ChatGptTransferredProfile,
-  type ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerSetup";
 import { codexCallbackUrl } from "@t3tools/shared/codexAuthHandoff";
 import { hashTelemetryId } from "@t3tools/shared/telemetryId";
 import * as Clock from "effect/Clock";

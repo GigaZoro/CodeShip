@@ -1,11 +1,9 @@
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { requireModelPreferences } from "../../OrchestratorMcpService.ts";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import {
-  OrchestratorMcpFailure,
   type ServerSettings,
   type ServerSettingsError,
-} from "@t3tools/contracts";
-import {
   providerUpdatesChoice,
   providerUpdatesPatch,
   usageLimitRecoveryChoice,

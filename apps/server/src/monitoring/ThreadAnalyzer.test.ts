@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 
 import {

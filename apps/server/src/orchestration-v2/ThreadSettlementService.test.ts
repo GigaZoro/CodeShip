@@ -1,29 +1,35 @@
-import { GitCommandError, SourceControlProviderKind } from "@t3tools/contracts";
-import { assert, describe, expect, it } from "@effect/vitest";
-import * as DateTime from "effect/DateTime";
 import {
-  DEFAULT_SERVER_SETTINGS,
   ProjectId,
   EventId,
   NodeId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
   ThreadId,
   TurnItemId,
-  type OrchestrationProjectShell,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2Command,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ShellSnapshot,
-  type OrchestrationV2ThreadShell,
-  type PullRequestSummary,
-  type ServerSettings as ContractServerSettings,
-  type ServerSettingsPatch,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  GitCommandError,
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
   type VcsUnmergedWorkResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/git";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2Command,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ShellSnapshot,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { PullRequestSummary } from "@t3tools/contracts/pullRequest";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type ServerSettings as ContractServerSettings,
+  type ServerSettingsPatch,
+} from "@t3tools/contracts/settings";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
+import { assert, describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as Crypto from "effect/Crypto";

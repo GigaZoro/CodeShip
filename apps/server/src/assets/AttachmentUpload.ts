@@ -5,7 +5,7 @@ import {
   ATTACHMENT_UPLOAD_URL_TTL_MS,
   type AttachmentCreateUploadUrlInput,
   AttachmentUploadSigningKeyError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/assets";
 import { isSvgAttachment } from "@t3tools/shared/image";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";

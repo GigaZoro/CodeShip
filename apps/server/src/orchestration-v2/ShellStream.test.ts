@@ -1,11 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
+import type { ApplicationStoredEvent } from "@t3tools/contracts/applicationEvent";
+import { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import type {
-  ApplicationStoredEvent,
   OrchestrationV2ShellSnapshot,
   OrchestrationV2ShellStreamItem,
   OrchestrationV2ThreadShell,
-} from "@t3tools/contracts";
-import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

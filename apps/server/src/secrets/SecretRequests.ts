@@ -5,12 +5,14 @@ import { pipe } from "effect/Function";
 import {
   CommandId,
   SecretRef,
-  SecretRequestError,
   type ProjectId,
-  type SecretRequestAnswerInput,
   type ThreadId,
-  isOrchestrationV2TerminalRunStatus,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { isOrchestrationV2TerminalRunStatus } from "@t3tools/contracts/orchestrationV2";
+import {
+  SecretRequestError,
+  type SecretRequestAnswerInput,
+} from "@t3tools/contracts/secretRequest";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 

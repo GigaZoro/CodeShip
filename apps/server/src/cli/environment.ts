@@ -1,12 +1,11 @@
+import { AuthMcpClientAccess, AuthStandardClientScopes } from "@t3tools/contracts/auth";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
 import {
-  AuthMcpClientAccess,
-  AuthStandardClientScopes,
-  EnvironmentId,
   PEER_LINK_AGENTS_ONLY_NOTE,
   peerLinkAccessAllowsLinkBack,
   type PeerLinkResult,
   type PeerLinkSummary,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/peerLink";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

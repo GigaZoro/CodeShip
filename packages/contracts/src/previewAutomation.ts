@@ -1,14 +1,13 @@
 import { Schema } from "effect";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { PreviewRenderedViewportSize, PreviewTabId } from "./preview.ts";
 import {
   PREVIEW_VIEWPORT_MAX_AREA,
-  PreviewRenderedViewportSize,
-  PreviewTabId,
   PreviewViewportPresetId,
   PreviewViewportSetting,
   PreviewViewportSize,
-} from "./preview.ts";
+} from "./settingsPrimitives.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
 

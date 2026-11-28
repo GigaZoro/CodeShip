@@ -4,15 +4,17 @@ import * as NodePath from "node:path";
 import {
   BrowserProfile,
   BrowserProfileId,
-  BrowserRecordingFrameRate,
   BUILT_IN_BROWSER_PROFILES,
   DEFAULT_BROWSER_PROFILE_ID,
-  DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   findBrowserProfile,
   isBuiltInBrowserProfileId,
   resolveBrowserProfiles,
-  type PreviewReportProfilesInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/browserProfile";
+import type { PreviewReportProfilesInput } from "@t3tools/contracts/preview";
+import {
+  BrowserRecordingFrameRate,
+  DEFAULT_BROWSER_RECORDING_FRAME_RATE,
+} from "@t3tools/contracts/settingsPrimitives";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

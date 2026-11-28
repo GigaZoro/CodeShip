@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { ScheduledTaskSchedule } from "@t3tools/contracts";
+import type { ScheduledTaskSchedule } from "@t3tools/contracts/scheduledTask";
 import * as DateTime from "effect/DateTime";
 
 import {

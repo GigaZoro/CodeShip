@@ -2,14 +2,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
-  AntigravitySettings,
-  CodexSettings,
-  ProviderDriverKind,
-  ProviderInstanceId,
   type ProviderReplayTranscript,
-  type ServerProvider,
-  type ServerProviderAuthStatus,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider, ServerProviderAuthStatus } from "@t3tools/contracts/server";
+import { AntigravitySettings, CodexSettings } from "@t3tools/contracts/settings";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { makeMuseSignedOut } from "@t3tools/provider-muse/testing";
 import { materializeReplayTranscriptWorkspace } from "@t3tools/provider-testing/replayTranscript";

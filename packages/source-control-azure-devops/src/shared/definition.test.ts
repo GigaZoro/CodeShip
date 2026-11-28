@@ -1,4 +1,4 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import type { ChangeRequestProjectIdentity } from "@t3tools/source-control-core/shared/definition";
 import {
   makeSourceControlDefinitionRegistry,

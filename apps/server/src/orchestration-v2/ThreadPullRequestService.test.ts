@@ -1,13 +1,12 @@
-import {
-  ProjectId,
-  ProviderInstanceId,
-  SourceControlProviderKind,
-  ThreadId,
-  type OrchestrationProjectShell,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ThreadShell,
-  type OrchestrationV2ServerCommand,
-} from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ThreadShell,
+  OrchestrationV2ServerCommand,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

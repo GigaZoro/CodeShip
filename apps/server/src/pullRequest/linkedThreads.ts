@@ -5,8 +5,8 @@ import {
 import {
   PullRequestLinkedThreadsResult,
   PullRequestOperationError,
-  type ThreadPullRequestKey,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import type { ThreadPullRequestKey } from "@t3tools/contracts/threadPullRequest";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Schema from "effect/Schema";

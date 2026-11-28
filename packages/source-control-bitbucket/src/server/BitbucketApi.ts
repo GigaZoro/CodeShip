@@ -7,16 +7,15 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import { NonNegativeInt, TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
+import { settingsSecretLiteral } from "@t3tools/contracts/settingsSecretValue";
 import {
-  NonNegativeInt,
-  settingsSecretLiteral,
   SourceControlProviderKind,
-  TrimmedNonEmptyString,
   type SourceControlProviderAuth,
   type SourceControlProviderInfo,
   type SourceControlRepositoryCloneUrls,
   type SourceControlRepositoryVisibility,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { sanitizeBranchFragment } from "@t3tools/shared/git";
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";

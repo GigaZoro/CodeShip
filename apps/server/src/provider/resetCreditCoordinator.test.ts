@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { ProviderConsumeResetCreditOutcome } from "@t3tools/contracts";
+import type { ProviderConsumeResetCreditOutcome } from "@t3tools/contracts/providerUsageLimits";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

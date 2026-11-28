@@ -3,14 +3,13 @@ import {
   AcpRegistryOperationError,
   AcpRegistryListSessionsResult,
   AcpRegistryProbeResult,
-  ServerProviderFunding,
   type AcpRegistryProbeAuthMethod,
   type AcpRegistryProbeModel,
   type AcpRegistryUrlAuthAction,
-  type ProviderInstanceId,
-  type ServerProviderSkill,
-  type ServerProviderSlashCommand,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/acpRegistry";
+import { ServerProviderFunding } from "@t3tools/contracts/model";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProviderSkill, ServerProviderSlashCommand } from "@t3tools/contracts/server";
 import { AcpRegistrySettings } from "../settings.ts";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";

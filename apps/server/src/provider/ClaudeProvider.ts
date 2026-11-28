@@ -1,14 +1,11 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a synchronous hash keeps the token out of the snapshot.
 import * as NodeCrypto from "node:crypto";
 
-import {
-  settingsSecretLiteral,
-  type ClaudeSettings,
-  type ModelCapabilities,
-  type ServerProvider,
-  type ServerProviderSlashCommand,
-  type ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+import type { ModelCapabilities } from "@t3tools/contracts/model";
+import type { ServerProviderUsageLimits } from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider, ServerProviderSlashCommand } from "@t3tools/contracts/server";
+import type { ClaudeSettings } from "@t3tools/contracts/settings";
+import { settingsSecretLiteral } from "@t3tools/contracts/settingsSecretValue";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

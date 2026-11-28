@@ -1,11 +1,10 @@
-import {
-  CommandId,
-  type OrchestrationProjectShell,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ThreadShell,
-  type ThreadId,
-  type ThreadLinkedPullRequest,
-} from "@t3tools/contracts";
+import { CommandId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import type { ThreadLinkedPullRequest } from "@t3tools/contracts/threadPullRequest";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Cause from "effect/Cause";

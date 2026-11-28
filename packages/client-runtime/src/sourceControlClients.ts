@@ -5,7 +5,8 @@ import {
   type SourceControlAppSignIn,
   type SourceControlDefinition,
 } from "@t3tools/source-control-core/shared/definition";
-import type { ServerSettings, SourceControlAppAccessInput } from "@t3tools/contracts";
+import type { ServerSettings } from "@t3tools/contracts/settings";
+import type { SourceControlAppAccessInput } from "@t3tools/contracts/sourceControl";
 import { parseGitRemoteRepository } from "@t3tools/shared/git";
 
 export {

@@ -1,4 +1,7 @@
-import { DATABASE_COMPACTION_RECOMMENDED_BYTES, StorageCleanupSettings } from "@t3tools/contracts";
+import {
+  DATABASE_COMPACTION_RECOMMENDED_BYTES,
+  StorageCleanupSettings,
+} from "@t3tools/contracts/settings";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";

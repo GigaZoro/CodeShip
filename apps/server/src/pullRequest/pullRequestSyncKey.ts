@@ -1,4 +1,6 @@
-import type { PullRequestRef, RepositoryIdentity, ThreadPullRequestKey } from "@t3tools/contracts";
+import type { RepositoryIdentity } from "@t3tools/contracts/environment";
+import type { PullRequestRef } from "@t3tools/contracts/pullRequest";
+import type { ThreadPullRequestKey } from "@t3tools/contracts/threadPullRequest";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import { normalizeThreadPullRequestKey } from "../sourceControl/threadPullRequests.ts";
 

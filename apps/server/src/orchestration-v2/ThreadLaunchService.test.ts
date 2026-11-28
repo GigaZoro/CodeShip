@@ -11,22 +11,20 @@ import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
 import { assert, it, vi } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
-  ChatAttachmentId,
-  ComposerContextId,
-  type ChatAttachment,
   CommandId,
-  DEFAULT_SERVER_SETTINGS,
-  GitCommandError,
   MessageId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  OrchestrationV2ThreadProjectionJson,
-  type ScheduledTask,
   ScheduledTaskId,
-  type ServerProvider,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachmentId, type ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import { ComposerContextId } from "@t3tools/contracts/composerContext";
+import { GitCommandError } from "@t3tools/contracts/git";
+import { OrchestrationV2ThreadProjectionJson } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ScheduledTask } from "@t3tools/contracts/scheduledTask";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";

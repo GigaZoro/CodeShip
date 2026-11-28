@@ -1,8 +1,12 @@
-import { resolvePullRequestAuthorFilter, SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  resolvePullRequestAuthorFilter,
+  type PullRequestCapabilities,
+  type PullRequestViewerPermissions,
+} from "@t3tools/contracts/pullRequest";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
-import type { PullRequestCapabilities, PullRequestViewerPermissions } from "@t3tools/contracts";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import * as ForgejoCli from "./ForgejoCli.ts";
 import { parseDiffFileRevisions } from "@t3tools/source-control-core/server/diffFileRevisions";

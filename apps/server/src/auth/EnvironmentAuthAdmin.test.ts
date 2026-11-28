@@ -1,4 +1,5 @@
-import { AuthStandardClientScopes, type ManagedPolicyDocument } from "@t3tools/contracts";
+import { AuthStandardClientScopes } from "@t3tools/contracts/auth";
+import type { ManagedPolicyDocument } from "@t3tools/contracts/managedPolicy";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";

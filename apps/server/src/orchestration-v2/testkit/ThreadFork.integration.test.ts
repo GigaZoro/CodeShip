@@ -1,14 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import {
-  CommandId,
-  MessageId,
-  type OrchestrationV2Command,
-  type OrchestrationV2ThreadProjection,
-  ProviderInstanceId,
-  type ProviderReplayTranscript,
-  ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, MessageId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2Command,
+  OrchestrationV2ThreadProjection,
+  ProviderReplayTranscript,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";

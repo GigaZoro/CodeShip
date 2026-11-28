@@ -1,4 +1,7 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  SourceControlProviderKind,
+  SourceControlProviderError,
+} from "@t3tools/contracts/sourceControl";
 import * as Effect from "effect/Effect";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
@@ -9,7 +12,6 @@ import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
-import { SourceControlProviderError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import * as ForgejoCli from "./ForgejoCli.ts";

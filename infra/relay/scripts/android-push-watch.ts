@@ -2,13 +2,13 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
 import {
   ORCHESTRATION_V2_WS_METHODS,
-  WS_METHODS,
-  WsRpcGroup,
-  type OrchestrationProjectShell,
   type OrchestrationV2ThreadShell,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { WsRpcGroup } from "@t3tools/contracts/rpc";
+import { WS_METHODS } from "@t3tools/contracts/wsMethods";
 import type { RelayAgentActivityState } from "@t3tools/contracts/relay";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
 import * as Cause from "effect/Cause";

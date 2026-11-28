@@ -10,7 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
-import type { ShellEnvironmentPatch } from "@t3tools/contracts";
+import type { ShellEnvironmentPatch } from "@t3tools/contracts/resourceTelemetry";
 import * as HostProcess from "./HostProcess.ts";
 import * as Context from "effect/Context";
 const SHELL_ENV_NAME_PATTERN = /^[A-Z0-9_]+$/;

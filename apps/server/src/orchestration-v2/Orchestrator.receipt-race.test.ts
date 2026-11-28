@@ -1,12 +1,6 @@
 import { assert, it } from "@effect/vitest";
-import {
-  CommandId,
-  MessageId,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

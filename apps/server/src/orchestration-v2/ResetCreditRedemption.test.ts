@@ -1,9 +1,6 @@
 import { assert, it } from "@effect/vitest";
-import {
-  type ProviderConsumeResetCreditResult,
-  ProviderDriverKind,
-  ProviderInstanceId,
-} from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderConsumeResetCreditResult } from "@t3tools/contracts/providerUsageLimits";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

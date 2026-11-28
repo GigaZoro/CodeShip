@@ -1,15 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
 import { describe, expect, it } from "@effect/vitest";
-import {
-  AgentSessionImportSource,
-  type OrchestrationProjectShell,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerSettings as ContractServerSettings,
-  ThreadId,
-} from "@t3tools/contracts";
+import { AgentSessionImportSource } from "@t3tools/contracts/agentSessions";
+import { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerSettings as ContractServerSettings } from "@t3tools/contracts/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { linkDirectory, symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as DateTime from "effect/DateTime";

@@ -7,14 +7,9 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import {
-  CommandId,
-  EventId,
-  ProviderInstanceId,
-  ThreadId,
-  type OrchestrationV2AppThread,
-  type ProjectId,
-} from "@t3tools/contracts";
+import { CommandId, EventId, ThreadId, type ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2AppThread } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as NetService from "@t3tools/shared/Net";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

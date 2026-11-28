@@ -1,13 +1,12 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
+import { type ScheduledTaskId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { MemoryShortage } from "@t3tools/contracts/hostMemory";
 import {
-  type MemoryShortage,
   type ScheduledTask,
   ScheduledTaskApplySharedInput,
-  type ScheduledTaskId,
   ScheduledTaskUpsertInput,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/scheduledTask";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

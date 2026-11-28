@@ -1,4 +1,4 @@
-import type { IdleCompactionMode } from "@t3tools/contracts";
+import type { IdleCompactionMode } from "@t3tools/contracts/settings";
 
 import { msg, t, type Message } from "./i18n.ts";
 

@@ -10,7 +10,6 @@ import {
   CheckpointId,
   NodeId,
   ProjectId,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -18,10 +17,13 @@ import {
   RunId,
   MessageId,
   ThreadId,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2ProviderTurn,
-  type ProviderOptionSelection,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ProviderOptionSelection } from "@t3tools/contracts/model";
+import type {
+  OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderTurn,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { OpenCodeSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";

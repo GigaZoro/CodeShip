@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
-import { CheckpointScopeId, CommandId, GitCommandError, RunId, ThreadId } from "@t3tools/contracts";
+import { CheckpointScopeId, CommandId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { GitCommandError } from "@t3tools/contracts/git";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";

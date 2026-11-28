@@ -1,9 +1,6 @@
-import type {
-  BackgroundScope,
-  ChatAttachment,
-  ServerSettings,
-  ServerSettingsError,
-} from "@t3tools/contracts";
+import type { BackgroundScope } from "@t3tools/contracts/background";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { ServerSettings, ServerSettingsError } from "@t3tools/contracts/settings";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";

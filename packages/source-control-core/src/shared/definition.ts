@@ -1,13 +1,11 @@
+import { TrimmedNonEmptyString, TrimmedString } from "@t3tools/contracts/baseSchemas";
+import type { RepositoryIdentity } from "@t3tools/contracts/environment";
+import type { PullRequestAction, PullRequestReviewVerdict } from "@t3tools/contracts/pullRequest";
+import { secretSetting } from "@t3tools/contracts/settingsSecretValue";
 import {
-  type PullRequestAction,
-  type PullRequestReviewVerdict,
-  type RepositoryIdentity,
-  secretSetting,
   SourceControlProviderKind,
   type SourceControlProviderInfo,
-  TrimmedNonEmptyString,
-  TrimmedString,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
 import { normalizeGitRemoteUrl, parseGitRemoteRepository } from "@t3tools/shared/git";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

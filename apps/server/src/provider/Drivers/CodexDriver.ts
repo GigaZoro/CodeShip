@@ -1,4 +1,6 @@
-import { CodexSettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

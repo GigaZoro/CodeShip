@@ -1,7 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import type { NotificationHandler } from "@muse-code/sdk";
-import { ProviderInstanceId, type ServerProviderModel } from "@t3tools/contracts";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { MuseSettings } from "../settings.ts";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";

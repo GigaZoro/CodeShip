@@ -1,14 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import {
-  CommandId,
-  MessageId,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ThreadId,
-  isOrchestrationV2WorkActive,
-} from "@t3tools/contracts";
+import { CommandId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { isOrchestrationV2WorkActive } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { readProviderReplayTranscript } from "@t3tools/provider-testing/replayTranscript";

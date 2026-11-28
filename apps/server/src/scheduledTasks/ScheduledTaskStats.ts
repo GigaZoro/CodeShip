@@ -1,10 +1,10 @@
+import { ScheduledTaskId } from "@t3tools/contracts/baseSchemas";
 import {
   ScheduledTaskError,
-  ScheduledTaskId,
   type ScheduledTaskRunStats,
   type ScheduledTaskStatsInput,
   type ScheduledTaskStatsResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/scheduledTask";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";

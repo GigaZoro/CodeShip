@@ -1,10 +1,8 @@
-import {
-  ProviderDriverKind,
-  ProviderSetupError,
-  TextGenerationError,
-  type CodexSettings,
-  type ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ServerProviderUsageLimits } from "@t3tools/contracts/providerUsageLimits";
+import type { CodexSettings } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

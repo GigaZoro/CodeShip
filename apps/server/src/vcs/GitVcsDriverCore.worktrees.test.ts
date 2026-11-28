@@ -13,7 +13,8 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { GitCommandError, type WorktreeSubmodules } from "@t3tools/contracts";
+import type { WorktreeSubmodules } from "@t3tools/contracts/environment";
+import { GitCommandError } from "@t3tools/contracts/git";
 import {
   gitErrorLines,
   gitFailureFacts,

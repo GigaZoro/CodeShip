@@ -6,10 +6,9 @@ import {
   ProviderThreadId,
   RunId,
   ThreadId,
-  type OrchestrationV2CheckpointScope,
-  VcsProcessTimeoutError,
-  VcsUnsupportedOperationError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2CheckpointScope } from "@t3tools/contracts/orchestrationV2";
+import { VcsProcessTimeoutError, VcsUnsupportedOperationError } from "@t3tools/contracts/vcs";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

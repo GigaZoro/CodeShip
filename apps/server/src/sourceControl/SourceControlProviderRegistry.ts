@@ -1,4 +1,8 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  SourceControlProviderKind,
+  SourceControlProviderError,
+  type SourceControlProviderDiscoveryItem,
+} from "@t3tools/contracts/sourceControl";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -8,10 +12,6 @@ import * as Exit from "effect/Exit";
 import * as Hash from "effect/Hash";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import {
-  SourceControlProviderError,
-  type SourceControlProviderDiscoveryItem,
-} from "@t3tools/contracts";
 
 import * as BuiltInDrivers from "./builtInDrivers.ts";
 import { sourceControlDefinitions } from "./sourceControlDefinitions.ts";

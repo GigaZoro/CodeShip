@@ -1,12 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2RestartHold } from "@t3tools/contracts/orchestrationV2";
 import {
-  DEFAULT_SERVER_SETTINGS,
   ServerSelfUpdateError,
-  ThreadId,
-  type OrchestrationV2RestartHold,
   type ServerSelfUpdateOutcome,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/serverUpdate";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";

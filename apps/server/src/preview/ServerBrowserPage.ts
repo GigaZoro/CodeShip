@@ -1,23 +1,23 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 
-import {
-  type BrowserRecordingFrameRate,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-  type PreviewAutomationClickInput,
-  type PreviewAutomationConsoleEntry,
-  type PreviewAutomationDragInput,
-  type PreviewAutomationEvaluateInput,
-  type PreviewAutomationHoverInput,
-  type PreviewAutomationNetworkEntry,
-  type PreviewAutomationPressInput,
-  type PreviewAutomationScrollInput,
-  type PreviewAutomationSelectInput,
-  type PreviewAutomationSelectResult,
-  type PreviewAutomationSnapshot,
-  type PreviewAutomationTypeInput,
-  type PreviewAutomationUploadInput,
-  type PreviewAutomationWaitForInput,
-} from "@t3tools/contracts";
+import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@t3tools/contracts/chatAttachment";
+import type {
+  PreviewAutomationClickInput,
+  PreviewAutomationConsoleEntry,
+  PreviewAutomationDragInput,
+  PreviewAutomationEvaluateInput,
+  PreviewAutomationHoverInput,
+  PreviewAutomationNetworkEntry,
+  PreviewAutomationPressInput,
+  PreviewAutomationScrollInput,
+  PreviewAutomationSelectInput,
+  PreviewAutomationSelectResult,
+  PreviewAutomationSnapshot,
+  PreviewAutomationTypeInput,
+  PreviewAutomationUploadInput,
+  PreviewAutomationWaitForInput,
+} from "@t3tools/contracts/previewAutomation";
+import type { BrowserRecordingFrameRate } from "@t3tools/contracts/settingsPrimitives";
 import { constVoid } from "effect/Function";
 import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwright-core";
 import * as NodeCrypto from "node:crypto";

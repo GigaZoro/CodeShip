@@ -8,9 +8,8 @@ import * as Path from "effect/Path";
 import * as RcMap from "effect/RcMap";
 import * as Schema from "effect/Schema";
 
+import type { FilesystemBrowseInput, FilesystemBrowseResult } from "@t3tools/contracts/filesystem";
 import type {
-  FilesystemBrowseInput,
-  FilesystemBrowseResult,
   ProjectEntry,
   ProjectListEntriesInput,
   ProjectListEntriesResult,
@@ -20,7 +19,7 @@ import type {
   ProjectSearchContentsResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/project";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isExplicitRelativePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { normalizeSearchQuery } from "@t3tools/shared/searchRanking";

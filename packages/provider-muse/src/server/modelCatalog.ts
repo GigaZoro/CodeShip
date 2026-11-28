@@ -1,5 +1,6 @@
 import type { SendUserTurnOptions } from "@muse-code/sdk";
-import { ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
+import { ModelCapabilities } from "@t3tools/contracts/model";
+import { ServerProviderModel } from "@t3tools/contracts/provider";
 import { MuseSettings } from "../settings.ts";
 import { createModelCapabilities, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";

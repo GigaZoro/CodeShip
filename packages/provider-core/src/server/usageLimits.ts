@@ -6,7 +6,7 @@ import type {
   ServerProviderUsageCredits,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerUsageLimits";
 
 const WINDOW_KIND_ORDER: Record<ServerProviderUsageWindow["kind"], number> = {
   session: 0,

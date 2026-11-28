@@ -1,13 +1,12 @@
 // @effect-diagnostics globalDate:off
+import type { UsageModelFilter, UsageModelSelector } from "@t3tools/contracts/settingsPrimitives";
 import type {
   UsageBucket,
   UsageCategoryCost,
   UsageDay,
-  UsageModelFilter,
-  UsageModelSelector,
   UsageResolution,
   UsageTokenTotals,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/usage";
 
 import { EMPTY_TOTALS, type UsageRecord } from "@t3tools/provider-core/server/usage";
 import { USAGE_HOUR_MS, usageHourStart } from "@t3tools/shared/usageFormat";

@@ -1,27 +1,33 @@
 import * as NodeV8 from "node:v8";
 
-import { SourceControlProviderKind } from "@t3tools/contracts";
-import * as Stream from "effect/Stream";
 import {
   EventId,
   MessageId,
   ProjectId,
-  ProviderInstanceId,
-  PullRequestOperationError,
   RunId,
   ThreadId,
   TurnItemId,
-  type OrchestrationV2Command as OrchestrationCommand,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2Run,
-  type OrchestrationProjectShell,
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import type {
+  OrchestrationV2Command as OrchestrationCommand,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2Run,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import {
+  PullRequestOperationError,
   type PullRequestRef,
   type PullRequestStack,
   type PullRequestSummary,
-  type ThreadPullRequestKey,
-  type ThreadPullRequestLink,
-  type ThreadPullRequestSnapshot,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
+import type {
+  ThreadPullRequestKey,
+  ThreadPullRequestLink,
+  ThreadPullRequestSnapshot,
+} from "@t3tools/contracts/threadPullRequest";
+import * as Stream from "effect/Stream";
 import { assert, describe, it } from "@effect/vitest";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";

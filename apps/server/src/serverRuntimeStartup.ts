@@ -1,15 +1,11 @@
-import {
-  CommandId,
-  DEFAULT_MODEL,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
-  DEFAULT_SERVER_SETTINGS,
-  isListedThreadLineage,
-  type ModelSelection,
-  type Project,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { DEFAULT_MODEL } from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { isListedThreadLineage } from "@t3tools/contracts/orchestrationV2";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { DEFAULT_PROVIDER_INTERACTION_MODE } from "@t3tools/contracts/providerPolicy";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";

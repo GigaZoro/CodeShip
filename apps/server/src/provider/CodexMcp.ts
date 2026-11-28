@@ -1,17 +1,19 @@
 import {
+  ProviderInstanceEnvironmentVariableName,
+  type ProviderInstanceId,
+} from "@t3tools/contracts/providerInstance";
+import {
   boundedProviderMcpMessage,
   displayProviderMcpCommand,
   displayProviderMcpUrl,
   PROVIDER_MCP_NEW_SERVER_NAME_PATTERN,
-  ProviderInstanceEnvironmentVariableName,
   ProviderMcpError,
-  type ProviderInstanceId,
   type ProviderMcpOperation,
   type ProviderMcpServer,
   type ProviderMcpServerConfig,
   type ProviderMcpServerStatus,
-  splitProviderPluginId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerMcp";
+import { splitProviderPluginId } from "@t3tools/contracts/providerPlugins";
 import type { ProviderMcpManagement } from "@t3tools/provider-core/server/driver";
 import { mcpCallbackUrl, mcpRedirect, type McpRedirect } from "@t3tools/shared/mcpAuthCallback";
 import type * as CodexClient from "effect-codex-app-server/client";

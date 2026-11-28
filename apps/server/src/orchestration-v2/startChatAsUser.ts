@@ -1,13 +1,13 @@
 import {
   type CommandId,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
   type MessageId,
-  type ModelSelection,
   type ProjectId,
-  type ServerProvider,
-  type ServerSettings as ServerSettingsValue,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { DEFAULT_PROVIDER_INTERACTION_MODE } from "@t3tools/contracts/providerPolicy";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import type { ServerSettings as ServerSettingsValue } from "@t3tools/contracts/settings";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { canAccountRun } from "@t3tools/shared/serverSettings";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";

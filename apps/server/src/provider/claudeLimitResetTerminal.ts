@@ -3,7 +3,7 @@
  * resets. It answers only the first-run screens it knows, and sends every key only onto the
  * fully drawn screen that key is meant for: any other screen ends the run instead.
  */
-import type { ServerProviderResetKind } from "@t3tools/contracts";
+import type { ServerProviderResetKind } from "@t3tools/contracts/providerUsageLimits";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import xtermHeadless from "@xterm/headless";
 import * as Clock from "effect/Clock";

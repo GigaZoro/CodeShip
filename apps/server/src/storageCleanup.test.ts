@@ -16,14 +16,14 @@ import * as Stream from "effect/Stream";
 import { SCAN_CACHE_DIRECTORY_NAME } from "./usage/usageScanCache.ts";
 import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/sql/SqlClient";
+import { GitCommandError } from "@t3tools/contracts/git";
 import {
   DEFAULT_SERVER_SETTINGS,
-  GitCommandError,
-  type WorktreeKeepWhen,
+  type ServerSettings,
   type StorageCleanupSettings,
-  type TerminalMetadataStreamEvent,
-  type TerminalSummary,
-} from "@t3tools/contracts";
+  type WorktreeKeepWhen,
+} from "@t3tools/contracts/settings";
+import type { TerminalMetadataStreamEvent, TerminalSummary } from "@t3tools/contracts/terminal";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { linkDirectory, symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -46,15 +46,16 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   EventId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   RunId,
   RuntimeRequestId,
   ThreadId,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ThreadShell,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import {
   storageCleanupActivityAt,
@@ -368,7 +369,7 @@ const cleanupFixture = (
       ...(managedLayout ? ["project", "feature"] : ["feature"]),
     );
     yield* command(repo, ["worktree", "add", "-b", "feature", worktree]);
-    let settings: import("@t3tools/contracts").ServerSettings = {
+    let settings: ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,
       storageCleanup,
     };

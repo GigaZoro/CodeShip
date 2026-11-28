@@ -1,12 +1,10 @@
 import { assert, it } from "@effect/vitest";
+import { EventId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   ComposerContextId,
-  EventId,
-  ProjectId,
-  ProviderInstanceId,
   type OrchestrationMessageContext,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/composerContext";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

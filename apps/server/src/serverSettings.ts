@@ -1,27 +1,29 @@
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ManagedPolicySummary } from "@t3tools/contracts/managedPolicy";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProjectScript } from "@t3tools/contracts/project";
 import {
-  DEFAULT_SERVER_SETTINGS,
-  ModelSelection,
-  ProjectId,
-  ProjectScript,
-  ProjectScriptExistsError,
-  type ProjectScriptMutation,
-  keepUnknownOverrideKeys,
-  ProjectSettingsOverrides,
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
   defaultInstanceIdForDriver,
   isProviderDriverKind,
   ProviderDriverKind,
   ProviderInstanceId,
+} from "@t3tools/contracts/providerInstance";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProjectScriptExistsError,
+  type ProjectScriptMutation,
+  keepUnknownOverrideKeys,
+  ProjectSettingsOverrides,
   resolveProviderInstanceEnabled,
   ResponseStreamingMode,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
-  type ManagedPolicySummary,
   globalIdleCompaction,
   withIdleCompaction,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";

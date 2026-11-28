@@ -4,9 +4,9 @@ import {
   AuthAccessTokenType,
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
-  EnvironmentHttpApi,
-  EnvironmentId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/auth";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { EnvironmentHttpApi } from "@t3tools/contracts/environmentHttp";
 import {
   RelayEnvironmentLinkProofPayload,
   type RelayLinkProofRequest,

@@ -1,4 +1,5 @@
-import type { ManualStep, ManualStepKind, ScopedThreadRef } from "@t3tools/contracts";
+import type { ScopedThreadRef } from "@t3tools/contracts/environment";
+import type { ManualStep, ManualStepKind } from "@t3tools/contracts/manualSteps";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 
 /** Agents keep each machine's pending list in `Work/Agent Maintenance/Machine inbox/<machine>`. */

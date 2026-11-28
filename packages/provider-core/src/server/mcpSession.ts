@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- adapters build review evidence synchronously from native reports.
 import * as NodeCrypto from "node:crypto";
-import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

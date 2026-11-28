@@ -1,27 +1,30 @@
 import { McpAttachmentInput } from "../attachment/input.ts";
 import {
-  DelegatedTaskRole,
   NonNegativeInt,
-  ModelSelection,
-  RepoCapExemption,
   TrimmedNonEmptyString,
   ThreadId,
   RunId,
+  ProjectId,
+  OrchestratorMcpEnvironmentTarget,
+} from "@t3tools/contracts/baseSchemas";
+import { DelegatedTaskRole } from "@t3tools/contracts/delegatedTaskRole";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
   OrchestrationV2DelegatedFrom,
   OrchestrationV2RunStatus,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
-  RuntimeMode,
-  ProviderInteractionMode,
-  Project,
-  ProjectCreatePayload,
-  ProjectUpdatePayload,
-  ProjectId,
+} from "@t3tools/contracts/orchestrationV2";
+import {
   OrchestratorMcpClientRequestId,
-  OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
+} from "@t3tools/contracts/orchestratorMcp";
+import { Project, ProjectCreatePayload, ProjectUpdatePayload } from "@t3tools/contracts/project";
+import { RuntimeMode, ProviderInteractionMode } from "@t3tools/contracts/providerPolicy";
+import { RepoCapExemption } from "@t3tools/contracts/scheduledTask";
+import {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
 import * as FileSystem from "effect/FileSystem";
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as MemoryAdmission from "../../../resourceTelemetry/MemoryAdmission.ts";

@@ -8,16 +8,17 @@ import {
   NodeId,
   EventId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ThreadId,
   TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadStreamItem,
   OrchestrationV2TurnItem,
   OrchestrationV2TurnItemJson,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";

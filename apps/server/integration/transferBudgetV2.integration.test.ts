@@ -5,15 +5,18 @@ import { assert, it } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { AuthOrchestrationReadScope } from "@t3tools/contracts/auth";
+import { AuthSessionId, EnvironmentId } from "@t3tools/contracts/baseSchemas";
 import {
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION,
-  AuthSessionId,
-  AuthOrchestrationReadScope,
+} from "@t3tools/contracts/environment";
+import {
   EnvironmentHttpApi,
-  EnvironmentId,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
+} from "@t3tools/contracts/environmentHttp";
+import {
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2RpcSchemas,
   OrchestrationV2ThreadBoundedSnapshot,
@@ -22,10 +25,10 @@ import {
   OrchestrationV2ShellSnapshot,
   OrchestrationV2GetThreadProjectionError,
   OrchestrationV2GetShellSnapshotError,
-  ProviderDriverKind,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2ShellStreamItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

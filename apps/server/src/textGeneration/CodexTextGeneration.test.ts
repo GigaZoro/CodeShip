@@ -1,9 +1,10 @@
-import {
-  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
-  ProviderDriverKind,
-  type ModelSelection,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import { DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER } from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -28,13 +29,6 @@ import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
-
-import {
-  TextGenerationError,
-  CodexSettings,
-  ProviderInstanceId,
-  ThreadId,
-} from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
 import { makeProcessProbe, processProbeSource } from "../testUtils/processProbe.ts";

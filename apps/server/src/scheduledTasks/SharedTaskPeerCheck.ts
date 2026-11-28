@@ -1,13 +1,14 @@
+import type { EnvironmentId, ScheduledTaskId } from "@t3tools/contracts/baseSchemas";
 import {
-  type EnvironmentId,
-  type PeerLinkError,
   OrchestratorMcpClaimScheduledTaskOccurrenceResult,
   OrchestratorMcpScheduledOccurrence,
   OrchestratorMcpScheduledTask,
+} from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLinkError } from "@t3tools/contracts/peerLink";
+import {
   SCHEDULED_TASK_CLAIM_PROTOCOL,
-  type ScheduledTaskId,
   ScheduledTaskNoWorkSkip,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/scheduledTask";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

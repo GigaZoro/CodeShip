@@ -1,4 +1,5 @@
-import { makeProviderSettingsSchema, SourceControlProviderKind } from "@t3tools/contracts";
+import { makeProviderSettingsSchema } from "@t3tools/contracts/settings";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import {
   buildCommitUrl,
   changeRequestUrlBelow,

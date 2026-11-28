@@ -1,13 +1,15 @@
 import {
-  DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
   UsageLimitSourceError,
   type UsageLimitSourceConsumeResetCreditInput,
   type ProviderConsumeResetCreditResult,
+  type UsageLimitSourceSnapshot,
+} from "@t3tools/contracts/providerUsageLimits";
+import {
+  DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
   type ServerSettings,
   type UsageLimitSourceConfig,
-  type UsageLimitSourceId,
-  type UsageLimitSourceSnapshot,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import type { UsageLimitSourceId } from "@t3tools/contracts/usageLimitSourceId";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

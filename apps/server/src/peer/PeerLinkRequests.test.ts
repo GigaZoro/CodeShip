@@ -1,25 +1,26 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { AuthEnvironmentScope } from "@t3tools/contracts/auth";
 import {
-  AuthEnvironmentScope,
   CommandId,
   EventId,
   MessageId,
   NodeId,
-  OrchestratorMcpFailure,
-  type PeerLinkBackOutcome,
-  type PeerLinkCreateInput,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderThreadId,
-  PEER_LINK_AGENTS_ONLY_NOTE,
-  type RuntimeMode,
   RunId,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import {
+  type PeerLinkBackOutcome,
+  type PeerLinkCreateInput,
+  PEER_LINK_AGENTS_ONLY_NOTE,
+} from "@t3tools/contracts/peerLink";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

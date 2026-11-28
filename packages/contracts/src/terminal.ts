@@ -1,6 +1,10 @@
 import * as Schema from "effect/Schema";
-import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { clampedPositiveInt, OrchestratorMcpEnvironmentTarget } from "./orchestratorMcp.ts";
+import {
+  clampedPositiveInt,
+  OrchestratorMcpEnvironmentTarget,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const DEFAULT_TERMINAL_ID = "term-1";

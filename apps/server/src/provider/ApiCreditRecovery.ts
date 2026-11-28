@@ -1,10 +1,7 @@
-import {
-  ClaudeSettings,
-  isProviderAvailable,
-  isSecretReference,
-  ProviderInstanceId,
-  settingsSecretLiteral,
-} from "@t3tools/contracts";
+import { isProviderAvailable } from "@t3tools/contracts/provider";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ClaudeSettings } from "@t3tools/contracts/settings";
+import { isSecretReference, settingsSecretLiteral } from "@t3tools/contracts/settingsSecretValue";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { accountCapacityExpiresAt, accountUsageTier } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";

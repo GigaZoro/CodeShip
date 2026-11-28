@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
-import { ManualStepReview } from "@t3tools/contracts";
+import { ManualStepReview } from "@t3tools/contracts/manualSteps";
 
 import {
   PersistenceDecodeError,

@@ -8,12 +8,12 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { GitCommandError } from "@t3tools/contracts/git";
 import {
-  GitCommandError,
   ReviewDiffPreviewInput,
   type ReviewDiffFileContentsInput,
   type ReviewDiffPreviewResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/review";
 import { makeGitVcsDriverCore, splitNullSeparatedGitStdoutPaths } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";

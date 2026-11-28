@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import { autoCoordinatorAccounts, autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 
 const first = ProviderInstanceId.make("codex_first");

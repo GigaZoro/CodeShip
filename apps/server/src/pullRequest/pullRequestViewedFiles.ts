@@ -8,7 +8,7 @@ import {
   type PullRequestFilesViewedResult,
   type PullRequestRef,
   type PullRequestSetFilesViewedInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
 
 import type * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import type {

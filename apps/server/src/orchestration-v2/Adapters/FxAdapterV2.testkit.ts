@@ -5,7 +5,7 @@ import {
   FX_DRIVER_KIND,
   makeFxAdapterV2,
 } from "@t3tools/provider-fx/testing";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";

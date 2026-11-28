@@ -1,6 +1,5 @@
+import { AuthRelayReadScope, AuthRelayWriteScope } from "@t3tools/contracts/auth";
 import {
-  AuthRelayReadScope,
-  AuthRelayWriteScope,
   EnvironmentCloudEndpointUnavailableError,
   EnvironmentHttpApi,
   EnvironmentHttpBadRequestError,
@@ -8,7 +7,7 @@ import {
   EnvironmentHttpForbiddenError,
   EnvironmentHttpInternalServerError,
   EnvironmentHttpUnauthorizedError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/environmentHttp";
 import * as Effect from "effect/Effect";
 import * as HttpEffect from "effect/http/HttpEffect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";

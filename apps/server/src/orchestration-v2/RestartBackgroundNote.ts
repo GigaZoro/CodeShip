@@ -1,3 +1,4 @@
+import type { RunId } from "@t3tools/contracts/baseSchemas";
 import {
   isOrchestrationV2WorkActive,
   type OrchestrationV2AppThread,
@@ -10,8 +11,7 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
-  type RunId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import {
   isExecutionTurnItemType,
   waitsOnAnotherThread,

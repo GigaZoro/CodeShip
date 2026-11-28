@@ -1,14 +1,12 @@
 import { assert, it } from "@effect/vitest";
-import {
-  type ModelSelection,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2CommandOutputFrame,
-  type OrchestrationV2TurnItem,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+import { type ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2CommandOutputFrame,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   appendTerminalOutput,
   EMPTY_TERMINAL_OUTPUT,

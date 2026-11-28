@@ -12,16 +12,15 @@ import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  EnvironmentId,
   USAGE_CONTRACT_VERSION,
-  ProviderDriverKind,
-  ProviderInstanceId,
   UsageDay,
   type UsageSource,
   type UsageSummary,
   type UsageSummaryInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/usage";
 import * as Duration from "effect/Duration";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";

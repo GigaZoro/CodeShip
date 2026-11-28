@@ -1,7 +1,9 @@
 import {
   type ProviderInstanceConfig,
   ProviderInstanceId,
-  type ServerSettings as ServerSettingsValue,
+} from "@t3tools/contracts/providerInstance";
+import type { ServerSettings as ServerSettingsValue } from "@t3tools/contracts/settings";
+import {
   USAGE_CONTRACT_VERSION,
   type UsageProviderKind,
   type UsageSource,
@@ -11,7 +13,7 @@ import {
   UsageDay,
   type UsageTokenTotals,
   UsageReadError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";

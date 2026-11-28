@@ -1,13 +1,19 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 // Screencasts ignore emulated device scale; real 2x keeps captures sharp.
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
+import { INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts/browserProfile";
+import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@t3tools/contracts/chatAttachment";
+import { DESKTOP_BROWSER_ATTACH_WAIT_MS } from "@t3tools/contracts/desktopBrowser";
 import {
-  FILL_PREVIEW_VIEWPORT,
-  INCOGNITO_BROWSER_PROFILE_ID,
+  PreviewClearProfileError,
+  type PreviewEvent,
+  type PreviewNavStatus,
+  type PreviewSessionSnapshot,
+} from "@t3tools/contracts/preview";
+import {
   PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   PREVIEW_HEADLESS_NOTE,
-  PreviewViewportSetting as PreviewViewportSettingSchema,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type PreviewAutomationActionEvent,
   type PreviewAutomationClickInput,
   type PreviewAutomationDialogInput,
@@ -28,16 +34,14 @@ import {
   type PreviewAutomationTypeInput,
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
-  PreviewClearProfileError,
-  type PreviewEvent,
-  type PreviewNavStatus,
-  type PreviewSessionSnapshot,
-  type PreviewViewportSetting,
-  ThreadId,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
-  DESKTOP_BROWSER_ATTACH_WAIT_MS,
+} from "@t3tools/contracts/previewAutomation";
+import {
+  FILL_PREVIEW_VIEWPORT,
+  PreviewViewportSetting as PreviewViewportSettingSchema,
+  type PreviewViewportSetting,
   type PreviewAppearancePreference,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settingsPrimitives";
 import { AgentScope, agentScopeLauncherScript } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as FileSystem from "effect/FileSystem";

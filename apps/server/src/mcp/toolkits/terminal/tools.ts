@@ -1,10 +1,10 @@
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import {
-  OrchestratorMcpFailure,
   TerminalToolReadInput,
   TerminalToolReadResult,
   TerminalToolWriteInput,
   TerminalToolWriteResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/terminal";
 import * as Crypto from "effect/Crypto";
 import { Tool, Toolkit } from "effect/ai";
 

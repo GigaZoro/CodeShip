@@ -7,12 +7,10 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import {
-  CodexSettings,
-  DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
-  type ServerProviderModel,
-  TextGenerationError,
-} from "@t3tools/contracts";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import { DEFAULT_TEXT_GENERATION_REASONING_EFFORT } from "@t3tools/contracts/model";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import {
   CommandResolutionCache,
   resolveCommandPath,
@@ -136,11 +134,14 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   getModels: Effect.Effect<ReadonlyArray<ServerProviderModel>> = Effect.succeed([]),
   resolveRuntime?: Effect.Effect<
     import("../provider/CodexManagedRuntime.ts").CodexEffectiveRuntime,
-    import("@t3tools/contracts").ProviderSetupError,
+    import("@t3tools/contracts/providerSetup").ProviderSetupError,
     Scope.Scope
   >,
   /** The program to run when no runtime is resolved; absent, `codexConfig.binaryPath`. */
-  resolveBinaryPath?: Effect.Effect<string, import("@t3tools/contracts").ProviderSetupError>,
+  resolveBinaryPath?: Effect.Effect<
+    string,
+    import("@t3tools/contracts/providerSetup").ProviderSetupError
+  >,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

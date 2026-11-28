@@ -1,12 +1,12 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  ProviderInstanceId,
   ProviderMcpError,
   type ProviderMcpServer,
   type ProviderMcpServerConfig,
   type ProviderMcpSignInState,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerMcp";
 import type { ProviderInstance, ProviderMcpManagement } from "@t3tools/provider-core/server/driver";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

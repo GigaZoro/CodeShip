@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import { Tool } from "effect/ai";
 
-import { OrchestratorMcpSaveScheduledTaskInput } from "@t3tools/contracts";
+import { OrchestratorMcpSaveScheduledTaskInput } from "@t3tools/contracts/orchestratorMcp";
 
 import { advertisedJsonSchema, unknownArguments } from "./advertisedJsonSchema.ts";
 import { MCP_TOOLKITS } from "./toolkits.testkit.ts";

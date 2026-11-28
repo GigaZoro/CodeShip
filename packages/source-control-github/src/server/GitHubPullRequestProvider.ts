@@ -1,4 +1,11 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import type {
+  PullRequestActor,
+  PullRequestCapabilities,
+  PullRequestCheck,
+  PullRequestReaction,
+  PullRequestViewerPermissions,
+} from "@t3tools/contracts/pullRequest";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import { removeAgentCredits } from "@t3tools/source-control-core/server/mergeMessage";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
@@ -6,13 +13,6 @@ import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Hash from "effect/Hash";
 import * as Effect from "effect/Effect";
-import type {
-  PullRequestActor,
-  PullRequestCapabilities,
-  PullRequestCheck,
-  PullRequestReaction,
-  PullRequestViewerPermissions,
-} from "@t3tools/contracts";
 
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as GitHubPullRequestApi from "./GitHubPullRequestApi.ts";

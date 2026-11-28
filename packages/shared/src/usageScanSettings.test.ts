@@ -1,10 +1,9 @@
 import {
-  DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceConfig,
-  type ServerSettings,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import { DEFAULT_SERVER_SETTINGS, type ServerSettings } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 
 import { usageScanSettingsKey } from "./usageScanSettings.ts";

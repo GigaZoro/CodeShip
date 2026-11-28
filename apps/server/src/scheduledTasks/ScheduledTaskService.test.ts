@@ -4,24 +4,23 @@ import * as NodeUtil from "node:util";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
+import { MessageId, ProjectId, ScheduledTaskId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { MemoryShortage } from "@t3tools/contracts/hostMemory";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2RunStatus } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  DEFAULT_SERVER_SETTINGS,
-  type MemoryShortage,
-  MessageId,
-  type ModelSelection,
-  type OrchestrationV2RunStatus,
-  ProjectId,
-  ProviderInstanceId,
   ScheduledTaskError,
-  ScheduledTaskId,
-  type ScheduledTaskPlacement,
   type ScheduledTask,
   type ScheduledTaskRunCheck,
   type ScheduledTaskUpsertInput,
+} from "@t3tools/contracts/scheduledTask";
+import {
+  DEFAULT_SERVER_SETTINGS,
   type ServerSettings as ServerSettingsValue,
-  ThreadId,
-  sameThreadFolder,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import type { ScheduledTaskPlacement } from "@t3tools/contracts/settingsPrimitives";
+import { sameThreadFolder } from "@t3tools/contracts/threadFolders";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

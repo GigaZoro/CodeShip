@@ -5,10 +5,9 @@ import {
   EnvironmentId,
   EventId,
   MessageId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

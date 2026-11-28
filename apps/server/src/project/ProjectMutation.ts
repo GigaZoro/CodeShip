@@ -1,4 +1,4 @@
-import { type ProjectMutation } from "@t3tools/contracts";
+import type { ProjectMutation } from "@t3tools/contracts/project";
 import * as Effect from "effect/Effect";
 
 import { type ProjectCloneTracker } from "./ProjectCloneTracker.ts";

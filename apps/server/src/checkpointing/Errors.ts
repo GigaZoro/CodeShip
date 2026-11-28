@@ -1,4 +1,5 @@
-import { NonNegativeInt, ThreadId, type VcsError } from "@t3tools/contracts";
+import { NonNegativeInt, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { VcsError } from "@t3tools/contracts/vcs";
 import * as Schema from "effect/Schema";
 
 import type { ProjectionRepositoryError } from "../persistence/Errors.ts";

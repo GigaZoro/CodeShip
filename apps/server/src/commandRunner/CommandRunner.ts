@@ -6,21 +6,17 @@ import * as NodeURL from "node:url";
 import { flow } from "effect/Function";
 import { admitWorkspaceProcess } from "../workspace/workspaceLease.ts";
 
+import { CommandId, NodeId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
-  CommandId,
-  type ModelSelection,
-  NodeId,
   ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   type OrchestratorMcpCommandCleanup,
   OrchestratorMcpFailure,
   type OrchestratorMcpRunCommandInput,
   type OrchestratorMcpRunCommandResult,
-  ProviderDriverKind,
-  type ProviderInstanceId,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   holdProcessGroup,
   isFifoHolderHeld,

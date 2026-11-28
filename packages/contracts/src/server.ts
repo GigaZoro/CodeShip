@@ -2,11 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AcpRegistryUrlAuthAction } from "./acpRegistry.ts";
-import {
-  type EnvironmentMachineKind,
-  ExecutionEnvironmentDescriptor,
-  ServerSelfUpdateMethod,
-} from "./environment.ts";
+import { type EnvironmentMachineKind, ExecutionEnvironmentDescriptor } from "./environment.ts";
 import { AuthClientPresentationMetadata, ServerAuthDescriptor } from "./auth.ts";
 import {
   ForwardCompatibleArray,
@@ -25,7 +21,13 @@ import {
 } from "./keybindings.ts";
 import { EditorId, FileManagerRevealKind, RemoteOpenTarget } from "./editor.ts";
 import { ManagedPolicySummary } from "./managedPolicy.ts";
-import { ModelCapabilities, ProviderOptionDescriptor, ServerProviderFunding } from "./model.ts";
+import { ProviderOptionDescriptor, ServerProviderFunding } from "./model.ts";
+import {
+  ServerProviderApiCredit,
+  ServerProviderAvailability,
+  ServerProviderCompatibilityStatus,
+  ServerProviderModel,
+} from "./provider.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -33,8 +35,8 @@ import {
   ServerProviderUsageLimits,
   UsageLimitSourceSnapshots,
 } from "./providerUsageLimits.ts";
+import { ServerSelfUpdateOutcome } from "./serverUpdate.ts";
 import { ServerSettings } from "./settings.ts";
-import { DesktopUpdateChannelSchema } from "./ipc.ts";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -87,24 +89,6 @@ export const ServerProviderAuth = Schema.Struct({
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 
-export const ServerProviderModel = Schema.Struct({
-  slug: TrimmedNonEmptyString,
-  name: TrimmedNonEmptyString,
-  /** Provider-reported model family when the executable slug is opaque. */
-  nativeModelFamily: Schema.optionalKey(TrimmedNonEmptyString),
-  shortName: Schema.optional(TrimmedNonEmptyString),
-  subProvider: Schema.optional(TrimmedNonEmptyString),
-  /** Overrides the account funding when the adapter can identify this model's payer separately. */
-  funding: Schema.optionalKey(ServerProviderFunding),
-  aliases: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
-  badge: Schema.optional(Schema.Literal("new")),
-  isCustom: Schema.Boolean,
-  isDefault: Schema.optional(Schema.Boolean),
-  isLegacy: Schema.optional(Schema.Boolean),
-  capabilities: Schema.NullOr(ModelCapabilities),
-});
-export type ServerProviderModel = typeof ServerProviderModel.Type;
-
 export const ServerProviderUpdateRequiredModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
@@ -150,31 +134,11 @@ export const ServerProviderWorkspaceSnapshot = Schema.Struct({
 });
 export type ServerProviderWorkspaceSnapshot = typeof ServerProviderWorkspaceSnapshot.Type;
 
-export const PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS = 5 * 60_000;
-
-export function isProviderWorkspaceSnapshotCurrent(
-  snapshot: Pick<ServerProviderWorkspaceSnapshot, "checkedAt">,
-  nowMs: number,
-): boolean {
-  return nowMs - Date.parse(snapshot.checkedAt) < PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS;
-}
-
-/** Unavailable snapshots must set installed and enabled false. */
-export const ServerProviderAvailability = Schema.Literals(["available", "unavailable"]);
-export type ServerProviderAvailability = typeof ServerProviderAvailability.Type;
-
 export const ServerProviderContinuation = Schema.Struct({
   groupKey: TrimmedNonEmptyString,
 });
 export type ServerProviderContinuation = typeof ServerProviderContinuation.Type;
 
-export const ServerProviderCompatibilityStatus = Schema.Literals([
-  "unknown",
-  "supported",
-  "graceful",
-  "unsupported",
-  "broken",
-]);
 export const ServerProviderCompatibilityAdvisory = Schema.Struct({
   status: ServerProviderCompatibilityStatus,
   latestVersionStatus: Schema.optionalKey(ServerProviderCompatibilityStatus),
@@ -222,24 +186,6 @@ export const ServerProviderUpdateState = Schema.Struct({
   output: Schema.NullOr(Schema.String.check(Schema.isMaxLength(10_000))),
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
-
-export const ServerProviderApiCredit = Schema.Struct({
-  linkedPlanInstanceId: ProviderInstanceId,
-  grantUsd: Schema.Number,
-  cycleStart: IsoDateTime,
-  cycleEnd: IsoDateTime,
-  balanceState: Schema.Literals(["available", "exhausted"]),
-  checkedAt: IsoDateTime,
-  exhaustedAt: Schema.optional(IsoDateTime),
-  reason: Schema.optional(TrimmedNonEmptyString),
-  spendUsd: Schema.NullOr(Schema.Number),
-  estimatedRemainingUsd: Schema.NullOr(Schema.Number),
-  spendSource: Schema.Literal("metered"),
-  meteringStartedAt: IsoDateTime,
-  unpricedUsage: Schema.Boolean,
-  sharedWith: Schema.optional(ProviderInstanceId),
-});
-export type ServerProviderApiCredit = typeof ServerProviderApiCredit.Type;
 
 export const ServerProvider = Schema.Struct({
   // Only instanceId is stable enough for provider routing.
@@ -333,13 +279,6 @@ export type ServerProvider = typeof ServerProvider.Type;
 
 export const ServerProviders = ForwardCompatibleArray(ServerProvider);
 export type ServerProviders = typeof ServerProviders.Type;
-
-export const isProviderAvailable = (snapshot: Pick<ServerProvider, "availability">): boolean =>
-  snapshot.availability !== "unavailable";
-
-/** Legacy producers omit this field and support text generation. */
-export const isProviderTextGenerationCapable = (snapshot: ServerProvider): boolean =>
-  snapshot.supportsTextGeneration !== false;
 
 export const OtlpEndpointSource = Schema.Literals(["environment", "bootstrap", "settings"]);
 export type OtlpEndpointSource = typeof OtlpEndpointSource.Type;
@@ -866,15 +805,6 @@ export const ServerConfigStreamEvent = Schema.Union([
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 
-export const ServerSelfUpdateOutcome = Schema.Struct({
-  id: TrimmedNonEmptyString,
-  fromVersion: TrimmedNonEmptyString,
-  targetVersion: TrimmedNonEmptyString,
-  status: Schema.Literals(["committed", "rolled-back", "failed"]),
-  reason: Schema.optionalKey(TrimmedNonEmptyString),
-});
-export type ServerSelfUpdateOutcome = typeof ServerSelfUpdateOutcome.Type;
-
 export const ServerLifecycleReadyPayload = Schema.Struct({
   at: IsoDateTime,
   environment: ExecutionEnvironmentDescriptor,
@@ -945,19 +875,6 @@ export const ServerProviderUpdateInput = Schema.Struct({
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 
-export class ServerProviderUpdateError extends Schema.TaggedError<ServerProviderUpdateError>()(
-  "ServerProviderUpdateError",
-  {
-    provider: ProviderDriverKind,
-    reason: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return `Provider update failed for ${this.provider}: ${this.reason}`;
-  }
-}
-
 export const ServerNpmReleaseInput = Schema.Struct({
   spec: Schema.String.check(
     Schema.isMaxLength(64),
@@ -978,55 +895,5 @@ export class ServerNpmReleaseError extends Schema.TaggedError<ServerNpmReleaseEr
 ) {
   override get message(): string {
     return `Could not check the configured npm registry: ${this.reason}`;
-  }
-}
-
-export const ServerSelfUpdateInput = Schema.Struct({
-  /** Exact npm version, never a dist-tag, so server and client agree on the request. */
-  targetVersion: TrimmedNonEmptyString,
-  /** Desktop-managed hosts move their app to this update track first. Sent only for a track switch. */
-  channel: Schema.optionalKey(DesktopUpdateChannelSchema),
-  /** The target release's highest migration; the host refuses to leave Nightly without it. */
-  targetDatabaseMigration: Schema.optionalKey(Schema.Int),
-});
-export type ServerSelfUpdateInput = typeof ServerSelfUpdateInput.Type;
-
-export const ServerSelfUpdateResult = Schema.Struct({
-  targetVersion: TrimmedNonEmptyString,
-  method: ServerSelfUpdateMethod,
-  updateId: Schema.optionalKey(TrimmedNonEmptyString),
-  desktopUpdateToken: Schema.optionalKey(TrimmedNonEmptyString),
-});
-export type ServerSelfUpdateResult = typeof ServerSelfUpdateResult.Type;
-
-export const DesktopUpdateCommitInput = Schema.Struct({
-  requestId: TrimmedNonEmptyString,
-});
-export type DesktopUpdateCommitInput = typeof DesktopUpdateCommitInput.Type;
-
-export const ServerSelfUpdateProgressStage = Schema.Literals(["downloading", "installing"]);
-export type ServerSelfUpdateProgressStage = typeof ServerSelfUpdateProgressStage.Type;
-
-export const ServerSelfUpdateProgressEvent = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("progress"),
-    stage: ServerSelfUpdateProgressStage,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("complete"),
-    result: ServerSelfUpdateResult,
-  }),
-]);
-export type ServerSelfUpdateProgressEvent = typeof ServerSelfUpdateProgressEvent.Type;
-
-export class ServerSelfUpdateError extends Schema.TaggedError<ServerSelfUpdateError>()(
-  "ServerSelfUpdateError",
-  {
-    reason: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return `Server update failed: ${this.reason}`;
   }
 }

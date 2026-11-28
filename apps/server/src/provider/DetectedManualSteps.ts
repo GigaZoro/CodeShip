@@ -1,10 +1,7 @@
-import {
-  type DetectedManualStep,
-  type DetectedManualStepsResult,
-  type ProviderInstanceId,
-  type ProviderMcpServer,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import type { DetectedManualStep, DetectedManualStepsResult } from "@t3tools/contracts/manualSteps";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderMcpServer } from "@t3tools/contracts/providerMcp";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { providerLoginExpiry } from "@t3tools/shared/providerLoginExpiry";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";

@@ -1,7 +1,8 @@
 // Reads secrets that settings point at through a configured secret provider. Each read, including
 // a failed one, is held for the server's life so rebuilds never re-prompt an unlock; `invalidate`
 // (the Settings refresh) is the only way to read again.
-import type { SecretReference, ServerSettings } from "@t3tools/contracts";
+import type { SecretReference } from "@t3tools/contracts/secretReference";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

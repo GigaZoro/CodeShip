@@ -1,12 +1,12 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
-import { describe, expect, it } from "@effect/vitest";
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import { OrchestrationDispatchCommandError } from "@t3tools/contracts/orchestrationDispatch";
+import { projectCloneProgressSummary } from "@t3tools/contracts/projectClone";
 import {
-  OrchestrationDispatchCommandError,
-  ProjectId,
-  projectCloneProgressSummary,
+  SourceControlProviderKind,
   type SourceControlCloneProtocol,
   SourceControlRepositoryError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
+import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

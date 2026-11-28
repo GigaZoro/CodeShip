@@ -1,7 +1,5 @@
+import type { CheckpointId, MessageId, NodeId } from "@t3tools/contracts/baseSchemas";
 import type {
-  CheckpointId,
-  MessageId,
-  NodeId,
   OrchestrationV2Checkpoint,
   OrchestrationV2DomainEvent,
   OrchestrationV2ContextHandoff,
@@ -11,7 +9,7 @@ import type {
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadStreamItem,
   OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import {
   dedupeSubagentBodies,
   dedupeTurnItemBodies,

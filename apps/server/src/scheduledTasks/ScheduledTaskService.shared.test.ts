@@ -1,17 +1,14 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
+import { ProjectId, type ScheduledTaskId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  OrchestratorMcpFailure,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   SCHEDULED_TASK_CLAIM_PROTOCOL,
   ScheduledTaskApplySharedInput,
-  type ScheduledTaskId,
   type ScheduledTaskRunCheck,
   ScheduledTaskUpsertInput,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/scheduledTask";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

@@ -1,4 +1,4 @@
-import type { UsageProviderKind } from "@t3tools/contracts";
+import type { UsageProviderKind } from "@t3tools/contracts/usage";
 import type { TranscriptUsageFormat } from "@t3tools/provider-core/server/usage";
 import { piUsageFormat } from "@t3tools/provider-pi/server/usage";
 import { grokUsageFormat } from "@t3tools/provider-grok/server/usage";

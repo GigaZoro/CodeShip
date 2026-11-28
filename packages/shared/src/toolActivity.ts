@@ -1,4 +1,4 @@
-import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import type { ToolLifecycleItemType } from "@t3tools/contracts/providerRuntime";
 
 import { t } from "./i18n.ts";
 

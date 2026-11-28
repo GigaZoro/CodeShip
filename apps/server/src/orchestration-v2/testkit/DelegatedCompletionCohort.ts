@@ -1,10 +1,8 @@
-import {
-  EventId,
-  type OrchestrationV2DelegatedCompletionCohort,
-  type OrchestrationV2DomainEvent,
-  type RunId,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { EventId, type RunId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2DelegatedCompletionCohort,
+  OrchestrationV2DomainEvent,
+} from "@t3tools/contracts/orchestrationV2";
 import type * as DateTime from "effect/DateTime";
 
 /** Seeds a run's cohort the only way the sink accepts one: run.updated never carries it. */

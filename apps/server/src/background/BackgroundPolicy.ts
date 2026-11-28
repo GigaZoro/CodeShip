@@ -1,12 +1,11 @@
-import {
-  type AuthSessionId,
-  type BackgroundPolicySnapshot,
-  type BackgroundScope,
-  type ClientActivityLease,
-  type ClientActivityReportInput,
-  type HostPowerSnapshot,
-  type RpcClientId,
-} from "@t3tools/contracts";
+import type {
+  BackgroundPolicySnapshot,
+  BackgroundScope,
+  ClientActivityLease,
+  ClientActivityReportInput,
+  HostPowerSnapshot,
+} from "@t3tools/contracts/background";
+import type { AuthSessionId, RpcClientId } from "@t3tools/contracts/baseSchemas";
 import {
   getBackgroundActivityPresetSettings,
   resolveServerBackgroundActivitySettings,

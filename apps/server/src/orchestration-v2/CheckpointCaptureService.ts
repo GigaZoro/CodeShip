@@ -1,15 +1,12 @@
+import { CheckpointScopeId, CommandId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  CheckpointScopeId,
-  CommandId,
   isOrchestrationV2TerminalRunStatus,
   type OrchestrationV2Checkpoint,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

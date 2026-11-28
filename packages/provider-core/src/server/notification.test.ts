@@ -1,13 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
-import {
-  MessageId,
-  NodeId,
-  type OrchestrationV2Subagent,
-  type OrchestrationV2TurnItem,
-  RunId,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+import { MessageId, NodeId, RunId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2Subagent,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
 import * as DateTime from "effect/DateTime";
 
 import { backgroundWorkNotification, notificationTurnItem } from "./notification.ts";

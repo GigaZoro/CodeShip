@@ -1,4 +1,5 @@
-import { type ProjectId, type ServerSettings } from "@t3tools/contracts";
+import type { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 import * as Effect from "effect/Effect";
 
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";

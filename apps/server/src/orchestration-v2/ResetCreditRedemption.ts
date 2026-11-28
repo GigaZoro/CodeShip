@@ -1,9 +1,7 @@
-import {
-  type ProviderConsumeResetCreditResult,
-  type ProviderInstanceId,
-  ProviderSetupError,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type { ProviderConsumeResetCreditResult } from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

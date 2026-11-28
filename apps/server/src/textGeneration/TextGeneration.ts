@@ -5,14 +5,15 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { isProviderAvailable, isProviderTextGenerationCapable } from "@t3tools/contracts/provider";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  ProjectId,
-  isProviderAvailable,
   isProviderInstanceBackgroundAllowed,
-  isProviderTextGenerationCapable,
   resolveProjectProviderInstanceEnabled,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import { exhaustedUsageWindow, isPayPerUseAccount } from "@t3tools/shared/usageLimits";
 import {
@@ -22,7 +23,6 @@ import {
 import * as ServerSettings from "../serverSettings.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
-import { TextGenerationError } from "@t3tools/contracts";
 
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";

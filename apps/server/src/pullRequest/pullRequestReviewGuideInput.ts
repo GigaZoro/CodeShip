@@ -1,4 +1,4 @@
-import type { PullRequestActivity, PullRequestDetail } from "@t3tools/contracts";
+import type { PullRequestActivity, PullRequestDetail } from "@t3tools/contracts/pullRequest";
 import type { ReviewGuideGenerationInput } from "@t3tools/provider-core/server/textGeneration";
 
 const SETTLED_REMARK_CHARS = 200;

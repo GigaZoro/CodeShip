@@ -1,14 +1,12 @@
+import type { AuthMcpClientAccess } from "@t3tools/contracts/auth";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import {
-  type AuthMcpClientAccess,
-  EnvironmentId,
   McpCapabilityUnavailableError,
-  OrchestratorMcpFailure,
   PreviewAutomationUnavailableError,
-  type ProviderInstanceId,
-  type ProviderInteractionMode,
-  type RuntimeMode,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/previewAutomation";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

@@ -1,12 +1,11 @@
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   isListedThreadLineage,
-  type EnvironmentId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
-  type Project,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { Project } from "@t3tools/contracts/project";
 import {
   RelayApi,
   type RelayAgentActivityPublishProofPayload,

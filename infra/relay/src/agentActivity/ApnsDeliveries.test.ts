@@ -5,7 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 import * as RelayDb from "../db.ts";
 import { makeAggregateState } from "./agentActivityAggregate.ts";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import type {
   RelayAgentActivityAggregateState,
   RelayAgentActivityState,

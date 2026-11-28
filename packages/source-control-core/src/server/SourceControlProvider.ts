@@ -1,8 +1,8 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
+import type { RepositoryIdentity } from "@t3tools/contracts/environment";
 import type {
-  RepositoryIdentity,
   ChangeRequest,
   ChangeRequestState,
   SourceControlProviderError,
@@ -10,7 +10,7 @@ import type {
   SourceControlProviderKind,
   SourceControlRepositoryCloneUrls,
   SourceControlRepositoryVisibility,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
 
 export interface SourceControlLinkSubject {
   readonly title: string;

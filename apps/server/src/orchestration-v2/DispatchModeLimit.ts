@@ -1,10 +1,10 @@
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2DomainEvent } from "@t3tools/contracts/orchestrationV2";
 import {
   isRuntimeModeAbove,
-  type OrchestrationV2DomainEvent,
   type ProviderInteractionMode,
   type RuntimeMode,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerPolicy";
 import * as Context from "effect/Context";
 import type * as Ref from "effect/Ref";
 

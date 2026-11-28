@@ -4,8 +4,8 @@ import {
   ProviderSessionId,
   RuntimeRequestId,
   ThreadId,
-  type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

@@ -16,7 +16,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import { readSourceControlHostSettings } from "@t3tools/source-control-core/shared/definition";
-import type { ServerSettings } from "@t3tools/contracts";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 
 import * as GitHubClient from "../shared/definition.ts";
 

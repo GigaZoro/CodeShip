@@ -1,15 +1,16 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import {
-  CommandId,
-  MessageId,
-  type OrchestrationV2Notification,
-  type PullRequestActivity,
-  type PullRequestComment,
-  type PullRequestRef,
-  type PullRequestThreadCommentsResult,
-  type ThreadPullRequestLink,
-  type ThreadPullRequestWatch,
-} from "@t3tools/contracts";
+import { CommandId, MessageId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2Notification } from "@t3tools/contracts/orchestrationV2";
+import type {
+  PullRequestActivity,
+  PullRequestComment,
+  PullRequestRef,
+  PullRequestThreadCommentsResult,
+} from "@t3tools/contracts/pullRequest";
+import type {
+  ThreadPullRequestLink,
+  ThreadPullRequestWatch,
+} from "@t3tools/contracts/threadPullRequest";
 import {
   normalizeThreadPullRequestKey,
   threadPullRequestKeyOf,

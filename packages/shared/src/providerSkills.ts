@@ -1,4 +1,5 @@
-import type { ProviderInstanceId, ServerProvider, ServerProviderSkill } from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider, ServerProviderSkill } from "@t3tools/contracts/server";
 import * as Schema from "effect/Schema";
 import { matchInlineSkills } from "./inlineSkills.ts";
 

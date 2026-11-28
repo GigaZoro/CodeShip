@@ -1,9 +1,9 @@
 import { assert } from "@effect/vitest";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
 import type {
   OrchestrationV2ThreadProjection,
   ProviderReplayTranscript,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 
 import type { OrchestratorV2ScenarioResult } from "../../OrchestratorScenario.ts";
 import {

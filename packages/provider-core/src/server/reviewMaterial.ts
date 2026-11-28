@@ -1,4 +1,4 @@
-import { ReviewMaterialRead } from "@t3tools/contracts";
+import { ReviewMaterialRead } from "@t3tools/contracts/orchestratorMcp";
 import * as Schema from "effect/Schema";
 
 const decodeRead = Schema.decodeUnknownSync(ReviewMaterialRead, { onExcessProperty: "error" });

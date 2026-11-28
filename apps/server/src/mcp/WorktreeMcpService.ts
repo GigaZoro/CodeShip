@@ -1,14 +1,12 @@
+import { CommandId, MessageId, type ProjectId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
-  MessageId,
-  type ProjectId,
   WorktreeMcpFailure,
   type WorktreeMcpContinuationStatus,
   type WorktreeMcpHandoffInput,
   type WorktreeMcpHandoffResult,
   type WorktreeMcpSetupScriptStatus,
   type WorktreeMcpStatusResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/worktreeMcp";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";

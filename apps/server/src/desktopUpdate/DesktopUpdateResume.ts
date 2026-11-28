@@ -1,4 +1,4 @@
-import { DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE } from "@t3tools/contracts";
+import { DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE } from "@t3tools/contracts/desktopBootstrap";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

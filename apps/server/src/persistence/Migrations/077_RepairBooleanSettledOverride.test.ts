@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { OrchestrationV2AppThreadJson } from "@t3tools/contracts";
+import { OrchestrationV2AppThreadJson } from "@t3tools/contracts/orchestrationV2";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

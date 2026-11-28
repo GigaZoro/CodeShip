@@ -4,13 +4,13 @@ import {
   MessageId,
   NodeId,
   ProjectId,
-  ProviderInstanceId,
   ProviderSessionId,
   RunAttemptId,
   RunId,
-  type RuntimeMode,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import { ACP_PROTOCOL } from "@t3tools/provider-acp/server/adapter";
 import { FxSettings } from "@t3tools/provider-fx/settings";
 import { FX_DRIVER_KIND, makeFxAdapterV2 } from "@t3tools/provider-fx/testing";

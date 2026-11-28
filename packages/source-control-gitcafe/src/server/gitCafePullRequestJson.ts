@@ -7,16 +7,18 @@ import {
   NonNegativeInt,
   PositiveInt,
   TrimmedNonEmptyString,
-  type PullRequestActor,
-  type PullRequestCheck,
-  type PullRequestChecksState,
-  type PullRequestComment,
-  type PullRequestReaction,
-  type PullRequestReactionContent,
-  type PullRequestReviewerCandidate,
-  type PullRequestReviewThread,
-  type PullRequestViewerPermissions,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  PullRequestActor,
+  PullRequestCheck,
+  PullRequestChecksState,
+  PullRequestComment,
+  PullRequestReaction,
+  PullRequestReactionContent,
+  PullRequestReviewerCandidate,
+  PullRequestReviewThread,
+  PullRequestViewerPermissions,
+} from "@t3tools/contracts/pullRequest";
 import type {
   ProviderChangeRequest,
   ProviderChangeRequestActivity,

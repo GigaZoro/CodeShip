@@ -1,8 +1,6 @@
-import {
-  ATTACHMENT_UPLOAD_URL_TTL_MS,
-  MessageId,
-  OrchestratorMcpFailure,
-} from "@t3tools/contracts";
+import { ATTACHMENT_UPLOAD_URL_TTL_MS } from "@t3tools/contracts/assets";
+import { MessageId } from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";

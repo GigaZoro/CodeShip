@@ -1,4 +1,5 @@
-import { AUTHENTICATION_FAILED_FAILURE_CODE, type ServerProvider } from "@t3tools/contracts";
+import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/contracts/orchestrationV2";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";

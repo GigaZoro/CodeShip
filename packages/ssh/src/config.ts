@@ -1,4 +1,4 @@
-import type { DesktopDiscoveredSshHost } from "@t3tools/contracts";
+import type { DesktopDiscoveredSshHost } from "@t3tools/contracts/ipc";
 import { escapeRegExp } from "@t3tools/shared/String";
 
 import * as Config from "effect/Config";

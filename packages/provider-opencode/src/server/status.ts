@@ -1,9 +1,6 @@
-import {
-  type ModelCapabilities,
-  type ServerProviderModel,
-  type ServerProviderSkill,
-  type ServerProviderSlashCommand,
-} from "@t3tools/contracts";
+import type { ModelCapabilities } from "@t3tools/contracts/model";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import type { ServerProviderSkill, ServerProviderSlashCommand } from "@t3tools/contracts/server";
 import type { OpenCodeSettings } from "../settings.ts";
 import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";

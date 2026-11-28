@@ -3,7 +3,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
-import { ANTIGRAVITY_DEFAULT_MODEL, type OrchestrationV2ProviderFailure } from "@t3tools/contracts";
+import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts/model";
+import type { OrchestrationV2ProviderFailure } from "@t3tools/contracts/orchestrationV2";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { antigravityQuotaMeter } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";

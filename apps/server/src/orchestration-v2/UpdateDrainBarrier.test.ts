@@ -3,14 +3,15 @@ import {
   CommandId,
   EventId,
   MessageId,
-  orchestrationV2RunAwaitsMemory,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
   ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  orchestrationV2RunAwaitsMemory,
   type OrchestrationV2RestartHold,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";

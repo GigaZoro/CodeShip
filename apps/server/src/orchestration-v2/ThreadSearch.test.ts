@@ -1,16 +1,13 @@
 import { assert, it } from "@effect/vitest";
+import { EventId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  EventId,
-  MessageId,
   ORCHESTRATION_V2_ARCHIVED_THREADS_PAGE_DEFAULT,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
   type OrchestrationV2ArchivedThreadsCursor,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2GetArchivedShellSnapshotInput,
-  type ThreadLinkedPullRequest,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ThreadLinkedPullRequest } from "@t3tools/contracts/threadPullRequest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

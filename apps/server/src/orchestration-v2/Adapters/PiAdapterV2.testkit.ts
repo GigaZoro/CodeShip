@@ -1,11 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ProviderReplayEntry,
-  ProviderInstanceId,
-  type ResolvedProviderInstanceEnvironment,
   type ProviderReplayTranscript,
   type ProviderReplayEntry as ProviderReplayEntryType,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import {
+  ProviderInstanceId,
+  type ResolvedProviderInstanceEnvironment,
+} from "@t3tools/contracts/providerInstance";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

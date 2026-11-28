@@ -1,4 +1,5 @@
-import { AuthSessionId, AuthStandardClientScopes } from "@t3tools/contracts";
+import { AuthStandardClientScopes } from "@t3tools/contracts/auth";
+import { AuthSessionId } from "@t3tools/contracts/baseSchemas";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

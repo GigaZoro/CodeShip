@@ -1,7 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac or timingSafeEqual.
 import * as NodeCrypto from "node:crypto";
 
-import type { ScheduledTaskWebhookSignature } from "@t3tools/contracts";
+import type { ScheduledTaskWebhookSignature } from "@t3tools/contracts/scheduledTask";
 
 /** The Standard Webhooks spec's tolerance between the signed timestamp and arrival. */
 const STANDARD_WEBHOOKS_TOLERANCE_SECONDS = 5 * 60;

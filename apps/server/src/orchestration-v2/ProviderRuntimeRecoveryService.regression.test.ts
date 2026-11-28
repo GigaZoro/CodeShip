@@ -1,10 +1,6 @@
-import {
-  ProviderInstanceId,
-  RunId,
-  ThreadId,
-  TurnItemId,
-  type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+import { RunId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { expect, it } from "vite-plus/test";

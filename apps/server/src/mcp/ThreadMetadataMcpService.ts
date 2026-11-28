@@ -1,14 +1,15 @@
-import {
-  CommandId,
-  OrchestratorMcpFailure,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2Command,
-  type OrchestrationV2DomainEvent,
-  type ThreadMetadataMcpAction,
-  type ThreadMetadataMcpUpdateInput,
-  type ThreadMetadataMcpUpdateResult,
-  ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2Command,
+  OrchestrationV2DomainEvent,
+} from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import type {
+  ThreadMetadataMcpAction,
+  ThreadMetadataMcpUpdateInput,
+  ThreadMetadataMcpUpdateResult,
+} from "@t3tools/contracts/threadMetadataMcp";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

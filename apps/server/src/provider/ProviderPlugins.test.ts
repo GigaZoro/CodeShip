@@ -1,10 +1,7 @@
 import { assert, it } from "@effect/vitest";
-import {
-  ProviderInstanceId,
-  type ProviderPlugin,
-  ProviderPluginError,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { type ProviderPlugin, ProviderPluginError } from "@t3tools/contracts/providerPlugins";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import type { ProviderInstance, ProviderPluginCatalog } from "@t3tools/provider-core/server/driver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

@@ -1,20 +1,24 @@
+import type {
+  ManagedProviderInstance,
+  ManagedProviderLimits,
+  ManagedPolicySummary,
+} from "@t3tools/contracts/managedPolicy";
 import {
-  AntigravitySettings,
-  ClaudeSettings,
-  CodexSettings,
   defaultInstanceIdForDriver,
-  disallowedProviderMessage,
-  type ManagedProviderInstance,
-  type ManagedProviderLimits,
-  type ManagedPolicySummary,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
+} from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
+import {
+  AntigravitySettings,
+  ClaudeSettings,
+  CodexSettings,
+  disallowedProviderMessage,
   resolveProviderInstanceEnabled,
-  type RuntimeMode,
   type ServerSettings,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
 import { cursorClient } from "@t3tools/provider-cursor/client";
 import { fxClient } from "@t3tools/provider-fx/client";

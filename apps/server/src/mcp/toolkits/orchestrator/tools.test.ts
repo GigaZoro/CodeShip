@@ -3,7 +3,7 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import { ORCHESTRATOR_MCP_COMMAND_SHELLS } from "@t3tools/contracts";
+import { ORCHESTRATOR_MCP_COMMAND_SHELLS } from "@t3tools/contracts/orchestratorMcp";
 
 import { COMMAND_SHELL_LABELS } from "../../../commandRunner/CommandRunner.ts";
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";

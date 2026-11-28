@@ -1,10 +1,10 @@
 import {
   ProviderDriverKind,
   ProviderInstanceId,
-  resolveProviderInstanceEnabled,
   type ProviderInstanceConfigMap,
-  type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { resolveProviderInstanceEnabled } from "@t3tools/contracts/settings";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as Effect from "effect/Effect";

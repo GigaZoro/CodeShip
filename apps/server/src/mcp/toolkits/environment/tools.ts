@@ -1,17 +1,16 @@
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import { OrchestratorMcpEnvironmentTarget } from "@t3tools/contracts/baseSchemas";
+import { ExecutionEnvironmentDescriptor } from "@t3tools/contracts/environment";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   BackgroundActivityProfile,
   BackgroundActivityProfileSelection,
-  ExecutionEnvironmentDescriptor,
-  OrchestratorMcpEnvironmentTarget,
-  OrchestratorMcpFailure,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ServerSettings,
   ServerSettingsPatch,
   ProviderUpdatesChoice,
   UsageLimitRecoveryChoice,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";

@@ -4,28 +4,29 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { resolvePullRequestAuthorFilter, VcsProcessExitError } from "@t3tools/contracts";
-import type {
-  PullRequestAction,
-  PullRequestActor,
-  PullRequestCheck,
-  PullRequestComment,
-  PullRequestCommit,
-  PullRequestInvolvement,
-  PullRequestLabel,
-  PullRequestListFilters,
-  PullRequestListState,
-  PullRequestMergeCapabilities,
-  PullRequestMergeMethod,
-  PullRequestReaction,
-  PullRequestReactionContent,
-  PullRequestReviewCommentDraft,
-  PullRequestReviewDecision,
-  PullRequestReviewPosition,
-  PullRequestReviewThread,
-  PullRequestReviewVerdict,
-  PullRequestReviewerCandidateList,
-} from "@t3tools/contracts";
+import {
+  resolvePullRequestAuthorFilter,
+  type PullRequestAction,
+  type PullRequestActor,
+  type PullRequestCheck,
+  type PullRequestComment,
+  type PullRequestCommit,
+  type PullRequestInvolvement,
+  type PullRequestLabel,
+  type PullRequestListFilters,
+  type PullRequestListState,
+  type PullRequestMergeCapabilities,
+  type PullRequestReaction,
+  type PullRequestReactionContent,
+  type PullRequestReviewCommentDraft,
+  type PullRequestReviewDecision,
+  type PullRequestReviewPosition,
+  type PullRequestReviewThread,
+  type PullRequestReviewVerdict,
+  type PullRequestReviewerCandidateList,
+} from "@t3tools/contracts/pullRequest";
+import type { PullRequestMergeMethod } from "@t3tools/contracts/settingsPrimitives";
+import { VcsProcessExitError } from "@t3tools/contracts/vcs";
 
 import * as GitLabCli from "./GitLabCli.ts";
 import {

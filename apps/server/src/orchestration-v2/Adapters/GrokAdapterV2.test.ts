@@ -5,13 +5,15 @@ import {
   NodeId,
   RunAttemptId,
   RunId,
-  type OrchestrationV2UserInputQuestion,
-  type OrchestrationV2RuntimeRequest,
-  ProviderInstanceId,
   ProviderSessionId,
-  type RuntimeMode,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2UserInputQuestion,
+  OrchestrationV2RuntimeRequest,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import { GrokSettings } from "@t3tools/provider-grok/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";

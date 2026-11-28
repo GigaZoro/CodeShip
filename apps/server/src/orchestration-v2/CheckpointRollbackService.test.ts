@@ -6,21 +6,22 @@ import {
   EventId,
   MessageId,
   NodeId,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2PendingBackgroundTask,
-  type OrchestrationV2RestartCancelledBackgroundWork,
-  ProviderDriverKind,
   ProviderTurnId,
   RunAttemptId,
   RunId,
   CheckpointScopeId,
   ProjectId,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2RestartCancelledBackgroundWork,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";

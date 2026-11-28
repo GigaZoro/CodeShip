@@ -13,7 +13,7 @@ import { Tool, Toolkit } from "effect/ai";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
 
-import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import packageJson from "../../package.json" with { type: "json" };
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";

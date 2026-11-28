@@ -1,5 +1,8 @@
 /** Reconcile closes removed/replaced scopes before creating replacements: at most one live instance per id. */
-import type { ProviderInstanceConfigMap, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  ProviderInstanceConfigMap,
+  ProviderInstanceId,
+} from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";

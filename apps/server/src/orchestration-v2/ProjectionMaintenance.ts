@@ -1,9 +1,9 @@
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   type OrchestrationV2DomainEvent,
   OrchestrationV2TurnItemJson,
   type OrchestrationV2TurnItem,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Context from "effect/Context";

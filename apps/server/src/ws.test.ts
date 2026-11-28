@@ -1,23 +1,20 @@
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import {
-  AuthSessionId,
-  EnvironmentId,
-  ProjectId,
-  ThreadId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  WS_METHODS,
-  WsServerRefreshProvidersRpc,
-  WsSubscribeServerConfigRpc,
-  type OrchestrationV2StoredEvent,
-  type OrchestrationV2ThreadShell,
-  type OrchestrationProjectShell,
-  type ServerConfig,
-  type ServerConfigStreamEvent,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { AuthSessionId, EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import type {
+  OrchestrationV2StoredEvent,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { WsServerRefreshProvidersRpc, WsSubscribeServerConfigRpc } from "@t3tools/contracts/rpc";
+import { WS_METHODS } from "@t3tools/contracts/wsMethods";
+import type {
+  ServerConfig,
+  ServerConfigStreamEvent,
+  ServerProvider,
+} from "@t3tools/contracts/server";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

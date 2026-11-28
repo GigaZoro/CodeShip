@@ -10,9 +10,9 @@ import * as SqlSchema from "effect/sql/SqlSchema";
 import {
   AuthClientMetadataDeviceType,
   AuthEnvironmentScopes,
-  AuthSessionId,
   ServerAuthSessionMethod,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/auth";
+import { AuthSessionId } from "@t3tools/contracts/baseSchemas";
 
 import {
   type AuthSessionRepositoryError,

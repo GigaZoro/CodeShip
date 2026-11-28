@@ -1,4 +1,6 @@
-import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { linkOriginIsFenced } from "@t3tools/contracts/orchestrationV2";
+import type { ProjectScript } from "@t3tools/contracts/project";
 import {
   buildProjectScript,
   nextProjectScriptId,

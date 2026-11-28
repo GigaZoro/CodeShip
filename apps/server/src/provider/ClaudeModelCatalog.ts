@@ -1,11 +1,8 @@
-import {
-  type CustomModelSetting,
-  type ModelCapabilities,
-  type ModelSelection,
-  ProviderDriverKind,
-  type ServerProviderModel,
-  type ServerProviderUpdateRequiredModel,
-} from "@t3tools/contracts";
+import type { CustomModelSetting, ModelCapabilities } from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { ServerProviderModel } from "@t3tools/contracts/provider";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ServerProviderUpdateRequiredModel } from "@t3tools/contracts/server";
 import * as Option from "effect/Option";
 import {
   getModelSelectionStringOptionValue,

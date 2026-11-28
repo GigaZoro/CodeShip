@@ -1,11 +1,11 @@
+import { OrchestratorMcpEnvironmentTarget } from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  OrchestratorMcpEnvironmentTarget,
-  OrchestratorMcpFailure,
-  ProviderInstanceId,
   ProviderMcpServer,
   ProviderMcpServerEdit,
   ProviderMcpServerName,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerMcp";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 

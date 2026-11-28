@@ -1,22 +1,18 @@
 import { assert, describe, it } from "@effect/vitest";
+import { EnvironmentId, NodeId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { RepositoryIdentity } from "@t3tools/contracts/environment";
+import type { OrchestrationV2AppThread } from "@t3tools/contracts/orchestrationV2";
 import {
-  EnvironmentId,
-  type HostResourcesSnapshot,
-  NodeId,
-  type OrchestrationV2AppThread,
   type OrchestratorMcpCapabilitiesResult,
   type OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpFailure,
   type OrchestratorMcpMachineCapacity,
   type OrchestratorMcpProviderCapability,
-  type PeerLinkSummary,
-  type Project,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type RepositoryIdentity,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLinkSummary } from "@t3tools/contracts/peerLink";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { HostResourcesSnapshot } from "@t3tools/contracts/resourceTelemetry";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";

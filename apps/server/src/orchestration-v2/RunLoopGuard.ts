@@ -1,17 +1,21 @@
+import type {
+  ProviderThreadId,
+  ProviderTurnId,
+  RunAttemptId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2Run,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
 import {
   DEFAULT_RUN_LOOP_GUARD_SETTINGS,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2Run,
-  type OrchestrationV2TurnItem,
-  type ProviderThreadId,
-  type ProviderTurnId,
-  type RunAttemptId,
   type RunLoopGuardSettings,
   type RunLoopRole,
   type RunLoopRoleLimit,
-  type ThreadId,
-  type TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/runLoopGuard";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { compactDynamicToolOutput, toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
 import * as Predicate from "effect/Predicate";

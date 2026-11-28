@@ -1,9 +1,5 @@
-import {
-  CommandId,
-  type OrchestrationV2ThreadShell,
-  ProjectId,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, ProjectId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";

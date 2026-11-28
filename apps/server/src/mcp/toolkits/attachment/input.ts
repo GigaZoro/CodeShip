@@ -1,4 +1,8 @@
-import { ChatAttachmentId, ChatFileAttachment, ChatImageAttachment } from "@t3tools/contracts";
+import {
+  ChatAttachmentId,
+  ChatFileAttachment,
+  ChatImageAttachment,
+} from "@t3tools/contracts/chatAttachment";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 

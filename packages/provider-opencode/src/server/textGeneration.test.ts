@@ -1,4 +1,5 @@
-import { ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { OpenCodeSettings } from "../settings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";

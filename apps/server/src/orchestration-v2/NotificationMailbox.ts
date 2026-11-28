@@ -1,9 +1,9 @@
+import type { MessageId } from "@t3tools/contracts/baseSchemas";
 import {
   latestProviderTurnForAttempt,
-  type MessageId,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 
 export function isBufferedProviderNotification(
   message: OrchestrationV2ConversationMessage,

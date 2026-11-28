@@ -1,4 +1,4 @@
-import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Effect from "effect/Effect";

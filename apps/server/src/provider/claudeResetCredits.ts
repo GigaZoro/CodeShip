@@ -4,7 +4,7 @@ import type {
   ServerProviderResetKind,
   ServerProviderResetPrograms,
   ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerUsageLimits";
 import { usageAccountKey } from "@t3tools/provider-core/server/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";

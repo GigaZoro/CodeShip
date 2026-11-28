@@ -4,12 +4,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ProviderMcpServer,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderMcpServer } from "@t3tools/contracts/providerMcp";
+import type { ServerProvider } from "@t3tools/contracts/server";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";

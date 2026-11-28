@@ -1,16 +1,15 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { NonNegativeInt, TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
+import {
+  resolvePullRequestAuthorFilter,
+  type PullRequestCapabilities,
+  type PullRequestListFilters,
+  type PullRequestStackHead,
+} from "@t3tools/contracts/pullRequest";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
-import {
-  NonNegativeInt,
-  resolvePullRequestAuthorFilter,
-  TrimmedNonEmptyString,
-  type PullRequestCapabilities,
-  type PullRequestListFilters,
-  type PullRequestStackHead,
-} from "@t3tools/contracts";
 import {
   PullRequestProviderError,
   type ProviderRepositoryRef,

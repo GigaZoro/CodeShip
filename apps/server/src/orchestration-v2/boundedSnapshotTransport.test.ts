@@ -1,34 +1,39 @@
 import { assert, describe, it } from "@effect/vitest";
+import { AuthOrchestrationReadScope } from "@t3tools/contracts/auth";
 import {
-  AuthOrchestrationReadScope,
   AuthSessionId,
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
-  EnvironmentAuthenticatedAuth,
-  EnvironmentAuthenticatedPrincipal,
-  EnvironmentHttpApi,
   EnvironmentId,
   EventId,
   MessageId,
   NodeId,
-  ORCHESTRATION_PROTOCOL_HEADER,
-  ORCHESTRATION_PROTOCOL_VERSION,
-  OrchestrationV2ThreadBoundedSnapshot,
-  OrchestrationV2ThreadHistoryPage,
-  OrchestrationV2ThreadStreamItem,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
   ThreadId,
   TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_VERSION,
+} from "@t3tools/contracts/environment";
+import {
+  EnvironmentAuthenticatedAuth,
+  EnvironmentAuthenticatedPrincipal,
+  EnvironmentHttpApi,
+} from "@t3tools/contracts/environmentHttp";
+import {
+  OrchestrationV2ThreadBoundedSnapshot,
+  OrchestrationV2ThreadHistoryPage,
+  OrchestrationV2ThreadStreamItem,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { boundedSnapshotProjection } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeServices from "@effect/platform-node/NodeServices";

@@ -1,10 +1,7 @@
-import {
-  OrchestratorMcpUsageMeter,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProvider,
-  type ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+import { OrchestratorMcpUsageMeter } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProviderUsageLimits } from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 

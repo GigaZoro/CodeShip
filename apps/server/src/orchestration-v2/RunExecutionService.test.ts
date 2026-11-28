@@ -1,35 +1,35 @@
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointScopeId,
-  ChatAttachmentId,
-  ChatFileAttachment,
   CommandId,
   EventId,
   MessageId,
   NodeId,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2CheckpointScope,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ExecutionNode,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2ProviderTurn,
-  type OrchestrationV2Run,
-  type OrchestrationV2RunAttempt,
-  type OrchestrationV2StoredEvent,
-  type OrchestrationV2Subagent,
-  type OrchestrationV2TurnItem,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
   RunId,
   ScheduledTaskId,
-  ServerSettingsError,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachmentId, ChatFileAttachment } from "@t3tools/contracts/chatAttachment";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2CheckpointScope,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2ExecutionNode,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderTurn,
+  OrchestrationV2Run,
+  OrchestrationV2RunAttempt,
+  OrchestrationV2StoredEvent,
+  OrchestrationV2Subagent,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ServerSettingsError } from "@t3tools/contracts/settings";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";

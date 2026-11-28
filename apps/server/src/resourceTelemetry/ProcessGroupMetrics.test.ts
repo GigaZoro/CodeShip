@@ -1,5 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { ResourceTelemetryProcess, ResourceTelemetrySnapshot } from "@t3tools/contracts";
+import type {
+  ResourceTelemetryProcess,
+  ResourceTelemetrySnapshot,
+} from "@t3tools/contracts/resourceTelemetry";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";

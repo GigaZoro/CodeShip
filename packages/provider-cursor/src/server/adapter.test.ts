@@ -6,12 +6,12 @@ import {
   MessageId,
   NodeId,
   ProjectId,
-  ProviderInstanceId,
   ProviderSessionId,
   RunAttemptId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

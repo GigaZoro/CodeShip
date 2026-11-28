@@ -18,6 +18,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import type { ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   GitActionProgressEvent,
   GitActionProgressPhase,
@@ -33,16 +34,17 @@ import {
   type VcsStatusLocalResult,
   type VcsStatusRemoteResult,
   VcsStatusResult,
-  ModelSelection,
-  type OrchestrationV2TurnItem,
-  type ProjectId,
-  SourceControlProviderError,
-  type SourceControlWritingStyleSettings,
-  type ThreadId,
-  type ThreadPullRequestKey,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
-} from "@t3tools/contracts";
+  GitManagerError,
+  GitPullRequestMaterializationError,
+  type GitManagerServiceError,
+} from "@t3tools/contracts/git";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2TurnItem } from "@t3tools/contracts/orchestrationV2";
+import type { SourceControlWritingStyleSettings } from "@t3tools/contracts/settings";
+import { SourceControlProviderError, type ChangeRequest } from "@t3tools/contracts/sourceControl";
+import type { ThreadPullRequestKey } from "@t3tools/contracts/threadPullRequest";
 import {
   hasProjectSettingsOverrides,
   resolveProjectSettings,
@@ -64,7 +66,6 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
-import { GitManagerError, GitPullRequestMaterializationError } from "@t3tools/contracts";
 import {
   historicalMessage,
   renderHistory,
@@ -91,12 +92,10 @@ import {
 } from "./repositorySnapshot.ts";
 import { detachStackFrame } from "./detachStackFrame.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import type { GitManagerServiceError } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
-import type { ChangeRequest } from "@t3tools/contracts";
 
 export interface GitActionProgressReporter {
   readonly publish: (event: GitActionProgressEvent) => Effect.Effect<void, never>;

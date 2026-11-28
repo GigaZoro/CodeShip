@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { type ManagedPolicyDocument, ServerSelfUpdateError } from "@t3tools/contracts";
+import type { ManagedPolicyDocument } from "@t3tools/contracts/managedPolicy";
+import { ServerSelfUpdateError } from "@t3tools/contracts/serverUpdate";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { linkDirectory } from "@t3tools/shared/testing/symlinks";

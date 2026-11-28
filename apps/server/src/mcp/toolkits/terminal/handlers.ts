@@ -1,13 +1,13 @@
+import type { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import {
-  type OrchestrationV2ThreadShell,
-  OrchestratorMcpFailure,
-  type ProjectId,
   TERMINAL_TOOL_DEFAULT_LINES,
   TERMINAL_TOOL_DEFAULT_WAIT_SECONDS,
   type TerminalEvent,
   type TerminalToolReadTerminal,
   type TerminalToolWriteResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/terminal";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { nextTerminalId } from "@t3tools/shared/terminalLabels";

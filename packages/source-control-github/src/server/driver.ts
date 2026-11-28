@@ -1,4 +1,7 @@
-import { SourceControlSignInError, type SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  SourceControlSignInError,
+  type SourceControlProviderKind,
+} from "@t3tools/contracts/sourceControl";
 import {
   defineSourceControlDriver,
   withOwnServices,

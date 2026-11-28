@@ -1,8 +1,6 @@
-import {
-  defaultInstanceIdForDriver,
-  PROVIDER_DISPLAY_NAMES,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts/model";
+import { defaultInstanceIdForDriver } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
 
 /** An account is known by its email, or by its profile when the provider reports no email. */
 const accountKeys = (provider: ServerProvider): ReadonlyArray<string> => {

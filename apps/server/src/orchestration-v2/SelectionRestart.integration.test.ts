@@ -1,25 +1,26 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
-  DEFAULT_SERVER_SETTINGS,
   EventId,
   MessageId,
-  type ModelSelection,
-  type OrchestrationV2ProviderCapabilities,
-  type OrchestrationV2ThreadProjection,
-  type OrchestrationV2PendingBackgroundTask,
-  type OrchestrationV2ProviderSession,
-  type OrchestrationV2ProviderThread,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
   type RunId,
-  type ServerProvider,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2ProviderCapabilities,
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2ProviderSession,
+  OrchestrationV2ProviderThread,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

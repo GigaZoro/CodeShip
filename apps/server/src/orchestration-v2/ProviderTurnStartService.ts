@@ -10,9 +10,8 @@ import {
   timeoutAwakeOrElse,
   watchWait,
 } from "@t3tools/shared/AwakeTime";
+import { CommandId, type ProviderSessionId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
-  isProviderInstanceBackgroundAllowed,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
@@ -22,14 +21,12 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
-  type ProviderInstanceId,
-  type ProviderSessionId,
   isCompactionCommandMessage,
   isListedThreadLineage,
   parseGoalCommand,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { isProviderInstanceBackgroundAllowed } from "@t3tools/contracts/settings";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

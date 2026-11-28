@@ -1,6 +1,6 @@
 import * as NodeDnsPromises from "node:dns/promises";
 import * as NodeNet from "node:net";
-import type { DeviceHostConfig, SshDeviceHostConfig } from "@t3tools/contracts";
+import type { DeviceHostConfig, SshDeviceHostConfig } from "@t3tools/contracts/device";
 import * as NodeOS from "node:os";
 import * as Context from "effect/Context";
 import { runSshCommand } from "@t3tools/ssh/command";

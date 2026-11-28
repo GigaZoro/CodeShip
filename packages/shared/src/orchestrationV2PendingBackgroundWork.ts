@@ -1,13 +1,13 @@
-import type {
-  OrchestrationV2PendingBackgroundTask,
-  OrchestrationV2ProviderThread,
-  OrchestrationV2Run,
-  OrchestrationV2TaskCommand,
-  OrchestrationV2TurnItem,
-  ThreadId,
-  ThreadPullRequestLink,
-} from "@t3tools/contracts";
-import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
+import {
+  type OrchestrationV2PendingBackgroundTask,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2Run,
+  type OrchestrationV2TaskCommand,
+  type OrchestrationV2TurnItem,
+  isOrchestrationV2WorkActive,
+} from "@t3tools/contracts/orchestrationV2";
+import type { ThreadPullRequestLink } from "@t3tools/contracts/threadPullRequest";
 import * as Predicate from "effect/Predicate";
 
 import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";

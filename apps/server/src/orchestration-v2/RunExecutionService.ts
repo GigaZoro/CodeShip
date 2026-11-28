@@ -2,11 +2,19 @@ import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { executionTurnItemTypes } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
-  isOrchestrationV2WorkActive,
   CommandId,
   type EventId,
-  type ModelSelection,
   type NodeId,
+  type ProviderSessionId,
+  type ProviderThreadId,
+  type ProviderTurnId,
+  type RunAttemptId,
+  type ThreadId,
+  type TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  isOrchestrationV2WorkActive,
   type OrchestrationV2AppThread,
   type OrchestrationV2CheckpointScope,
   type OrchestrationV2DomainEvent,
@@ -20,13 +28,7 @@ import {
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
-  type ProviderSessionId,
-  type ProviderThreadId,
-  type ProviderTurnId,
-  type RunAttemptId,
-  type ThreadId,
-  type TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";

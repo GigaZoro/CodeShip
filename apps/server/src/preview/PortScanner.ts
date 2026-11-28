@@ -1,11 +1,11 @@
+import { ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   CONFIGURED_LOCAL_SERVER_URLS_MAX_ITEMS,
   PREVIEW_URL_MAX_LENGTH,
   PreviewStopLocalServerError,
-  ThreadId,
   type DiscoveredLocalServer,
   type PreviewStopLocalServerInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/preview";
 import { signalProcessGroup } from "@t3tools/shared/processGroup";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isLoopbackHost, LSOF_LOCAL_HOST_TOKENS } from "@t3tools/shared/preview";

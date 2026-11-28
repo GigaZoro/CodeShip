@@ -344,3 +344,24 @@ export const RawEventId = makeEntityId("RawEventId");
 export type RawEventId = typeof RawEventId.Type;
 export const PlanId = makeEntityId("PlanId");
 export type PlanId = typeof PlanId.Type;
+
+/**
+ * A linked environment to act in; the call is forwarded there, under the link's access and the
+ * caller's own modes. No description: over forty tools take it, and the orchestration
+ * instructions every provider with T3 tools gets explain it once.
+ */
+export const OrchestratorMcpEnvironmentTarget = Schema.optional(EnvironmentId);
+
+// Codex hides `minimum` and `maximum` from the model, so a value above the maximum clamps on
+// decode instead of failing the call; pagination returns the rest. Values below 1 still fail:
+// 0 asks for nothing, and answering it with one item would be a different request.
+export const clampedPositiveInt = (maximum: number) =>
+  PositiveInt.pipe(
+    Schema.decodeTo(
+      PositiveInt.check(Schema.isLessThanOrEqualTo(maximum)),
+      SchemaTransformation.transform({
+        decode: (value) => Math.min(value, maximum),
+        encode: (value) => value,
+      }),
+    ),
+  );

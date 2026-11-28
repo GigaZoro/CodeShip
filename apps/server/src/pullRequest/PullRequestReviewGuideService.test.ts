@@ -9,14 +9,14 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Queue from "effect/Queue";
 import * as Tracer from "effect/Tracer";
-import {
-  ProjectId,
-  GitCommandError,
-  type PullRequestActivity,
-  type PullRequestDetail,
-  type PullRequestStack,
-  type PullRequestReviewGuideInput,
-} from "@t3tools/contracts";
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import { GitCommandError } from "@t3tools/contracts/git";
+import type {
+  PullRequestActivity,
+  PullRequestDetail,
+  PullRequestStack,
+} from "@t3tools/contracts/pullRequest";
+import type { PullRequestReviewGuideInput } from "@t3tools/contracts/pullRequestReviewGuide";
 
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";

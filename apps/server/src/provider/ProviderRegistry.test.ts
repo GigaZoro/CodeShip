@@ -22,20 +22,18 @@ import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS } from "@t3tools/contracts/provider";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ServerProvider, type ServerProviderSlashCommand } from "@t3tools/contracts/server";
 import {
-  EnvironmentId,
   ClaudeSettings,
   CodexSettings,
   DEFAULT_SERVER_SETTINGS,
-  PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ServerSettings,
   ServerSettingsError,
-  ServerProvider,
-  type ServerProviderSlashCommand,
   type ServerSettings as ContractServerSettings,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";

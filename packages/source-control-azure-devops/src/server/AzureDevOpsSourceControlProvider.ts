@@ -1,6 +1,9 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  SourceControlProviderKind,
+  SourceControlProviderError,
+  type ChangeRequest,
+} from "@t3tools/contracts/sourceControl";
 import * as Effect from "effect/Effect";
-import { SourceControlProviderError, type ChangeRequest } from "@t3tools/contracts";
 
 import * as AzureDevOpsCli from "./AzureDevOpsCli.ts";
 import type { NormalizedAzureDevOpsPullRequestRecord } from "./azureDevOpsPullRequests.ts";

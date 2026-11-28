@@ -1,14 +1,12 @@
+import { ProviderThreadId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   type OrchestrationV2AppThread,
   OrchestrationV2ContextHandoff,
   type OrchestrationV2TurnItem,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
-  ProviderInstanceId,
-  ProviderThreadId,
-  RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

@@ -1,26 +1,32 @@
 import {
   OrchestratorMcpEnvironmentTarget,
   ScheduledTaskId,
-  ScheduledTask,
-  OrchestrationSearchThreadsInput,
-  OrchestrationThreadSearchMatch,
-  OrchestrationV2ThreadForkSourcePoint,
-  OrchestrationV2ContextTransfer,
   TrimmedNonEmptyString,
-  ModelSelection,
-  RuntimeMode,
-  ProviderInteractionMode,
   RuntimeRequestId,
-  ProviderUserInputAnswers,
   IsoDateTime,
-  OrchestratorMcpFailure,
-  OrchestrationV2DispatchCommandResult,
   ThreadId,
   RunId,
   NonNegativeInt,
   ProjectId,
-  ThreadFolder,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  OrchestrationV2ThreadForkSourcePoint,
+  OrchestrationV2ContextTransfer,
+  OrchestrationV2DispatchCommandResult,
+} from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import {
+  RuntimeMode,
+  ProviderInteractionMode,
+  ProviderUserInputAnswers,
+} from "@t3tools/contracts/providerPolicy";
+import { ScheduledTask } from "@t3tools/contracts/scheduledTask";
+import { ThreadFolder } from "@t3tools/contracts/threadFolders";
+import {
+  OrchestrationSearchThreadsInput,
+  OrchestrationThreadSearchMatch,
+} from "@t3tools/contracts/threadSearch";
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";

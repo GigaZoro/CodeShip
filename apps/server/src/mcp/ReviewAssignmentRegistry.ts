@@ -1,12 +1,11 @@
+import type { RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  type ProviderInstanceId,
   ReviewMaterialRead,
   type ReviewMaterialReceipt,
   ReviewSessionEvidence,
-  type RunId,
-  type RuntimeMode,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import { bindReviewMaterial } from "@t3tools/provider-core/server/reviewMaterial";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a synchronous, filename-safe name for a thread's workspace.

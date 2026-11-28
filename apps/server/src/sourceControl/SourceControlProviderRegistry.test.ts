@@ -1,4 +1,6 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
+import { VcsProcessSpawnError, VcsProcessTimeoutError } from "@t3tools/contracts/vcs";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
@@ -12,11 +14,6 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  VcsProcessSpawnError,
-  VcsProcessTimeoutError,
-} from "@t3tools/contracts";
 import type {
   SourceControlCliDiscoverySpec,
   SourceControlManagedCliDiscoverySpec,

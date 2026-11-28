@@ -10,13 +10,10 @@ import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
-import {
-  AgentSessionImportSource,
-  IsoDateTime,
-  ProviderInstanceId,
-  RuntimeMode,
-  ThreadId,
-} from "@t3tools/contracts";
+import { AgentSessionImportSource } from "@t3tools/contracts/agentSessions";
+import { IsoDateTime, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { RuntimeMode } from "@t3tools/contracts/providerPolicy";
 
 import {
   PersistenceDecodeError,

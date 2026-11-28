@@ -1,8 +1,6 @@
-import {
-  ModelCapabilities,
-  TrimmedNonEmptyString,
-  type ProviderDriverKind,
-} from "@t3tools/contracts";
+import { TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
+import { ModelCapabilities } from "@t3tools/contracts/model";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

@@ -1,7 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - node:http sends the one-shot loopback callback with no proxy, redirect handling, or response logging.
 import * as NodeHttp from "node:http";
 
-import { ProviderSetupError, type ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import * as Effect from "effect/Effect";
 
 export interface AntigravityPendingCallback {

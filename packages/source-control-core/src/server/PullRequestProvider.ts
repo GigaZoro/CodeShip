@@ -18,7 +18,6 @@ import type {
   PullRequestListFilters,
   PullRequestListState,
   PullRequestMergeCapabilities,
-  PullRequestMergeMethod,
   PullRequestMergeability,
   PullRequestOmittedFileStat,
   PullRequestReaction,
@@ -35,9 +34,12 @@ import type {
   PullRequestPreview,
   PullRequestUpdateMethod,
   PullRequestViewerPermissions,
-  SourceControlProviderKind,
-} from "@t3tools/contracts";
-import { SourceControlProviderKind as SourceControlProviderKindSchema } from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import type { PullRequestMergeMethod } from "@t3tools/contracts/settingsPrimitives";
+import {
+  type SourceControlProviderKind,
+  SourceControlProviderKind as SourceControlProviderKindSchema,
+} from "@t3tools/contracts/sourceControl";
 
 export class PullRequestProviderError extends Schema.TaggedError<PullRequestProviderError>()(
   "PullRequestProviderError",

@@ -1,4 +1,5 @@
-import { AuthOrchestrationReadScope, EnvironmentHttpApi } from "@t3tools/contracts";
+import { AuthOrchestrationReadScope } from "@t3tools/contracts/auth";
+import { EnvironmentHttpApi } from "@t3tools/contracts/environmentHttp";
 import * as Effect from "effect/Effect";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 

@@ -1,9 +1,6 @@
-import type {
-  ModelSelection,
-  ProviderDriverKind,
-  ProviderInteractionMode,
-  RuntimeMode,
-} from "@t3tools/contracts";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 
 import type { ProviderContinuationIdentity } from "@t3tools/provider-core/server/driver";

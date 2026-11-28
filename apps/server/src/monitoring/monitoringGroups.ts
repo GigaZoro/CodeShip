@@ -6,7 +6,7 @@ import type {
   MonitoringThreadSummary,
   MonitoringTimeBuckets,
   MonitoringTokenTotals,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/monitoring";
 import * as DateTime from "effect/DateTime";
 
 const SEVERITY_RANK: Record<MonitoringFindingSeverity, number> = { high: 3, medium: 2, low: 1 };

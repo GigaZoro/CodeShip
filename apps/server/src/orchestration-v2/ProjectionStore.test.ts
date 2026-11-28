@@ -1,7 +1,6 @@
 import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { assert, it, vi } from "@effect/vitest";
 import {
-  ChatAttachmentId,
   EnvironmentId,
   EventId,
   CommandId,
@@ -9,21 +8,9 @@ import {
   CheckpointRef,
   CheckpointScopeId,
   MessageId,
-  type ModelSelection,
-  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
-  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2RuntimeRequest,
-  type OrchestrationV2RunStatus,
-  type OrchestrationV2TurnItem,
-  type OrchestrationV2ThreadHistoryPage,
-  type OrchestrationV2ThreadShellSnapshot,
   NodeId,
   PlanId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -33,10 +20,24 @@ import {
   ScheduledTaskId,
   ThreadId,
   TurnItemId,
-  type ThreadPullRequestLink,
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachmentId } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2RuntimeRequest,
+  type OrchestrationV2RunStatus,
+  type OrchestrationV2TurnItem,
+  type OrchestrationV2ThreadHistoryPage,
+  type OrchestrationV2ThreadShellSnapshot,
   isLiveSubagentShell,
-  threadFolderKey,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { threadFolderKey } from "@t3tools/contracts/threadFolders";
+import type { ThreadPullRequestLink } from "@t3tools/contracts/threadPullRequest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

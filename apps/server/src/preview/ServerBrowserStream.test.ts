@@ -6,11 +6,13 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
-  AuthSessionId,
+  type AuthEnvironmentScope,
+} from "@t3tools/contracts/auth";
+import { AuthSessionId } from "@t3tools/contracts/baseSchemas";
+import {
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
   PreviewStreamHostSetup,
-  type AuthEnvironmentScope,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/preview";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

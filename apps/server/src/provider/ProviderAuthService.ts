@@ -1,3 +1,5 @@
+import type { ProviderSessionId } from "@t3tools/contracts/baseSchemas";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   ProviderSetupError,
   type ChatGptReconnectProfile,
@@ -6,9 +8,7 @@ import {
   type ProviderAuthRespondInput,
   type ProviderAuthStartInput,
   type ProviderAuthState,
-  type ProviderInstanceId,
-  type ProviderSessionId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerSetup";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Function from "effect/Function";

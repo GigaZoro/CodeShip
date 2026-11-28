@@ -1,8 +1,8 @@
-import {
-  type SourceControlDiscoveryResult,
-  type VcsDiscoveryItem,
-  type VcsDriverKind,
-} from "@t3tools/contracts";
+import type {
+  SourceControlDiscoveryResult,
+  VcsDiscoveryItem,
+} from "@t3tools/contracts/sourceControl";
+import type { VcsDriverKind } from "@t3tools/contracts/vcs";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

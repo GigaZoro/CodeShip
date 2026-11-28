@@ -1,10 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type AutoModeModel,
-  type ModelSelection,
-} from "@t3tools/contracts";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { AutoModeModel } from "@t3tools/contracts/settings";
 import {
   applyAutoComplexityToSelection,
   applyAutoRoutingConstraints,

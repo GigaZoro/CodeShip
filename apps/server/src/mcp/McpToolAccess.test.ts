@@ -2,12 +2,11 @@ import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   OrchestratorMcpEnvironmentTarget,
-  OrchestratorMcpFailure,
-  ProviderInstanceId,
-  ProviderInteractionMode,
-  RuntimeMode,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

@@ -1,5 +1,6 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import type { DesktopBackendEndpoint, OrchestrationV2RestartHold } from "@t3tools/contracts";
+import type { OrchestrationV2RestartHold } from "@t3tools/contracts/orchestrationV2";
+import type { DesktopBackendEndpoint } from "@t3tools/contracts/resourceTelemetry";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

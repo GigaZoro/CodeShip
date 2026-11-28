@@ -12,18 +12,20 @@ import {
   type AuthMcpClientAccess,
   type AuthPairingLink,
   type AuthPairingCredentialResult,
-  type AuthSessionId,
   type AuthSessionState,
   authScopeResponse,
   type ServerAuthDescriptor,
   type ServerAuthSessionMethod,
   type AuthWebSocketTicketResult,
   type AuthWebSocketTicketUse,
+  mcpClientScopes,
+} from "@t3tools/contracts/auth";
+import {
+  type AuthSessionId,
   DpopFailureReason,
   type EnvironmentId,
   type DpopFailureReason as DpopFailureReasonType,
-  mcpClientScopes,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
 import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
 import * as Context from "effect/Context";

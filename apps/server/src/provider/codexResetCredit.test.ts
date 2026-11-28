@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { usageAccountKey } from "@t3tools/provider-core/server/usageLimits";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";

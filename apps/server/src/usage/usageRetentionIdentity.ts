@@ -1,4 +1,4 @@
-import type { UsageProviderKind } from "@t3tools/contracts";
+import type { UsageProviderKind } from "@t3tools/contracts/usage";
 import type { UsageRecord } from "@t3tools/provider-core/server/usage";
 
 function claudeIdentity(key: string | null) {

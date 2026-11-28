@@ -1,18 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import {
-  CommandId,
-  MessageId,
-  type ModelSelection,
-  type OrchestrationV2Command,
-  type OrchestrationV2Run,
-  ProjectId,
-  type ProviderInteractionMode,
-  ProviderInstanceId,
-  type ProviderReplayEntry,
-  type RuntimeMode,
-  ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2Command,
+  OrchestrationV2Run,
+  ProviderReplayEntry,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 

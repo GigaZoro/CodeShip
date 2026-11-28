@@ -1,16 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import {
-  EventId,
-  MessageId,
-  ProjectId,
-  ProviderInstanceId,
-  RunId,
-  ThreadId,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2Run,
-  type OrchestrationV2StoredEvent,
-} from "@t3tools/contracts";
+import { EventId, MessageId, ProjectId, RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2Run,
+  OrchestrationV2StoredEvent,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

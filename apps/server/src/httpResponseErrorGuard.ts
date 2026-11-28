@@ -7,7 +7,7 @@ import {
   ENVIRONMENT_DESCRIPTOR_PATH,
   type EnvironmentStartingResponse,
   type EnvironmentStartup,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/environment";
 
 export function guardHttpResponseWriteErrors<T extends NodeHttp.Server>(
   server: T,

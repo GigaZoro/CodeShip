@@ -1,11 +1,7 @@
 import { describe, it, assert } from "@effect/vitest";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ServerSettingsError,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS, ServerSettingsError } from "@t3tools/contracts/settings";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";

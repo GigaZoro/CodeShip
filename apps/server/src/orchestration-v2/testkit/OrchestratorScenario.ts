@@ -1,3 +1,4 @@
+import type { CommandId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
 import type {
   OrchestrationV2Command,
   OrchestrationV2DomainEvent,
@@ -7,12 +8,11 @@ import type {
   OrchestrationV2StoredEvent,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import type {
   ProviderApprovalDecision,
   ProviderUserInputAnswers,
-  CommandId,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerPolicy";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

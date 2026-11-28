@@ -3,11 +3,9 @@ import {
   ASSISTANT_CITATION_CONTEXT_LENGTH,
   ASSISTANT_CITATION_MAX_COMMENT_LENGTH,
   ASSISTANT_CITATION_MAX_TEXT_LENGTH,
-  EnvironmentId,
-  MessageId,
-  ThreadId,
   type AssistantCitation,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/assistantCitations";
+import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   assistantCitationsToPlainText,
   collectAssistantCitations,

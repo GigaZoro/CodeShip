@@ -1,13 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { PreviewTabId } from "@t3tools/contracts/preview";
 import {
-  EnvironmentId,
   PREVIEW_HEADLESS_NOTE,
-  PreviewTabId,
-  ProviderInstanceId,
-  ThreadId,
   type PreviewAutomationRequest,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/previewAutomation";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

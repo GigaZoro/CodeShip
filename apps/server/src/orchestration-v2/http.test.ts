@@ -1,19 +1,20 @@
+import type { AuthEnvironmentScope } from "@t3tools/contracts/auth";
+import { AuthSessionId, EnvironmentId, EventId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@t3tools/contracts/chatAttachment";
 import {
-  AuthSessionId,
-  type AuthEnvironmentScope,
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+} from "@t3tools/contracts/environment";
+import {
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
   EnvironmentHttpApi,
-  EnvironmentId,
-  EventId,
-  ORCHESTRATION_PROTOCOL_HEADER,
-  ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+} from "@t3tools/contracts/environmentHttp";
+import {
   OrchestrationV2AppThread,
   OrchestrationV2TurnItem,
   OrchestrationV2ThreadTranscript,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import { expect, it } from "@effect/vitest";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import * as Effect from "effect/Effect";

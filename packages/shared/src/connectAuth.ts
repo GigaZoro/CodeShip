@@ -1,4 +1,4 @@
-import type { EnvironmentConnectReachability } from "@t3tools/contracts";
+import type { EnvironmentConnectReachability } from "@t3tools/contracts/environmentHttp";
 
 import { tn, t } from "./i18n.ts";
 import { readHashParams } from "./remote.ts";

@@ -1,18 +1,20 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
-  ChatFileAttachment,
   MessageId,
   NodeId,
-  type OrchestrationV2ProviderThread,
   ProjectId,
-  ProviderInstanceId,
   ProviderSessionId,
   RunAttemptId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ChatFileAttachment } from "@t3tools/contracts/chatAttachment";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
+  type OrchestrationV2ProviderThread,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Crypto from "effect/Crypto";

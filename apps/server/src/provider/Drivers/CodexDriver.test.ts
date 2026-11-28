@@ -6,13 +6,9 @@ import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
-import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
-  EnvironmentId,
-  ProviderInstanceId,
-  ProviderSessionId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ProviderSessionId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";

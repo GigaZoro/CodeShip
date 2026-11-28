@@ -1,17 +1,15 @@
 import { assert, it } from "@effect/vitest";
-import {
-  GuestShareId,
-  type GuestShareAccess,
-  type ManagedPolicySummary,
-  type ModelSelection,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2ProviderCapabilities,
-  ProjectId,
-  ProviderInstanceId,
-  type RuntimeMode,
-  type ServerProvider,
-  ThreadId,
-} from "@t3tools/contracts";
+import { GuestShareId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { GuestShareAccess } from "@t3tools/contracts/guestShare";
+import type { ManagedPolicySummary } from "@t3tools/contracts/managedPolicy";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2ProviderCapabilities,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

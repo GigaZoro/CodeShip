@@ -8,8 +8,8 @@ import type {
   PullRequestComment,
   PullRequestInvolvement,
   PullRequestListState,
-  PullRequestMergeMethod,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import type { PullRequestMergeMethod } from "@t3tools/contracts/settingsPrimitives";
 
 import * as AzureDevOpsCli from "./AzureDevOpsCli.ts";
 import {

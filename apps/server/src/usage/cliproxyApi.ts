@@ -1,10 +1,10 @@
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import {
-  ProviderDriverKind,
   UsageLimitSourceError,
   type ProviderConsumeResetCreditResult,
   type UsageLimitSourceAccount,
-  type UsageLimitSourceConfig,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerUsageLimits";
+import type { UsageLimitSourceConfig } from "@t3tools/contracts/settings";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

@@ -5,15 +5,11 @@ import {
   CheckpointRef,
   CheckpointScopeId,
   CommandId,
-  DEFAULT_SERVER_SETTINGS,
   MessageId,
   EventId,
   NodeId,
-  type OrchestrationV2DomainEvent,
   PlanId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -23,7 +19,10 @@ import {
   ScheduledTaskId,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2DomainEvent } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

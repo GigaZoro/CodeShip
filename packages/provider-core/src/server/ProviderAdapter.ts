@@ -1,10 +1,21 @@
-import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
-  ChatAttachment,
   CheckpointId,
   MessageId,
-  ModelSelection,
   NodeId,
+  PositiveInt,
+  ProviderSessionId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RuntimeRequestId,
+  RunAttemptId,
+  RunId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  type OrchestrationV2HistoricalMessage,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
   OrchestrationV2ExecutionNode,
@@ -22,22 +33,14 @@ import {
   OrchestrationV2Subagent,
   OrchestrationV2SystemNotice,
   OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import {
   ProviderApprovalDecision,
   ProviderInteractionMode,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  PositiveInt,
   ProviderUserInputAnswers,
-  ProviderSessionId,
-  ProviderThreadId,
-  ProviderTurnId,
   RuntimeMode,
-  RuntimeRequestId,
-  RunAttemptId,
-  RunId,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerPolicy";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
 import type * as Effect from "effect/Effect";

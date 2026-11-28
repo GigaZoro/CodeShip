@@ -1,10 +1,8 @@
 import { expect, it } from "@effect/vitest";
-import {
-  EnvironmentId,
-  ProviderInstanceId,
-  type ProviderMcpSetEnabledInput,
-  type ProviderRetryUsageLimitResult,
-} from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderMcpSetEnabledInput } from "@t3tools/contracts/providerMcp";
+import type { ProviderRetryUsageLimitResult } from "@t3tools/contracts/providerUsageLimits";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";

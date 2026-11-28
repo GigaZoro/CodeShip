@@ -3,9 +3,9 @@ import {
   AuthMcpClientAccess,
   AuthStandardClientScopes,
   type AuthCreatePairingCredentialInput,
-  EnvironmentHttpApi,
   mcpClientScopes,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/auth";
+import { EnvironmentHttpApi } from "@t3tools/contracts/environmentHttp";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";

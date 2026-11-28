@@ -17,10 +17,9 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import { PositiveInt, TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
 import {
   resolvePullRequestAuthorFilter,
-  PositiveInt,
-  TrimmedNonEmptyString,
   type PullRequestAction,
   type PullRequestStackHead,
   type PullRequestActor,
@@ -30,7 +29,6 @@ import {
   type PullRequestInvolvement,
   type PullRequestListFilters,
   type PullRequestListState,
-  type PullRequestMergeMethod,
   type PullRequestOmittedFileStat,
   type PullRequestReaction,
   type PullRequestReactionContent,
@@ -43,7 +41,8 @@ import {
   type PullRequestThreadCommentsResult,
   type PullRequestUpdateMethod,
   type PullRequestPreview,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/pullRequest";
+import type { PullRequestMergeMethod } from "@t3tools/contracts/settingsPrimitives";
 
 import * as GitHubAppAccess from "./GitHubAppAccess.ts";
 import * as GitHubRest from "./GitHubRest.ts";

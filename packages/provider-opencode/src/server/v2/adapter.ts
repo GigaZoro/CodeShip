@@ -14,9 +14,11 @@ import {
   type OpenCodeEvent,
 } from "@opencode/client/effect";
 import { Mcp } from "@opencode/schema/mcp";
+import type { MessageId, RunId, RuntimeRequestId } from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
   isOrchestrationV2WorkActive,
-  type ChatAttachment,
   type OrchestrationV2AppThread,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ExecutionNode,
@@ -30,13 +32,9 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserInputQuestion,
-  type MessageId,
-  type ModelSelection,
-  type ProviderApprovalDecision,
-  type ProviderInstanceId,
-  type RunId,
-  type RuntimeRequestId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ProviderApprovalDecision } from "@t3tools/contracts/providerPolicy";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

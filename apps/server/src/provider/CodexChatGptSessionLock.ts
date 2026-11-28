@@ -1,7 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - Credential leases coordinate Node server processes.
 import * as NodePath from "node:path";
 import { acquireFileLock } from "./FileLock.ts";
-import { ProviderSetupError, type ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 

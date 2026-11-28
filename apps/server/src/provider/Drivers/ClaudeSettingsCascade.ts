@@ -3,7 +3,7 @@ import {
   type Settings as ClaudeSdkSettings,
   type SettingSource as ClaudeSettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { ClaudeSettings } from "@t3tools/contracts";
+import type { ClaudeSettings } from "@t3tools/contracts/settings";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";

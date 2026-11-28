@@ -9,10 +9,11 @@ import {
   type PreviewReportStatusInput,
   type PreviewResizeInput,
   type PreviewAdjustInput,
-  FILL_PREVIEW_VIEWPORT,
   PreviewSessionLookupError,
   type PreviewSessionSnapshot,
-} from "@t3tools/contracts";
+  PreviewControlRequiredError,
+} from "@t3tools/contracts/preview";
+import { FILL_PREVIEW_VIEWPORT } from "@t3tools/contracts/settingsPrimitives";
 import {
   isPreviewUrlNormalizationError,
   newPreviewTabId,
@@ -27,7 +28,6 @@ import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
-import { PreviewControlRequiredError } from "@t3tools/contracts";
 
 export class PreviewManager extends Context.Service<
   PreviewManager,

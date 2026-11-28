@@ -1,16 +1,11 @@
 import { describe, expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  CommandId,
-  EnvironmentId,
-  GitManagerError,
-  type OrchestrationV2ThreadProjection,
-  type Project,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  WorktreeMcpHandoffInput,
-} from "@t3tools/contracts";
+import { CommandId, EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { GitManagerError } from "@t3tools/contracts/git";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
+import type { Project } from "@t3tools/contracts/project";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { WorktreeMcpHandoffInput } from "@t3tools/contracts/worktreeMcp";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

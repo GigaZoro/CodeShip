@@ -1,15 +1,19 @@
+import type { GuestMessageId } from "@t3tools/contracts/baseSchemas";
+import type {
+  GuestMessageAttribution,
+  OrchestrationMessageContext,
+} from "@t3tools/contracts/composerContext";
 import {
   GUEST_PENDING_ATTACHMENT_BYTES_LIMIT,
   GUEST_PENDING_MESSAGE_LIMIT,
   GUEST_RESOLVED_MESSAGE_LIMIT,
-  type GuestMessageAttribution,
-  type GuestMessageId,
-  type OrchestrationMessageContext,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2ServerCommand,
   type ThreadGuestMessage,
   type ThreadGuestShare,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/guestShare";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2ServerCommand,
+} from "@t3tools/contracts/orchestrationV2";
 import * as DateTime from "effect/DateTime";
 import * as Result from "effect/Result";
 

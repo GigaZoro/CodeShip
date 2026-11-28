@@ -1,4 +1,5 @@
-import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ScopedThreadRef } from "@t3tools/contracts/environment";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { t } from "./i18n.ts";

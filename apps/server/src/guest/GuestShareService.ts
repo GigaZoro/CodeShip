@@ -1,26 +1,29 @@
 import {
-  type ChatAttachment,
-  ChatAttachmentId,
   CommandId,
-  GUEST_SHARE_LIFETIME_MS,
   GuestMessageId,
+  GuestShareId,
+  MessageId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import { type ChatAttachment, ChatAttachmentId } from "@t3tools/contracts/chatAttachment";
+import {
+  GUEST_SHARE_LIFETIME_MS,
   GuestShareCreateError,
   type GuestShareCreateInput,
   type GuestShareCreateResult,
-  GuestShareId,
   type GuestRedeemRequest,
-  MessageId,
-  type GuestStreamEvent,
   type GuestSubmitRequest,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2CommandOutputFrame,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2GetTurnItemResult,
-  type OrchestrationV2ThreadHistoryPage,
-  type OrchestrationV2TurnItem,
-  ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/guestShare";
+import type { GuestStreamEvent } from "@t3tools/contracts/guestStream";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2CommandOutputFrame,
+  OrchestrationV2DomainEvent,
+  OrchestrationV2GetTurnItemResult,
+  OrchestrationV2ThreadHistoryPage,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
 import { chatMarkdownImageSources } from "@t3tools/shared/markdownPipeline";
 import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Context from "effect/Context";

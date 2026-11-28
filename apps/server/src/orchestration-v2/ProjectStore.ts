@@ -1,13 +1,9 @@
-import {
-  type ApplicationProjectEvent,
-  IsoDateTime,
-  ModelSelection,
-  type OrchestrationProjectShell,
-  StoredProjectIcon,
-  ProjectId,
-  ProjectScript,
-  ThreadEnvMode,
-} from "@t3tools/contracts";
+import type { ApplicationProjectEvent } from "@t3tools/contracts/applicationEvent";
+import { IsoDateTime, ProjectId } from "@t3tools/contracts/baseSchemas";
+import { ThreadEnvMode } from "@t3tools/contracts/environment";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
+import { StoredProjectIcon, ProjectScript } from "@t3tools/contracts/project";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";

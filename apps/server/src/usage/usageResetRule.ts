@@ -7,12 +7,14 @@ import type {
   OrchestratorMcpResetClaimReason,
   OrchestratorMcpResetRunReason,
   OrchestratorMcpResetWaitReason,
-  ServerProvider,
+} from "@t3tools/contracts/orchestratorMcp";
+import type {
   ServerProviderResetCredit,
   ServerProviderResetKind,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider } from "@t3tools/contracts/server";
 
 const HOUR_MS = 3_600_000;
 // A window younger than this has too little history to read a burn rate from.

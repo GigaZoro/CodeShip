@@ -1,11 +1,11 @@
 import type {
-  BranchNamingOptions,
   VcsRef,
   VcsStatusLocalResult,
   VcsStatusRemoteResult,
   VcsStatusResult,
   VcsStatusStreamEvent,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/git";
+import type { BranchNamingOptions } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 

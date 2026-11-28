@@ -1,4 +1,12 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import type { BackgroundScope } from "@t3tools/contracts/background";
+import {
+  type VcsStatusLocalResult,
+  type VcsStatusRemoteResult,
+  type VcsStatusStreamEvent,
+  GitCommandError,
+  GitManagerError,
+} from "@t3tools/contracts/git";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import { assert, it, describe } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Deferred from "effect/Deferred";
@@ -16,13 +24,6 @@ import * as Scheduler from "effect/Scheduler";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
-import type {
-  BackgroundScope,
-  VcsStatusLocalResult,
-  VcsStatusRemoteResult,
-  VcsStatusStreamEvent,
-} from "@t3tools/contracts";
-import { GitCommandError, GitManagerError } from "@t3tools/contracts";
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";

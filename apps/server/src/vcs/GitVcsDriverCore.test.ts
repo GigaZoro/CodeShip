@@ -20,7 +20,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { GitCommandError } from "@t3tools/contracts";
+import { GitCommandError } from "@t3tools/contracts/git";
 import * as WorkerProcessSpawner from "../process/WorkerProcessSpawner.ts";
 import {
   GIT_REMOTE_TIMED_OUT_DETAIL,

@@ -5,16 +5,17 @@ import {
   MessageId,
   NodeId,
   ProjectId,
-  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
   ThreadId,
   TurnItemId,
-  type ProviderDriverKind,
-  type OrchestrationV2DomainEvent,
-  type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2DomainEvent,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId, type ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import {
   diagnosticOutput,

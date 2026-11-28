@@ -15,12 +15,12 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import type { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
 import {
   PullRequestOperationError,
   PullRequestUnavailableError,
   resolvePullRequestAuthorFilter,
-  type OrchestrationProjectShell,
-  type ProjectId,
   type PullRequestAction,
   type PullRequestActionInput,
   type PullRequestActivity,
@@ -70,10 +70,12 @@ import {
   type PullRequestThreadCommentsInput,
   type PullRequestThreadCommentsResult,
   type PullRequestUpdateInput,
+} from "@t3tools/contracts/pullRequest";
+import {
   type SourceControlProviderInfo,
   SourceControlProviderKind,
-  type ThreadPullRequestKey,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sourceControl";
+import type { ThreadPullRequestKey } from "@t3tools/contracts/threadPullRequest";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 

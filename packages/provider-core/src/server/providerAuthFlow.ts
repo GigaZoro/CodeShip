@@ -1,11 +1,11 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
   ProviderSetupError,
   type ProviderAuthInteraction,
   type ProviderAuthMethod,
   type ProviderAuthResponse,
   type ProviderAuthState,
-  type ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerSetup";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";

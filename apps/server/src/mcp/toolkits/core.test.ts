@@ -3,27 +3,26 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
-  DEFAULT_SERVER_SETTINGS,
-  ChatImageAttachment,
   CommandId,
   EnvironmentId,
   NodeId,
-  OrchestratorMcpThreadReadResult,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
-  ScheduledTaskError,
-  ScheduledTask,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import { ChatImageAttachment, type ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import {
   OrchestrationV2Command,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadShell,
-  type ChatAttachment,
-  type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpThreadReadResult } from "@t3tools/contracts/orchestratorMcp";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ScheduledTaskError, ScheduledTask } from "@t3tools/contracts/scheduledTask";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

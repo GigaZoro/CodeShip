@@ -2,7 +2,6 @@ import {
   ACP_REGISTRY_MAX_AGENTS,
   AcpRegistryOperationError,
   AcpRegistryOperationErrorReason,
-  TrimmedNonEmptyString,
   type AcpRegistryManagedBinaryUninstallInput,
   type AcpRegistryManagedBinaryUninstallResult,
   type AcpRegistryPrepareInput,
@@ -10,7 +9,8 @@ import {
   type AcpRegistrySearchInput,
   type AcpRegistrySearchResult,
   type AcpRegistryDistribution as AcpRegistryDistributionKind,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/acpRegistry";
+import { TrimmedNonEmptyString } from "@t3tools/contracts/baseSchemas";
 import type { AcpRegistryDistributionPreference } from "../settings.ts";
 import type { AcpRegistrySettings } from "../settings.ts";
 import { cliArchiveTarCommand } from "@t3tools/shared/cliRelease";

@@ -1,4 +1,4 @@
-import type { ModelSelection } from "@t3tools/contracts";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,

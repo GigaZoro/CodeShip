@@ -1,4 +1,5 @@
-import { SourceControlProviderKind, VcsProcessSpawnError } from "@t3tools/contracts";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
+import { VcsProcessSpawnError } from "@t3tools/contracts/vcs";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";

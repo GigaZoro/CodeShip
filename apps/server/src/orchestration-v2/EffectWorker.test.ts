@@ -4,7 +4,6 @@ import {
   CheckpointScopeId,
   CommandId,
   NodeId,
-  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -12,8 +11,9 @@ import {
   RunId,
   RuntimeRequestId,
   ThreadId,
-  VcsProcessExitError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { VcsProcessExitError } from "@t3tools/contracts/vcs";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";

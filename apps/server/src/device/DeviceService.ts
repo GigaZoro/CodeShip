@@ -1,3 +1,4 @@
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
   type DeviceActionInput,
   DeviceBootError,
@@ -31,8 +32,7 @@ import {
   type DeviceHostSummary,
   LOCAL_DEVICE_HOST_ID,
   LOCAL_DEVICE_HOST_LABEL,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/device";
 import { SshCommandError } from "@t3tools/ssh/errors";
 import * as FileSystem from "effect/FileSystem";
 import { resolveNodeExecutable, nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";

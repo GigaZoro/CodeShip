@@ -1,9 +1,7 @@
-import {
-  ClaudeSettings,
-  ProviderDriverKind,
-  ProviderSkillError,
-  ProviderSetupError,
-} from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import { ProviderSkillError } from "@t3tools/contracts/providerSkills";
+import { ClaudeSettings } from "@t3tools/contracts/settings";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";

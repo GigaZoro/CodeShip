@@ -1,9 +1,7 @@
-import {
-  type ChatAttachment,
-  OrchestratorMcpFailure,
-  type OrchestrationV2ThreadShell,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import * as Effect from "effect/Effect";
 
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";

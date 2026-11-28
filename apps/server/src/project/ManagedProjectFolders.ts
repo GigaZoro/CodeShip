@@ -1,11 +1,7 @@
-import {
-  CommandId,
-  type GitManagerServiceError,
-  type ModelSelection,
-  ProjectId,
-  type ThreadId,
-  VcsProcessSpawnError,
-} from "@t3tools/contracts";
+import { CommandId, ProjectId, type ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { GitManagerServiceError } from "@t3tools/contracts/git";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { VcsProcessSpawnError } from "@t3tools/contracts/vcs";
 import { newProjectFolderName } from "@t3tools/shared/path";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";

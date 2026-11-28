@@ -1,25 +1,30 @@
 import {
   CommandId,
   type EnvironmentId,
-  type ModelSelection,
   NodeId,
+  type ProjectId,
+  type RunId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  type RepositoryIdentity,
+  repositoryKeysOf,
+  repositoryMatchRank,
+} from "@t3tools/contracts/environment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2RemoteTaskChild,
+  OrchestrationV2Subagent,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts/orchestrationV2";
+import {
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpTaskCancelResult,
   type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadTimelineItem,
-  type OrchestrationV2RemoteTaskChild,
-  type OrchestrationV2Subagent,
-  type OrchestrationV2ThreadProjection,
-  type ProjectId,
-  type ProviderInstanceId,
-  ProviderDriverKind,
-  type RepositoryIdentity,
-  repositoryKeysOf,
-  repositoryMatchRank,
-  type RunId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import { type ProviderInstanceId, ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import { SUBAGENT_REPLY_TURN_ITEM_TYPES } from "@t3tools/provider-core/server/subagentProjection";
 import * as Context from "effect/Context";

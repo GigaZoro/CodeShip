@@ -1,12 +1,10 @@
+import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import {
-  AntigravitySettings,
-  CodexSettings,
-  ProviderDriverKind,
   type ProviderInstallCancelInput,
-  type ProviderInstanceId,
   ProviderSetupError,
   type ProviderSetupInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerSetup";
+import { AntigravitySettings, CodexSettings } from "@t3tools/contracts/settings";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

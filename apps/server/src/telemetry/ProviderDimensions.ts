@@ -1,8 +1,6 @@
-import type {
-  ModelSelection,
-  OrchestrationV2ThreadShell,
-  ServerProvider,
-} from "@t3tools/contracts";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type { OrchestrationV2ThreadShell } from "@t3tools/contracts/orchestrationV2";
+import type { ServerProvider } from "@t3tools/contracts/server";
 
 import { BUNDLED_MODEL_MANIFEST } from "../provider/ModelManifest.ts";
 

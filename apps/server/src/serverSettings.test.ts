@@ -1,21 +1,20 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ProjectId } from "@t3tools/contracts/baseSchemas";
+import type { ManagedPolicyDocument } from "@t3tools/contracts/managedPolicy";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import { ProjectScript } from "@t3tools/contracts/project";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { SecretProviderId } from "@t3tools/contracts/secretReference";
 import {
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
-  type ManagedPolicyDocument,
-  ModelSelection,
-  ProjectId,
-  ProjectScript,
   ProjectScriptExistsError,
-  ProviderDriverKind,
-  ProviderInstanceId,
   resolveProviderInstanceEnabled,
-  SecretProviderId,
   ServerSettings,
   ServerSettingsPatch,
-  UsageLimitSourceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
+import { UsageLimitSourceId } from "@t3tools/contracts/usageLimitSourceId";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";

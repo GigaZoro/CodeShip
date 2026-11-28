@@ -1,17 +1,20 @@
+import type { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { isManagedSettingPath, type ManagedPolicySummary } from "@t3tools/contracts/managedPolicy";
 import {
-  type EnvironmentId,
-  isBuiltInProviderInstance,
-  isManagedSettingPath,
-  type ManagedPolicySummary,
   type ProviderInstanceConfig,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceMutation,
+} from "@t3tools/contracts/providerInstance";
+import {
   resolveProviderInstanceAllowBackground,
   resolveProviderInstanceEnabled,
   type ServerSettings,
+} from "@t3tools/contracts/settings";
+import {
+  isBuiltInProviderInstance,
   type SharedProviderInstanceValue,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/sharedSettings";
 import type { AnyProviderDriver } from "@t3tools/provider-core/server/driver";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";

@@ -1,10 +1,10 @@
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import type {
-  ProviderInstanceId,
   UsageProviderKind,
   UsageReadError,
   UsageSource,
   UsageTokenTotals,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/usage";
 import type { UsageScanSettings } from "@t3tools/shared/usageScanSettings";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";

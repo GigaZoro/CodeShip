@@ -1,4 +1,4 @@
-import { GitCommandError } from "@t3tools/contracts";
+import { GitCommandError } from "@t3tools/contracts/git";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

@@ -8,13 +8,12 @@ import {
   EnvironmentId,
   MessageId,
   NodeId,
-  type OrchestrationV2Run,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2Run } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { McpSchema, McpServer } from "effect/ai";

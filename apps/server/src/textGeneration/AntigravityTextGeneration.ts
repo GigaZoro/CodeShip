@@ -1,4 +1,5 @@
-import { type ProviderSetupError, TextGenerationError } from "@t3tools/contracts";
+import { TextGenerationError } from "@t3tools/contracts/git";
+import type { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

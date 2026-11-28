@@ -1,10 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
-  type ManualStep,
-  type ManualStepReview,
   type TextGenerationError,
   TextGenerationError as TextGenerationFailure,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/git";
+import type { ManualStep, ManualStepReview } from "@t3tools/contracts/manualSteps";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

@@ -32,7 +32,7 @@ import {
   type VcsStatusRemoteResult,
   type VcsStatusResult,
   type VcsUnmergedWorkResult,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/git";
 
 import * as GitManager from "./GitManager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";

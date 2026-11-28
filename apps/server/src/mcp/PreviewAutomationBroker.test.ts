@@ -1,19 +1,18 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { PreviewTabId } from "@t3tools/contracts/preview";
 import {
-  EnvironmentId,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationTimeoutError,
-  PreviewTabId,
-  ProviderInstanceId,
-  ThreadId,
   type PreviewAutomationHost,
   type PreviewAutomationRequest,
   type PreviewAutomationStreamEvent,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/previewAutomation";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";

@@ -3,24 +3,28 @@ import {
   threadPullRequestsOf,
 } from "../../sourceControl/threadPullRequests.ts";
 import {
-  ChatAttachment,
-  OrchestrationMessageContext,
-  DEFAULT_MODEL,
   EventId,
   MessageId,
-  ModelSelection,
+  ProjectId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import { OrchestrationMessageContext } from "@t3tools/contracts/composerContext";
+import { DEFAULT_MODEL } from "@t3tools/contracts/model";
+import { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
   type OrchestrationV2AppThread,
   OrchestrationV2AppThreadJson,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import {
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/threadPullRequest";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Cause from "effect/Cause";

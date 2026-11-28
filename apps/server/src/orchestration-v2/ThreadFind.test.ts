@@ -6,14 +6,16 @@ import {
   RunId,
   RuntimeRequestId,
   TurnItemId,
-  type OrchestrationV2TurnItem,
-  type OrchestrationV2Run,
-  type OrchestrationV2ThreadHistoryPage,
   ProjectId,
-  ProviderInstanceId,
   ThreadId,
-  type OrchestrationV2DomainEvent,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2TurnItem,
+  OrchestrationV2Run,
+  OrchestrationV2ThreadHistoryPage,
+  OrchestrationV2DomainEvent,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

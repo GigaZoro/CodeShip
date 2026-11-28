@@ -4,6 +4,41 @@ import * as SchemaAST from "effect/SchemaAST";
 import { TrimmedString } from "./baseSchemas.ts";
 import { SecretReference } from "./secretReference.ts";
 
+declare module "effect/Schema" {
+  namespace Annotations {
+    interface Annotations {
+      /** Store this credential separately and expose only whether it is configured to clients. */
+      readonly settingsSecret?: boolean | undefined;
+      /** Set by `SettingsSecretValue`: the credential may name a secret provider reference. */
+      readonly settingsSecretReference?: boolean | undefined;
+    }
+  }
+}
+
+export function secretSetting<S extends Schema.Top>(schema: S): S["Rebuild"] {
+  return schema.annotateKey({ settingsSecret: true });
+}
+
+/** A masked form field is a credential too, so none is saved or sent to clients as plain text. */
+export function isSecretSetting(schema: Schema.Top): boolean {
+  const annotations = Schema.resolveAnnotationsKey(schema) ?? Schema.resolveAnnotations(schema);
+  if (annotations?.settingsSecret === true) return true;
+  const form =
+    annotations && "providerSettingsForm" in annotations
+      ? (annotations as { readonly providerSettingsForm?: { readonly control?: string } })
+          .providerSettingsForm
+      : undefined;
+  return form?.control === "password";
+}
+
+export function secretSettingsFields(schema: {
+  readonly fields: Readonly<Record<string, Schema.Top>>;
+}): ReadonlyArray<string> {
+  return Object.entries(schema.fields).flatMap(([field, fieldSchema]) => {
+    return isSecretSetting(fieldSchema) ? [field] : [];
+  });
+}
+
 /**
  * A credential setting: the literal, which is kept in the secret store and redacted for
  * clients, or the secret reference to read it from, which is not itself a secret and is

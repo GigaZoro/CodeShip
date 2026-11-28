@@ -1,5 +1,5 @@
 // The CLI catalog honors ignored/disabled skills and nested plugin skills that flat scans miss.
-import type { ServerProviderSkill } from "@t3tools/contracts";
+import type { ServerProviderSkill } from "@t3tools/contracts/server";
 import type { GrokSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";

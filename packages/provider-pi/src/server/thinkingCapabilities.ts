@@ -1,4 +1,4 @@
-import { type ModelCapabilities, type ProviderOptionChoice } from "@t3tools/contracts";
+import type { ModelCapabilities, ProviderOptionChoice } from "@t3tools/contracts/model";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Predicate from "effect/Predicate";
 

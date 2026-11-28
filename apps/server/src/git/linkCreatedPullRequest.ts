@@ -1,9 +1,6 @@
-import {
-  type CommandId,
-  type GitRunStackedActionResult,
-  type OrchestrationProjectShell,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { CommandId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { GitRunStackedActionResult } from "@t3tools/contracts/git";
+import type { OrchestrationProjectShell } from "@t3tools/contracts/orchestrationProject";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";

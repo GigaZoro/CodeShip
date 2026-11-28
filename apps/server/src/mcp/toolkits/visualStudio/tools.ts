@@ -1,5 +1,5 @@
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import {
-  OrchestratorMcpFailure,
   VisualStudioAutoContinue,
   VisualStudioAutoContinueInput,
   VisualStudioControlInput,
@@ -9,7 +9,7 @@ import {
   VisualStudioStatusInput,
   VisualStudioStatusResult,
   VisualStudioWindow,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/visualStudio";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 

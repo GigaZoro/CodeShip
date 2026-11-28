@@ -1,18 +1,18 @@
+import type { ProviderOptionDescriptor, ProviderOptionSelection } from "@t3tools/contracts/model";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
   DELEGATED_REVIEW_ROUND_LIMIT,
-  type ModelSelection,
   type OrchestrationV2DelegatedReviewRequest,
   type OrchestrationV2SubagentReview,
+} from "@t3tools/contracts/orchestrationV2";
+import {
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpInteractionMode,
   type OrchestratorMcpRuntimeMode,
-  type ProviderInteractionMode,
-  type ProviderOptionDescriptor,
-  type ProviderOptionSelection,
-  type RuntimeMode,
-  type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
+import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts/providerPolicy";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { optionSelectionProblem, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 

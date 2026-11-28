@@ -4,17 +4,19 @@ import {
   ContextTransferId,
   EnvironmentId,
   MessageId,
-  type ModelSelection,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2Run,
-  type OrchestrationV2ThreadProjection,
   ProjectId,
-  ProviderInstanceId,
   ProviderThreadId,
   RunId,
   ThreadId,
-  type ThreadPullRequestLink,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2Run,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ThreadPullRequestLink } from "@t3tools/contracts/threadPullRequest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 

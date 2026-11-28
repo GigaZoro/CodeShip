@@ -1,7 +1,6 @@
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import {
   BrowserNavigationTarget,
-  OrchestratorMcpFailure,
-  ToolActivityIcon,
   PreviewAutomationActInput,
   PreviewAutomationDialogInput,
   PreviewAutomationError,
@@ -20,7 +19,8 @@ import {
   PreviewAutomationTabTargetInput,
   PreviewAutomationWaitForInput,
   PreviewHeadlessFields,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/previewAutomation";
+import { ToolActivityIcon } from "@t3tools/contracts/providerRuntime";
 import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import { Tool, Toolkit } from "effect/ai";

@@ -4,17 +4,26 @@
  * `PeerLinks.link`, never into the transcript or the agent's context. Asking does not wait
  * (provider CLIs abandon a long tool call): the answer reaches the agent as a notification.
  */
+import type { AuthEnvironmentScope } from "@t3tools/contracts/auth";
 import {
-  type AuthEnvironmentScope,
   CommandId,
   type EnvironmentId,
   MessageId,
   type NodeId,
-  type OrchestrationV2Notification,
-  type OrchestrationV2TurnItem,
+  type RunId,
+  type ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2Notification,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import {
   type OrchestratorMcpEnvironmentLinkInput,
   type OrchestratorMcpEnvironmentLinkResult,
   OrchestratorMcpFailure,
+} from "@t3tools/contracts/orchestratorMcp";
+import {
   PEER_LINK_AGENTS_ONLY_NOTE,
   type PeerLink,
   type PeerLinkBackOutcome,
@@ -22,10 +31,7 @@ import {
   PeerLinkRequestError,
   type PeerLinkRequestAnswerInput,
   type PeerLinkRequestAnswerResult,
-  type RunId,
-  type ThreadId,
-  TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/peerLink";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";

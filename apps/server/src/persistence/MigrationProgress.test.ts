@@ -4,7 +4,7 @@ import * as NodeHttp from "node:http";
 import type * as NodeNet from "node:net";
 
 import { assert, it } from "@effect/vitest";
-import { ENVIRONMENT_DESCRIPTOR_PATH } from "@t3tools/contracts";
+import { ENVIRONMENT_DESCRIPTOR_PATH } from "@t3tools/contracts/environment";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

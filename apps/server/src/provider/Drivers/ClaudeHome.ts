@@ -1,11 +1,11 @@
 import {
   defaultInstanceIdForDriver,
-  settingsSecretLiteral,
   ProviderDriverKind,
-  type ClaudeSettings,
   type ProviderInstanceEnvironment,
   type ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import type { ClaudeSettings } from "@t3tools/contracts/settings";
+import { settingsSecretLiteral } from "@t3tools/contracts/settingsSecretValue";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";

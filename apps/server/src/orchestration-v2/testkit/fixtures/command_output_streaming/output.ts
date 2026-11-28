@@ -1,5 +1,5 @@
 import { assert } from "@effect/vitest";
-import type { ProviderReplayTranscript } from "@t3tools/contracts";
+import type { ProviderReplayTranscript } from "@t3tools/contracts/orchestrationV2";
 import { normalizeTerminalOutput, terminalOutputPlainText } from "@t3tools/shared/terminalOutput";
 
 import type { OrchestratorV2ScenarioResult } from "../../OrchestratorScenario.ts";

@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { CodexSettings, type ProviderReplayTranscript } from "@t3tools/contracts";
+import type { ProviderReplayTranscript } from "@t3tools/contracts/orchestrationV2";
+import { CodexSettings } from "@t3tools/contracts/settings";
 import * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexError from "effect-codex-app-server/errors";
 import * as CodexReplay from "effect-codex-app-server/replay";

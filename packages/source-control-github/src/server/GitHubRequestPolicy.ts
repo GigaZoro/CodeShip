@@ -1,5 +1,5 @@
 import { normalizeHost } from "@t3tools/source-control-core/server/pullRequestUtils";
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { SourceControlProviderKind } from "@t3tools/contracts/sourceControl";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";

@@ -1,4 +1,4 @@
-import type { ResponseStreamingMode } from "@t3tools/contracts";
+import type { ResponseStreamingMode } from "@t3tools/contracts/settings";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 // List fences can open at any indentation; closers may be at most three spaces deeper.

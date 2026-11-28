@@ -1,4 +1,5 @@
-import { MessageId, NodeId, ProviderDriverKind, ThreadId, TurnItemId } from "@t3tools/contracts";
+import { MessageId, NodeId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";

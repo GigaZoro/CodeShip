@@ -1,17 +1,19 @@
 import {
   CheckpointId,
   CheckpointScopeId,
+  ProviderThreadId,
+  type RunId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import {
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2Run,
   orchestrationV2RunTurnEnded,
-  ProviderThreadId,
-  type RunId,
-  ThreadId,
-  VcsProcessExitError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { VcsProcessExitError } from "@t3tools/contracts/vcs";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

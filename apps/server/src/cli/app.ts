@@ -10,7 +10,7 @@ import {
   DesktopAppActivationResponse,
   type DesktopAppActivationPlatform,
   type DesktopAppActivationRequest,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/desktopAppActivation";
 import {
   resolveDesktopAppControlAddress,
   type DesktopAppControlAddress,

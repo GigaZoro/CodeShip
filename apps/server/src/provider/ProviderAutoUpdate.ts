@@ -1,4 +1,5 @@
-import type { ServerProvider, ServerSettings } from "@t3tools/contracts";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import type { ServerSettings } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

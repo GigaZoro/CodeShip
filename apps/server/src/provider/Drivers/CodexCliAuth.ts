@@ -1,9 +1,6 @@
-import {
-  boundedProviderMcpMessage,
-  ProviderSetupError,
-  type ProviderAuthMethod,
-  type ProviderInstanceId,
-} from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { boundedProviderMcpMessage } from "@t3tools/contracts/providerMcp";
+import { ProviderSetupError, type ProviderAuthMethod } from "@t3tools/contracts/providerSetup";
 import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import type * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexErrors from "effect-codex-app-server/errors";

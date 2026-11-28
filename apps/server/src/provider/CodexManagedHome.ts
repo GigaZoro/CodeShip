@@ -1,4 +1,5 @@
-import type { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { CodexSettings } from "@t3tools/contracts/settings";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import { resolveCodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";

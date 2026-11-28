@@ -1,21 +1,17 @@
 import * as ProviderMcp from "../../../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { expect, it } from "@effect/vitest";
-import {
-  EnvironmentId,
-  ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProvider,
-  type Project as ProjectRecord,
-  type ModelSelection,
-  type RuntimeMode,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2ThreadShell,
-  type ChatAttachment,
-  ChatAttachmentId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { type ChatAttachment, ChatAttachmentId } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts/orchestrationV2";
+import type { Project as ProjectRecord } from "@t3tools/contracts/project";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { RuntimeMode } from "@t3tools/contracts/providerPolicy";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";

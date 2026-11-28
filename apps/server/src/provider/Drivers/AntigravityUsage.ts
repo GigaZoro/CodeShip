@@ -1,4 +1,5 @@
-import { type AntigravitySettings, UsageReadError } from "@t3tools/contracts";
+import type { AntigravitySettings } from "@t3tools/contracts/settings";
+import { UsageReadError } from "@t3tools/contracts/usage";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import type {

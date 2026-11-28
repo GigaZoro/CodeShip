@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeOS from "node:os";
 
-import { TRIAGE_PROMPT_FILE_NAME } from "@t3tools/contracts";
+import { TRIAGE_PROMPT_FILE_NAME } from "@t3tools/contracts/server";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

@@ -1,11 +1,9 @@
-import {
-  RunId,
-  ThreadId,
-  TurnItemId,
-  type OrchestrationV2ProjectedTurnItem,
-  type OrchestrationV2ThreadProjection,
-  type OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
+import { RunId, ThreadId, TurnItemId } from "@t3tools/contracts/baseSchemas";
+import type {
+  OrchestrationV2ProjectedTurnItem,
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
 import { describe, expect, it } from "vite-plus/test";
 
 import {

@@ -11,13 +11,373 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
-    "./settings": {
-      "types": "./src/settings.ts",
-      "import": "./src/settings.ts"
+    "./acpRegistry": {
+      "types": "./src/acpRegistry.ts",
+      "import": "./src/acpRegistry.ts"
+    },
+    "./agentSessions": {
+      "types": "./src/agentSessions.ts",
+      "import": "./src/agentSessions.ts"
+    },
+    "./apiCreditUsage": {
+      "types": "./src/apiCreditUsage.ts",
+      "import": "./src/apiCreditUsage.ts"
+    },
+    "./applicationEvent": {
+      "types": "./src/applicationEvent.ts",
+      "import": "./src/applicationEvent.ts"
+    },
+    "./assets": {
+      "types": "./src/assets.ts",
+      "import": "./src/assets.ts"
+    },
+    "./assistantCitations": {
+      "types": "./src/assistantCitations.ts",
+      "import": "./src/assistantCitations.ts"
+    },
+    "./auth": {
+      "types": "./src/auth.ts",
+      "import": "./src/auth.ts"
+    },
+    "./background": {
+      "types": "./src/background.ts",
+      "import": "./src/background.ts"
+    },
+    "./baseSchemas": {
+      "types": "./src/baseSchemas.ts",
+      "import": "./src/baseSchemas.ts"
+    },
+    "./browserImport": {
+      "types": "./src/browserImport.ts",
+      "import": "./src/browserImport.ts"
+    },
+    "./browserProfile": {
+      "types": "./src/browserProfile.ts",
+      "import": "./src/browserProfile.ts"
+    },
+    "./chatAttachment": {
+      "types": "./src/chatAttachment.ts",
+      "import": "./src/chatAttachment.ts"
+    },
+    "./checkpointDiff": {
+      "types": "./src/checkpointDiff.ts",
+      "import": "./src/checkpointDiff.ts"
+    },
+    "./clientRpcPermissions": {
+      "types": "./src/clientRpcPermissions.ts",
+      "import": "./src/clientRpcPermissions.ts"
+    },
+    "./composerContext": {
+      "types": "./src/composerContext.ts",
+      "import": "./src/composerContext.ts"
+    },
+    "./composerContextClipboard": {
+      "types": "./src/composerContextClipboard.ts",
+      "import": "./src/composerContextClipboard.ts"
+    },
+    "./delegatedTaskRole": {
+      "types": "./src/delegatedTaskRole.ts",
+      "import": "./src/delegatedTaskRole.ts"
+    },
+    "./desktopAppActivation": {
+      "types": "./src/desktopAppActivation.ts",
+      "import": "./src/desktopAppActivation.ts"
+    },
+    "./desktopBootstrap": {
+      "types": "./src/desktopBootstrap.ts",
+      "import": "./src/desktopBootstrap.ts"
+    },
+    "./desktopBrowser": {
+      "types": "./src/desktopBrowser.ts",
+      "import": "./src/desktopBrowser.ts"
+    },
+    "./device": {
+      "types": "./src/device.ts",
+      "import": "./src/device.ts"
+    },
+    "./deviceSettingsProfile": {
+      "types": "./src/deviceSettingsProfile.ts",
+      "import": "./src/deviceSettingsProfile.ts"
+    },
+    "./editor": {
+      "types": "./src/editor.ts",
+      "import": "./src/editor.ts"
+    },
+    "./environment": {
+      "types": "./src/environment.ts",
+      "import": "./src/environment.ts"
+    },
+    "./environmentHttp": {
+      "types": "./src/environmentHttp.ts",
+      "import": "./src/environmentHttp.ts"
+    },
+    "./filesystem": {
+      "types": "./src/filesystem.ts",
+      "import": "./src/filesystem.ts"
+    },
+    "./git": {
+      "types": "./src/git.ts",
+      "import": "./src/git.ts"
+    },
+    "./guestShare": {
+      "types": "./src/guestShare.ts",
+      "import": "./src/guestShare.ts"
+    },
+    "./guestStream": {
+      "types": "./src/guestStream.ts",
+      "import": "./src/guestStream.ts"
+    },
+    "./hostMemory": {
+      "types": "./src/hostMemory.ts",
+      "import": "./src/hostMemory.ts"
+    },
+    "./ipc": {
+      "types": "./src/ipc.ts",
+      "import": "./src/ipc.ts"
+    },
+    "./keybindings": {
+      "types": "./src/keybindings.ts",
+      "import": "./src/keybindings.ts"
+    },
+    "./managedPolicy": {
+      "types": "./src/managedPolicy.ts",
+      "import": "./src/managedPolicy.ts"
+    },
+    "./manualSteps": {
+      "types": "./src/manualSteps.ts",
+      "import": "./src/manualSteps.ts"
+    },
+    "./mcpApps": {
+      "types": "./src/mcpApps.ts",
+      "import": "./src/mcpApps.ts"
+    },
+    "./model": {
+      "types": "./src/model.ts",
+      "import": "./src/model.ts"
+    },
+    "./modelSelection": {
+      "types": "./src/modelSelection.ts",
+      "import": "./src/modelSelection.ts"
+    },
+    "./monitoring": {
+      "types": "./src/monitoring.ts",
+      "import": "./src/monitoring.ts"
+    },
+    "./orchestrationDispatch": {
+      "types": "./src/orchestrationDispatch.ts",
+      "import": "./src/orchestrationDispatch.ts"
+    },
+    "./orchestrationProject": {
+      "types": "./src/orchestrationProject.ts",
+      "import": "./src/orchestrationProject.ts"
+    },
+    "./orchestrationV2": {
+      "types": "./src/orchestrationV2.ts",
+      "import": "./src/orchestrationV2.ts"
+    },
+    "./orchestratorMcp": {
+      "types": "./src/orchestratorMcp.ts",
+      "import": "./src/orchestratorMcp.ts"
+    },
+    "./peerLink": {
+      "types": "./src/peerLink.ts",
+      "import": "./src/peerLink.ts"
+    },
+    "./preview": {
+      "types": "./src/preview.ts",
+      "import": "./src/preview.ts"
+    },
+    "./previewAutomation": {
+      "types": "./src/previewAutomation.ts",
+      "import": "./src/previewAutomation.ts"
+    },
+    "./previewCapture": {
+      "types": "./src/previewCapture.ts",
+      "import": "./src/previewCapture.ts"
+    },
+    "./project": {
+      "types": "./src/project.ts",
+      "import": "./src/project.ts"
+    },
+    "./projectClone": {
+      "types": "./src/projectClone.ts",
+      "import": "./src/projectClone.ts"
+    },
+    "./provider": {
+      "types": "./src/provider.ts",
+      "import": "./src/provider.ts"
+    },
+    "./providerInstance": {
+      "types": "./src/providerInstance.ts",
+      "import": "./src/providerInstance.ts"
+    },
+    "./providerMcp": {
+      "types": "./src/providerMcp.ts",
+      "import": "./src/providerMcp.ts"
+    },
+    "./providerPlugins": {
+      "types": "./src/providerPlugins.ts",
+      "import": "./src/providerPlugins.ts"
+    },
+    "./providerPolicy": {
+      "types": "./src/providerPolicy.ts",
+      "import": "./src/providerPolicy.ts"
+    },
+    "./providerRuntime": {
+      "types": "./src/providerRuntime.ts",
+      "import": "./src/providerRuntime.ts"
+    },
+    "./providerSetup": {
+      "types": "./src/providerSetup.ts",
+      "import": "./src/providerSetup.ts"
+    },
+    "./providerSkills": {
+      "types": "./src/providerSkills.ts",
+      "import": "./src/providerSkills.ts"
+    },
+    "./providerUsageLimits": {
+      "types": "./src/providerUsageLimits.ts",
+      "import": "./src/providerUsageLimits.ts"
+    },
+    "./pullRequest": {
+      "types": "./src/pullRequest.ts",
+      "import": "./src/pullRequest.ts"
+    },
+    "./pullRequestReviewGuide": {
+      "types": "./src/pullRequestReviewGuide.ts",
+      "import": "./src/pullRequestReviewGuide.ts"
     },
     "./relay": {
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
+    },
+    "./relayClient": {
+      "types": "./src/relayClient.ts",
+      "import": "./src/relayClient.ts"
+    },
+    "./remoteAccess": {
+      "types": "./src/remoteAccess.ts",
+      "import": "./src/remoteAccess.ts"
+    },
+    "./resourceTelemetry": {
+      "types": "./src/resourceTelemetry.ts",
+      "import": "./src/resourceTelemetry.ts"
+    },
+    "./review": {
+      "types": "./src/review.ts",
+      "import": "./src/review.ts"
+    },
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "import": "./src/rpc.ts"
+    },
+    "./runLoopGuard": {
+      "types": "./src/runLoopGuard.ts",
+      "import": "./src/runLoopGuard.ts"
+    },
+    "./scheduledTask": {
+      "types": "./src/scheduledTask.ts",
+      "import": "./src/scheduledTask.ts"
+    },
+    "./secretReference": {
+      "types": "./src/secretReference.ts",
+      "import": "./src/secretReference.ts"
+    },
+    "./secretRequest": {
+      "types": "./src/secretRequest.ts",
+      "import": "./src/secretRequest.ts"
+    },
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
+    },
+    "./serverUpdate": {
+      "types": "./src/serverUpdate.ts",
+      "import": "./src/serverUpdate.ts"
+    },
+    "./settings": {
+      "types": "./src/settings.ts",
+      "import": "./src/settings.ts"
+    },
+    "./settingsPrimitives": {
+      "types": "./src/settingsPrimitives.ts",
+      "import": "./src/settingsPrimitives.ts"
+    },
+    "./settingsSecretValue": {
+      "types": "./src/settingsSecretValue.ts",
+      "import": "./src/settingsSecretValue.ts"
+    },
+    "./sharedSettings": {
+      "types": "./src/sharedSettings.ts",
+      "import": "./src/sharedSettings.ts"
+    },
+    "./sourceControl": {
+      "types": "./src/sourceControl.ts",
+      "import": "./src/sourceControl.ts"
+    },
+    "./t3ProjectFile": {
+      "types": "./src/t3ProjectFile.ts",
+      "import": "./src/t3ProjectFile.ts"
+    },
+    "./terminal": {
+      "types": "./src/terminal.ts",
+      "import": "./src/terminal.ts"
+    },
+    "./threadFolders": {
+      "types": "./src/threadFolders.ts",
+      "import": "./src/threadFolders.ts"
+    },
+    "./threadMetadataMcp": {
+      "types": "./src/threadMetadataMcp.ts",
+      "import": "./src/threadMetadataMcp.ts"
+    },
+    "./threadPreferences": {
+      "types": "./src/threadPreferences.ts",
+      "import": "./src/threadPreferences.ts"
+    },
+    "./threadPullRequest": {
+      "types": "./src/threadPullRequest.ts",
+      "import": "./src/threadPullRequest.ts"
+    },
+    "./threadSearch": {
+      "types": "./src/threadSearch.ts",
+      "import": "./src/threadSearch.ts"
+    },
+    "./threadTags": {
+      "types": "./src/threadTags.ts",
+      "import": "./src/threadTags.ts"
+    },
+    "./threadTitle": {
+      "types": "./src/threadTitle.ts",
+      "import": "./src/threadTitle.ts"
+    },
+    "./usage": {
+      "types": "./src/usage.ts",
+      "import": "./src/usage.ts"
+    },
+    "./usageLimitSourceId": {
+      "types": "./src/usageLimitSourceId.ts",
+      "import": "./src/usageLimitSourceId.ts"
+    },
+    "./vcs": {
+      "types": "./src/vcs.ts",
+      "import": "./src/vcs.ts"
+    },
+    "./visualStudio": {
+      "types": "./src/visualStudio.ts",
+      "import": "./src/visualStudio.ts"
+    },
+    "./worktreeMcp": {
+      "types": "./src/worktreeMcp.ts",
+      "import": "./src/worktreeMcp.ts"
+    },
+    "./worktreeSetup": {
+      "types": "./src/worktreeSetup.ts",
+      "import": "./src/worktreeSetup.ts"
+    },
+    "./wsMethods": {
+      "types": "./src/wsMethods.ts",
+      "import": "./src/wsMethods.ts"
     }
   },
   "scripts": {

@@ -3,16 +3,20 @@ import * as NodeOS from "node:os";
 import {
   AgentSessionImportSource,
   AgentSessionScanError,
-  ClaudeSettings,
-  CodexSettings,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  resolveProviderInstanceEnabled,
   type AgentSessionProjectCandidate,
   type AgentSessionProjectGit,
   type AgentSessionScanResult,
+} from "@t3tools/contracts/agentSessions";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
   type ProviderInstanceConfig,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import {
+  ClaudeSettings,
+  CodexSettings,
+  resolveProviderInstanceEnabled,
+} from "@t3tools/contracts/settings";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

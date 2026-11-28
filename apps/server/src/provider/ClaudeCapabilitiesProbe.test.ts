@@ -6,12 +6,9 @@ import * as NodePath from "node:path";
 import { query as claudeQuery } from "@anthropic-ai/claude-agent-sdk";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  ClaudeSettings,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { ClaudeSettings } from "@t3tools/contracts/settings";
 import { vi } from "vite-plus/test";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";

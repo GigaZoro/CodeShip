@@ -1,7 +1,7 @@
 import * as NodeOS from "node:os";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { AutomatedStartMemoryGuard } from "@t3tools/contracts";
+import { AutomatedStartMemoryGuard } from "@t3tools/contracts/hostMemory";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

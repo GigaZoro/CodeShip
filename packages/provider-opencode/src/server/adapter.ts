@@ -12,30 +12,34 @@ import type {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { causeErrorTag } from "@t3tools/shared/observability";
+import type {
+  PlanId,
+  ProviderSessionId,
+  RuntimeRequestId,
+  ThreadId,
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2ConversationMessage,
+  OrchestrationV2ExecutionNode,
+  OrchestrationV2PlanStep,
+  OrchestrationV2ProviderCapabilities,
+  OrchestrationV2ProviderFailure,
+  OrchestrationV2ProviderRef,
+  OrchestrationV2ProviderSession,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderTurn,
+  OrchestrationV2RuntimeRequest,
+  OrchestrationV2Subagent,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
 import {
   defaultInstanceIdForDriver,
-  type ModelSelection,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2ConversationMessage,
-  type OrchestrationV2ExecutionNode,
-  type OrchestrationV2PlanStep,
-  type OrchestrationV2ProviderCapabilities,
-  type OrchestrationV2ProviderFailure,
-  type OrchestrationV2ProviderRef,
-  type OrchestrationV2ProviderSession,
-  type OrchestrationV2ProviderThread,
-  type OrchestrationV2ProviderTurn,
-  type OrchestrationV2RuntimeRequest,
-  type OrchestrationV2Subagent,
-  type OrchestrationV2TurnItem,
-  type PlanId,
   ProviderDriverKind,
   type ProviderInstanceId,
-  type ProviderRequestKind,
-  type ProviderSessionId,
-  type RuntimeRequestId,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import type { ProviderRequestKind } from "@t3tools/contracts/providerPolicy";
 import { OpenCodeSettings } from "../settings.ts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";

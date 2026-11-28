@@ -1,8 +1,8 @@
 import type {
-  ProviderDriverKind,
   ProviderReplayEntry,
   ProviderReplayTranscript,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 

@@ -4,6 +4,7 @@ import * as NodeNet from "node:net";
 import * as NodeTls from "node:tls";
 
 import * as NodeStream from "@effect/platform-node/NodeStream";
+import type { DesktopUpdateChannel } from "@t3tools/contracts/ipc";
 import {
   type DesktopBackendEndpoint,
   DesktopHostTelemetryMessage,
@@ -11,13 +12,12 @@ import {
   type DesktopHostTelemetrySnapshot,
   type DesktopShellEnvironmentSnapshot,
   DesktopTelemetryControlMessage,
-  type DesktopUpdateChannel,
   type DesktopUpdateControlAcknowledgement,
   type DesktopUpdateControlCommand,
   type DesktopUpdateControlReport,
   type DesktopUpdateStatusReport,
   type ResourceTelemetrySourceStatus,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/resourceTelemetry";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyShellEnvironment } from "@t3tools/shared/shell";

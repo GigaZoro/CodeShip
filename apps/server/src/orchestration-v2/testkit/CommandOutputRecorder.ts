@@ -1,4 +1,4 @@
-import type { TurnItemId } from "@t3tools/contracts";
+import type { TurnItemId } from "@t3tools/contracts/baseSchemas";
 import {
   appendTerminalOutput,
   EMPTY_TERMINAL_OUTPUT,

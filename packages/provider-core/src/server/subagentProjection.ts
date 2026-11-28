@@ -1,28 +1,30 @@
 import type {
   EventId,
   MessageId,
-  ModelSelection,
   NodeId,
-  OrchestrationV2AppThread,
-  OrchestrationV2Actor,
-  OrchestrationV2ConversationMessage,
-  OrchestrationV2CreationSource,
-  OrchestrationV2DomainEvent,
-  OrchestrationV2ProviderRef,
-  OrchestrationV2Run,
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2TurnItem,
-  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   ThreadId,
   TurnItemId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
+  type OrchestrationV2AppThread,
+  type OrchestrationV2Actor,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2CreationSource,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderRef,
+  type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2TurnItem,
+  isOrchestrationV2WorkActive,
+} from "@t3tools/contracts/orchestrationV2";
+import type { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 
 function trimmed(value: string | null | undefined): string | undefined {
   const result = value?.trim();

@@ -1,10 +1,7 @@
-import {
-  NonNegativeInt,
-  OrchestratorMcpFailure,
-  PreviewAutomationError,
-  PreviewListResult,
-  PreviewTabId,
-} from "@t3tools/contracts";
+import { NonNegativeInt } from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { PreviewListResult, PreviewTabId } from "@t3tools/contracts/preview";
+import { PreviewAutomationError } from "@t3tools/contracts/previewAutomation";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";

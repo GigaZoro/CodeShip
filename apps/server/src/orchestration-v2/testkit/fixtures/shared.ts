@@ -1,25 +1,23 @@
 import { assert } from "@effect/vitest";
+import { CommandId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts/baseSchemas";
+import type { ChatAttachment } from "@t3tools/contracts/chatAttachment";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
 import {
-  type ChatAttachment,
-  CommandId,
   isOrchestrationV2WorkActive,
-  MessageId,
-  ProjectId,
-  ThreadId,
-  type ModelSelection,
   type OrchestrationV2Command,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2RunStatus,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserMessageInputIntent,
-  ProviderInstanceId,
-  type ProviderInteractionMode,
-  type ProviderDriverKind,
   type ProviderReplayTranscript,
-  type ProviderUserInputAnswers,
-  type RuntimeMode,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId, type ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type {
+  ProviderInteractionMode,
+  ProviderUserInputAnswers,
+  RuntimeMode,
+} from "@t3tools/contracts/providerPolicy";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 

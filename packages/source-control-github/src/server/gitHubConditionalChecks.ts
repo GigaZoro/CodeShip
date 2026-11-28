@@ -5,7 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { PositiveInt, type PullRequestChecks } from "@t3tools/contracts";
+import { PositiveInt } from "@t3tools/contracts/baseSchemas";
+import type { PullRequestChecks } from "@t3tools/contracts/pullRequest";
 
 import * as GitHubRest from "./GitHubRest.ts";
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";

@@ -1,16 +1,17 @@
 import {
   REASONING_EFFORT_OPTION_IDS,
-  type AutoCapabilityTier,
-  type AutoModeModel,
-  type AutoRoutingConstraints,
-  type AutoRoutingDegradationReason,
   type ModelCapabilities,
-  type ModelSelection,
-  type ProviderDriverKind,
-  type ProviderInstanceId,
   type ProviderOptionSelection,
   type SelectProviderOptionDescriptor,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/model";
+import type {
+  AutoCapabilityTier,
+  AutoRoutingConstraints,
+  AutoRoutingDegradationReason,
+  ModelSelection,
+} from "@t3tools/contracts/modelSelection";
+import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { AutoModeModel } from "@t3tools/contracts/settings";
 import {
   acceptedOptionSelections,
   modelSelectionsEqual,

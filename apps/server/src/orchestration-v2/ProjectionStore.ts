@@ -1,68 +1,55 @@
+import { AgentSessionSource } from "@t3tools/contracts/agentSessions";
 import {
-  AgentSessionSource,
+  type PlanId,
+  type GuestShareId,
+  type ProviderThreadId,
+  type ProviderTurnId,
+  type ScheduledTaskId,
+  RunAttemptId,
+  RunId,
+  MessageId,
+  RuntimeRequestId,
+  CheckpointScopeId,
+  CheckpointId,
+  ThreadId,
+  TurnItemId,
+  NodeId,
+  ProjectId,
+} from "@t3tools/contracts/baseSchemas";
+import {
+  isReadOnlyGuestShare,
+  pendingGuestMessageCount,
+  type ThreadGuestShare,
+} from "@t3tools/contracts/guestShare";
+import type { ModelSelection } from "@t3tools/contracts/modelSelection";
+import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
   countOlderSettledFolders,
-  isReadOnlyGuestShare,
   orchestrationV2RuntimeRequestUpdateApplies,
-  pendingGuestMessageCount,
-  threadFolderKeyOf,
-} from "@t3tools/contracts";
-import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
-import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
-import { nodePayloadSql, stripNodePayloadColumns } from "./NodePayloadColumns.ts";
-import { TURN_ITEM_PAYLOAD_REMOVE_PATHS, turnItemPayloadSql } from "./TurnItemPayloadColumns.ts";
-import { projectTurnItemForWire } from "./WireProjection.ts";
-import * as Hash from "effect/Hash";
-import * as Stream from "effect/Stream";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import { makeThreadFind } from "./ThreadFind.ts";
-import type {
-  ModelSelection,
-  OrchestrationV2SearchThreadInput,
-  OrchestrationV2SearchThreadResult,
-  OrchestrationV2ThreadHistoryPage,
-} from "@t3tools/contracts";
-import {
-  isUndeliveredFailure,
-  latestExecutedRun,
-  latestRootProviderFailure,
-  NON_WORK_TURN_ITEM_TYPES,
-  latestUnheldRun,
-  threadErrorSummary,
-  usageLimitRunPresentedAsLatest,
-} from "@t3tools/shared/orchestrationV2ThreadError";
-import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
-import type {
-  OrchestrationV2AppThread,
-  OrchestrationV2Checkpoint,
-  OrchestrationV2CheckpointScope,
-  OrchestrationV2ExecutionNode,
-  OrchestrationV2PlanArtifact,
-  OrchestrationV2PendingRuntimeRequestSummary,
-  PlanId,
-  OrchestrationV2ConversationMessage,
-  OrchestrationV2DomainEvent,
-  OrchestrationV2OlderSettledCount,
-  OrchestrationV2OlderSettledFolderCount,
-  OrchestrationV2OlderSettledCursor,
-  OrchestrationV2ProjectedTurnItem,
-  OrchestrationV2ProviderThread,
-  OrchestrationV2ProviderTurn,
-  OrchestrationV2Run,
-  OrchestrationV2Subagent,
-  OrchestrationV2ThreadShellSnapshot,
-  OrchestrationV2ShellThreadStatus,
-  OrchestrationV2ThreadShell,
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2TurnItem,
-  GuestShareId,
-  ProviderThreadId,
-  ProviderTurnId,
-  ThreadGuestShare,
-} from "@t3tools/contracts";
-import {
-  ScheduledTaskSchedule,
-  type ScheduledTaskId,
+  type OrchestrationV2SearchThreadInput,
+  type OrchestrationV2SearchThreadResult,
+  type OrchestrationV2ThreadHistoryPage,
+  type OrchestrationV2AppThread,
+  type OrchestrationV2Checkpoint,
+  type OrchestrationV2CheckpointScope,
+  type OrchestrationV2ExecutionNode,
+  type OrchestrationV2PlanArtifact,
+  type OrchestrationV2PendingRuntimeRequestSummary,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2OlderSettledCount,
+  type OrchestrationV2OlderSettledFolderCount,
+  type OrchestrationV2OlderSettledCursor,
+  type OrchestrationV2ProjectedTurnItem,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2Run,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2ThreadShellSnapshot,
+  type OrchestrationV2ShellThreadStatus,
+  type OrchestrationV2ThreadShell,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2TurnItem,
   IDLE_COMPACTION_TEXT,
   idleCompactionOf,
   OrchestrationV2AppThreadJson as OrchestrationV2AppThreadJsonSchema,
@@ -82,18 +69,29 @@ import {
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
-  RunAttemptId,
-  RunId,
-  MessageId,
-  RuntimeRequestId,
-  CheckpointScopeId,
-  CheckpointId,
-  ThreadId,
-  TurnItemId,
-  NodeId,
-  ProjectId,
-  ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
+import { ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ScheduledTaskSchedule } from "@t3tools/contracts/scheduledTask";
+import { threadFolderKeyOf } from "@t3tools/contracts/threadFolders";
+import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
+import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
+import { nodePayloadSql, stripNodePayloadColumns } from "./NodePayloadColumns.ts";
+import { TURN_ITEM_PAYLOAD_REMOVE_PATHS, turnItemPayloadSql } from "./TurnItemPayloadColumns.ts";
+import { projectTurnItemForWire } from "./WireProjection.ts";
+import * as Hash from "effect/Hash";
+import * as Stream from "effect/Stream";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { makeThreadFind } from "./ThreadFind.ts";
+import {
+  isUndeliveredFailure,
+  latestExecutedRun,
+  latestRootProviderFailure,
+  NON_WORK_TURN_ITEM_TYPES,
+  latestUnheldRun,
+  threadErrorSummary,
+  usageLimitRunPresentedAsLatest,
+} from "@t3tools/shared/orchestrationV2ThreadError";
+import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
   createOrchestrationV2TurnItemVisibility,
   isOrchestrationV2SupersededInterrupt,

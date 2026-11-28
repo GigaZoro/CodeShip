@@ -16,7 +16,7 @@ import {
   AuthSourceControlWriteScope,
   AuthTerminalOperateScope,
   AuthTerminalReadScope,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/auth";
 
 import { msg, t, type Message } from "./i18n.ts";
 

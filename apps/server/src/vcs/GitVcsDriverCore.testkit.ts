@@ -10,7 +10,7 @@ import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { type GitCommandError } from "@t3tools/contracts";
+import type { GitCommandError } from "@t3tools/contracts/git";
 import * as ServerConfig from "../config.ts";
 import { makeGitVcsDriverCore } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";

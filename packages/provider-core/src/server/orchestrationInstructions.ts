@@ -6,9 +6,9 @@ import {
   REASONING_EFFORT_OPTION_IDS,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
-  type ProviderDriverKind,
-  type ProviderInteractionMode,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/model";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
+import type { ProviderInteractionMode } from "@t3tools/contracts/providerPolicy";
 import { supportsAutoCoordinator } from "@t3tools/shared/serverSettings";
 import { CLAUDE_MODEL_FAMILIES } from "@t3tools/shared/usageLimits";
 

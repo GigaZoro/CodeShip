@@ -1,21 +1,18 @@
 import { executionTurnItemTypes } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { CommandId, MessageId, type RunId, type ThreadId } from "@t3tools/contracts/baseSchemas";
 import {
-  CommandId,
   IDLE_COMPACTION_TEXT,
   isCompactionCommandMessage,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   latestProviderTurnForAttempt,
-  MessageId,
   orchestrationV2RunAwaitsMemory,
   type OrchestrationV2Run,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2TurnItem,
-  type RunId,
-  type ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestrationV2";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

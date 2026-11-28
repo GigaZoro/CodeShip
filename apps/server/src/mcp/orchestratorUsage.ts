@@ -7,13 +7,15 @@ import type {
   OrchestratorMcpResetDecision,
   OrchestratorMcpUsageError,
   OrchestratorMcpUsageMeter,
+} from "@t3tools/contracts/orchestratorMcp";
+import type {
   ProviderCreditUse,
   ProviderRetryUsageLimitResult,
-  ServerProvider,
   ServerProviderResetCreditsError,
   ServerProviderResetKindUnknownReason,
   ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import { usageWindowScope } from "@t3tools/shared/usageLimits";
 
 import {

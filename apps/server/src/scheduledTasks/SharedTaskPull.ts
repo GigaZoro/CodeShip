@@ -1,9 +1,7 @@
-import {
-  type EnvironmentId,
-  OrchestratorMcpSharedScheduledTasksResult,
-  type PeerLink,
-  type ScheduledTaskApplySharedInput,
-} from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpSharedScheduledTasksResult } from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLink } from "@t3tools/contracts/peerLink";
+import type { ScheduledTaskApplySharedInput } from "@t3tools/contracts/scheduledTask";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";

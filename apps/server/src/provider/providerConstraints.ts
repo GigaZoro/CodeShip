@@ -1,4 +1,5 @@
-import { isProviderAvailable, type ServerProvider } from "@t3tools/contracts";
+import { isProviderAvailable } from "@t3tools/contracts/provider";
+import type { ServerProvider } from "@t3tools/contracts/server";
 
 export function providerConstraints(
   provider: ServerProvider | undefined,

@@ -1,14 +1,12 @@
+import { OrchestratorMcpEnvironmentTarget, ThreadId } from "@t3tools/contracts/baseSchemas";
+import { VcsListRefsInput, VcsListRefsResult } from "@t3tools/contracts/git";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
 import {
   WorktreeMcpFailure,
-  OrchestratorMcpEnvironmentTarget,
-  OrchestratorMcpFailure,
-  VcsListRefsInput,
-  VcsListRefsResult,
   WorktreeMcpHandoffInput,
   WorktreeMcpHandoffResult,
   WorktreeMcpStatusResult,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/worktreeMcp";
 import * as Schema from "effect/Schema";
 import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";

@@ -8,9 +8,13 @@ import {
   type AuthEnvironmentScope,
   type EnvironmentAuthorizationError,
   mcpClientScopes,
+} from "@t3tools/contracts/auth";
+import {
   OrchestratorMcpFailure,
   type OrchestratorMcpLinkBackInput,
   OrchestratorMcpLinkBackResult,
+} from "@t3tools/contracts/orchestratorMcp";
+import {
   type PeerLink,
   peerLinkAccessAllowsLinkBack,
   type PeerLinkBackOutcome,
@@ -18,7 +22,7 @@ import {
   type PeerLinkError,
   type PeerLinkResult,
   type PeerLinkReverseRequest,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/peerLink";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

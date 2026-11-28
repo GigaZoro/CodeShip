@@ -1,7 +1,7 @@
 import {
   OrchestratorMcpFailure,
   type OrchestratorMcpReviewAssignmentInput,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/orchestratorMcp";
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 

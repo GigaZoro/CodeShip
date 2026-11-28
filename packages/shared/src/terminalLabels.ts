@@ -1,4 +1,4 @@
-import type { TerminalSummary } from "@t3tools/contracts";
+import type { TerminalSummary } from "@t3tools/contracts/terminal";
 
 import { t } from "./i18n.ts";
 

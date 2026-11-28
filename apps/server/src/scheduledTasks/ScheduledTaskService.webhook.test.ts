@@ -5,12 +5,12 @@ import * as NodeCrypto from "node:crypto";
 
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
+import type { ManagedPolicyDocument } from "@t3tools/contracts/managedPolicy";
 import {
-  type ManagedPolicyDocument,
   ScheduledTaskUpsertInput,
   ScheduledTaskWebhookDeliveryId,
-  SecretRequestError,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/scheduledTask";
+import { SecretRequestError } from "@t3tools/contracts/secretRequest";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";

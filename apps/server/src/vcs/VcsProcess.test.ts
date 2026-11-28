@@ -16,7 +16,7 @@ import * as Schema from "effect/Schema";
 import { FetchHttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
-import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
+import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts/vcs";
 import * as AzureDevOpsDriver from "@t3tools/source-control-azure-devops/server/driver";
 import { probeSourceControlProvider } from "@t3tools/source-control-core/server/discovery";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";

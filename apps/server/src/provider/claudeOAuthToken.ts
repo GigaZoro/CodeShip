@@ -2,11 +2,11 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
-  ClaudeSettings,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderInstanceConfig,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import { ClaudeSettings } from "@t3tools/contracts/settings";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

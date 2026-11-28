@@ -4,7 +4,7 @@
  *
  * @module provider-fx/client
  */
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import { defineProviderClient } from "@t3tools/provider-core/client";
 
 import { FxSettings } from "./settings.ts";

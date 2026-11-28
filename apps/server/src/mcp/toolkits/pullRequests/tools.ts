@@ -1,16 +1,18 @@
 import {
-  McpCapabilityUnavailableError,
   OrchestratorMcpEnvironmentTarget,
-  OrchestratorMcpFailure,
   PositiveInt,
-  PullRequestReviewGuide,
-  PullRequestReviewGuideRun,
-  PullRequestState,
   ReaderLanguage,
-  ThreadPullRequestLinkSource,
   TrimmedNonEmptyString,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpFailure } from "@t3tools/contracts/orchestratorMcp";
+import { McpCapabilityUnavailableError } from "@t3tools/contracts/previewAutomation";
+import { PullRequestState } from "@t3tools/contracts/pullRequest";
+import {
+  PullRequestReviewGuide,
+  PullRequestReviewGuideRun,
+} from "@t3tools/contracts/pullRequestReviewGuide";
+import { ThreadPullRequestLinkSource } from "@t3tools/contracts/threadPullRequest";
 import * as Schema from "effect/Schema";
 import * as McpSchema from "effect/ai/McpSchema";
 import * as Tool from "effect/ai/Tool";

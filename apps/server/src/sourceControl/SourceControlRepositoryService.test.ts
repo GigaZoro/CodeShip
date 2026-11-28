@@ -1,4 +1,9 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { GitCommandError } from "@t3tools/contracts/git";
+import {
+  SourceControlProviderKind,
+  SourceControlProviderError,
+  type SourceControlCloneRepositoryInput,
+} from "@t3tools/contracts/sourceControl";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -8,12 +13,6 @@ import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/process";
-
-import {
-  GitCommandError,
-  SourceControlProviderError,
-  type SourceControlCloneRepositoryInput,
-} from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";

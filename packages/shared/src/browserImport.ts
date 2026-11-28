@@ -1,4 +1,4 @@
-import type { BrowserImportFailureReason } from "@t3tools/contracts";
+import type { BrowserImportFailureReason } from "@t3tools/contracts/browserImport";
 
 import { msg, t, type Message } from "./i18n.ts";
 

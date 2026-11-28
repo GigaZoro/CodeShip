@@ -2,16 +2,15 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CheckpointId,
   CheckpointRef,
-  DEFAULT_SERVER_SETTINGS,
   MessageId,
   NodeId,
-  type OrchestrationV2ThreadProjection,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
-  type ServerProvider,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import type { ServerProvider } from "@t3tools/contracts/server";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 
 import { finalReviewCommand } from "./FinalReview.ts";
 

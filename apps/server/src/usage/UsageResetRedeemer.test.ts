@@ -1,15 +1,16 @@
 import { assert, describe, it } from "@effect/vitest";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
+import type {
+  ProviderConsumeResetCreditOutcome,
+  ServerProviderResetKind,
+  ServerProviderUsageWindow,
+} from "@t3tools/contracts/providerUsageLimits";
+import type { ServerProvider } from "@t3tools/contracts/server";
 import {
   DEFAULT_SERVER_SETTINGS,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderSetupError,
-  type ProviderConsumeResetCreditOutcome,
-  type ServerProvider,
-  type ServerProviderResetKind,
-  type ServerProviderUsageWindow,
   type ServerSettings as ServerSettingsValue,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/settings";
 import type { ProviderConsumeResetCreditRequest } from "@t3tools/provider-core/server/driver";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

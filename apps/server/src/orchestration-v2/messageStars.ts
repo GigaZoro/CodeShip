@@ -1,4 +1,4 @@
-import type { RunId, ThreadId } from "@t3tools/contracts";
+import type { RunId, ThreadId } from "@t3tools/contracts/baseSchemas";
 import * as Effect from "effect/Effect";
 import type { ProjectionStoreV2 } from "./ProjectionStore.ts";
 

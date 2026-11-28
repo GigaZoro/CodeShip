@@ -1,14 +1,16 @@
 import {
   EnvironmentId,
   ForwardCompatibleArray,
-  LinkedScheduledTask,
   NonNegativeInt,
-  OrchestratorMcpListScheduledTasksResult,
+  ProjectId,
+} from "@t3tools/contracts/baseSchemas";
+import { OrchestratorMcpListScheduledTasksResult } from "@t3tools/contracts/orchestratorMcp";
+import type { PeerLink } from "@t3tools/contracts/peerLink";
+import {
+  LinkedScheduledTask,
   type LinkedScheduledTaskMachine,
   type LinkedScheduledTasksResult,
-  type PeerLink,
-  ProjectId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/scheduledTask";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";

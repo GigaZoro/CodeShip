@@ -1,15 +1,17 @@
+import type { ProjectId } from "@t3tools/contracts/baseSchemas";
 import {
   KeybindingRule,
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,
   type KeybindingCommand,
-  type ProjectId,
-  type ProjectScript,
-  type ProjectScriptMutation,
-  type ServerSettings,
-  type ServerSettingsPatch,
-  type T3ProjectFileScript,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/keybindings";
+import type { ProjectScript } from "@t3tools/contracts/project";
+import type {
+  ProjectScriptMutation,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "@t3tools/contracts/settings";
+import type { T3ProjectFileScript } from "@t3tools/contracts/t3ProjectFile";
 import * as Schema from "effect/Schema";
 
 import { msg, t } from "./i18n.ts";

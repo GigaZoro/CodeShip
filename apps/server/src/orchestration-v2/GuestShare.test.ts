@@ -4,15 +4,13 @@ import {
   EventId,
   GuestMessageId,
   GuestShareId,
-  IDLE_COMPACTION_TEXT,
   MessageId,
-  type OrchestrationV2Run,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { IDLE_COMPACTION_TEXT, type OrchestrationV2Run } from "@t3tools/contracts/orchestrationV2";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

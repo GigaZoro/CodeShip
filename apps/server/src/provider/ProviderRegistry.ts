@@ -1,13 +1,12 @@
+import { isProviderWorkspaceSnapshotCurrent } from "@t3tools/contracts/provider";
 import {
-  ClaudeSettings,
   ProviderInstanceId as ProviderId,
   defaultInstanceIdForDriver,
-  isProviderWorkspaceSnapshotCurrent,
   ProviderDriverKind,
   type ProviderInstanceId,
-  type ServerProvider,
-  type ServerProviderUpdateState,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/providerInstance";
+import type { ServerProvider, ServerProviderUpdateState } from "@t3tools/contracts/server";
+import { ClaudeSettings } from "@t3tools/contracts/settings";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";

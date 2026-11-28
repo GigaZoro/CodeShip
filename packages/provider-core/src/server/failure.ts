@@ -1,19 +1,19 @@
-import {
-  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
-  OrchestrationV2ProviderFailure as ProviderFailureSchema,
-} from "@t3tools/contracts";
 import type {
   NodeId,
-  OrchestrationV2ProviderFailure,
-  OrchestrationV2ProviderFailureClass,
-  OrchestrationV2ProviderRetry,
-  OrchestrationV2TurnItem,
-  ProviderDriverKind,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  OrchestrationV2ProviderFailure as ProviderFailureSchema,
+  type OrchestrationV2ProviderFailure,
+  type OrchestrationV2ProviderFailureClass,
+  type OrchestrationV2ProviderRetry,
+  type OrchestrationV2TurnItem,
+} from "@t3tools/contracts/orchestrationV2";
+import type { ProviderDriverKind } from "@t3tools/contracts/providerInstance";
 import { redactSensitiveText, stripTerminalEscapes } from "@t3tools/shared/redaction";
 import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";

@@ -1,15 +1,14 @@
 import { assert, it } from "@effect/vitest";
 import {
   NodeId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   ProviderSessionId,
-  ProviderSetupError,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/baseSchemas";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts/providerInstance";
+import { ProviderSetupError } from "@t3tools/contracts/providerSetup";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
