@@ -48,8 +48,10 @@ an existing slot, or removes something to make room; it does not add one more al
   [`resolveThreadNoticeSlot`](../../apps/web/src/components/chat/threadNoticeSlot.logic.ts), which
   ranks it against the thread's other notices.
 - A sidebar row's state goes through its one status,
-  [`resolveThreadRowStatus`](../../apps/web/src/components/sidebar/threadRowStatus.tsx), not a
-  second badge or dot.
+  [`resolveThreadRowStatus`](../../apps/web/src/components/sidebar/threadRowStatus.tsx), and its
+  single row marker goes through
+  [`pickRowMarker`](../../packages/client-runtime/src/state/sidebarRowMarker.ts) (with overflow
+  markers moving to `ThreadHoverCard`), not a second badge or dot.
 - A thread detail goes in
   [`THREAD_DETAILS_ITEMS`](../../apps/web/src/components/chat/threadDetailsItems.ts), hidden by
   default unless it replaces a default row.

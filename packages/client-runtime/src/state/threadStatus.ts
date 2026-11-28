@@ -217,3 +217,10 @@ export function matchesThreadListStatus(
   if (filter === "failed") return status === "failed";
   return classifyThreadStatus(status, thread, flags) === (filter === "unread" ? "done" : filter);
 }
+
+export {
+  pickRowMarker,
+  type RowMarkerInput,
+  type RowMarkerKind,
+  type RowMarkerSelection,
+} from "./sidebarRowMarker.ts";

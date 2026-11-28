@@ -9,6 +9,7 @@ import {
   type PreviewAutomationLoadError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -36,12 +37,25 @@ export interface DesktopTabKey {
 
 const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}`;
 
+/** `declined`: no desktop window can show the tab. `timedOut`: a window can, but did not in time. */
+export type DesktopAttachOutcome = "attached" | "declined" | "timedOut";
+
 export class DesktopBrowserChannel extends Context.Service<
   DesktopBrowserChannel,
   {
+    /**
+     * The desktop app started this server, so its window may render server tabs natively.
+     * It stays true after the event pipe closes: the window can still be connected then.
+     */
     readonly available: boolean;
-    /** Subscribe before checking so concurrent attaches cannot be missed. */
-    readonly awaitAttached: (key: DesktopTabKey, timeout: Duration.Input) => Effect.Effect<boolean>;
+    /**
+     * While it waits, the desktop keeps the window that mounts the tab rendering. Once the
+     * event pipe closes, no tab can attach, and every wait is declined.
+     */
+    readonly awaitAttached: (
+      key: DesktopTabKey,
+      timeout: Duration.Input,
+    ) => Effect.Effect<DesktopAttachOutcome>;
     readonly detached: Stream.Stream<DesktopTabKey>;
     readonly attached: Stream.Stream<DesktopTabKey>;
     readonly isAttached: (key: DesktopTabKey) => Effect.Effect<boolean>;
@@ -61,67 +75,87 @@ export class DesktopBrowserChannel extends Context.Service<
   }
 >()("t3/preview/DesktopBrowserChannel") {}
 
-const make = Effect.gen(function* () {
-  const config = yield* ServerConfig.ServerConfig;
-  const inputFd = config.desktopBrowserFd;
-  const controlFd = config.desktopBrowserControlFd;
-  const changes = yield* PubSub.unbounded<{ key: DesktopTabKey; attached: boolean }>();
-  const attachedTabs = new Set<string>();
+/** The two bootstrap fds, as the channel uses them. */
+export interface DesktopBrowserPipes {
+  /** NDJSON `DesktopBrowserEvent` bytes. It ends when the desktop closes its end. */
+  readonly events: Stream.Stream<Uint8Array, Error>;
+  /** Writes one newline-terminated `DesktopBrowserCommand` line. */
+  readonly write: (line: string) => Effect.Effect<void, Error>;
+}
+
+const noDesktop = DesktopBrowserChannel.of({
+  available: false,
+  awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function () {
+    return Effect.succeed("declined" as const);
+  }),
+  detached: Stream.empty,
+  attached: Stream.empty,
+  isAttached: Effect.fn("DesktopBrowserChannel.isAttached")(function () {
+    return Effect.succeed(false);
+  }),
+  endpoint: Effect.fn("DesktopBrowserChannel.endpoint")(function () {
+    return Effect.die("No desktop app is attached to this server.");
+  }),
+  turn: Effect.fn("DesktopBrowserChannel.turn")(function () {
+    return Effect.void;
+  }),
+  pointer: Effect.fn("DesktopBrowserChannel.pointer")(function () {
+    return Effect.void;
+  }),
+  isShown: () => false,
+  awaitShown: Effect.fn("DesktopBrowserChannel.awaitShown")(function () {
+    return Effect.succeed(false);
+  }),
+  loadFailure: () => undefined,
+});
+
+const makeConnected = Effect.fn("DesktopBrowserChannel.makeConnected")(function* (
+  pipes: DesktopBrowserPipes,
+) {
+  const channelScope = yield* Effect.scope;
+  const changes = yield* PubSub.unbounded<{
+    key: DesktopTabKey;
+    change: "attached" | "detached" | "declined";
+  }>();
+  const attachedTabs = new Map<string, DesktopTabKey>();
   // Missing reports protect desktop tabs until the renderer explicitly marks them hidden.
   const shownTabs = new Map<string, boolean>();
   const shownReports = yield* PubSub.unbounded<string>();
   const loadFailures = new Map<string, PreviewAutomationLoadError>();
   const inbound = new Map<string, Queue.Queue<string>>();
   const writeLock = yield* Semaphore.make(1);
-
-  if (inputFd === undefined || controlFd === undefined) {
-    return DesktopBrowserChannel.of({
-      available: false,
-      awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function () {
-        return Effect.succeed(false);
-      }),
-      detached: Stream.empty,
-      attached: Stream.empty,
-      isAttached: Effect.fn("DesktopBrowserChannel.isAttached")(function () {
-        return Effect.succeed(false);
-      }),
-      endpoint: Effect.fn("DesktopBrowserChannel.endpoint")(function () {
-        return Effect.die("No desktop app is attached to this server.");
-      }),
-      turn: Effect.fn("DesktopBrowserChannel.turn")(function () {
-        return Effect.void;
-      }),
-      pointer: Effect.fn("DesktopBrowserChannel.pointer")(function () {
-        return Effect.void;
-      }),
-      isShown: () => false,
-      awaitShown: Effect.fn("DesktopBrowserChannel.awaitShown")(function () {
-        return Effect.succeed(false);
-      }),
-      loadFailure: () => undefined,
-    });
-  }
+  const closed = yield* Deferred.make<void>();
 
   const command = (message: DesktopBrowserCommandType) =>
     writeLock.withPermits(1)(
       encodeCommand(message).pipe(
-        Effect.flatMap((line) => writeAllToFileDescriptor(controlFd, Buffer.from(`${line}\n`))),
+        Effect.flatMap((line) => pipes.write(`${line}\n`)),
         Effect.catchCause((cause) =>
           Effect.logWarning("desktop browser command failed", { cause }),
         ),
       ),
     );
 
-  // Use cancellable socket reads; filesystem pipe reads keep Node alive after scope shutdown.
-  const readable = yield* Effect.acquireRelease(
-    Effect.sync(() => new NodeNet.Socket({ fd: inputFd, readable: true, writable: false })),
-    (stream) => Effect.sync(() => stream.destroy()),
-  );
-  yield* NodeStream.fromReadable<Uint8Array, Error>({
-    evaluate: () => readable,
-    closeOnDone: true,
-    onError: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-  }).pipe(
+  const detach = (id: string, key: DesktopTabKey) => {
+    attachedTabs.delete(id);
+    shownTabs.delete(id);
+    loadFailures.delete(id);
+    const queue = inbound.get(id);
+    return (queue ? Queue.shutdown(queue) : Effect.void).pipe(
+      Effect.andThen(PubSub.publish(changes, { key, change: "detached" as const })),
+    );
+  };
+
+  // With the pipe gone no tab can attach or keep relaying, so the server runs them headless.
+  const close = Effect.gen(function* () {
+    for (const [id, key] of attachedTabs) yield* detach(id, key);
+    shownTabs.clear();
+    loadFailures.clear();
+    yield* Deferred.succeed(closed, undefined);
+    yield* Effect.logWarning("desktop browser channel closed; agent tabs now run headless");
+  });
+
+  yield* pipes.events.pipe(
     Stream.pipeThroughChannel(Ndjson.decode({ ignoreEmptyLines: true })),
     Stream.mapEffect((value) => decodeEvent(value).pipe(Effect.option)),
     Stream.runForEach((decoded) => {
@@ -135,8 +169,8 @@ const make = Effect.gen(function* () {
           return queue ? Queue.offer(queue, event.message).pipe(Effect.asVoid) : Effect.void;
         }
         case "attached":
-          attachedTabs.add(id);
-          return PubSub.publish(changes, { key, attached: true });
+          attachedTabs.set(id, key);
+          return PubSub.publish(changes, { key, change: event.type });
         case "loadFailed":
           loadFailures.set(id, {
             url: event.url.slice(0, 2048),
@@ -144,29 +178,33 @@ const make = Effect.gen(function* () {
             description: event.description,
           });
           return Effect.void;
-        case "detached": {
-          attachedTabs.delete(id);
-          shownTabs.delete(id);
-          loadFailures.delete(id);
-          const queue = inbound.get(id);
-          return (queue ? Queue.shutdown(queue) : Effect.void).pipe(
-            Effect.andThen(PubSub.publish(changes, { key, attached: false })),
-          );
-        }
+        case "detached":
+          return detach(id, key);
         case "shown":
           shownTabs.set(id, event.shown);
           return event.shown ? PubSub.publish(shownReports, id) : Effect.void;
+        case "declined":
+          return PubSub.publish(changes, { key, change: event.type });
       }
     }),
     Effect.catchCause((cause) => Effect.logWarning("desktop browser channel stopped", { cause })),
-    Effect.ensuring(
-      Effect.sync(() => {
-        shownTabs.clear();
-        loadFailures.clear();
-      }),
-    ),
+    Effect.andThen(close),
     Effect.forkScoped,
   );
+
+  // The desktop keeps the tab's window rendering between these writes. They run on the channel's
+  // scope so a slow pipe never holds up the waiter, and in one fiber so `false` cannot overtake `true`.
+  const holdRendering = Effect.fn("DesktopBrowserChannel.holdRendering")(function* (
+    key: DesktopTabKey,
+  ) {
+    const released = yield* Deferred.make<void>();
+    yield* Effect.addFinalizer(() => Deferred.succeed(released, undefined));
+    yield* command({ type: "awaiting", ...key, active: true }).pipe(
+      Effect.andThen(Deferred.await(released)),
+      Effect.andThen(command({ type: "awaiting", ...key, active: false })),
+      Effect.forkIn(channelScope),
+    );
+  });
 
   const endpoint = Effect.fn("DesktopBrowserChannel.endpoint")(function* (key: DesktopTabKey) {
     const id = keyOf(key);
@@ -235,26 +273,35 @@ const make = Effect.gen(function* () {
   return DesktopBrowserChannel.of({
     available: true,
     awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function (key, timeout) {
-      return Effect.scoped(
-        Effect.gen(function* () {
-          const subscription = yield* PubSub.subscribe(changes);
-          if (attachedTabs.has(keyOf(key))) return true;
-          return yield* Stream.fromSubscription(subscription).pipe(
-            Stream.filter((change) => change.attached && keyOf(change.key) === keyOf(key)),
-            Stream.runHead,
-            Effect.map(Option.isSome),
-            Effect.timeoutOption(timeout),
-            Effect.map((result) => Option.getOrElse(result, () => false)),
-          );
-        }),
+      const id = keyOf(key);
+      return Effect.gen(function* () {
+        // Subscribe before checking so a concurrent attach cannot be missed.
+        const subscription = yield* PubSub.subscribe(changes);
+        if (attachedTabs.has(id)) return "attached" as const;
+        if (yield* Deferred.isDone(closed)) return "declined" as const;
+        yield* holdRendering(key);
+        return yield* Stream.fromSubscription(subscription).pipe(
+          Stream.filter((change) => change.change !== "detached" && keyOf(change.key) === id),
+          Stream.runHead,
+          Effect.map((found) =>
+            Option.isSome(found) && found.value.change === "attached"
+              ? ("attached" as const)
+              : ("declined" as const),
+          ),
+          Effect.raceFirst(Deferred.await(closed).pipe(Effect.as("declined" as const))),
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.timeoutOption(timeout),
+        Effect.map(Option.getOrElse(() => "timedOut" as const)),
       );
     }),
     detached: Stream.fromPubSub(changes).pipe(
-      Stream.filter((change) => !change.attached),
+      Stream.filter((change) => change.change === "detached"),
       Stream.map((change) => change.key),
     ),
     attached: Stream.fromPubSub(changes).pipe(
-      Stream.filter((change) => change.attached),
+      Stream.filter((change) => change.change === "attached"),
       Stream.map((change) => change.key),
     ),
     isAttached: Effect.fn("DesktopBrowserChannel.isAttached")(function (key) {
@@ -287,4 +334,28 @@ const make = Effect.gen(function* () {
   });
 });
 
+const make = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  const inputFd = config.desktopBrowserFd;
+  const controlFd = config.desktopBrowserControlFd;
+  if (inputFd === undefined || controlFd === undefined) return noDesktop;
+
+  // Use cancellable socket reads; filesystem pipe reads keep Node alive after scope shutdown.
+  const readable = yield* Effect.acquireRelease(
+    Effect.sync(() => new NodeNet.Socket({ fd: inputFd, readable: true, writable: false })),
+    (stream) => Effect.sync(() => stream.destroy()),
+  );
+  return yield* makeConnected({
+    events: NodeStream.fromReadable<Uint8Array, Error>({
+      evaluate: () => readable,
+      closeOnDone: true,
+      onError: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+    }),
+    write: (line) => writeAllToFileDescriptor(controlFd, Buffer.from(line)),
+  });
+});
+
 export const layer = Layer.effect(DesktopBrowserChannel, make);
+
+export const layerFromPipes = (pipes: DesktopBrowserPipes) =>
+  Layer.effect(DesktopBrowserChannel, makeConnected(pipes));

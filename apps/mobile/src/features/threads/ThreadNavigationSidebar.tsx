@@ -510,9 +510,10 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
             project={projectByKey.get(scopeKey) ?? null}
             providerInstance={resolveProviderInstance(thread)}
             providers={providersByEnvironmentId.get(thread.environmentId)}
+            inMachineFolder={item.inMachineFolder}
+            inProjectFolder={item.inProjectFolder}
             environmentLabel={
-              // A machine folder already names the machine.
-              Object.keys(savedConnectionsById).length > 1 && item.folderKind !== "machine"
+              Object.keys(savedConnectionsById).length > 1
                 ? (savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
                 : null
             }

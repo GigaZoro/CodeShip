@@ -1,6 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off - Stands in for an Electron debugger.
+// @effect-diagnostics nodeBuiltinImport:off - Stands in for an Electron debugger and joins download paths as the host does.
 import { describe, expect, it, vi } from "@effect/vitest";
-import { DesktopBrowserEvent } from "@t3tools/contracts";
+import { DESKTOP_BROWSER_ATTACH_WAIT_MS, DesktopBrowserEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -8,6 +8,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeEvents from "node:events";
+import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 
@@ -50,6 +52,15 @@ const command = (
     }),
   );
 
+/** What a relay's end undoes on the page's debugger, as Chrome would for a client that left. */
+const RELAY_RESETS: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+  ["Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }],
+  ["Fetch.disable", {}],
+  ["Page.setInterceptFileChooserDialog", { enabled: false }],
+  ["Page.setDownloadBehavior", { behavior: "default" }],
+];
+const SCREENCAST_RESET = ["Page.stopScreencast", {}] as const;
+
 let nextWebContentsId = 1;
 const makeDebuggee = (
   options: {
@@ -63,6 +74,8 @@ const makeDebuggee = (
     readonly refuse?: (method: string, sessionId: string | undefined) => boolean;
     /** Answers a command at once with this value, unless it returns undefined. */
     readonly answer?: (method: string, sessionId: string | undefined) => unknown;
+    /** Methods a relay sends with a reset's params, held like any other command instead. */
+    readonly hold?: ReadonlyArray<string>;
   } = {},
 ) => {
   const emitter = new NodeEvents.EventEmitter();
@@ -72,6 +85,7 @@ const makeDebuggee = (
   const methods: Array<string> = [];
   const sessionIds: Array<string | undefined> = [];
   const rejects: Array<() => void> = [];
+  const resets: Array<readonly [string, unknown]> = [];
   const sendWaiters: Array<() => void> = [];
   const focusEmulation: Array<boolean> = [];
   const screencastCommands: Array<{ method: string; params: unknown }> = [];
@@ -103,6 +117,17 @@ const makeDebuggee = (
         const answer = options.answer?.(method, sessionId);
         if (answer !== undefined) {
           resolve(answer);
+          return;
+        }
+        if (
+          !options.hold?.includes(method) &&
+          [...RELAY_RESETS, SCREENCAST_RESET].some(
+            ([resetMethod, resetParams]) =>
+              resetMethod === method && NodeUtil.isDeepStrictEqual(resetParams, params),
+          )
+        ) {
+          resets.push([method, params]);
+          resolve({});
           return;
         }
         sent.push(params?.id);
@@ -145,8 +170,10 @@ const makeDebuggee = (
     },
     failLoad: (code: number) =>
       webContents.emit("did-fail-load", {}, code, "Failed", "http://localhost/", true),
-    /** Ids of the commands the debugger received, in order. */
+    /** Ids of the commands the debugger received, in order, but for the resets below. */
     sent,
+    /** Each of the resets above the debugger received, in order, from a relay's end or a stream's. */
+    resets,
     /** Methods of the same commands, in order. */
     methods,
     /** Sessions of the same commands, in order; undefined for the page. */
@@ -216,7 +243,167 @@ const watchPainting = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =
     return painting;
   });
 
+const awaiting = (
+  host: DesktopBrowserHost.DesktopBrowserHost["Service"],
+  tabKey: DesktopBrowserHost.DesktopBrowserTabKey,
+  active: boolean,
+) => host.handleCommandLine(encodeJson({ type: "awaiting", ...tabKey, active }));
+
 describe("DesktopBrowserHost", () => {
+  it.effect("keeps the main window rendering while the server waits for a tab to show", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      const other = { threadId: "thread-1", tabId: "tab-2" };
+      yield* awaiting(host, key, true);
+      host.setMainWindow(window.tab.webContents);
+      expect(window.backgroundThrottling).toEqual([false]);
+
+      yield* awaiting(host, other, true);
+      host.attach(key, makeDebuggee().tab);
+      expect(window.backgroundThrottling).toEqual([false]);
+
+      yield* awaiting(host, other, false);
+      expect(window.backgroundThrottling).toEqual([false, true]);
+    }),
+  );
+
+  it.effect("tells the server no window can show a tab it waits for", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      const other = { threadId: "thread-1", tabId: "tab-2" };
+      const events = yield* Queue.unbounded<DesktopBrowserEvent>();
+      yield* host.events.pipe(
+        Stream.runForEach((line) =>
+          Queue.offer(events, decodeEvent(new TextDecoder().decode(line))),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+      host.setMainWindow(window.tab.webContents);
+      yield* awaiting(host, key, true);
+
+      host.setMainWindow(null);
+      yield* awaiting(host, other, true);
+
+      expect(yield* Queue.takeN(events, 2)).toEqual([
+        { type: "declined", ...key },
+        { type: "declined", ...other },
+      ]);
+      expect(window.backgroundThrottling).toEqual([false, true]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("lets the main window throttle once the backend that waited for a tab leaves", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      host.setMainWindow(window.tab.webContents);
+      const backend = yield* Effect.forkChild(Stream.runDrain(host.events), {
+        startImmediately: true,
+      });
+      yield* awaiting(host, key, true);
+      const releaseRecording = host.keepRendering(window.tab.webContents);
+
+      yield* Fiber.interrupt(backend);
+      expect(window.backgroundThrottling).toEqual([false]);
+      releaseRecording();
+
+      expect(window.backgroundThrottling).toEqual([false, true]);
+    }),
+  );
+
+  it.effect("lets the main window throttle once the server's longest wait has passed", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      host.setMainWindow(window.tab.webContents);
+      yield* awaiting(host, key, true);
+      yield* TestClock.adjust(DESKTOP_BROWSER_ATTACH_WAIT_MS * 0.75);
+      // A wait that ended and started again gets its own full span.
+      yield* awaiting(host, key, false);
+      yield* awaiting(host, key, true);
+      expect(window.backgroundThrottling).toEqual([false, true, false]);
+
+      yield* TestClock.adjust(DESKTOP_BROWSER_ATTACH_WAIT_MS * 0.5);
+      expect(window.backgroundThrottling).toEqual([false, true, false]);
+
+      yield* TestClock.adjust(DESKTOP_BROWSER_ATTACH_WAIT_MS * 0.5);
+      expect(window.backgroundThrottling).toEqual([false, true, false, true]);
+    }),
+  );
+
+  it.effect("lets go of what it kept rendering, focused and streaming when it shuts down", () =>
+    Effect.gen(function* () {
+      const window = makeDebuggee();
+      const debuggee = makeDebuggee();
+      yield* Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        host.setMainWindow(window.tab.webContents);
+        yield* awaiting(host, { threadId: "thread-2", tabId: "tab-2" }, true);
+        host.attach(key, debuggee.tab);
+        yield* command(host, 1, "Page.startScreencast");
+        yield* settle;
+      }).pipe(Effect.scoped);
+
+      expect(window.backgroundThrottling).toEqual([false, true]);
+      expect(debuggee.backgroundThrottling).toEqual([false, true]);
+      expect(debuggee.focusEmulation).toEqual([true, false]);
+      expect(debuggee.resets).toEqual([...RELAY_RESETS, SCREENCAST_RESET]);
+
+      // Its wait timers end with it.
+      yield* TestClock.adjust(DESKTOP_BROWSER_ATTACH_WAIT_MS);
+      expect(window.backgroundThrottling).toEqual([false, true]);
+    }),
+  );
+
+  it.effect("lets a guest the agent drove go idle once its backend leaves mid-turn", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      host.attach(key, debuggee.tab);
+      const backend = yield* Effect.forkChild(Stream.runDrain(host.events), {
+        startImmediately: true,
+      });
+      yield* host.handleCommandLine(
+        encodeJson({ type: "turn", threadId: key.threadId, active: true }),
+      );
+      yield* command(host, 1, "Input.dispatchKeyEvent");
+      yield* settle;
+      debuggee.release();
+      yield* settle;
+      yield* TestClock.adjust("1 minute");
+      expect(debuggee.focusEmulation).toEqual([true]);
+      expect(debuggee.backgroundThrottling).toEqual([false]);
+      expect(debuggee.resets).toEqual([]);
+
+      yield* Fiber.interrupt(backend);
+      yield* TestClock.adjust("1 minute");
+
+      expect(debuggee.focusEmulation).toEqual([true, false]);
+      expect(debuggee.backgroundThrottling).toEqual([false, true]);
+      expect(debuggee.resets).toEqual(RELAY_RESETS);
+    }),
+  );
+
+  it.effect("keeps a tab's wait when the backend before the one waiting leaves late", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      host.setMainWindow(window.tab.webContents);
+      const previous = yield* Effect.forkChild(Stream.runDrain(host.events), {
+        startImmediately: true,
+      });
+      yield* Effect.forkChild(Stream.runDrain(host.events), { startImmediately: true });
+      yield* awaiting(host, key, true);
+
+      yield* Fiber.interrupt(previous);
+
+      expect(window.backgroundThrottling).toEqual([false]);
+    }),
+  );
+
   it.effect("announces tabs already attached to a backend that starts later", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
@@ -513,6 +700,27 @@ describe("DesktopBrowserHost", () => {
       debuggee.releaseFirst();
       expect(yield* Queue.take(replies)).toBe(2);
       expect(debuggee.sent).toEqual([1, 2, 3]);
+    }),
+  );
+
+  it.effect("undoes what a released relay set on the page's debugger", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      const unused = makeDebuggee();
+      const unusedKey = { threadId: "thread-2", tabId: "tab-2" };
+      host.attach(key, debuggee.tab);
+      host.attach(unusedKey, unused.tab);
+      yield* command(host, 1, "Page.startScreencast");
+      yield* settle;
+
+      yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+      // With no relay left, nothing is undone twice.
+      yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+      yield* host.handleCommandLine(encodeJson({ type: "release", ...unusedKey }));
+
+      expect(debuggee.resets).toEqual([...RELAY_RESETS, SCREENCAST_RESET]);
+      expect(unused.resets).toEqual([]);
     }),
   );
 
@@ -967,33 +1175,37 @@ describe("DesktopBrowserHost", () => {
     }),
   );
 
-  it.effect("lets a guest throttle after a person's input through a viewer that then closed", () =>
-    Effect.gen(function* () {
-      const host = yield* makeDrawnHost;
-      const debuggee = makeDebuggee();
-      host.attach(key, debuggee.tab);
-      const replies = yield* watchReplies(host);
-      const raw = (message: Record<string, unknown>) =>
-        host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
+  it.effect(
+    "stops a guest's stream and lets it throttle once the viewer that drove it closed",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* makeDrawnHost;
+        const debuggee = makeDebuggee();
+        host.attach(key, debuggee.tab);
+        const replies = yield* watchReplies(host);
+        const raw = (message: Record<string, unknown>) =>
+          host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
 
-      yield* host.handleCommandLine(
-        encodeJson({ type: "turn", threadId: key.threadId, active: true }),
-      );
-      yield* raw({ id: 1, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
-      expect(yield* Queue.take(replies)).toBe(1);
-      yield* raw({ id: 2, method: "Page.startScreencast", sessionId: "t3-preview-page-1" });
-      yield* raw({ id: 3, method: "Input.dispatchMouseEvent", sessionId: "t3-preview-page-1" });
-      yield* settle;
-      debuggee.release();
-      yield* raw({
-        id: 4,
-        method: "Target.detachFromTarget",
-        params: { sessionId: "t3-preview-page-1" },
-      });
-      yield* settle;
-      yield* TestClock.adjust("1 minute");
-      expect(debuggee.focusEmulation).toEqual([true, false]);
-    }),
+        yield* host.handleCommandLine(
+          encodeJson({ type: "turn", threadId: key.threadId, active: true }),
+        );
+        yield* raw({ id: 1, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
+        expect(yield* Queue.take(replies)).toBe(1);
+        yield* raw({ id: 2, method: "Page.startScreencast", sessionId: "t3-preview-page-1" });
+        yield* raw({ id: 3, method: "Input.dispatchMouseEvent", sessionId: "t3-preview-page-1" });
+        yield* settle;
+        debuggee.release();
+        yield* raw({
+          id: 4,
+          method: "Target.detachFromTarget",
+          params: { sessionId: "t3-preview-page-1" },
+        });
+        yield* settle;
+        // It closed without stopping its screencast, which nothing else watches.
+        expect(debuggee.resets).toEqual([SCREENCAST_RESET]);
+        yield* TestClock.adjust("1 minute");
+        expect(debuggee.focusEmulation).toEqual([true, false]);
+      }),
   );
 
   it.effect("keeps a page's screencast when a child session's screencast is refused", () =>
@@ -1131,7 +1343,7 @@ describe("DesktopBrowserHost", () => {
     }),
   );
 
-  it.effect("keeps a guest focused while any of its screencasts runs", () =>
+  it.effect("keeps a guest streaming and focused while any of its screencasts runs", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
       const debuggee = makeDebuggee();
@@ -1151,6 +1363,8 @@ describe("DesktopBrowserHost", () => {
       debuggee.release();
       yield* settle;
       yield* TestClock.adjust("1 minute");
+      // The guest has one screencast; the other session still watches it.
+      expect(debuggee.resets).toEqual([]);
       expect(debuggee.focusEmulation).toEqual([true]);
 
       yield* raw({
@@ -1159,6 +1373,7 @@ describe("DesktopBrowserHost", () => {
         params: { sessionId: "t3-preview-page-2" },
       });
       yield* TestClock.adjust("1 minute");
+      expect(debuggee.resets).toEqual([SCREENCAST_RESET]);
       expect(debuggee.focusEmulation).toEqual([true, false]);
     }),
   );
@@ -1463,7 +1678,8 @@ describe("DesktopBrowserHost", () => {
       const raw = (message: Record<string, unknown>) =>
         host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
       const nativeStops = () =>
-        debuggee.methods.filter((method) => method === "Page.stopScreencast").length;
+        debuggee.screencastCommands.filter((command) => command.method === "Page.stopScreencast")
+          .length;
 
       // A viewer and a recording share Chromium's single screencast for the guest.
       yield* raw({ id: 0, method: "Target.setAutoAttach", params: { autoAttach: true } });
@@ -1569,7 +1785,8 @@ describe("DesktopBrowserHost", () => {
       const raw = (message: Record<string, unknown>) =>
         host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
       const nativeStops = () =>
-        debuggee.methods.filter((method) => method === "Page.stopScreencast").length;
+        debuggee.screencastCommands.filter((command) => command.method === "Page.stopScreencast")
+          .length;
 
       yield* raw({ id: 1, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
       yield* raw({ id: 2, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
@@ -1632,7 +1849,7 @@ describe("DesktopBrowserHost", () => {
   it.effect("saves a server tab's download under its CDP guid where the server asked", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const debuggee = makeDebuggee();
+      const debuggee = makeDebuggee({ hold: ["Page.setDownloadBehavior"] });
       host.attach(key, debuggee.tab);
       const replies = yield* watchReplies(host);
       const paths: Array<string> = [];
@@ -1659,9 +1876,55 @@ describe("DesktopBrowserHost", () => {
       debuggee.emit("Page.downloadWillBegin", { guid: "guid-1", suggestedFilename: "r.csv" });
       expect(host.placeDownload(makeDebuggee().tab.webContents, item)).toBe(false);
       expect(host.placeDownload(debuggee.tab.webContents, item)).toBe(true);
-      expect(paths).toEqual(["/srv/downloads/guid-1"]);
+      expect(paths).toEqual([NodePath.join("/srv/downloads", "guid-1")]);
       expect(host.placeDownload(debuggee.tab.webContents, item)).toBe(false);
     }),
+  );
+
+  it.effect("forgets where a server it let go asked downloads to go", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee({ hold: ["Page.setDownloadBehavior"] });
+      host.attach(key, debuggee.tab);
+      const replies = yield* watchReplies(host);
+      const paths: Array<string> = [];
+      const item = {
+        setSavePath: (path: string) => void paths.push(path),
+      } as unknown as Electron.DownloadItem;
+      const askForDownloads = (id: number) =>
+        host.handleCommandLine(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({
+              id,
+              method: "Browser.setDownloadBehavior",
+              params: { behavior: "allowAndName", downloadPath: "/srv/downloads" },
+            }),
+          }),
+        );
+      const release = host.handleCommandLine(encodeJson({ type: "release", ...key }));
+
+      let sent = debuggee.nextSend();
+      yield* askForDownloads(1);
+      yield* Effect.promise(() => sent);
+      debuggee.release();
+      expect(yield* Queue.take(replies)).toBe(1);
+      yield* release;
+      debuggee.emit("Page.downloadWillBegin", { guid: "guid-1", suggestedFilename: "r.csv" });
+      expect(host.placeDownload(debuggee.tab.webContents, item)).toBe(false);
+
+      // Chromium answers after the server released the relay that asked.
+      sent = debuggee.nextSend();
+      yield* askForDownloads(2);
+      yield* Effect.promise(() => sent);
+      yield* release;
+      debuggee.release();
+      yield* settle;
+      debuggee.emit("Page.downloadWillBegin", { guid: "guid-2", suggestedFilename: "r.csv" });
+      expect(host.placeDownload(debuggee.tab.webContents, item)).toBe(false);
+      expect(paths).toEqual([]);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("tells a download the person clicked from one the agent's input started", () =>
@@ -1871,11 +2134,8 @@ describe("DesktopBrowserHost", () => {
 
       const { type, threadId, tabId } = detached!;
       expect({ type, threadId, tabId }).toEqual({ type: "detached", ...key });
-      expect(send).toHaveBeenCalledWith("Target.setAutoAttach", {
-        autoAttach: false,
-        waitForDebuggerOnStart: false,
-        flatten: true,
-      });
+      expect(tabs[0]!.resets).toEqual([...RELAY_RESETS, SCREENCAST_RESET]);
+      expect(tabs[1]!.resets).toEqual([]);
       tabs[0]!.settleFocus();
       yield* settle;
       expect(send).not.toHaveBeenCalledWith("Target.setAutoAttach", {
@@ -1883,7 +2143,6 @@ describe("DesktopBrowserHost", () => {
         waitForDebuggerOnStart: true,
         flatten: true,
       });
-      expect(send).toHaveBeenCalledWith("Page.stopScreencast");
       expect(tabs[0]!.focusEmulation).toEqual([true, false]);
       expect(next).toMatchObject({ type: "cdp", ...keys[1] });
       expect(JSON.parse((next as { message: string }).message)).toMatchObject({

@@ -11,7 +11,11 @@ import type { ThreadColor } from "@t3tools/contracts";
 import { ThreadHoverCard } from "../ThreadHoverCard";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "./threadRowStatus";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
-import { ThreadScheduledTaskIndicator } from "./ThreadScheduledTaskIndicator";
+import {
+  ThreadScheduledTaskIndicator,
+  useThreadScheduledTasks,
+} from "./ThreadScheduledTaskIndicator";
+import { ScheduledTaskScheduleLine } from "../settings/ScheduledTasksSettings";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { formatWorktreePathForDisplay } from "../../worktreeCleanup";
 import { contextMenuSourceOf } from "../../contextMenuSource";
@@ -27,7 +31,6 @@ import {
   hasQueuedTurnStart,
   QUEUED_TURN_START_GRACE_MS,
 } from "@t3tools/client-runtime/state/thread-settled";
-import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import {
   resolveSettledThreadTimestamp,
   resolveThreadActivityTimestamp,
@@ -44,6 +47,7 @@ import {
   type ContextMenuSource,
   type EnvironmentId,
   type EnvironmentMachineKind,
+  type ScheduledTask,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 
@@ -54,6 +58,7 @@ import {
   BellIcon,
   BellOffIcon,
   ArrowRightLeftIcon,
+  CalendarClockIcon,
   CheckIcon,
   CircleAlertIcon,
   CircleCheckIcon,
@@ -63,6 +68,7 @@ import {
   PinIcon,
   PinOffIcon,
   SquarePenIcon,
+  TagIcon,
   TerminalIcon,
   Undo2Icon,
   WifiOffIcon,
@@ -131,10 +137,17 @@ import {
   prStatusIndicator,
   resolveThreadPullRequestBadge,
   terminalStatusFromRunningIds,
+  type PrStatusIndicator,
   type TerminalStatusIndicator,
   useLinkedThreadPullRequest,
   ThreadSearchPullRequestNumber,
 } from "../ThreadStatusIndicators";
+import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
+import {
+  resolveSidebarRowMarkers,
+  statusCoversRowMarker,
+  type RowMarkerKind,
+} from "./SidebarThreadRow.logic";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
 import { useThreadShell } from "../../state/entities";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
@@ -297,6 +310,12 @@ function SidebarThreadTooltip({
   terminalStatus,
   terminalProcessCount,
   unreachableMachine = null,
+  overflowMarkers,
+  topStatusLabel = null,
+  prStatus = null,
+  prNumber = null,
+  scheduledTasks = EMPTY_SCHEDULED_TASKS,
+  preferenceLabels,
 }: {
   thread: SidebarThreadSummary;
   project: ProjectFaviconProject | null;
@@ -319,6 +338,12 @@ function SidebarThreadTooltip({
     readonly state: string;
     readonly lastSeenAt: number | null;
   } | null;
+  overflowMarkers: ReadonlyArray<RowMarkerKind>;
+  topStatusLabel?: string | null;
+  prStatus?: PrStatusIndicator | null;
+  prNumber?: number | null;
+  scheduledTasks?: ReadonlyArray<ScheduledTask>;
+  preferenceLabels: ReturnType<typeof threadPreferenceLabels>;
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   const worktreePath = thread.worktreePath?.trim();
@@ -327,51 +352,262 @@ function SidebarThreadTooltip({
     .map((instanceId) => providerEntryByInstanceId.get(instanceId)?.displayName ?? instanceId);
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
 
+  const renderProjectRow = (hoverMarker?: RowMarkerKind) =>
+    projectDisplayName ? (
+      <div
+        key={hoverMarker}
+        data-hover-marker={hoverMarker}
+        className="flex min-w-0 items-center gap-2"
+      >
+        {project ? <ProjectFavicon project={project} className="size-3 shrink-0" /> : null}
+        <div className="min-w-0 truncate text-foreground/75">{projectDisplayName}</div>
+      </div>
+    ) : null;
+
+  const renderMachineRow = (hoverMarker?: RowMarkerKind) =>
+    environmentLabel ? (
+      <div
+        key={hoverMarker}
+        data-hover-marker={hoverMarker}
+        className="flex min-w-0 items-center gap-2"
+      >
+        <EnvironmentMachineIcon
+          kind={environmentMachine}
+          className="size-3 shrink-0 stroke-muted-foreground"
+        />
+        <div className="min-w-0 truncate text-foreground/75">{environmentLabel}</div>
+      </div>
+    ) : null;
+
+  const renderMachineOfflineRow = (hoverMarker?: RowMarkerKind) =>
+    unreachableMachine ? (
+      <div
+        key={hoverMarker}
+        data-hover-marker={hoverMarker}
+        className="flex min-w-0 items-start gap-2 text-muted-foreground"
+      >
+        <WifiOffIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-current" />
+        <div className="min-w-0 flex-1 wrap-break-word">
+          {unreachableMachine.state}
+          {unreachableMachine.lastSeenAt !== null ? (
+            <>
+              {" · "}
+              <MachineLastSeen lastSeenAt={unreachableMachine.lastSeenAt} />
+            </>
+          ) : null}
+          {". "}
+          {t("The status is the last one seen. Actions wait until {name} reconnects.", {
+            name: unreachableMachine.label,
+          })}
+        </div>
+      </div>
+    ) : null;
+
+  const renderProviderRow = (hoverMarker?: RowMarkerKind) =>
+    driverKind ? (
+      <div
+        key={hoverMarker}
+        data-hover-marker={hoverMarker}
+        className="flex min-w-0 items-center gap-2"
+      >
+        <ProviderInstanceIcon
+          driverKind={driverKind}
+          displayName={
+            providerEntry?.displayName ?? thread.runtime?.providerName ?? modelInstanceId
+          }
+          accentColor={providerEntry?.accentColor}
+          acpRegistryAgentId={providerEntry?.acpRegistryAgentId}
+          acpRegistryIconUrl={providerEntry?.acpRegistryIconUrl}
+          showBadge={showInstanceBadge && providerEntry?.accentColor !== undefined}
+          badgeContent="none"
+          badgeClassName="h-2 min-w-2 px-0"
+          iconClassName="size-3 shrink-0 opacity-60"
+        />
+        <div className="min-w-0 truncate text-foreground/75">
+          {showInstanceBadge && providerEntry
+            ? t("{model} · {provider}", {
+                model: modelLabel,
+                provider: providerEntry.displayName,
+              })
+            : modelLabel}
+        </div>
+      </div>
+    ) : null;
+
+  const renderScheduledRow = (hoverMarker?: RowMarkerKind) =>
+    scheduledTasks.length > 0 ? (
+      <div
+        key={hoverMarker}
+        data-hover-marker={hoverMarker}
+        className="flex min-w-0 items-start gap-2"
+      >
+        <CalendarClockIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1 space-y-1">
+          {scheduledTasks.map((task) => (
+            <div key={task.id} className="min-w-0">
+              <div className="truncate font-medium text-foreground/85">{task.title}</div>
+              <div className="text-muted-foreground">
+                <ScheduledTaskScheduleLine task={task} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    ) : null;
+
+  const renderErrorRow = (hoverMarker?: RowMarkerKind) =>
+    thread.runtime?.lastError || hoverMarker === "failed" ? (
+      <div
+        key={hoverMarker}
+        data-hover-marker={hoverMarker}
+        className={cn(
+          "flex min-w-0 items-start gap-2",
+          thread.runtime?.lastErrorClass === "usage_limit"
+            ? "text-warning-foreground"
+            : "text-error-foreground",
+        )}
+      >
+        <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-current" />
+        <div className="line-clamp-3 min-w-0 flex-1 wrap-break-word">
+          {thread.runtime?.lastErrorClass === "usage_limit"
+            ? t("Usage limit reached")
+            : (thread.runtime?.lastError ?? t("Failed"))}
+        </div>
+      </div>
+    ) : null;
+
+  const renderOverflowMarker = (kind: RowMarkerKind): ReactNode => {
+    switch (kind) {
+      case "needsYou":
+        return (
+          <div
+            key={kind}
+            data-hover-marker={kind}
+            className="flex min-w-0 items-center gap-2 text-warning-foreground"
+          >
+            <CircleAlertIcon aria-hidden className="size-3 shrink-0 stroke-current" />
+            <div className="min-w-0 truncate">{topStatusLabel ?? t("Needs you")}</div>
+          </div>
+        );
+      case "failed":
+        return renderErrorRow(kind);
+      case "pr": {
+        const PrIcon = prStatus?.Icon ?? PullRequestGlyph.pullRequest;
+        const label =
+          prStatus?.tooltip ?? (prNumber !== null ? t("PR #{number}", { number: prNumber }) : null);
+        if (label === null) return null;
+        return (
+          <div key={kind} data-hover-marker={kind} className="flex min-w-0 items-start gap-2">
+            <PrIcon
+              aria-hidden
+              className={cn(
+                "mt-0.5 size-3 shrink-0",
+                prStatus?.colorClass ?? "text-muted-foreground",
+              )}
+            />
+            <div className="min-w-0 flex-1 wrap-break-word text-foreground/75">{label}</div>
+          </div>
+        );
+      }
+      case "machineOffline":
+        return renderMachineOfflineRow(kind);
+      case "draft":
+        return (
+          <div key={kind} data-hover-marker={kind} className="flex min-w-0 items-center gap-2">
+            <SquarePenIcon aria-hidden className={draftPenClassName} />
+            <div className="min-w-0 truncate text-foreground/75">{t("Unsent draft")}</div>
+          </div>
+        );
+      case "queued":
+        return (
+          <div key={kind} data-hover-marker={kind} className="flex min-w-0 items-center gap-2">
+            <ClockIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 truncate text-foreground/75">
+              {t("Messages queued to send")}
+            </div>
+          </div>
+        );
+      case "terminal":
+        return terminalStatus ? (
+          <div key={kind} data-hover-marker={kind} className="flex min-w-0 items-center gap-2">
+            <TerminalIcon
+              aria-hidden
+              className={cn("size-3 shrink-0", terminalStatus.colorClass)}
+            />
+            <div className="min-w-0 truncate text-foreground/75">
+              {terminalProcessLabel(terminalProcessCount)}
+            </div>
+          </div>
+        ) : null;
+      case "scheduled":
+        return renderScheduledRow(kind);
+      case "pinned":
+        return (
+          <div key={kind} data-hover-marker={kind} className="flex min-w-0 items-center gap-2">
+            <PinIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 truncate text-foreground/75">{t("Pinned")}</div>
+          </div>
+        );
+      case "machine":
+        return renderMachineRow(kind);
+      case "project":
+        return renderProjectRow(kind);
+      case "tags":
+        return thread.source.tags?.length ? (
+          <div key={kind} data-hover-marker={kind} className="flex min-w-0 items-start gap-2">
+            <TagIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1 wrap-break-word text-foreground/75">
+              {thread.source.tags.join(", ")}
+            </div>
+          </div>
+        ) : null;
+      case "color":
+        return thread.color != null && preferenceLabels.color ? (
+          <div key={kind} data-hover-marker={kind} className="flex min-w-0 items-center gap-2">
+            <span
+              aria-hidden
+              className={cn("size-2 shrink-0 rounded-full", threadColorDotClass[thread.color])}
+            />
+            <div className="min-w-0 truncate text-foreground/75">{preferenceLabels.color}</div>
+          </div>
+        ) : null;
+      case "notifications":
+        return preferenceLabels.notifications ? (
+          <div key={kind} data-hover-marker={kind} className="flex min-w-0 items-center gap-2">
+            {thread.notificationLevel === "muted" ? (
+              <BellOffIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+            ) : (
+              <BellIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+            )}
+            <div className="min-w-0 truncate text-foreground/75">
+              {preferenceLabels.notifications}
+            </div>
+          </div>
+        ) : null;
+      case "provider":
+        return renderProviderRow(kind);
+    }
+  };
+
+  const hasPrInOverflow = overflowMarkers.includes("pr");
   return (
     <>
       <ThreadHoverCard
         title={thread.title}
         footer={
-          supportsMultiplePullRequests && thread.pullRequests.length > 0 ? (
+          supportsMultiplePullRequests &&
+          thread.pullRequests.length > 0 &&
+          (!hasPrInOverflow || thread.pullRequests.length > 1) ? (
             <div className="border-t border-border/60 pt-2 pl-0.5 text-xs text-muted-foreground">
               <ThreadPullRequestsMiniList pullRequests={thread.pullRequests} />
             </div>
           ) : null
         }
       >
-        {projectDisplayName ? (
-          <div className="flex min-w-0 items-center gap-2">
-            {project ? <ProjectFavicon project={project} className="size-3 shrink-0" /> : null}
-            <div className="min-w-0 truncate text-foreground/75">{projectDisplayName}</div>
-          </div>
-        ) : null}
-        {environmentLabel ? (
-          <div className="flex min-w-0 items-center gap-2">
-            <EnvironmentMachineIcon
-              kind={environmentMachine}
-              className="size-3 shrink-0 stroke-muted-foreground"
-            />
-            <div className="min-w-0 truncate text-foreground/75">{environmentLabel}</div>
-          </div>
-        ) : null}
-        {unreachableMachine ? (
-          <div className="flex min-w-0 items-start gap-2 text-muted-foreground">
-            <WifiOffIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-current" />
-            <div className="min-w-0 flex-1 wrap-break-word">
-              {unreachableMachine.state}
-              {unreachableMachine.lastSeenAt !== null ? (
-                <>
-                  {" · "}
-                  <MachineLastSeen lastSeenAt={unreachableMachine.lastSeenAt} />
-                </>
-              ) : null}
-              {". "}
-              {t("The status is the last one seen. Actions wait until {name} reconnects.", {
-                name: unreachableMachine.label,
-              })}
-            </div>
-          </div>
-        ) : null}
+        {overflowMarkers.map(renderOverflowMarker)}
+        {!overflowMarkers.includes("project") ? renderProjectRow() : null}
+        {!overflowMarkers.includes("machine") ? renderMachineRow() : null}
+        {!overflowMarkers.includes("machineOffline") ? renderMachineOfflineRow() : null}
         {thread.branch ? (
           <div className="flex min-w-0 items-center gap-2">
             <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
@@ -392,31 +628,7 @@ function SidebarThreadTooltip({
             </div>
           </div>
         ) : null}
-        {driverKind ? (
-          <div className="flex min-w-0 items-center gap-2">
-            <ProviderInstanceIcon
-              driverKind={driverKind}
-              displayName={
-                providerEntry?.displayName ?? thread.runtime?.providerName ?? modelInstanceId
-              }
-              accentColor={providerEntry?.accentColor}
-              acpRegistryAgentId={providerEntry?.acpRegistryAgentId}
-              acpRegistryIconUrl={providerEntry?.acpRegistryIconUrl}
-              showBadge={showInstanceBadge && providerEntry?.accentColor !== undefined}
-              badgeContent="none"
-              badgeClassName="h-2 min-w-2 px-0"
-              iconClassName="size-3 shrink-0 opacity-60"
-            />
-            <div className="min-w-0 truncate text-foreground/75">
-              {showInstanceBadge && providerEntry
-                ? t("{model} · {provider}", {
-                    model: modelLabel,
-                    provider: providerEntry.displayName,
-                  })
-                : modelLabel}
-            </div>
-          </div>
-        ) : null}
+        {!overflowMarkers.includes("provider") ? renderProviderRow() : null}
         {previousProviderNames.length > 0 ? (
           <div className="flex min-w-0 items-center gap-2">
             <ArrowRightLeftIcon className="size-3 shrink-0 stroke-muted-foreground" />
@@ -425,38 +637,14 @@ function SidebarThreadTooltip({
             </div>
           </div>
         ) : null}
-        {terminalStatus ? (
-          <div className="flex min-w-0 items-center gap-2">
-            <TerminalIcon
-              aria-hidden
-              className={cn("size-3 shrink-0", terminalStatus.colorClass)}
-            />
-            <div className="min-w-0 truncate text-foreground/75">
-              {terminalProcessLabel(terminalProcessCount)}
-            </div>
-          </div>
-        ) : null}
-        {thread.runtime?.lastError ? (
-          <div
-            className={cn(
-              "flex min-w-0 items-start gap-2",
-              thread.runtime.lastErrorClass === "usage_limit"
-                ? "text-warning-foreground"
-                : "text-error-foreground",
-            )}
-          >
-            <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-current" />
-            <div className="line-clamp-3 min-w-0 flex-1 wrap-break-word">
-              {thread.runtime.lastErrorClass === "usage_limit"
-                ? t("Usage limit reached")
-                : thread.runtime.lastError}
-            </div>
-          </div>
-        ) : null}
+        {!overflowMarkers.includes("scheduled") ? renderScheduledRow() : null}
+        {!overflowMarkers.includes("failed") && thread.runtime?.lastError ? renderErrorRow() : null}
       </ThreadHoverCard>
     </>
   );
 }
+
+const EMPTY_SCHEDULED_TASKS: ReadonlyArray<ScheduledTask> = [];
 
 function SnoozeMenuButton(props: {
   open: boolean;
@@ -935,6 +1123,66 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ? getTriggerDisplayModelName(selectedModel, providerEntry?.driverKind)
     : thread.modelSelection.model;
 
+  const scheduledTasks = useThreadScheduledTasks(thread.environmentId, thread.id);
+  const prBadgeShape = supportsMultiplePullRequests
+    ? resolveThreadPullRequestBadge(thread.pullRequests)
+    : null;
+  const hasPr = prBadgeShape?.kind === "stack" || pr !== null || currentLinkedPr !== null;
+  const sortable = props.sortable;
+  const showPin =
+    props.isPinned && (!sortable?.isDragging || (props.dragOverPinned && props.dropVerb === null));
+  const machineBadgeLabel =
+    machineConnection?.environmentLabel ??
+    props.environmentLabel ??
+    props.scratchMachineLabel ??
+    "";
+  const hasMachineBadge = (isRemote || showsScratchMachine) && machineBadgeLabel.length > 0;
+  const providerStack = resolveThreadProviderStack(thread);
+  const hasProvider =
+    props.providerEntryByInstanceId.get(providerStack[providerStack.length - 1]!) !== undefined;
+  const hasProject =
+    variant === "card"
+      ? props.project !== null || props.projectDisplayName !== null
+      : props.project !== null;
+  const preferenceLabels = threadPreferenceLabels(thread);
+  const pickedMarkers = resolveSidebarRowMarkers(
+    {
+      status,
+      hasPr,
+      machineUnreachable,
+      hasUnsentDraft,
+      hasQueuedMessages,
+      hasRunningTerminal: runningTerminalIds.length > 0,
+      hasScheduledTask: scheduledTasks.length > 0,
+      // One-line pinned rows sit under the Pinned header, so the pin shows only as Unpin on hover.
+      showPin: showPin && variant !== "line",
+      hasMachineBadge,
+      hasProject,
+      hasTags: Boolean(thread.source.tags?.length),
+      hasColor: thread.color != null,
+      hasNotificationPreference:
+        thread.notificationLevel === "muted" || thread.notificationLevel === "following",
+      hasProvider,
+    },
+    {
+      machine: props.inMachineFolder,
+      project: props.inProjectFolder,
+    },
+  );
+  const multiline = variant === "folder-multiline";
+  const indented = variant === "folder" || multiline;
+  // Folder-style rows have no status line, so the status takes the time slot.
+  const inFolder = indented || variant === "line";
+  const showsStatusSlot =
+    variant === "card" ||
+    (inFolder && !(variantAction === "unsnooze" && props.snoozeWakeLabelText !== null));
+  const statusCoversPrimary = statusCoversRowMarker(
+    pickedMarkers.primary,
+    topStatus,
+    showsStatusSlot,
+  );
+  const renderedMarkerKind = statusCoversPrimary ? null : pickedMarkers.primary;
+
   const detailsTooltip = (
     <SidebarThreadTooltip
       thread={checkoutThread}
@@ -959,6 +1207,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             }
           : null
       }
+      overflowMarkers={pickedMarkers.overflow}
+      topStatusLabel={topStatus?.lastKnown?.label ?? topStatus?.label ?? null}
+      prStatus={prStatus}
+      prNumber={pr?.number ?? currentLinkedPr?.number ?? null}
+      scheduledTasks={scheduledTasks}
+      preferenceLabels={preferenceLabels}
     />
   );
 
@@ -1123,7 +1377,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     props.sortable?.isDragging &&
       "bg-sidebar bg-linear-to-b from-sidebar-row-active to-sidebar-row-active text-sidebar-foreground opacity-100 shadow-lg",
   );
-  const sortable = props.sortable;
   const sortableRootProps = sortable
     ? {
         ref: sortable.setNodeRef,
@@ -1155,7 +1408,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       </span>
     ) : null;
 
-  const preferenceLabels = threadPreferenceLabels(thread);
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
     statusLabel: pendingSync
@@ -1210,7 +1462,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   );
   const tags = thread.source.tags;
   const tagChips = tags?.length ? (
-    <span className="flex max-w-[40%] shrink-0 items-center gap-1">
+    <span className="flex min-w-0 items-center gap-1">
       {tags.slice(0, 2).map((tag) => (
         <span
           key={tag}
@@ -1227,27 +1479,23 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     </span>
   ) : null;
 
-  const prBadgeShape = supportsMultiplePullRequests
-    ? resolveThreadPullRequestBadge(thread.pullRequests)
-    : null;
   const openLinkedItems = () => {
     useRightPanelStore.getState().open(threadRef, "pull-requests");
     if (!props.isRouteThread) onThreadActivate(threadRef);
   };
-  const prBadge =
-    prBadgeShape?.kind === "stack" || pr || currentLinkedPr ? (
-      <ThreadPullRequestBadgeControl
-        render={<InlineButton />}
-        badge={prBadgeShape}
-        pullRequests={thread.pullRequests}
-        number={pr?.number ?? currentLinkedPr?.number}
-        url={pr?.url ?? currentLinkedPr?.url}
-        status={prStatus}
-        onOpenList={openLinkedItems}
-        onOpenPullRequest={handlePrClick}
-        side="right"
-      />
-    ) : null;
+  const prBadge = hasPr ? (
+    <ThreadPullRequestBadgeControl
+      render={<InlineButton />}
+      badge={prBadgeShape}
+      pullRequests={thread.pullRequests}
+      number={pr?.number ?? currentLinkedPr?.number}
+      url={pr?.url ?? currentLinkedPr?.url}
+      status={prStatus}
+      onOpenList={openLinkedItems}
+      onOpenPullRequest={handlePrClick}
+      side="right"
+    />
+  ) : null;
   const firstIssue = thread.issues?.[0];
   const issueCount = thread.issues?.length ?? 0;
   const issueState = useSidebarLinkedIssueState(
@@ -1337,8 +1585,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       <TooltipPopup side="top">{t("Messages queued to send")}</TooltipPopup>
     </Tooltip>
   ) : null;
-  const showPin =
-    props.isPinned && (!sortable?.isDragging || (props.dragOverPinned && props.dropVerb === null));
   const pinIndicator = showPin ? (
     props.pinningSupported && canOperateThread && !sortable?.isDragging ? (
       <SharedTooltipTrigger
@@ -1394,79 +1640,195 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     </Tooltip>
   );
 
-  const scheduledIndicator = (
-    <ThreadScheduledTaskIndicator environmentId={thread.environmentId} threadId={thread.id} />
-  );
+  const renderPrimaryMarker = (kind: RowMarkerKind, layout: "card" | "inline"): ReactNode => {
+    switch (kind) {
+      case "needsYou":
+        return (
+          <span
+            data-row-marker="needsYou"
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 text-xs font-medium",
+              topStatus?.className ?? "text-warning-foreground",
+            )}
+          >
+            {topStatus ? (
+              <ThreadRowStatusContent status={topStatus} iconClassName="size-3" />
+            ) : (
+              <>
+                <CircleAlertIcon aria-hidden className="size-3 shrink-0" />
+                <span>{t("Needs you")}</span>
+              </>
+            )}
+          </span>
+        );
+      case "failed":
+        return (
+          <span
+            data-row-marker="failed"
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 text-xs font-medium",
+              topStatus?.className ?? "text-error-foreground",
+            )}
+          >
+            {topStatus ? (
+              <ThreadRowStatusContent status={topStatus} iconClassName="size-3" />
+            ) : (
+              <>
+                <CircleAlertIcon aria-hidden className="size-3 shrink-0" />
+                <span>{t("Failed")}</span>
+              </>
+            )}
+          </span>
+        );
+      case "pr":
+        return prBadge ? (
+          <span data-row-marker="pr" className="inline-flex shrink-0 items-center">
+            {prBadge}
+          </span>
+        ) : null;
+      case "machineOffline":
+        return (
+          <span
+            data-row-marker="machineOffline"
+            className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground"
+          >
+            <WifiOffIcon aria-hidden className="size-3 shrink-0" />
+            <span>{machineAvailabilityLabel(machine)}</span>
+          </span>
+        );
+      case "draft":
+        return draftIndicator ? (
+          <span data-row-marker="draft" className="inline-flex shrink-0 items-center">
+            {draftIndicator}
+          </span>
+        ) : null;
+      case "queued":
+        return queuedIndicator ? (
+          <span data-row-marker="queued" className="inline-flex shrink-0 items-center">
+            {queuedIndicator}
+          </span>
+        ) : null;
+      case "terminal":
+        return (
+          <span data-row-marker="terminal" className="inline-flex shrink-0 items-center">
+            {terminalStatusIcon}
+          </span>
+        );
+      case "scheduled":
+        return (
+          <span data-row-marker="scheduled" className="inline-flex shrink-0 items-center">
+            <ThreadScheduledTaskIndicator
+              environmentId={thread.environmentId}
+              threadId={thread.id}
+              tasks={scheduledTasks}
+            />
+          </span>
+        );
+      case "pinned":
+        return pinIndicator ? (
+          <span data-row-marker="pinned" className="inline-flex shrink-0 items-center">
+            {pinIndicator}
+          </span>
+        ) : null;
+      case "machine":
+        return (
+          <span
+            data-row-marker="machine"
+            className={cn(
+              "inline-flex items-center gap-1",
+              layout === "card" ? "min-w-0" : "shrink-0",
+            )}
+          >
+            <MachineBadge
+              environmentId={thread.environmentId}
+              label={machineBadgeLabel}
+              className="size-3.5 text-4xs"
+            />
+            {layout === "card" ? (
+              <span className="min-w-0 truncate text-xs font-normal text-secondary-label">
+                {machineBadgeLabel}
+              </span>
+            ) : null}
+          </span>
+        );
+      case "project":
+        return layout === "card" ? (
+          <span data-row-marker="project" className="inline-flex min-w-0 items-center gap-1.5">
+            {props.project ? (
+              <ProjectFavicon project={props.project} className="size-4 shrink-0" />
+            ) : null}
+            {props.projectDisplayName ? (
+              <span className="min-w-0 truncate font-normal text-secondary-label text-xs">
+                {props.projectDisplayName}
+              </span>
+            ) : null}
+          </span>
+        ) : props.project ? (
+          <span
+            data-row-marker="project"
+            className={cn(
+              "flex shrink-0 items-center transition-opacity",
+              (!props.isActive || variantAction === "unsettle") &&
+                "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
+            )}
+          >
+            <ProjectFavicon project={props.project} className="size-4" />
+          </span>
+        ) : null;
+      case "tags":
+        return tagChips ? (
+          <span
+            data-row-marker="tags"
+            className={cn(
+              "inline-flex shrink-0 items-center",
+              layout === "inline" ? "max-w-[40%]" : "min-w-0 max-w-full",
+            )}
+          >
+            {tagChips}
+          </span>
+        ) : null;
+      case "color":
+        return thread.color != null ? (
+          <span
+            data-row-marker="color"
+            aria-hidden
+            className={cn("size-2 shrink-0 rounded-full", threadColorDotClass[thread.color])}
+          />
+        ) : null;
+      case "notifications":
+        return thread.notificationLevel === "muted" ? (
+          <span data-row-marker="notifications" className="inline-flex shrink-0 items-center">
+            <BellOffIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+          </span>
+        ) : thread.notificationLevel === "following" ? (
+          <span data-row-marker="notifications" className="inline-flex shrink-0 items-center">
+            <BellIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+          </span>
+        ) : null;
+      case "provider":
+        return (
+          <span
+            data-row-marker="provider"
+            aria-hidden
+            className="inline-flex shrink-0 items-center"
+          >
+            <SidebarProviderStack
+              thread={thread}
+              providerEntryByInstanceId={props.providerEntryByInstanceId}
+            />
+          </span>
+        );
+    }
+  };
 
-  // A machine folder already names the machine.
-  const remoteMachineIcon =
-    isRemote && !showsScratchMachine && !props.inMachineFolder ? (
-      <span className="inline-flex shrink-0 items-center">
-        <MachineBadge
-          environmentId={thread.environmentId}
-          label={machineConnection?.environmentLabel ?? props.environmentLabel ?? ""}
-          className="size-3.5 text-4xs"
-        />
-      </span>
-    ) : null;
-  const diff = latestRunDiff(thread);
-  // Only the trailing icons would remain, so the row moves them to the title line instead.
-  const metaLineEmpty =
-    props.environmentLabel === null &&
-    prBadge === null &&
-    issueBadge === null &&
-    diff === null &&
-    runningTerminalIds.length === 0;
+  const metaLineEmpty = issueBadge === null;
   const metaLine = metaLineEmpty ? null : (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-      {props.environmentLabel !== null ? (
-        <>
-          <MachineBadge
-            environmentId={thread.environmentId}
-            label={machineConnection?.environmentLabel ?? props.scratchMachineLabel ?? ""}
-            className="size-3.5 text-4xs"
-          />
-          <span className="min-w-0 flex-1 truncate">{props.environmentLabel}</span>
-        </>
-      ) : (
-        <span className="flex-1" />
-      )}
-      {terminalStatusIcon}
-      {prBadge}
       {issueBadge}
-      {diff ? (
-        <span className="shrink-0 font-mono">
-          <span className="text-diff-addition-foreground">+{formatDiffCount(diff.insertions)}</span>{" "}
-          <span className="text-diff-deletion-foreground">−{formatDiffCount(diff.deletions)}</span>
-        </span>
-      ) : null}
-      <span
-        aria-hidden
-        className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
-      >
-        {remoteMachineIcon}
-        <SidebarProviderStack
-          thread={thread}
-          providerEntryByInstanceId={props.providerEntryByInstanceId}
-        />
-      </span>
     </div>
   );
-  const titleLineIcons = metaLineEmpty ? (
-    <span aria-hidden className="inline-flex shrink-0 items-center gap-1">
-      {remoteMachineIcon}
-      <SidebarProviderStack
-        thread={thread}
-        providerEntryByInstanceId={props.providerEntryByInstanceId}
-      />
-    </span>
-  ) : null;
 
   if (variant !== "card") {
-    const multiline = variant === "folder-multiline";
-    const indented = variant === "folder" || multiline;
-    // Folder-style rows have no status line, so the status takes the time slot.
-    const inFolder = indented || variant === "line";
     return (
       <li
         data-thread-item={copy ? undefined : threadKey}
@@ -1525,26 +1887,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         >
           {/* `contents` keeps one-line rows a single flex row. */}
           <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
-            <ThreadPreferenceMarkers thread={thread} />
-            {props.inProjectFolder ? null : (
-              <span
-                className={cn(
-                  "flex shrink-0 items-center transition-opacity",
-                  (!props.isActive || variantAction === "unsettle") &&
-                    "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
-                )}
-              >
-                {props.project ? (
-                  <ProjectFavicon project={props.project} className="size-4" />
-                ) : null}
-              </span>
-            )}
-            {draftIndicator}
-            {queuedIndicator}
+            {renderedMarkerKind === "project" ? renderPrimaryMarker("project", "inline") : null}
             {title}
-            {tagChips}
-            {multiline ? titleLineIcons : null}
-            {scheduledIndicator}
+            {renderedMarkerKind !== null && renderedMarkerKind !== "project"
+              ? renderPrimaryMarker(renderedMarkerKind, "inline")
+              : null}
             {variant === "line" && pinIndicator !== null ? (
               // One-line pinned rows sit under the Pinned header, so the pin shows as Unpin on hover.
               <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 group-focus-visible/sidebar-row:opacity-100 motion-reduce:transition-none">
@@ -1558,17 +1905,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   "size-3 shrink-0",
                 )}
               </span>
-            ) : (
-              pinIndicator
-            )}
-            {inFolder && !multiline && isRemote && !props.inMachineFolder ? (
-              <MachineBadge
-                environmentId={thread.environmentId}
-                label={machineConnection?.environmentLabel ?? props.environmentLabel ?? ""}
-                className="size-3.5 text-4xs"
-              />
             ) : null}
-            {multiline ? null : terminalStatusIcon}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
                 {t("Regenerating title")}
@@ -1618,6 +1955,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   ) : inFolder && topStatus ? (
                     // Folder rows have no status line, so the status takes the time slot.
                     <span
+                      data-row-marker={
+                        statusCoversPrimary ? (pickedMarkers.primary ?? undefined) : undefined
+                      }
                       className={cn(
                         "inline-flex items-center gap-1 text-xs font-medium",
                         topStatus.className,
@@ -1764,21 +2104,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           )}
         >
           <div className="flex h-5 min-w-0 items-center gap-1.5">
-            <ThreadPreferenceMarkers thread={thread} />
-            {draftIndicator}
-            {queuedIndicator}
-            {props.project ? (
-              <ProjectFavicon project={props.project} className="size-4 shrink-0" />
-            ) : null}
-            {/* Left of the status slot, the pin would slide when hover swaps the
-                label for the wider row controls. */}
-            {scheduledIndicator}
-            {pinIndicator}
-            {props.projectDisplayName ? (
-              <span
-                className={cn("min-w-0 flex-1 truncate font-normal text-secondary-label text-xs")}
-              >
-                {props.projectDisplayName}
+            {renderedMarkerKind !== null ? (
+              <span className="flex min-w-0 flex-1 items-center">
+                {renderPrimaryMarker(renderedMarkerKind, "card")}
               </span>
             ) : (
               <span className="flex-1" />
@@ -1825,6 +2153,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       </Tooltip>
                     ) : (
                       <span
+                        data-row-marker={
+                          statusCoversPrimary ? (pickedMarkers.primary ?? undefined) : undefined
+                        }
                         className={cn(
                           "inline-flex items-center gap-1 font-medium",
                           topStatus.className,
@@ -1928,13 +2259,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           </div>
           <div className="mt-1 flex min-w-0 items-center gap-1.5">
             {title}
-            {tagChips}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
                 {t("Regenerating title")}
               </span>
             ) : null}
-            {titleLineIcons}
           </div>
           {metaLine}
         </div>
@@ -1942,13 +2271,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     </li>
   );
 });
-
-function latestRunDiff(
-  thread: SidebarThreadSummary,
-): { insertions: number; deletions: number } | null {
-  void thread;
-  return null;
-}
 
 // Attached only to the highlighted result, so React calls it each time the
 // highlight lands on a different row: a new query, late rows replacing the first
@@ -2044,6 +2366,136 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
     threadId: thread.id,
   });
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds, t);
+  const scheduledTasks = useThreadScheduledTasks(thread.environmentId, thread.id);
+  const status = resolveSidebarRowStatus(thread);
+  const pickedMarkers = resolveSidebarRowMarkers(
+    {
+      status,
+      hasPr: false,
+      machineUnreachable: false,
+      hasUnsentDraft: false,
+      hasQueuedMessages: false,
+      hasRunningTerminal: runningTerminalIds.length > 0,
+      hasScheduledTask: scheduledTasks.length > 0,
+      showPin: thread.pinnedAt != null,
+      hasMachineBadge: false,
+      hasProject: props.project !== null,
+      hasTags: Boolean(thread.source.tags?.length),
+      hasColor: thread.color != null,
+      hasNotificationPreference:
+        thread.notificationLevel === "muted" || thread.notificationLevel === "following",
+      hasProvider: providerEntry !== null,
+    },
+    { machine: false, project: false },
+  );
+  const renderSearchMarker = (kind: RowMarkerKind): ReactNode => {
+    switch (kind) {
+      case "needsYou":
+        return (
+          <CircleAlertIcon
+            aria-hidden
+            data-row-marker="needsYou"
+            className="size-3.5 shrink-0 text-warning-foreground"
+          />
+        );
+      case "failed":
+        return (
+          <CircleAlertIcon
+            aria-hidden
+            data-row-marker="failed"
+            className="size-3.5 shrink-0 text-error-foreground"
+          />
+        );
+      case "terminal":
+        return terminalStatus ? (
+          <TerminalIcon
+            aria-hidden
+            data-row-marker="terminal"
+            className={cn("size-3.5 shrink-0", terminalStatus.colorClass)}
+          />
+        ) : null;
+      case "scheduled":
+        return (
+          <CalendarClockIcon
+            aria-hidden
+            data-row-marker="scheduled"
+            className="size-3.5 shrink-0 text-muted-foreground"
+          />
+        );
+      case "pinned":
+        return (
+          <PinIcon
+            aria-hidden
+            data-row-marker="pinned"
+            className="size-3 shrink-0 text-muted-foreground/65"
+          />
+        );
+      case "project":
+        return props.project ? (
+          <span data-row-marker="project" className="inline-flex shrink-0 items-center">
+            <ProjectFavicon
+              project={props.project}
+              className={cn(
+                "size-4 shrink-0 transition-opacity",
+                props.isSettled &&
+                  !props.isRouteActive &&
+                  !props.isHighlighted &&
+                  "opacity-40 grayscale group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
+              )}
+            />
+          </span>
+        ) : null;
+      case "tags":
+        return (
+          <TagIcon
+            aria-hidden
+            data-row-marker="tags"
+            className="size-3 shrink-0 text-muted-foreground"
+          />
+        );
+      case "color":
+        return thread.color != null ? (
+          <span
+            aria-hidden
+            data-row-marker="color"
+            className={cn("size-2 shrink-0 rounded-full", threadColorDotClass[thread.color])}
+          />
+        ) : null;
+      case "notifications":
+        return thread.notificationLevel === "muted" ? (
+          <BellOffIcon
+            aria-hidden
+            data-row-marker="notifications"
+            className="size-3 shrink-0 text-muted-foreground"
+          />
+        ) : thread.notificationLevel === "following" ? (
+          <BellIcon
+            aria-hidden
+            data-row-marker="notifications"
+            className="size-3 shrink-0 text-muted-foreground"
+          />
+        ) : null;
+      case "provider":
+        return (
+          <span
+            aria-hidden
+            data-row-marker="provider"
+            className="inline-flex shrink-0 items-center"
+          >
+            <SidebarProviderStack
+              thread={thread}
+              providerEntryByInstanceId={props.providerEntryByInstanceId}
+            />
+          </span>
+        );
+      case "pr":
+      case "machineOffline":
+      case "draft":
+      case "queued":
+      case "machine":
+        return null;
+    }
+  };
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const onFileDropThreads = props.onFileDropThreads;
   const fileDropHandlers = makeWorkspaceFileDropHandlers({
@@ -2076,6 +2528,9 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
             branchMismatch={branchMismatch}
             terminalStatus={terminalStatus}
             terminalProcessCount={runningTerminalIds.length}
+            overflowMarkers={pickedMarkers.overflow}
+            scheduledTasks={scheduledTasks}
+            preferenceLabels={preferenceLabels}
           />
         }
         render={
@@ -2124,18 +2579,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
           />
         }
       >
-        {props.project ? (
-          <ProjectFavicon
-            project={props.project}
-            className={cn(
-              "size-4 shrink-0 transition-opacity",
-              props.isSettled &&
-                !props.isRouteActive &&
-                !props.isHighlighted &&
-                "opacity-40 grayscale group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
-            )}
-          />
-        ) : null}
+        {pickedMarkers.primary ? renderSearchMarker(pickedMarkers.primary) : null}
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-2.5">
             <span
@@ -2191,25 +2635,3 @@ const threadColorDotClass = {
   purple: "bg-purple-600 dark:bg-purple-400",
   gray: "bg-gray-600 dark:bg-gray-400",
 } satisfies Record<ThreadColor, string>;
-
-function ThreadPreferenceMarkers({
-  thread,
-}: {
-  readonly thread: Pick<SidebarThreadSummary, "color" | "notificationLevel">;
-}) {
-  return (
-    <>
-      {thread.color == null ? null : (
-        <span
-          aria-hidden
-          className={cn("size-2 shrink-0 rounded-full", threadColorDotClass[thread.color])}
-        />
-      )}
-      {thread.notificationLevel === "muted" ? (
-        <BellOffIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-      ) : thread.notificationLevel === "following" ? (
-        <BellIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-      ) : null}
-    </>
-  );
-}

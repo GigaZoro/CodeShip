@@ -82,6 +82,15 @@ export const PreviewAutomationLoadError = Schema.Struct({
 });
 export type PreviewAutomationLoadError = typeof PreviewAutomationLoadError.Type;
 
+export const PREVIEW_HEADLESS_NOTE =
+  "This tab runs in the server's headless browser, whose profiles are separate from the desktop app's, so sign-ins made in the desktop app are not available here.";
+
+/** Server hosts: present when the tab runs in the server's headless browser. */
+export const PreviewHeadlessFields = {
+  headless: Schema.optional(Schema.Literal(true)),
+  headlessNote: Schema.optional(Schema.String),
+};
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean.annotate({ description: VISIBLE_DESCRIPTION }),
@@ -140,6 +149,7 @@ export const PreviewAutomationStatus = Schema.Struct({
   ),
   profiles: Schema.optional(Schema.Array(PreviewAutomationProfile)),
   defaultProfileId: Schema.optional(BrowserProfileId),
+  ...PreviewHeadlessFields,
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
@@ -656,6 +666,8 @@ export const PreviewAutomationResponse = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   ok: Schema.Boolean,
   result: Schema.optional(Schema.Unknown),
+  /** Server hosts: the operation ran on a tab in the server's headless browser. */
+  headless: Schema.optional(Schema.Literal(true)),
   error: Schema.optional(
     Schema.Struct({
       _tag: TrimmedNonEmptyString,

@@ -697,19 +697,29 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ),
       );
     });
-  const setWindowBackgroundThrottling = Effect.fnUntraced(function* (
-    window: BrowserWindow,
-    enabled: boolean,
-  ) {
-    if (window.isDestroyed()) return;
-    yield* attempt({ operation: "frameCapture.setBackgroundThrottling" }, () =>
-      window.webContents.setBackgroundThrottling(enabled),
-    );
+  /** A hold shared with the host's, so neither lets the window throttle while the other needs it. */
+  let frameCaptureWindowHold: {
+    readonly window: BrowserWindow;
+    readonly release: () => void;
+  } | null = null;
+  const releaseFrameCaptureWindowRendering = Effect.fnUntraced(function* () {
+    const hold = frameCaptureWindowHold;
+    if (hold === null) return;
+    yield* attempt({ operation: "frameCapture.releaseWindowRendering" }, hold.release);
+    frameCaptureWindowHold = null;
   });
-  const setFrameCaptureBackgroundThrottling = Effect.fnUntraced(function* (enabled: boolean) {
+  const keepFrameCaptureWindowRendering = Effect.fnUntraced(function* (window: BrowserWindow) {
+    if (frameCaptureWindowHold?.window === window) return;
+    yield* releaseFrameCaptureWindowRendering();
+    if (window.isDestroyed()) return;
+    const release = yield* attempt({ operation: "frameCapture.keepWindowRendering" }, () =>
+      browserHost.keepRendering(window.webContents),
+    );
+    frameCaptureWindowHold = { window, release };
+  });
+  const keepFrameCaptureMainWindowRendering = Effect.fnUntraced(function* () {
     const mainWindow = yield* Ref.get(mainWindowRef);
-    if (Option.isNone(mainWindow)) return;
-    yield* setWindowBackgroundThrottling(mainWindow.value, enabled);
+    if (Option.isSome(mainWindow)) yield* keepFrameCaptureWindowRendering(mainWindow.value);
   });
   /** The agent may drive the same guest, so its throttling is a hold shared with the host. */
   const keepFrameCaptureWebContentsRendering = (wc: Electron.WebContents) =>
@@ -805,7 +815,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         });
         yield* releaseFrameCaptureRendering(current.renderingHolds);
         if (remainingSessions.size === 0) {
-          yield* setFrameCaptureBackgroundThrottling(true).pipe(
+          yield* releaseFrameCaptureWindowRendering().pipe(
             Effect.retry({ times: 2 }),
             Effect.catch((error) =>
               Effect.logWarning("Failed to restore preview frame capture throttling.", { error }),
@@ -1115,15 +1125,22 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               wcDebugger.on("message", onMessage);
               wcDebugger.on("detach", onDetach);
               wcDebugger.attach("1.3");
-            });
-            // Set an opaque base before first paint or background-less dark pages retain white-on-white text.
-            yield* attemptPromise(
-              { operation: "initializeDebugger.defaultBackground", webContentsId: wc.id },
-              () =>
-                wcDebugger.sendCommand("Emulation.setDefaultBackgroundColorOverride", {
+              // Sent first, so an opaque base precedes first paint and every later command; dark
+              // pages without a background would keep white-on-white text. Not awaited: a guest
+              // still loading can take seconds to answer, and every other tab waits on this lock.
+              wcDebugger
+                .sendCommand("Emulation.setDefaultBackgroundColorOverride", {
                   color: { r: 255, g: 255, b: 255, a: 1 },
-                }),
-            );
+                })
+                .catch((cause: unknown) =>
+                  runFork(
+                    Effect.logWarning("Preview guest default background was not set.", {
+                      webContentsId: wc.id,
+                      cause,
+                    }),
+                  ),
+                );
+            });
             return [
               control,
               replaceMap(sessions, (copy) => {
@@ -1722,15 +1739,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         // Cleanup or lock acquisition can outlive the replacement window.
         if (window.isDestroyed()) return [undefined, sessions] as const;
         if (sessions.size > 0) {
-          yield* setWindowBackgroundThrottling(window, false);
+          yield* keepFrameCaptureWindowRendering(window);
         }
         yield* Ref.set(mainWindowRef, Option.some(window));
         currentMainWindow = window;
         frameCaptureWindowOpen = true;
+        browserHost.setMainWindow(window.webContents);
         window.once("closed", () => {
           if (currentMainWindow !== window) return;
           currentMainWindow = undefined;
           frameCaptureWindowOpen = false;
+          browserHost.setMainWindow(null);
           mainWindowCleanupFiber = runFork(
             Effect.all([closeAllPictureInPicture(), stopAllRecordings()], {
               concurrency: "unbounded",
@@ -3029,12 +3048,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             ] as const;
           }
           if (sessions.size === 0) {
-            yield* setFrameCaptureBackgroundThrottling(false);
+            yield* keepFrameCaptureMainWindowRendering();
           }
           const release = yield* keepFrameCaptureWebContentsRendering(wc).pipe(
             Effect.onError(() =>
               sessions.size === 0
-                ? setFrameCaptureBackgroundThrottling(true).pipe(Effect.ignore)
+                ? releaseFrameCaptureWindowRendering().pipe(Effect.ignore)
                 : Effect.void,
             ),
           );

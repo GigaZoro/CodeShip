@@ -59,6 +59,7 @@ import {
   PASSKEY_BRIDGE_ARGUMENT,
   PRIMARY_PASTE_DISABLED_ARGUMENT,
 } from "../preview/GuestProtocol.ts";
+import * as DesktopBrowserHost from "../preview/DesktopBrowserHost.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
 
@@ -74,12 +75,14 @@ const environmentInput = {
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
+let nextWebContentsId = 1;
+
 function makeFakeBrowserWindow() {
   const windowListeners = new Map<string, (...args: readonly unknown[]) => void>();
   const webContentsListeners = new Map<string, (...args: readonly unknown[]) => void>();
   let zoomLevel = 0;
   const webContents = {
-    id: 1,
+    id: nextWebContentsId++,
     session: {
       setPermissionRequestHandler: vi.fn(),
       webRequest: {
@@ -376,6 +379,7 @@ function layerTest(input: {
         Layer.succeed(DesktopPrimaryPaste.DesktopPrimaryPaste, {
           enabled: input.primaryPasteEnabled ?? true,
         }),
+        DesktopBrowserHost.layer,
         Layer.mock(PreviewPasskeys.PreviewPasskeys)({
           bridgeEnabled: input.previewPasskeyBridgeEnabled ?? false,
           installSessionHandlers: () => {},
@@ -488,6 +492,7 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
           layerElectronTheme,
           Layer.succeed(ElectronWindow.ElectronWindow, electronWindowShape),
           Layer.succeed(DesktopPrimaryPaste.DesktopPrimaryPaste, { enabled: true }),
+          DesktopBrowserHost.layer,
           Layer.mock(PreviewPasskeys.PreviewPasskeys)({
             bridgeEnabled: false,
             installSessionHandlers: () => {},

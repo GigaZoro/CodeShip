@@ -20,6 +20,7 @@ import {
   PreviewAutomationStatus,
   PreviewAutomationTabTargetInput,
   PreviewAutomationWaitForInput,
+  PreviewHeadlessFields,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
@@ -182,6 +183,7 @@ const PreviewActTool = browserTool(
 /** Wrap non-objects: MCP requires object structuredContent, and Claude Code rejects invalid results entirely. */
 export const PreviewEvaluateResult = Schema.Struct({
   ...presentationFields,
+  ...PreviewHeadlessFields,
   value: Schema.Unknown.annotate({
     description: "The JSON-serializable value the expression produced, or null.",
   }),

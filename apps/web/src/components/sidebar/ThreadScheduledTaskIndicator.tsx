@@ -29,16 +29,21 @@ const threadScheduledTasksAtom = Atom.family((key: string) => {
   }).pipe(Atom.withLabel(`web:thread-scheduled-tasks:${key}`));
 });
 
+export function useThreadScheduledTasks(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): ReadonlyArray<ScheduledTask> {
+  return useAtomValue(threadScheduledTasksAtom(JSON.stringify([environmentId, threadId])));
+}
+
 /** Marks a thread a scheduled task keeps running in, and opens that task. */
 export const ThreadScheduledTaskIndicator = memo(function ThreadScheduledTaskIndicator(props: {
   environmentId: EnvironmentId;
   threadId: ThreadId;
+  tasks: ReadonlyArray<ScheduledTask>;
 }) {
   const navigate = useNavigate();
-  const tasks = useAtomValue(
-    threadScheduledTasksAtom(JSON.stringify([props.environmentId, props.threadId])),
-  );
-  const first = tasks[0];
+  const first = props.tasks[0];
   if (first === undefined) return null;
   const openTask = (event: ReactMouseEvent) => {
     event.preventDefault();
@@ -65,7 +70,7 @@ export const ThreadScheduledTaskIndicator = memo(function ThreadScheduledTaskInd
         <CalendarClockIcon aria-hidden className="size-3 shrink-0" />
       </TooltipTrigger>
       <TooltipPopup side="top">
-        {tasks.map((task) => (
+        {props.tasks.map((task) => (
           <div key={task.id}>
             <p className="font-medium">{task.title}</p>
             <p className="text-muted-foreground">

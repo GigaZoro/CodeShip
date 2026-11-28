@@ -1,33 +1,67 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as NodeStream from "@effect/platform-node/NodeStream";
-import { expect, it } from "@effect/vitest";
+import { it } from "@effect/vitest";
+import type { DesktopBrowserCommand, DesktopBrowserEvent } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { vi } from "vite-plus/test";
+import * as TestClock from "effect/testing/TestClock";
+import { describe, expect } from "vite-plus/test";
 
-import * as ServerConfig from "../config.ts";
-import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
+import { DesktopBrowserChannel, layerFromPipes } from "./DesktopBrowserChannel.ts";
 
-vi.mock("@effect/platform-node/NodeStream", () => ({ fromReadable: vi.fn() }));
-vi.mock("node:net", () => ({
-  Socket: class {
-    destroy() {}
-  },
-}));
+const tab = (tabId: string) => ({ threadId: "thread-1", tabId });
 
-it.effect("protects unknown desktop visibility until an explicit hidden report arrives", () =>
+const connect = (options: { readonly writesWaitFor?: Deferred.Deferred<void> } = {}) =>
   Effect.gen(function* () {
-    const input = yield* Queue.unbounded<Uint8Array>();
-    vi.mocked(NodeStream.fromReadable).mockReturnValue(Stream.fromQueue(input));
-    const config = yield* ServerConfig.ServerConfig;
-    yield* Effect.gen(function* () {
-      const channel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
-      const key = { threadId: "thread-1", tabId: "tab-1" };
-      const send = (event: object) =>
-        Queue.offer(input, new TextEncoder().encode(`${JSON.stringify(event)}\n`));
+    const events = yield* Queue.unbounded<Uint8Array, Cause.Done>();
+    const written = yield* Queue.unbounded<DesktopBrowserCommand>();
+    const context = yield* Layer.build(
+      layerFromPipes({
+        events: Stream.fromQueue(events),
+        write: (line) =>
+          (options.writesWaitFor ? Deferred.await(options.writesWaitFor) : Effect.void).pipe(
+            Effect.andThen(Queue.offer(written, JSON.parse(line) as DesktopBrowserCommand)),
+          ),
+      }),
+    );
+    const channel = Context.get(context, DesktopBrowserChannel);
+    return {
+      channel,
+      // Started at once, so the wait has subscribed and armed its deadline when this returns.
+      startWait: (tabId: string) =>
+        Effect.forkChild(channel.awaitAttached(tab(tabId), "60 seconds"), {
+          startImmediately: true,
+        }),
+      send: (event: DesktopBrowserEvent) =>
+        Queue.offer(events, new TextEncoder().encode(`${JSON.stringify(event)}\n`)),
+      closePipe: Queue.end(events),
+      takeWrites: (count: number) =>
+        Effect.gen(function* () {
+          const writes: DesktopBrowserCommand[] = [];
+          for (let index = 0; index < count; index++) writes.push(yield* Queue.take(written));
+          return writes;
+        }),
+      written,
+    };
+  });
+
+const awaitingWrites = (writes: ReadonlyArray<DesktopBrowserCommand>, tabId: string) =>
+  writes.filter((write) => write.type === "awaiting" && write.tabId === tabId);
+
+const heldThenReleased = (tabId: string) => [
+  { type: "awaiting", ...tab(tabId), active: true },
+  { type: "awaiting", ...tab(tabId), active: false },
+];
+
+describe("DesktopBrowserChannel", () => {
+  it.effect("protects unknown desktop visibility until an explicit hidden report arrives", () =>
+    Effect.gen(function* () {
+      const { channel, send } = yield* connect();
+      const key = tab("tab-1");
 
       expect(channel.isShown(key)).toBe(true);
       yield* send({ type: "attached", ...key });
@@ -49,34 +83,13 @@ it.effect("protects unknown desktop visibility until an explicit hidden report a
       yield* send({ type: "attached", threadId: key.threadId, tabId: "sentinel-3" });
       yield* channel.awaitAttached({ threadId: key.threadId, tabId: "sentinel-3" }, "5 seconds");
       expect(channel.isShown(key)).toBe(true);
-    }).pipe(
-      Effect.provide(
-        DesktopBrowserChannel.layer.pipe(
-          Layer.provide(
-            ServerConfig.layer({ ...config, desktopBrowserFd: 41, desktopBrowserControlFd: 42 }),
-          ),
-        ),
-      ),
-    );
-  }).pipe(
-    Effect.provide(
-      ServerConfig.layerTest(process.cwd(), { prefix: "desktop-browser-channel-" }).pipe(
-        Layer.provide(NodeServices.layer),
-      ),
-    ),
-  ),
-);
+    }),
+  );
 
-it.live("closes a tab's relay connection when the desktop detaches the tab", () =>
-  Effect.gen(function* () {
-    const input = yield* Queue.unbounded<Uint8Array>();
-    vi.mocked(NodeStream.fromReadable).mockReturnValue(Stream.fromQueue(input));
-    const config = yield* ServerConfig.ServerConfig;
-    yield* Effect.gen(function* () {
-      const channel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
-      const key = { threadId: "thread-1", tabId: "tab-1" };
-      const send = (event: object) =>
-        Queue.offer(input, new TextEncoder().encode(`${JSON.stringify(event)}\n`));
+  it.live("closes a tab's relay connection when the desktop detaches the tab", () =>
+    Effect.gen(function* () {
+      const { channel, send } = yield* connect();
+      const key = tab("tab-1");
 
       yield* send({ type: "attached", ...key });
       yield* channel.awaitAttached(key, "5 seconds");
@@ -93,21 +106,45 @@ it.live("closes a tab's relay connection when the desktop detaches the tab", () 
       // Playwright waits on this socket for CDP replies; it must learn the tab is gone.
       yield* send({ type: "detached", ...key });
       yield* Effect.promise(() => closed).pipe(Effect.timeout("2 seconds"));
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        DesktopBrowserChannel.layer.pipe(
-          Layer.provide(
-            ServerConfig.layer({ ...config, desktopBrowserFd: 41, desktopBrowserControlFd: 42 }),
-          ),
-        ),
-      ),
-    );
-  }).pipe(
-    Effect.provide(
-      ServerConfig.layerTest(process.cwd(), { prefix: "desktop-browser-channel-" }).pipe(
-        Layer.provide(NodeServices.layer),
-      ),
-    ),
-  ),
-);
+    }),
+  );
+
+  it.effect("a closed event pipe declines waits and detaches its tabs", () =>
+    Effect.gen(function* () {
+      const { channel, startWait, send, closePipe, takeWrites, written } = yield* connect();
+      const shown = yield* startWait("shown");
+      yield* send({ type: "attached", ...tab("shown") });
+      expect(yield* Fiber.join(shown)).toBe("attached");
+      const pending = yield* startWait("pending");
+
+      yield* closePipe;
+
+      expect(yield* Fiber.join(pending)).toBe("declined");
+      expect(yield* channel.isAttached(tab("shown"))).toBe(false);
+      expect(yield* channel.awaitAttached(tab("later"), "60 seconds")).toBe("declined");
+      const writes = yield* takeWrites(4);
+      expect(awaitingWrites(writes, "shown")).toEqual(heldThenReleased("shown"));
+      expect(awaitingWrites(writes, "pending")).toEqual(heldThenReleased("pending"));
+      expect(yield* Queue.size(written)).toBe(0);
+    }),
+  );
+
+  it.effect("a stalled control pipe neither delays a wait nor reorders its awaiting writes", () =>
+    Effect.gen(function* () {
+      const pipeDrains = yield* Deferred.make<void>();
+      const { startWait, send, takeWrites } = yield* connect({ writesWaitFor: pipeDrains });
+
+      const unanswered = yield* startWait("unanswered");
+      yield* TestClock.adjust("60 seconds");
+      expect(yield* Fiber.join(unanswered)).toBe("timedOut");
+      const answered = yield* startWait("answered");
+      yield* send({ type: "attached", ...tab("answered") });
+      expect(yield* Fiber.join(answered)).toBe("attached");
+
+      yield* Deferred.succeed(pipeDrains, undefined);
+      const writes = yield* takeWrites(4);
+      expect(awaitingWrites(writes, "unanswered")).toEqual(heldThenReleased("unanswered"));
+      expect(awaitingWrites(writes, "answered")).toEqual(heldThenReleased("answered"));
+    }),
+  );
+});

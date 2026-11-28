@@ -56,6 +56,8 @@ export interface PreviewAutomationInvokeInput {
   /** Background metadata reads must not change the agent's current tab. */
   readonly updateCurrentTab?: boolean;
   readonly onTargetTab?: (tabId: PreviewTabId | undefined) => void;
+  /** Called when the host ran the operation on a tab in the server's headless browser. */
+  readonly onHeadless?: () => void;
 }
 
 export interface PreviewAutomationConnectOptions {
@@ -94,6 +96,7 @@ interface ClientConnection {
 interface PendingRequest {
   readonly queue: ClientConnection["queue"];
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
+  readonly onHeadless: (() => void) | undefined;
   readonly context: PreviewAutomationRequestErrorContext;
 }
 
@@ -507,6 +510,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     });
     if (!pending) return;
     if (response.ok) {
+      if (response.headless) pending.onHeadless?.();
       yield* Deferred.succeed(pending.deferred, response.result);
     } else {
       yield* Deferred.fail(
@@ -604,7 +608,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...selectorDiagnostics,
       };
       const pending = new Map(current.pending);
-      pending.set(requestId, { queue: connection.queue, deferred, context });
+      pending.set(requestId, {
+        queue: connection.queue,
+        deferred,
+        context,
+        onHeadless: input.onHeadless,
+      });
       return [
         { connection, requestId, requestContext: context, requestSequence },
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },

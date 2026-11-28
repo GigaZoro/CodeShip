@@ -132,12 +132,13 @@ export class SessionControl {
   }
 
   /** Read without control or queueing so agents can observe without delaying human input. */
-  observe<A>(run: () => Promise<A>) {
+  // Async like every method here: a closed tab rejects the promise, so a caller's `.catch` sees it.
+  async observe<A>(run: () => Promise<A>) {
     this.assertOpen();
     return run();
   }
 
-  system<A>(run: () => Promise<A>) {
+  async system<A>(run: () => Promise<A>) {
     this.assertOpen();
     return this.enqueue(async () => {
       this.assertOpen();
