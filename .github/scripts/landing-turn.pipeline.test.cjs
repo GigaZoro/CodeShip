@@ -9,10 +9,17 @@ const {
   LEASE_TTL_MS,
   land,
   withTurn,
-  testing: { acquireCheckoutSlot, checkoutsFolder, release, tryAcquire },
+  testing: { acquireCheckoutSlot, checkoutsFolder, deleteLease, release, tryAcquire },
 } = require("./landing-turn.cjs");
 const { recordPass, requirePass } = require("./check-changed-receipt.cjs");
-const { ELSEWHERE, QUEUE_PREFIX, setup } = require("./landing-turn.testkit.cjs");
+const {
+  ELSEWHERE,
+  QUEUE_PREFIX,
+  loseNextAnswer,
+  setup,
+  signalServer,
+  stderrOf,
+} = require("./landing-turn.testkit.cjs");
 
 const NO_RENEWAL = () => () => {};
 const NOW = 1_800_000_000_000;
@@ -163,10 +170,32 @@ test("AB#7666: holder publishes candidate, head waiter speculatively pre-checks,
 });
 
 test("AB#7666: in-flight speculative pre-check finishes under turn and reuses pass; turn loss aborts in-flight speculative check", async () => {
-  // Subcase A: in-flight speculative check finishes after waiter acquires turn.
+  // Subcase A: in-flight speculative check finishes after waiter acquires turn; waiter publishes its own tip while awaiting it.
   {
     const { root, origin, git, clone, commit } = setup();
+    let candidatePublishCount = 0;
+    const waiterPublishedCandidate = Promise.withResolvers();
+    const signals = await signalServer(root, (name, answer) => {
+      if (name !== "candidate-published") return;
+      candidatePublishCount += 1;
+      answer();
+      if (candidatePublishCount === 2) waiterPublishedCandidate.resolve();
+    });
     try {
+      fs.writeFileSync(
+        path.join(origin, "hooks", "post-receive"),
+        [
+          "#!/bin/sh",
+          "while read old new ref; do",
+          `  if [ "$ref" = "${CANDIDATE_REF}" ] && [ "$new" != "0000000000000000000000000000000000000000" ]; then`,
+          `    ${signals.command("candidate-published")}`,
+          "  fi",
+          "done",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+
       const holder = clone("holder");
       const waiter = clone("waiter");
       const other = clone("other");
@@ -234,17 +263,24 @@ test("AB#7666: in-flight speculative pre-check finishes under turn and reuses pa
       allowHolderAcquire.resolve();
       await holderInUnderTurn.promise;
       await specStarted.promise;
-      // Wait for holder to land, then let waiter's in-flight speculative check finish under turn.
+      // Wait for holder to land, then verify waiter publishes its own rebased tip BEFORE its in-flight spec check ends.
       await holderPromise;
+      await waiterPublishedCandidate.promise;
+      const waiterRebasedTip = git(waiter, "rev-parse", "HEAD");
+      assert.equal(git(origin, "rev-parse", CANDIDATE_REF), waiterRebasedTip);
+      assert.equal(readOriginLeasePayload(origin, git).data.candidate, waiterRebasedTip);
+
       allowSpecFinish.resolve();
 
       const waiterResult = await waiterPromise;
       assert.equal(waiterResult.status, "landed");
+      assert.equal(waiterResult.commit, waiterRebasedTip);
       assert.equal(waiterUnderTurnCalls, 0);
       assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
       const waiterRecords = readLandings(waiter, git);
       assert.equal(waiterRecords.at(-1).speculativeReused, true);
     } finally {
+      await signals.close();
       fs.rmSync(root, { recursive: true, force: true });
     }
   }
@@ -718,7 +754,7 @@ test("AB#7666: depth-one enforcement, abort on queue drop and candidate change, 
     }
   }
 
-  // Subcase D: aborting acquireCheckoutSlot while queued releases local queue ticket cleanly.
+  // Subcase D: aborting acquireCheckoutSlot while queued (or a sync-throwing waitSlot) releases queue ticket and abort listener cleanly.
   {
     const { root, git, clone } = setup();
     try {
@@ -745,6 +781,40 @@ test("AB#7666: depth-one enforcement, abort on queue drop and candidate change, 
         await assert.rejects(queuedPromise, { name: "AbortError" });
         const leftover = fs.existsSync(queueDir) ? fs.readdirSync(queueDir) : [];
         assert.deepEqual(leftover, []);
+
+        // Synchronous throw inside custom waitSlot still removes the abort listener and queue ticket.
+        const syncThrowController = new AbortController();
+        let addedListeners = 0;
+        let removedListeners = 0;
+        const origAdd = syncThrowController.signal.addEventListener.bind(
+          syncThrowController.signal,
+        );
+        const origRemove = syncThrowController.signal.removeEventListener.bind(
+          syncThrowController.signal,
+        );
+        syncThrowController.signal.addEventListener = (...args) => {
+          addedListeners += 1;
+          return origAdd(...args);
+        };
+        syncThrowController.signal.removeEventListener = (...args) => {
+          removedListeners += 1;
+          return origRemove(...args);
+        };
+        await assert.rejects(
+          acquireCheckoutSlot({
+            cwd: dir,
+            role: "preWait",
+            warmLimit: 1,
+            signal: syncThrowController.signal,
+            waitSlot: () => {
+              throw new Error("sync waitSlot boom");
+            },
+          }),
+          /sync waitSlot boom/,
+        );
+        assert.equal(addedListeners, 1);
+        assert.equal(removedListeners, 1);
+        assert.deepEqual(fs.existsSync(queueDir) ? fs.readdirSync(queueDir) : [], []);
       } finally {
         heldSlot.release();
       }
@@ -786,22 +856,17 @@ test("AB#7666: speculative rebase conflict does not fail wait; .github/scripts c
       await holderPublished.promise;
 
       let specCheckRan = false;
-      // recordClock ticks: 1=start, 2=preWait begin, 3=preWait end, 4=waitForTurn begin,
-      // 5=speculativeCheck begin, 6=speculativeCheck end (after speculative rebase conflict).
-      let clockTicks = 0;
-      const specPhaseEnded = Promise.withResolvers();
+      const specSettled = Promise.withResolvers();
 
       const waiterResult = await land({
         cwd: waiter,
         remote: "origin",
         every: NO_RENEWAL,
-        recordClock: () => {
-          clockTicks += 1;
-          if (clockTicks === 6) specPhaseEnded.resolve();
-          return clockTicks * 10;
-        },
+        onSpeculativeSettled: (info) => specSettled.resolve(info),
         sleep: async () => {
-          await specPhaseEnded.promise;
+          const settled = await specSettled.promise;
+          assert.equal(settled.passed, false);
+          assert.equal(settled.checkingStarted, false);
           releaseHolder.resolve();
           await holderPromise;
         },
@@ -994,5 +1059,219 @@ test("AB#7666: lapsed lease takeover cleans up stale CANDIDATE_REF left by crash
     assert.equal(git(origin, "for-each-ref", QUEUE_PREFIX), "");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("AB#7666: active turn holder aborts unstarted speculation queued on warm slots and finishes in an overflow checkout", async () => {
+  const { root, origin, git, clone, commit } = setup();
+  let occupiedSlot = null;
+  try {
+    const holder = clone("holder");
+    const waiter = clone("waiter");
+    commit(holder, "holder.txt");
+    const holderCommit = git(holder, "rev-parse", "HEAD");
+    commit(waiter, "waiter.txt");
+    const initialBase = git(origin, "rev-parse", "main");
+    const waiterCommon = fs.realpathSync.native(
+      git(waiter, "rev-parse", "--path-format=absolute", "--git-common-dir"),
+    );
+    const queueDir = path.join(checkoutsFolder(waiterCommon), "queue");
+
+    const holderHasTurn = Promise.withResolvers();
+    const allowHolderPublish = Promise.withResolvers();
+    const holderPublished = Promise.withResolvers();
+    const releaseHolder = Promise.withResolvers();
+
+    const holderPromise = withTurn(
+      { cwd: holder, remote: "origin", every: NO_RENEWAL },
+      async (_turn, _signal, pushMain, publishCandidate) => {
+        holderHasTurn.resolve();
+        await allowHolderPublish.promise;
+        assert.equal(publishCandidate(holderCommit), true);
+        holderPublished.resolve();
+        await releaseHolder.promise;
+        assert.equal(await pushMain("main", holderCommit), true);
+      },
+    );
+    await holderHasTurn.promise;
+
+    const specQueuedInLocalFifo = Promise.withResolvers();
+    let pollCount = 0;
+    let specCheckRan = false;
+    let underTurnCalls = 0;
+    let underTurnDirName = null;
+    let queueEntriesAtUnderTurn = null;
+
+    const waiterResult = await land({
+      cwd: waiter,
+      remote: "origin",
+      warmLimit: 1,
+      every: NO_RENEWAL,
+      waitSlot: () => {
+        specQueuedInLocalFifo.resolve();
+        // Never resolves on its own: only aborting the unstarted speculative task can unblock it.
+        return new Promise(() => {});
+      },
+      sleep: async () => {
+        pollCount += 1;
+        if (pollCount === 1) {
+          // Waiter's own preWaitCheck has released warm slot 0; occupy it before holder publishes a candidate.
+          occupiedSlot = await acquireCheckoutSlot({
+            cwd: waiter,
+            role: "preWait",
+            warmLimit: 1,
+          });
+          allowHolderPublish.resolve();
+          await holderPublished.promise;
+        } else if (pollCount === 2) {
+          await specQueuedInLocalFifo.promise;
+          const tickets = fs
+            .readdirSync(queueDir)
+            .filter((name) => /^wait-\d+-[0-9a-f-]+\.lock$/.test(name));
+          assert.equal(tickets.length, 1);
+          releaseHolder.resolve();
+          await holderPromise;
+        }
+      },
+      check: (turn, base, _budget, directory) => {
+        if (!turn && base === initialBase) return true;
+        if (!turn) {
+          specCheckRan = true;
+          return true;
+        }
+        underTurnCalls += 1;
+        underTurnDirName = path.basename(directory);
+        queueEntriesAtUnderTurn = fs.existsSync(queueDir) ? fs.readdirSync(queueDir) : [];
+        return true;
+      },
+    });
+
+    assert.equal(waiterResult.status, "landed");
+    assert.equal(specCheckRan, false);
+    assert.equal(underTurnCalls, 1);
+    assert.match(underTurnDirName ?? "", /^extra-[0-9a-f-]+$/);
+    assert.deepEqual(queueEntriesAtUnderTurn, []);
+    assert.equal(git(origin, "rev-parse", "main"), waiterResult.commit);
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    const records = readLandings(waiter, git);
+    assert.equal(records.at(-1).speculativeReused, false);
+  } finally {
+    occupiedSlot?.release();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("AB#7666: CANDIDATE_REF fallback and error recovery (deleteLease, pushMain retry, publishCandidate RemoteFailure)", async () => {
+  // Subcase A: deleteLease(..., { deleteCandidate: true }) falls back to deleting LEASE_REF alone when CANDIDATE_REF is absent.
+  {
+    const { root, origin, git, clone } = setup();
+    try {
+      const dir = clone("delete-fallback");
+      const leaseSha = tryAcquire({ cwd: dir, remote: "origin", runId: "r-del", now: () => NOW });
+      assert.ok(leaseSha);
+      assert.equal(git(origin, "for-each-ref", CANDIDATE_REF), "");
+      assert.equal(
+        deleteLease({ cwd: dir, remote: "origin" }, leaseSha, { deleteCandidate: true }),
+        true,
+      );
+      assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // Subcase B: pushMain retries without :CANDIDATE_REF when candidatePresent is true but CANDIDATE_REF was removed on origin.
+  {
+    const { root, origin, git, clone, commit } = setup();
+    try {
+      const dir = clone("push-retry");
+      commit(dir, "retry.txt");
+      const tip = git(dir, "rev-parse", "HEAD");
+      await withTurn(
+        { cwd: dir, remote: "origin", every: NO_RENEWAL },
+        async (_turn, _signal, pushMain, publishCandidate) => {
+          assert.equal(publishCandidate(tip), true);
+          assert.equal(git(origin, "rev-parse", CANDIDATE_REF), tip);
+          // Externally remove CANDIDATE_REF while holder still believes candidatePresent === true.
+          git(origin, "update-ref", "-d", CANDIDATE_REF);
+          assert.equal(git(origin, "for-each-ref", CANDIDATE_REF), "");
+          assert.equal(await pushMain("main", tip), true);
+        },
+      );
+      assert.equal(git(origin, "rev-parse", "main"), tip);
+      assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // Subcase C: publishCandidate RemoteFailure sets failing = true; subsequent renew() settles pending candidate and pushMain lands cleanly.
+  {
+    const { root, origin, git, clone, commit } = setup();
+    try {
+      const dir = clone("publish-recover");
+      commit(dir, "recover.txt");
+      const tip = git(dir, "rev-parse", "HEAD");
+      let tickRenewal = null;
+      await withTurn(
+        {
+          cwd: dir,
+          remote: "origin",
+          every: (_ms, tick) => {
+            tickRenewal = tick;
+            return () => {};
+          },
+        },
+        async (_turn, signal, pushMain, publishCandidate) => {
+          // Disconnect origin to trigger RemoteFailure on publishCandidate.
+          fs.renameSync(path.join(origin, "HEAD"), path.join(origin, "HEAD-away"));
+          const pubOut = stderrOf(() => publishCandidate(tip));
+          assert.equal(pubOut.result, false);
+          assert.equal(signal.aborted, false);
+          assert.match(pubOut.written.join(""), /could not publish candidate commit/);
+
+          // Consistent with renew(), failing = true suppresses duplicate renewal failure warnings while origin stays down.
+          const renewDownOut = stderrOf(() => tickRenewal());
+          assert.equal(renewDownOut.written.join(""), "");
+
+          // Reconnect origin: renew() settles pending/pendingCandidate, preserving candidate on LEASE_REF and CANDIDATE_REF.
+          fs.renameSync(path.join(origin, "HEAD-away"), path.join(origin, "HEAD"));
+          tickRenewal();
+          assert.equal(git(origin, "rev-parse", CANDIDATE_REF), tip);
+          assert.equal(readOriginLeasePayload(origin, git).data.candidate, tip);
+          assert.equal(await pushMain("main", tip), true);
+        },
+      );
+      assert.equal(git(origin, "rev-parse", "main"), tip);
+      assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // Subcase D: ambiguous RemoteFailure (push reached origin, readback failed) cleaned up on releaseTurn without leaking refs.
+  {
+    const { root, origin, git, clone, commit } = setup();
+    try {
+      const dir = clone("publish-ambiguous");
+      commit(dir, "ambiguous.txt");
+      const tip = git(dir, "rev-parse", "HEAD");
+      await withTurn(
+        { cwd: dir, remote: "origin", every: NO_RENEWAL },
+        async (_turn, signal, _pushMain, publishCandidate) => {
+          const { reconnect } = loseNextAnswer(dir, origin, git, true);
+          const pubOut = stderrOf(() => publishCandidate(tip));
+          assert.equal(pubOut.result, false);
+          assert.equal(signal.aborted, false);
+          reconnect();
+          // The ambiguous push actually applied CANDIDATE_REF and moved LEASE_REF to `pending` on origin.
+          assert.equal(git(origin, "rev-parse", CANDIDATE_REF), tip);
+          // Exit without pushing so releaseTurn() must delete both the pending lease and CANDIDATE_REF.
+        },
+      );
+      assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   }
 });

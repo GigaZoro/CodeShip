@@ -784,7 +784,10 @@ function acquire({ sleep = sleepSync, ...options }) {
   }
 }
 
-/** Async version of `acquire` that leaves the event loop free between polls for speculative pre-checking. */
+/**
+ * Async `acquire`: shares sync `createAcquireSession` and yields via `sleep` so speculative child processes
+ * (`stdio: "inherit"`) run concurrently; a stalled remote git poll delays speculative transitions until it returns.
+ */
 async function acquireAsync({ sleep = defaultWaitSlot, ...options }) {
   const session = createAcquireSession(options);
   try {
@@ -811,7 +814,7 @@ function turnEnd(data) {
 /**
  * Holds main's landing turn while `run(turn, signal, pushMain, publishCandidate)` runs, renewing every LEASE_RENEW_MS
  * up to the turn's end. `signal` aborts on turn loss; `pushMain` moves main atomically with the lease; `publishCandidate`
- * atomically publishes the rebased candidate ref on the lease for the first waiter.
+ * atomically publishes the candidate commit ref on the lease for the first waiter.
  */
 async function runWithTurn(
   { every = repeatEvery, after = runAfter, mainCallMs = MAIN_CALL_MS, ...options },
@@ -983,6 +986,7 @@ async function runWithTurn(
           lose(error.message);
           return false;
         }
+        failing = true;
         process.stderr.write(
           `landing turn: could not publish candidate commit: ${error.message}\nContinuing without publishing candidate.\n`,
         );
@@ -1041,6 +1045,7 @@ async function runWithTurn(
           }
           if (candidatePresent && remoteRef(options, CANDIDATE_REF) === null) {
             candidatePresent = false;
+            candidateMaybePresent = false;
             continue;
           }
           if (!pushed.timedOut || awakeClock() - started >= leftMs) {
@@ -1555,16 +1560,18 @@ function waitWithSignal(startWait, signal) {
   return new Promise((resolve, reject) => {
     const onAbort = () => resolve();
     signal.addEventListener("abort", onAbort, { once: true });
-    Promise.resolve(startWait()).then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
+    Promise.resolve()
+      .then(startWait)
+      .then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
   });
 }
 
@@ -2287,6 +2294,7 @@ async function runLanding(
     warmLimit,
     waitSlot,
     localSlotPollMs,
+    onSpeculativeSettled = () => {},
     ...rest
   },
   record,
@@ -2411,6 +2419,7 @@ async function runLanding(
       controller,
       specTree: null,
       specTreeReady: specTreeDeferred.promise,
+      checkingStarted: false,
       passed: false,
       settled: false,
       promise: null,
@@ -2472,6 +2481,8 @@ async function runLanding(
                 const specTip = git(directory, ["rev-parse", "HEAD"]).stdout;
                 task.specTree = git(directory, ["rev-parse", "HEAD^{tree}"]).stdout;
                 specTreeDeferred.resolve(task.specTree);
+                if (specSignal.aborted) return false;
+                task.checkingStarted = true;
                 const specCheckoutContext = {
                   ...checkoutContext,
                   rebuild: (rebuildSignal) => checkoutContext.rebuild(rebuildSignal, specTip),
@@ -2497,6 +2508,12 @@ async function runLanding(
       } finally {
         specTreeDeferred.resolve(task.specTree);
         task.settled = true;
+        onSpeculativeSettled({
+          candidate,
+          passed: task.passed,
+          checkingStarted: task.checkingStarted,
+          specTree: task.specTree,
+        });
       }
     })();
     task.promise = runPromise;
@@ -2559,36 +2576,61 @@ async function runLanding(
             return lostTurn();
           }
           let speculativeReused = false;
+          let candidatePublished = false;
           if (rebasedUnderTurn && specTask && specTask.candidate === base) {
             const activeSpec = specTask;
             const tipTree = git(cwd, ["rev-parse", "HEAD^{tree}"]).stdout;
-            const onTurnLost = () => {
-              if (!activeSpec.controller.signal.aborted) {
-                activeSpec.controller.abort(new Error("turn lost"));
-              }
-            };
-            signal.addEventListener("abort", onTurnLost, { once: true });
-            if (signal.aborted) onTurnLost();
-            try {
-              const specTree = await activeSpec.specTreeReady;
-              if (
-                (specTree === null || specTree !== tipTree) &&
-                !activeSpec.controller.signal.aborted
-              ) {
-                activeSpec.controller.abort(new Error("speculative tree mismatch"));
-              }
+            if (activeSpec.passed && activeSpec.specTree === tipTree) {
+              specTask = null;
               await activeSpec.promise;
-            } finally {
-              signal.removeEventListener("abort", onTurnLost);
+              if (signal.aborted) return lostTurn();
+              speculativeReused = true;
+              record.note({ speculativeReused: true });
+            } else if (
+              !activeSpec.settled &&
+              activeSpec.checkingStarted &&
+              activeSpec.specTree === tipTree
+            ) {
+              if (!signal.aborted) {
+                publishCandidate(tip);
+                candidatePublished = true;
+                if (signal.aborted) return lostTurn();
+              }
+              const onTurnLost = () => {
+                if (!activeSpec.controller.signal.aborted) {
+                  activeSpec.controller.abort(new Error("turn lost"));
+                }
+              };
+              signal.addEventListener("abort", onTurnLost, { once: true });
+              if (signal.aborted) onTurnLost();
+              try {
+                await activeSpec.promise;
+              } finally {
+                signal.removeEventListener("abort", onTurnLost);
+              }
+              specTask = null;
+              if (signal.aborted) return lostTurn();
+              speculativeReused =
+                activeSpec.passed &&
+                activeSpec.candidate === base &&
+                activeSpec.specTree === tipTree;
+              if (speculativeReused) record.note({ speculativeReused: true });
+            } else {
+              await stopSpeculative(
+                activeSpec.checkingStarted
+                  ? "speculative tree mismatch"
+                  : "speculative check not started before turn",
+              );
+              if (signal.aborted) return lostTurn();
             }
-            specTask = null;
-            if (signal.aborted) return lostTurn();
-            speculativeReused =
-              activeSpec.passed && activeSpec.candidate === base && activeSpec.specTree === tipTree;
-            if (speculativeReused) record.note({ speculativeReused: true });
           }
-          if (((rebasedUnderTurn && !speculativeReused) || Boolean(finalize)) && !signal.aborted) {
+          if (
+            !candidatePublished &&
+            ((rebasedUnderTurn && !speculativeReused) || Boolean(finalize)) &&
+            !signal.aborted
+          ) {
             publishCandidate(tip);
+            candidatePublished = true;
             if (signal.aborted) return lostTurn();
           }
           const verifyUnchanged = async (expectedTip, expectedBase) => {
@@ -2958,6 +3000,7 @@ module.exports = {
     tryAcquire,
     acquire,
     acquireAsync,
+    deleteLease,
     release,
     runCheck,
     runFinalize,
