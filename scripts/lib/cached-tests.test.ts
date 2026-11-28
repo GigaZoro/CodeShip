@@ -669,6 +669,7 @@ describe("cachedTestTasks", () => {
         ...args: Array<string>
       ) => NodeChildProcess.SpawnSyncReturns<string>;
       runGroup: (cwd: string, ...args: Array<string>) => NodeChildProcess.SpawnSyncReturns<string>;
+      readLastSummary: () => Promise<string>;
       hits: () => Promise<number>;
       git: (...args: Array<string>) => string;
     }) => Promise<void>,
@@ -752,9 +753,30 @@ describe("cachedTestTasks", () => {
         child.once("error", reject);
         child.once("close", resolve);
       });
+    const readLastSummary = async () => {
+      const cacheRoot = NodePath.join(directory, "cache");
+      const entries = await NodeFSP.readdir(cacheRoot, { withFileTypes: true });
+      const candidates: Array<{ file: string; mtimeMs: number }> = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const summaryPath = NodePath.join(cacheRoot, entry.name, "last-summary.json");
+        try {
+          const stat = await NodeFSP.stat(summaryPath);
+          candidates.push({ file: summaryPath, mtimeMs: stat.mtimeMs });
+        } catch {
+          // Ignore cache subdirectories without a run summary.
+        }
+      }
+      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      const latest = candidates[0];
+      if (!latest) {
+        throw new Error(`No last-summary.json found under ${cacheRoot}`);
+      }
+      return NodeFSP.readFile(latest.file, "utf8");
+    };
     const hits = async () => {
       const value: { tasks: Array<{ result: Record<string, unknown> }> } = JSON.parse(
-        await NodeFSP.readFile(NodePath.join(directory, "cache/v18/last-summary.json"), "utf8"),
+        await readLastSummary(),
       );
       return value.tasks.filter((task) => "CacheHit" in task.result).length;
     };
@@ -797,7 +819,18 @@ describe("cachedTestTasks", () => {
       );
       await write("fixture.txt", "hello");
       git("init", "--quiet");
-      await body({ directory, runtimeEnv, write, run, cli, packageTest, runGroup, hits, git });
+      await body({
+        directory,
+        runtimeEnv,
+        write,
+        run,
+        cli,
+        packageTest,
+        runGroup,
+        readLastSummary,
+        hits,
+        git,
+      });
     } finally {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }
@@ -816,7 +849,7 @@ describe("cachedTestTasks", () => {
     }));
 
   it("selects a path and applies its cache exception using the filesystem's case rules", () =>
-    withFixture(async ({ directory, write, cli }) => {
+    withFixture(async ({ directory, write, cli, readLastSummary }) => {
       await write(
         "Choice.test.ts",
         'import {test} from "vite-plus/test"; test("first spelling", () => {});',
@@ -836,10 +869,7 @@ describe("cachedTestTasks", () => {
       const result = await cli("--uncached", selected, selected);
       expect(result.error).toBeUndefined();
       expect(result.status, result.stdout + result.stderr).toBe(0);
-      const summary = await NodeFSP.readFile(
-        NodePath.join(directory, "cache/v18/last-summary.json"),
-        "utf8",
-      );
+      const summary = await readLastSummary();
       const tasks = JSON.parse(summary).tasks as Array<{
         task_name: string;
         result: Record<string, unknown>;

@@ -1,3 +1,7 @@
+## 2026-11-28 — Upgrade Vite+ to 1.8.0 so Windows cached checks stop crashing Git Bash
+
+- Maintainers: upgraded `vite-plus` from `1.4.0` to `1.8.0` (with `@voidzero-dev/vite-plus-core@8.3.8001` and `@vitest/browser-playwright@5.1.1`), picking up the `vite-task` / `fspy` Windows shared-memory fix so cached `check:changed` test runs no longer crash Git for Windows `sh.exe` with `MapViewOfFileEx 'shared.5' Win32 error 487`.
+
 ## 2026-11-28 — Auto mode and account failover now include Antigravity
 
 - When every Claude and Codex account is out of usage, new Auto mode chats can fail over to Antigravity (choosing Gemini 4 Neon with headroom before falling back to Antigravity's Claude Opus pool), and Antigravity now participates in multi-account failover, Auto primary provider selection, Settings Auto model defaults, and signed-out login recovery.

@@ -886,23 +886,25 @@ function ReplCodeText({
   readonly theme: "light" | "dark";
 }) {
   const lines = useMarkdownCodeHighlight({ code, language: "typescript", theme, enabled: true });
-  let offset = 0;
-  const highlighted = lines?.flatMap((line, lineIndex) => {
-    const separator = lineIndex > 0 ? "\n" : "";
-    offset += separator.length;
-    return [
-      separator,
-      ...line.map((token) => {
+  let highlighted: Array<ReactNode> | undefined;
+  if (lines) {
+    highlighted = [];
+    let offset = 0;
+    for (const [lineIndex, line] of lines.entries()) {
+      const separator = lineIndex > 0 ? "\n" : "";
+      offset += separator.length;
+      highlighted.push(separator);
+      for (const token of line) {
         const start = offset;
         offset += token.content.length;
-        return (
+        highlighted.push(
           <Text key={start} style={token.color ? { color: token.color } : undefined}>
             {token.content}
-          </Text>
+          </Text>,
         );
-      }),
-    ];
-  });
+      }
+    }
+  }
   return (
     <Text selectable className="font-mono text-2xs leading-normal text-foreground">
       {highlighted ?? code}

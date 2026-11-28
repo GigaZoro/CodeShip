@@ -172,7 +172,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
             releaseChecks++;
             const response = yield* (
               input.latestRelease?.(releaseChecks, sha256) ??
-                Effect.succeed(new Response(null, { status: 404 }))
+              Effect.succeed(new Response(null, { status: 404 }))
             );
             return HttpClientResponse.fromWeb(request, response);
           }

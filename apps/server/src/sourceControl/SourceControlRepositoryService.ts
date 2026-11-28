@@ -336,34 +336,36 @@ export const make = Effect.gen(function* () {
     };
     // Git misreads @ in a pathless URL's query as userinfo and echoes its suffix as the host.
     const normalizedCloneUrl = cloneUrl.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]+)\?/i, "$1/?");
-    yield* git
-      // oxlint-disable-next-line t3code/no-remote-git-through-execute -- streams clone progress and keeps its own stderr tail, which executeRemote does not offer
-      .execute({
-        operation: "SourceControlRepositoryService.cloneRepository",
-        cwd: path.dirname(destinationPath),
-        args: ["clone", "--progress", "--", normalizedCloneUrl, path.basename(destinationPath)],
-        timeoutMs: options?.timeoutMs === undefined ? CLONE_TIMEOUT_MS : options.timeoutMs,
-        // Buffered output is unused and progress can be huge; cap it while retaining line callbacks.
-        maxOutputBytes: 256 * 1024,
-        appendTruncationMarker: true,
-        keepLineCallbacksAfterTruncation: true,
-        env: CLONE_ENV,
-        progress: { onStderrLine },
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new SourceControlRepositoryError({
-              operation: "cloneRepository",
-              provider: input.provider ?? SourceControlProviderKind.make("unknown"),
-              detail:
-                stderrTail.length > 0
-                  ? stderrTail.join(" ")
-                  : "The repository could not be cloned.",
-              cause,
-            }),
-        ),
-      );
+    yield* (
+      git
+        // oxlint-disable-next-line t3code/no-remote-git-through-execute -- streams clone progress and keeps its own stderr tail, which executeRemote does not offer
+        .execute({
+          operation: "SourceControlRepositoryService.cloneRepository",
+          cwd: path.dirname(destinationPath),
+          args: ["clone", "--progress", "--", normalizedCloneUrl, path.basename(destinationPath)],
+          timeoutMs: options?.timeoutMs === undefined ? CLONE_TIMEOUT_MS : options.timeoutMs,
+          // Buffered output is unused and progress can be huge; cap it while retaining line callbacks.
+          maxOutputBytes: 256 * 1024,
+          appendTruncationMarker: true,
+          keepLineCallbacksAfterTruncation: true,
+          env: CLONE_ENV,
+          progress: { onStderrLine },
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new SourceControlRepositoryError({
+                operation: "cloneRepository",
+                provider: input.provider ?? SourceControlProviderKind.make("unknown"),
+                detail:
+                  stderrTail.length > 0
+                    ? stderrTail.join(" ")
+                    : "The repository could not be cloned.",
+                cause,
+              }),
+          ),
+        )
+    );
   });
 
   const cloneRepository = Effect.fn("SourceControlRepositoryService.cloneRepository")(function* (

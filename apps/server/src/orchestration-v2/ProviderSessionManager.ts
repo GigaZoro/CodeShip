@@ -2005,15 +2005,15 @@ export const layerWithOptions = (
               // A refused review attach rolls back; the adapter then finds no review session and refuses the turn.
               const prepared = yield* (
                 input.prepareCredential ??
-                  prepareMcpSession(input.threadId, input.providerInstanceId).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new ProviderSessionActivityError({
-                          providerSessionId: input.providerSessionId,
-                          cause,
-                        }),
-                    ),
-                  )
+                prepareMcpSession(input.threadId, input.providerInstanceId).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderSessionActivityError({
+                        providerSessionId: input.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                )
               );
               preparedForCleanup = prepared;
               if (prepared.mcpCredentialId !== undefined) {

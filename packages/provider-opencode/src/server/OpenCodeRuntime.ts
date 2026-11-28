@@ -700,13 +700,13 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     const url = readyOption.value;
     const version = yield* (
       input.verify?.(url) ??
-        verifyOpenCodeServerVersion(
-          createOpenCodeSdkClient({
-            baseUrl: url,
-            directory: input.directory,
-            ...(serverPassword !== undefined ? { serverPassword } : {}),
-          }),
-        )
+      verifyOpenCodeServerVersion(
+        createOpenCodeSdkClient({
+          baseUrl: url,
+          directory: input.directory,
+          ...(serverPassword !== undefined ? { serverPassword } : {}),
+        }),
+      )
     );
 
     return {

@@ -9,7 +9,7 @@ import {
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { EnvironmentThread } from "@t3tools/client-runtime/state/shell";
 import { Atom } from "effect/reactivity";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -160,23 +160,25 @@ function WorkflowScript(props: { readonly script: string }) {
   const lineCount = script.split("\n").length;
   const canFold = lineCount > FOLDED_SCRIPT_LINES;
   const shownLines = canFold && !expanded ? FOLDED_SCRIPT_LINES : lineCount;
-  let offset = 0;
-  const highlighted = lines?.slice(0, shownLines).flatMap((line, lineIndex) => {
-    const separator = lineIndex > 0 ? "\n" : "";
-    offset += separator.length;
-    return [
-      separator,
-      ...line.map((token) => {
+  let highlighted: Array<ReactNode> | undefined;
+  if (lines) {
+    highlighted = [];
+    let offset = 0;
+    for (const [lineIndex, line] of lines.slice(0, shownLines).entries()) {
+      const separator = lineIndex > 0 ? "\n" : "";
+      offset += separator.length;
+      highlighted.push(separator);
+      for (const token of line) {
         const start = offset;
         offset += token.content.length;
-        return (
+        highlighted.push(
           <Text key={start} style={token.color ? { color: token.color } : undefined}>
             {token.content}
-          </Text>
+          </Text>,
         );
-      }),
-    ];
-  });
+      }
+    }
+  }
   return (
     <View className="gap-1">
       <View className="rounded-lg bg-subtle px-3 py-2.5">
