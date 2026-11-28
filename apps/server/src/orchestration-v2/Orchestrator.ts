@@ -3375,6 +3375,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
+    const initialTags =
+      command.tags === undefined || command.tags.length === 0
+        ? undefined
+        : [...new Set(command.tags)];
     const thread: OrchestrationV2AppThread = {
       createdBy: command.createdBy,
       creationSource: command.creationSource,
@@ -3391,6 +3395,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       pullRequests: [],
       ...(command.linkOrigin === undefined ? {} : { linkOrigin: command.linkOrigin }),
       ...(command.folder === undefined ? {} : { folder: command.folder }),
+      ...(initialTags === undefined ? {} : { tags: initialTags }),
       // Only stamped work names a remote parent, so a client cannot claim one.
       ...(command.linkOrigin === undefined || command.delegatedFrom === undefined
         ? {}
@@ -8870,21 +8875,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.title === undefined ? {} : { title: command.title }),
         ordinal: (yield* subagentCount(command.parentThreadId)) + 1,
       });
+      const baseChildThread = makeSubagentChildThread({
+        parentThread: parentProjection.thread,
+        childThreadId,
+        parentNodeId: taskNodeId,
+        activeProviderThreadId: null,
+        providerInstanceId: command.modelSelection.instanceId,
+        modelSelection: command.modelSelection,
+        title: taskTitle,
+        now,
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      });
+      const mergedTags =
+        command.tags === undefined || command.tags.length === 0
+          ? baseChildThread.tags
+          : [...new Set([...(baseChildThread.tags ?? []), ...command.tags])];
       const childThread: OrchestrationV2AppThread = {
-        ...makeSubagentChildThread({
-          parentThread: parentProjection.thread,
-          childThreadId,
-          parentNodeId: taskNodeId,
-          activeProviderThreadId: null,
-          providerInstanceId: command.modelSelection.instanceId,
-          modelSelection: command.modelSelection,
-          title: taskTitle,
-          now,
-          createdBy: command.createdBy,
-          creationSource: command.creationSource,
-        }),
+        ...baseChildThread,
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
+        ...(mergedTags === undefined ? {} : { tags: mergedTags }),
         ...(command.projectId === undefined ? {} : { projectId: command.projectId }),
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
         ...(command.reviewAssignment === undefined

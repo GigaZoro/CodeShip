@@ -1,7 +1,9 @@
 import { McpAttachmentInput } from "../attachment/input.ts";
 import {
+  DelegatedTaskRole,
   NonNegativeInt,
   ModelSelection,
+  RepoCapExemption,
   TrimmedNonEmptyString,
   ThreadId,
   RunId,
@@ -191,6 +193,9 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     /** Set by a linked environment for the `modelSelection` options its delegated task inherited rather than named; ignored otherwise. */
     inheritedOptionIds: Schema.optional(Schema.Array(Schema.String)),
     matchedRemote: Schema.optional(TrimmedNonEmptyString),
+    capExemption: Schema.optional(RepoCapExemption),
+    /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
+    delegatedRole: Schema.optional(DelegatedTaskRole),
   }),
   success: Schema.Struct({
     threadId: ThreadId,

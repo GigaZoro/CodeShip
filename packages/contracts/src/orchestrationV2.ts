@@ -3350,6 +3350,7 @@ export const OrchestrationV2Command = Schema.Union([
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
     folder: Schema.optional(ThreadFolder),
+    tags: Schema.optional(Schema.Array(ThreadTag)),
     /** Only the server sets this; a client's thread.create never carries one. */
     linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
     /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
@@ -3826,6 +3827,7 @@ export const OrchestrationV2Command = Schema.Union([
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
     // A review task: the parent counts its review rounds and refuses one past the limit.
     review: Schema.optional(OrchestrationV2DelegatedReviewRequest),
+    tags: Schema.optional(Schema.Array(ThreadTag)),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

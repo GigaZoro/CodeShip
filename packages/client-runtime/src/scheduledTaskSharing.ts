@@ -109,6 +109,7 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
     ...(task.runCondition === undefined ? {} : { runCondition: task.runCondition }),
     ...(task.delegateProviders === undefined ? {} : { delegateProviders: task.delegateProviders }),
     ...(task.maxLiveRuns === undefined ? {} : { maxLiveRuns: task.maxLiveRuns }),
+    ...(task.capExemption === undefined ? {} : { capExemption: task.capExemption }),
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     createdBy: task.createdBy,

@@ -32,6 +32,7 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import * as RepoConcurrencyAdmission from "../peer/RepoConcurrencyAdmission.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -154,6 +155,7 @@ const withService = <A, E>(
     /** While true the scheduler does no due work, as on a machine that sleeps. */
     readonly asleep?: Ref.Ref<boolean>;
     readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
+    readonly repoAdmission?: Layer.Layer<RepoConcurrencyAdmission.RepoConcurrencyAdmission>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -187,6 +189,7 @@ const withService = <A, E>(
             extras.threadManagement ?? {},
           ),
           Layer.mock(SecretRequests.SecretRequests)({}),
+          extras.repoAdmission ?? Layer.empty,
         ),
       ),
       // Reaches the scheduler too, so its poll also waits for it.
@@ -993,6 +996,7 @@ const runScenario = <A, E>(
   checks?: Ref.Ref<number>,
   checkAnswer: ScheduledTaskRunCheck = { outcome: "run", failure: null, exitCode: 0, detail: null },
   threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>,
+  repoAdmission?: Layer.Layer<RepoConcurrencyAdmission.RepoConcurrencyAdmission>,
 ) =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<unknown>();
@@ -1106,6 +1110,7 @@ const runScenario = <A, E>(
               }),
             }),
         ...(threadManagement === undefined ? {} : { threadManagement }),
+        ...(repoAdmission === undefined ? {} : { repoAdmission }),
       },
     );
   });
@@ -2455,4 +2460,90 @@ it.effect("a shared task's group and its group pause travel with its copies", ()
       ]);
     }),
   ),
+);
+
+it.effect(
+  "one-machine shared interval task preserves aligned slots on repo_capacity deferral in takeOccurrence and checkThenRun",
+  () =>
+    Effect.gen(function* () {
+      const blockedDecision = {
+        allowed: false,
+        activeCount: 4,
+        requestedCount: 1,
+        limit: 4,
+        repoKey: "github.com/pingdotgg/t3code",
+        breakdown: [{ environmentId: "local" as const, label: "local", count: 4 }],
+      };
+      const allowedDecision = {
+        ...blockedDecision,
+        allowed: true,
+        activeCount: 3,
+        breakdown: [{ environmentId: "local" as const, label: "local", count: 3 }],
+      };
+
+      // 1. Pre-claim deferral in takeOccurrence claims nothing and lands on the next aligned slot.
+      yield* runScenario(
+        [HERE_ENVIRONMENT_ID, OTHER],
+        NO_RUN_THERE,
+        (scenario) =>
+          Effect.gen(function* () {
+            yield* scenario.tick(NOW + MINUTE_MS + 15_000);
+            yield* scenario.settled;
+            expect(yield* Queue.size(scenario.launches)).toBe(0);
+            expect(yield* Ref.get(scenario.peerClaims)).toEqual([]);
+            expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(NOW + 2 * MINUTE_MS));
+            const { runs } = yield* scenario.service.listRuns({
+              id: "scheduled-task:shared" as ScheduledTaskId,
+            });
+            expect(runs).toEqual([
+              expect.objectContaining({
+                outcome: "skipped",
+                skipReason: "repo_capacity",
+              }),
+            ]);
+          }),
+        { type: "interval", everyMs: MINUTE_MS },
+        undefined,
+        undefined,
+        undefined,
+        RepoConcurrencyAdmission.layerTest(() => Effect.succeed(blockedDecision)),
+      );
+
+      // 2. Post-runCondition deferral in checkThenRun also keeps the aligned slot.
+      const checks = yield* Ref.make(0);
+      let calls = 0;
+      yield* runScenario(
+        [HERE_ENVIRONMENT_ID, OTHER],
+        NO_RUN_THERE,
+        (scenario) =>
+          Effect.gen(function* () {
+            yield* scenario.tick(NOW + MINUTE_MS + 15_000);
+            yield* scenario.settled;
+            expect(yield* Ref.get(checks)).toBe(1);
+            expect(yield* Queue.size(scenario.launches)).toBe(0);
+            expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(NOW + 2 * MINUTE_MS));
+            const { runs } = yield* scenario.service.listRuns({
+              id: "scheduled-task:shared" as ScheduledTaskId,
+            });
+            expect(runs).toEqual([
+              expect.objectContaining({
+                outcome: "skipped",
+                skipReason: "repo_capacity",
+                check: expect.objectContaining({ outcome: "run", exitCode: 0 }),
+              }),
+            ]);
+          }),
+        { type: "interval", everyMs: MINUTE_MS },
+        checks,
+        undefined,
+        undefined,
+        RepoConcurrencyAdmission.layerTest(() =>
+          Effect.sync(() => {
+            calls += 1;
+            // First check (pre-claim in takeOccurrence) allows; second (in checkThenRun) blocks.
+            return calls === 1 ? allowedDecision : blockedDecision;
+          }),
+        ),
+      );
+    }),
 );

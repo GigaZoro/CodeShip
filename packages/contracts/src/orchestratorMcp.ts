@@ -23,6 +23,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  RepoCapExemption,
   RUN_CONDITION_FAILING_STREAK,
   ScheduledTaskChangedBy,
   ScheduledTaskDescription,
@@ -345,6 +346,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
     }),
   ),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
+  capExemption: Schema.optional(RepoCapExemption),
 });
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 
@@ -499,6 +501,7 @@ export const OrchestratorMcpCreateThreadsInput = Schema.Struct({
     Schema.isMaxLength(20),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  capExemption: Schema.optional(RepoCapExemption),
 });
 export type OrchestratorMcpCreateThreadsInput = typeof OrchestratorMcpCreateThreadsInput.Type;
 
@@ -1211,6 +1214,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   }),
   delegateProviders: Schema.optional(OrchestratorMcpDelegateProviders),
   maxLiveRuns: Schema.optional(OrchestratorMcpMaxLiveRuns),
+  capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -1302,6 +1306,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   }),
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
+  capExemption: Schema.optional(Schema.NullOr(RepoCapExemption)),
   liveRuns: Schema.optional(NonNegativeInt).annotate({
     description:
       "New-thread repeating task: its runs here that still work, delegated tasks included.",
@@ -1441,6 +1446,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   group: OrchestratorMcpScheduleTaskInput.fields.group,
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
+  capExemption: OrchestratorMcpScheduleTaskInput.fields.capExemption,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
@@ -1679,6 +1685,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "thread_credential_required",
       "target_required",
       "memory_short",
+      /** The repository already reached its per-repo concurrent implementation thread cap across linked machines. */
+      "repo_capacity_full",
       /** A fourth review round of one part of a change, refused until it is re-planned or split. */
       "review_round_limit",
       /** Auto mode is off where the thread would start, or its provider has no enabled account there. */

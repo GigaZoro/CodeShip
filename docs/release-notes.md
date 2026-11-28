@@ -1,3 +1,8 @@
+## 2026-11-28 — Per-repository cap of 4 concurrent implementation threads across linked machines
+
+- Automated launches (`delegate_task`, `create_threads`, `t3_thread_launch`, and due scheduled tasks) now enforce a fleet-wide cap of 4 concurrent active or landing implementation threads per repository (overridable via `T3CODE_REPO_IMPLEMENTATION_CAP`), counting local and reachable linked environments without double-counting repository alias keys and failing open on unreachable or older peers.
+- User-requested chats, manual **Run now** triggers, `plan` mode, scratch launches, non-implementation roles (`review`, `research`, `design`), idempotent retries, and explicit `capExemption` (`"broken_main"` or `"incident"`) requests bypass the cap; deferred scheduled occurrences quietly retry once a slot opens.
+
 ## 2026-11-28 — Use expiring Claude API credits
 
 - Claude accounts can spend subscriber API grants through the Agent SDK with a key kept in the secret store, linked to the plan that grants them.

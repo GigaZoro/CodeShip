@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
 import * as MemoryAdmission from "../../../resourceTelemetry/MemoryAdmission.ts";
+import * as RepoConcurrencyAdmission from "../../../peer/RepoConcurrencyAdmission.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -359,27 +360,37 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           yield* OrchestrationMcp.requireMemoryForDelegation(
             yield* MemoryAdmission.MemoryAdmission,
           );
-        let startedRuntimeMode =
-          projectDefaults !== undefined && input.runtimeMode === undefined
-            ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
-                Effect.orElseSucceed(() => runtimeMode),
-              )
-            : runtimeMode;
-        if (!replaying) {
-          const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
-          startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
-            modelSelection,
-            supportedRuntimeModes: providers.find(
-              (provider) => provider.instanceId === modelSelection.instanceId,
-            )?.supportedRuntimeModes,
-          });
-        }
-        // A new thread owns no attachments yet, even on a replay: a replay claims again and
-        // keeps the copies its first launch accepted.
-        const requested = input.attachments ?? [];
-        const result = yield* withResolvedAttachments(
-          { requested, owned: [], context },
-          (attachments) =>
+        const nonImplementationDelegatedRole =
+          delegatedFrom !== undefined &&
+          RepoConcurrencyAdmission.isNonImplementationRole(input.delegatedRole)
+            ? input.delegatedRole
+            : undefined;
+        const needsRepoSlot =
+          !replaying &&
+          input.scratch !== true &&
+          interactionMode !== "plan" &&
+          input.capExemption === undefined &&
+          nonImplementationDelegatedRole === undefined;
+        const performLaunch = Effect.gen(function* () {
+          let startedRuntimeMode =
+            projectDefaults !== undefined && input.runtimeMode === undefined
+              ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
+                  Effect.orElseSucceed(() => runtimeMode),
+                )
+              : runtimeMode;
+          if (!replaying) {
+            const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
+            startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
+              modelSelection,
+              supportedRuntimeModes: providers.find(
+                (provider) => provider.instanceId === modelSelection.instanceId,
+              )?.supportedRuntimeModes,
+            });
+          }
+          // A new thread owns no attachments yet, even on a replay: a replay claims again and
+          // keeps the copies its first launch accepted.
+          const requested = input.attachments ?? [];
+          return yield* withResolvedAttachments({ requested, owned: [], context }, (attachments) =>
             ThreadMessageIntake.launchThread({
               commandId,
               threadId,
@@ -403,6 +414,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               creationSource: "mcp",
               ...(linkOrigin === undefined ? {} : { linkOrigin }),
               ...(delegatedFrom === undefined ? {} : { delegatedFrom }),
+              ...(nonImplementationDelegatedRole === undefined
+                ? {}
+                : { tags: [nonImplementationDelegatedRole] }),
             }).pipe(
               Effect.mapError((error) => {
                 if (error._tag === "AttachmentClaimError") {
@@ -427,7 +441,17 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 return unavailable();
               }),
             ),
-        );
+          );
+        });
+        const result = needsRepoSlot
+          ? yield* RepoConcurrencyAdmission.withRepoConcurrencySlot({
+              admission: yield* Effect.serviceOption(
+                RepoConcurrencyAdmission.RepoConcurrencyAdmission,
+              ),
+              projectId,
+              use: () => performLaunch,
+            })
+          : yield* performLaunch;
         const thread = result.projection.thread;
         // A concurrent request can accept the key after the shell lookup.
         if (input.clientRequestId !== undefined)

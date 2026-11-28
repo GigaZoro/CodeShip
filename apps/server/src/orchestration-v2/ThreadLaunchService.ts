@@ -25,6 +25,7 @@ import {
   type ScheduledTaskId,
   ThreadId,
   type ThreadFolder,
+  type ThreadTag,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -107,6 +108,8 @@ export interface ThreadLaunchInput {
   readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
   /** The sidebar folder a newly created thread starts in; a reused thread keeps its own. */
   readonly folder?: ThreadFolder;
+  /** Initial tags for a newly created thread (e.g. non-implementation delegated role). */
+  readonly tags?: ReadonlyArray<ThreadTag>;
 }
 
 type PreparationInput = Pick<
@@ -1077,6 +1080,9 @@ const make = Effect.gen(function* () {
                   : { importedNativeThread: input.importedNativeThread }),
                 ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
                 ...(input.folder === undefined ? {} : { folder: input.folder }),
+                ...(input.tags === undefined || input.tags.length === 0
+                  ? {}
+                  : { tags: input.tags }),
                 ...(input.delegatedFrom === undefined
                   ? {}
                   : { delegatedFrom: input.delegatedFrom }),

@@ -218,6 +218,7 @@ import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as CpuAdmission from "./resourceTelemetry/CpuAdmission.ts";
 import * as MemoryAdmission from "./resourceTelemetry/MemoryAdmission.ts";
+import * as RepoConcurrencyAdmission from "./peer/RepoConcurrencyAdmission.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as TriageService from "./triage/TriageService.ts";
@@ -685,14 +686,19 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
+const layerPeerMcpClient = PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer));
+
+const layerRepoConcurrencyAdmission = RepoConcurrencyAdmission.layer.pipe(
+  Layer.provide(RuntimeLayer.layerProjectService),
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provide(layerPeerMcpClient),
+);
+
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   Layer.provide(DesktopUpdateResume.layer),
   // Memoized with the links the rest of the server shares.
-  Layer.provide(
-    SharedTaskPeerCheck.layer.pipe(
-      Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer))),
-    ),
-  ),
+  Layer.provide(SharedTaskPeerCheck.layer.pipe(Layer.provide(layerPeerMcpClient))),
+  Layer.provideMerge(layerRepoConcurrencyAdmission),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(LaunchJournal.layer),
   Layer.provide(ProviderUsageAnalytics.layer),

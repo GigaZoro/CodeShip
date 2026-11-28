@@ -12794,6 +12794,8 @@ const catalog: MessageCatalog = {
     "Встановлення клієнта ретранслятора завершилося без остаточного стану.",
   "The relay client is still unavailable after installation.":
     "Клієнт ретранслятора досі недоступний після встановлення.",
+  "The repository already reached its limit of concurrent active or landing implementation threads.":
+    "Репозиторій уже досяг ліміту одночасних активних чатів реалізації або чатів на злитті.",
   "The request failed.": "Запит не вдався.",
   "The request timed out.": "Час очікування відповіді минув.",
   "The requested model is not available, so your default is used.":
