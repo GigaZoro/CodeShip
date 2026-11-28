@@ -1,3 +1,7 @@
+## 2026-11-28 — Depth-one landing pipeline pre-checks the next queued change
+
+- Maintainers: `landing-turn.cjs` now pipelines the first queued lander behind the current turn holder: while a holder runs under-turn checks or `finalize`, it atomically publishes its rebased candidate commit to `refs/heads/landing-lease/candidate` (cleaned up on push, release, or lapsed-lease takeover), and the next waiter in line speculatively rebases and pre-checks a private copy against that candidate. When the holder lands that exact commit and the rebased tree matches, the waiter skips `underTurnCheck` and pushes straight to `main`, logging `speculativeReused` and `phases.speculativeCheck` in `landings.jsonl`.
+
 ## 2026-11-28 — Declarative capability tiers and provider dissimilarity for Auto delegations
 
 - `delegate_task` in Auto mode accepts an optional `routing` object (`capabilityTier`, `minTier`, `excludeVendorFamily`) so agents can ask for `fast`, `standard`, `deep`, or `frontier` capability tiers, enforce a minimum reasoning floor across prompt lengths, and steer delegations away from an excluded vendor family (such as `anthropic`, `openai`, `google`, or `xai`).

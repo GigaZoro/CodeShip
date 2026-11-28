@@ -15,6 +15,7 @@ const { STOP_TREE_MS, endGroup, probeGroup, spawnChild, spawnTree } = require(".
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
+const CANDIDATE_REF = "refs/heads/landing-lease/candidate";
 // .gitattributes names this driver. Only a landing's own rebase configures it; a manual one merges the file as text.
 const BUDGET_MERGE_CONFIG = [
   [
@@ -361,6 +362,62 @@ function moveLease(lease, from, to) {
 }
 
 /**
+ * Atomically moves origin's lease from `from` to `to` and publishes `candidateSha` to CANDIDATE_REF, guarded by
+ * `LEASE_REF:from`. Same CAS and readback semantics as `moveLease`.
+ */
+function moveLeaseAndCandidate(lease, from, to, candidateSha) {
+  const { cwd, remote, callMs = LEASE_CALL_MS } = lease;
+  const pushed = remoteGit(
+    cwd,
+    [
+      "push",
+      "--quiet",
+      "--atomic",
+      `--force-with-lease=${LEASE_REF}:${from}`,
+      remote,
+      `${to}:${LEASE_REF}`,
+      `+${candidateSha}:${CANDIDATE_REF}`,
+    ],
+    callMs,
+    { allowFailure: true },
+  );
+  if (pushed.ok) return true;
+  const after = remoteLease(lease);
+  if (after === to) return true;
+  if (after !== from) return false;
+  throw new RemoteFailure(`git push failed: ${pushed.stderr}`);
+}
+
+/**
+ * Deletes origin's lease `from` (and CANDIDATE_REF atomically when `deleteCandidate` is true). If CANDIDATE_REF is
+ * already absent on origin while `from` still stands, falls back to deleting LEASE_REF alone so the lease always frees.
+ */
+function deleteLease(lease, from, { deleteCandidate = false } = {}) {
+  if (!deleteCandidate) return moveLease(lease, from, null);
+  const { cwd, remote, callMs = LEASE_CALL_MS } = lease;
+  const pushed = remoteGit(
+    cwd,
+    [
+      "push",
+      "--quiet",
+      "--atomic",
+      `--force-with-lease=${LEASE_REF}:${from}`,
+      remote,
+      `:${LEASE_REF}`,
+      `:${CANDIDATE_REF}`,
+    ],
+    callMs,
+    { allowFailure: true },
+  );
+  if (pushed.ok) return true;
+  const after = remoteLease(lease);
+  if (after === null) return true;
+  if (after !== from) return false;
+  if (remoteRef(lease, CANDIDATE_REF) === null) return moveLease(lease, from, null);
+  throw new RemoteFailure(`git push failed: ${pushed.stderr}`);
+}
+
+/**
  * Whether a lease is live to the wait `runId` on `machine`, by the wait's own clock: one it watched unchanged for its
  * `ttl_ms` awake missed three renewals. One renewed two `ttl_ms` ago by the wall clock is dead at once, unless its
  * holder is on `machine` and slept whenever the wait did. Leases with no `ttl_ms` or `renewed_at` predate them.
@@ -380,16 +437,16 @@ function leaseLive(holder, { now, runId, machine, watched }) {
 }
 
 /**
- * Origin's lease commit (null: none), its turn, and the run id of a live one; a lease that lapsed, or whose lander
- * `localHolder` finds gone, has no live holder. `watched(sha, ttl)` answers how long the wait has been awake since it
- * first read the lease commit `sha`, and needs to be exact only from `ttl` on.
+ * Origin's lease commit (null: none), its turn, the run id and payload of a live one; a lease that lapsed, or whose
+ * lander `localHolder` finds gone, has no live holder. `watched(sha, ttl)` answers how long the wait has been awake
+ * since it first read the lease commit `sha`, and needs to be exact only from `ttl` on.
  */
 function readLease(
   { readLeaseHolder = readHolder, ...lease },
   { now, runId = null, machine = machineTag(), watched = () => 0 },
 ) {
   const held = remoteLease(lease);
-  if (!held) return { held, turn: null, liveRunId: null };
+  if (!held) return { held, turn: null, liveRunId: null, holder: null };
   const holder = readLeaseHolder(lease, held);
   const turn = turnOf(held, holder);
   // A lease nobody can read is one nobody can release, so it lapses like any other.
@@ -397,14 +454,14 @@ function readLease(
     holder !== null &&
     leaseLive(holder, { now, runId, machine, watched: (ttl) => watched(held, ttl) }) &&
     localHolder(lease.cwd, turn)?.gone !== true;
-  return { held, turn, liveRunId: live ? holder.run_id : null };
+  return { held, turn, liveRunId: live ? holder.run_id : null, holder: live ? holder : null };
 }
 
 /**
  * Takes the lease when it is free, lapsed, or held by a lander `localHolder` finds gone; returns it, or null while
  * another lander holds it. A live lease that carries the wait's `runId` is its own, as when a take reached origin
  * although its push reported a failure. `machine` names this machine as the lease does; `onHolder` hears a live lease's
- * run id, and `watched` is readLease's.
+ * run id and parsed payload, and `watched` is readLease's.
  */
 function tryAcquire({
   runId,
@@ -415,14 +472,19 @@ function tryAcquire({
   onHolder = () => {},
   ...lease
 }) {
-  const { held, turn, liveRunId } = readLease(lease, { now, runId, machine, watched });
+  const { held, turn, liveRunId, holder } = readLease(lease, { now, runId, machine, watched });
   if (liveRunId !== null) {
-    onHolder(liveRunId);
+    onHolder(liveRunId, holder);
     if (liveRunId !== runId) return null;
     recordHolder(lease.cwd, held);
     return held;
   }
-  if (!canTake() || (held && !moveLease(lease, held, null))) return null;
+  if (!canTake()) return null;
+  if (held) {
+    // Clean up any lingering candidate ref left by a crashed/lapsed holder atomically with the lapsed lease.
+    const staleCandidate = remoteRef(lease, CANDIDATE_REF);
+    if (!deleteLease(lease, held, { deleteCandidate: staleCandidate !== null })) return null;
+  }
   if (turn) forgetHolder(lease.cwd, turn);
   const acquiredAt = now();
   const expiresAt = acquiredAt + LEASE_TTL_MS;
@@ -469,14 +531,16 @@ function landingCommit(cwd, data, parent) {
 function release(
   { failingMs = FAILING_MS, pollMs = POLL_MS, sleep = sleepSync, awakeClock = awakeNow, ...lease },
   sha,
-  { pending = null, turn = sha } = {},
+  { pending = null, turn = sha, deleteCandidate = false } = {},
 ) {
   let failingSince = null;
   for (let first = true; ; first = false) {
     let failure;
     try {
       // Deleting the old lease fences a delayed renewal. If the renewal won, only its own commit may be deleted.
-      if (!moveLease(lease, sha, null) && pending !== null) moveLease(lease, pending, null);
+      if (!deleteLease(lease, sha, { deleteCandidate }) && pending !== null) {
+        deleteLease(lease, pending, { deleteCandidate });
+      }
       forgetHolder(lease.cwd, turn);
       return true;
     } catch (error) {
@@ -543,19 +607,19 @@ function awakeNow() {
 }
 
 /**
- * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. Failures of origin
- * count on `awakeClock`: a sleep is no time the lander tried. The wait makes its own run id, so no other wait can carry it.
- * It ends after `maxWaitMs` in which nothing moved.
+ * Shared state machine for `acquire` (sync) and `acquireAsync` (event-loop-friendly). Waits for the turn on the
+ * monotonic clock, counts origin failures on `awakeClock`, and notifies `onWaitState({ firstInQueue, holder })` after
+ * each clean poll observation while waiting.
  */
-function acquire({
+function createAcquireSession({
   maxWaitMs = MAX_WAIT_MS,
   failingMs = FAILING_MS,
   pollMs = POLL_MS,
   random = Math.random,
-  sleep = sleepSync,
   clock = () => performance.now(),
   now = Date.now,
   awakeClock = awakeNow,
+  onWaitState = () => {},
   ...options
 }) {
   const runId = randomUUID();
@@ -603,11 +667,14 @@ function acquire({
   };
   // A take that failed partway may have reached origin, and the queue can put another entry first meanwhile.
   let tookMaybe = false;
-  try {
-    for (;;) {
+
+  return {
+    step() {
       let failure = null;
       let firstInQueue = false;
       let polled = false;
+      let observed = false;
+      let observedLiveHolder = null;
       try {
         // A take of its own that origin applied is its turn while it lives; one that lapsed goes back through the queue.
         if (tookMaybe) {
@@ -615,7 +682,7 @@ function acquire({
           tookMaybe = false;
           if (liveRunId === runId) {
             recordHolder(cwd, held);
-            return held;
+            return { done: true, sha: held };
           }
         }
         firstInQueue = queue.poll();
@@ -634,11 +701,15 @@ function acquire({
               moved("head", queue.head());
               return firstInQueue;
             },
-            onHolder: (holder) => moved("holder", holder),
+            onHolder: (holderRunId, holder) => {
+              moved("holder", holderRunId);
+              observedLiveHolder = holder;
+            },
           });
           tookMaybe = false;
-          if (sha) return sha;
+          if (sha) return { done: true, sha };
         }
+        observed = true;
       } catch (error) {
         if (!(error instanceof RemoteFailure)) throw error;
         failure = error;
@@ -680,14 +751,50 @@ function acquire({
       } else {
         failingSince = null;
       }
-      sleep(Math.round(pollMs * (0.8 + 0.4 * random())));
+      if (observed) {
+        onWaitState({ firstInQueue, holder: firstInQueue ? observedLiveHolder : null });
+      }
+      return { done: false, pauseMs: Math.round(pollMs * (0.8 + 0.4 * random())) };
+    },
+    leave() {
+      try {
+        queue.leave();
+      } catch (error) {
+        process.stderr.write(`landing turn: could not remove its queue entry: ${error.message}\n`);
+      }
+    },
+  };
+}
+
+/**
+ * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. Failures of origin
+ * count on `awakeClock`: a sleep is no time the lander tried. The wait makes its own run id, so no other wait can carry it.
+ * It ends after `maxWaitMs` in which nothing moved.
+ */
+function acquire({ sleep = sleepSync, ...options }) {
+  const session = createAcquireSession(options);
+  try {
+    for (;;) {
+      const step = session.step();
+      if (step.done) return step.sha;
+      sleep(step.pauseMs);
     }
   } finally {
-    try {
-      queue.leave();
-    } catch (error) {
-      process.stderr.write(`landing turn: could not remove its queue entry: ${error.message}\n`);
+    session.leave();
+  }
+}
+
+/** Async version of `acquire` that leaves the event loop free between polls for speculative pre-checking. */
+async function acquireAsync({ sleep = defaultWaitSlot, ...options }) {
+  const session = createAcquireSession(options);
+  try {
+    for (;;) {
+      const step = session.step();
+      if (step.done) return step.sha;
+      await sleep(step.pauseMs);
     }
+  } finally {
+    session.leave();
   }
 }
 
@@ -702,10 +809,9 @@ function turnEnd(data) {
 }
 
 /**
- * Holds main's landing turn while `run(turn, signal, pushMain)` runs, in this process alone. `turn` is the first lease
- * commit, renewed every LEASE_RENEW_MS for LEASE_TTL_MS more up to the turn's end. `signal` aborts once the turn is
- * lost, as when this machine slept and another lander took the lease, or at the turn's end. `pushMain(branch, commit)`
- * pushes `commit` there; `every` schedules the renewals and `after` the stops of calls to origin that ran out of time.
+ * Holds main's landing turn while `run(turn, signal, pushMain, publishCandidate)` runs, renewing every LEASE_RENEW_MS
+ * up to the turn's end. `signal` aborts on turn loss; `pushMain` moves main atomically with the lease; `publishCandidate`
+ * atomically publishes the rebased candidate ref on the lease for the first waiter.
  */
 async function runWithTurn(
   { every = repeatEvery, after = runAfter, mainCallMs = MAIN_CALL_MS, ...options },
@@ -713,12 +819,17 @@ async function runWithTurn(
 ) {
   const now = options.now ?? Date.now;
   const awakeClock = options.awakeClock ?? awakeNow;
-  const turn = acquire(options);
+  const turn = await acquireAsync(options);
   const lost = new AbortController();
   // The last confirmed lease. Null once the push or the release has finished handling it.
   let current = turn;
+  // Parsed payload of the last confirmed lease (updated with `candidate` once publication confirms).
+  let data = null;
   // A renewal of `current` whose answer was lost, which origin may hold instead.
   let pending = null;
+  let pendingCandidate = null;
+  let candidatePresent = false;
+  let candidateMaybePresent = false;
   let cancel = () => {};
   let releaseConfirmed = true;
   const lose = (reason) => {
@@ -734,16 +845,35 @@ async function runWithTurn(
   /** Resends the same conditional renewal: reading the old commit alone cannot rule out a late write. */
   const settle = () => {
     if (pending === null) return true;
-    const took = moveLease(options, current, pending);
-    if (took) current = pending;
-    else forgetTurn();
+    const took =
+      pendingCandidate !== null
+        ? moveLeaseAndCandidate(options, current, pending, pendingCandidate)
+        : moveLease(options, current, pending);
+    if (took) {
+      current = pending;
+      if (pendingCandidate !== null) {
+        data = { ...data, candidate: pendingCandidate };
+        candidatePresent = true;
+      }
+    } else {
+      forgetTurn();
+    }
     pending = null;
+    pendingCandidate = null;
     return took;
   };
   const releaseTurn = () => {
     if (current === null) return true;
-    const released = release(options, current, { pending, turn });
+    const released = release(options, current, {
+      pending,
+      turn,
+      deleteCandidate: candidatePresent || candidateMaybePresent,
+    });
     current = null;
+    pending = null;
+    pendingCandidate = null;
+    candidatePresent = false;
+    candidateMaybePresent = false;
     if (!released) releaseConfirmed = false;
     return released;
   };
@@ -766,7 +896,7 @@ async function runWithTurn(
   };
   let result;
   try {
-    const data = JSON.parse(leaseLine(options.cwd, turn));
+    data = JSON.parse(leaseLine(options.cwd, turn));
     let failing = false;
     /** Renews the lease. False when origin holds no lease of the turn any more, which its caller decides on. */
     const renew = () => {
@@ -809,6 +939,56 @@ async function runWithTurn(
     const renewHeld = () => {
       if (!renew()) loseTaken();
     };
+    /**
+     * Publishes `candidateSha` atomically with a lease renewal carrying `candidate: candidateSha`. A transient remote
+     * failure warns and returns false without failing the holder's landing; CAS loss aborts the turn.
+     */
+    const publishCandidate = (candidateSha) => {
+      if (lost.signal.aborted || current === null) return false;
+      if (!OBJECT_ID.test(candidateSha ?? "")) {
+        throw new Error(`landing turn: invalid candidate commit "${candidateSha}"`);
+      }
+      const at = now();
+      if (at >= turnEnd(data)) {
+        lose("the turn reached its end.");
+        return false;
+      }
+      try {
+        if (!settle()) {
+          loseTaken();
+          return false;
+        }
+        const expiresAt = Math.min(at + LEASE_TTL_MS, turnEnd(data));
+        pending = landingCommit(
+          options.cwd,
+          {
+            ...data,
+            candidate: candidateSha,
+            turn,
+            renewed_at: new Date(at).toISOString(),
+            expires_at: new Date(expiresAt).toISOString(),
+          },
+          current,
+        );
+        pendingCandidate = candidateSha;
+        candidateMaybePresent = true;
+        if (!settle()) {
+          loseTaken();
+          return false;
+        }
+        failing = false;
+        return true;
+      } catch (error) {
+        if (!(error instanceof RemoteFailure)) {
+          lose(error.message);
+          return false;
+        }
+        process.stderr.write(
+          `landing turn: could not publish candidate commit: ${error.message}\nContinuing without publishing candidate.\n`,
+        );
+        return false;
+      }
+    };
     // Main moves only in the push that gives back the exact lease commit the turn holds, so origin refuses the push of a
     // holder whose lease another lander took, however late the holder would learn of it. No renewal may move the lease
     // under the push, so the push starts on a fresh lease and is stopped before that lease runs out. A call's limit counts
@@ -830,6 +1010,11 @@ async function runWithTurn(
           // A failed push can still land. Keep local waiters from taking this turn until its lease is given back.
           recordHolder(options.cwd, turn, { pushing: true });
           sent = true;
+          const refspecs = [
+            `${commit}:refs/heads/${branch}`,
+            `:${LEASE_REF}`,
+            ...(candidatePresent ? [`:${CANDIDATE_REF}`] : []),
+          ];
           const pushed = await gitAsync(
             options.cwd,
             [
@@ -838,12 +1023,13 @@ async function runWithTurn(
               "--atomic",
               `--force-with-lease=${LEASE_REF}:${current}`,
               options.remote,
-              `${commit}:refs/heads/${branch}`,
-              `:${LEASE_REF}`,
+              ...refspecs,
             ],
             { env: { [TURN_ENV]: turn }, allowFailure: true, timeoutMs: leftMs, after },
           );
           if (pushed.ok) {
+            candidatePresent = false;
+            candidateMaybePresent = false;
             forgetTurn();
             return true;
           }
@@ -852,6 +1038,10 @@ async function runWithTurn(
             // A different lease already rules out this delayed write. Only main still needs checking.
             forgetTurn();
             break;
+          }
+          if (candidatePresent && remoteRef(options, CANDIDATE_REF) === null) {
+            candidatePresent = false;
+            continue;
           }
           if (!pushed.timedOut || awakeClock() - started >= leftMs) {
             failure = new Error(`git push failed: ${pushMessage}`);
@@ -885,7 +1075,7 @@ async function runWithTurn(
     // A take confirmed late, after a lost answer, has already spent part of its lease.
     if (Date.parse(data.expires_at) - now() < LEASE_TTL_MS - LEASE_RENEW_MS) renewHeld();
     cancel = every(LEASE_RENEW_MS, renewHeld);
-    result = await run(turn, lost.signal, pushMain);
+    result = await run(turn, lost.signal, pushMain, publishCandidate);
   } finally {
     cancel();
     releaseTurn();
@@ -1027,17 +1217,20 @@ function keepAwake({
  * Rebases HEAD onto `base` unless HEAD holds it already. A conflict must not leave the worktree in the middle of the
  * rebase: the next landing would refuse it.
  */
-async function rebaseOnto(cwd, base) {
+async function rebaseOnto(cwd, base, { signal, trackChild } = {}) {
+  throwIfAborted(signal);
   if (holds(cwd, base)) return;
   try {
     // Main gains release notes and tool text while a lander waits; the drivers merge them, whatever git config says.
     await gitAsync(cwd, ["rebase", base], {
       config: [...MERGE_DRIVER_CONFIG, ...BUDGET_MERGE_CONFIG],
+      signal,
+      trackChild,
     });
   } catch (error) {
     if (stoppedRebase(cwd)) {
-      error.landingStatus = "conflict";
-      await gitAsync(cwd, ["rebase", "--abort"], { allowFailure: true });
+      if (!signal?.aborted) error.landingStatus = "conflict";
+      await gitAsync(cwd, ["rebase", "--abort"], { allowFailure: true, trackChild });
     }
     throw error;
   }
@@ -1334,8 +1527,45 @@ function isFirstWaiter(queueDir, myName) {
   return true;
 }
 
-function defaultWaitSlot(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error("landing: aborted");
+  error.name = "AbortError";
+  throw error;
+}
+
+function defaultWaitSlot(ms, signal) {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function waitWithSignal(startWait, signal) {
+  if (!signal) return startWait();
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve();
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(startWait()).then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function ownPgid() {
@@ -1530,10 +1760,11 @@ async function removeCheckout(cwd, directory, { timeoutMs, trackChild, signal, i
 }
 
 /** Whether `directory` is a working checkout of the clone whose Git folder is `common`. */
-async function checkoutOf(directory, common, { trackChild } = {}) {
+async function checkoutOf(directory, common, { trackChild, signal } = {}) {
+  if (signal?.aborted) return false;
   if (!fs.existsSync(path.join(directory, ".git"))) return false;
   const args = ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"];
-  const shown = await gitAsync(directory, args, { allowFailure: true, trackChild });
+  const shown = await gitAsync(directory, args, { allowFailure: true, trackChild, signal });
   if (!shown.ok) return false;
   const [top, own] = shown.stdout.split("\n").map((entry) => fs.realpathSync.native(entry));
   return top === fs.realpathSync.native(directory) && own === common;
@@ -1543,24 +1774,29 @@ async function checkoutOf(directory, common, { trackChild } = {}) {
  * Moves a kept checkout to `commit` and deletes every file the commit lacks but each package's node_modules. A holder
  * killed in a git call leaves git's lock files; holding the slot, this landing is the only one using them.
  */
-async function resetCheckout(directory, commit, { trackChild, isStopping } = {}) {
-  if (isStopping?.()) return;
+async function resetCheckout(directory, commit, { trackChild, signal, isStopping } = {}) {
+  if (isStopping?.() || signal?.aborted) return;
   const lockFiles = ["--git-path", "index.lock", "--git-path", "HEAD.lock"];
   const locks = await gitAsync(directory, ["rev-parse", "--path-format=absolute", ...lockFiles], {
     trackChild,
+    signal,
   });
-  if (isStopping?.()) return;
+  if (isStopping?.() || signal?.aborted) return;
   for (const file of locks.stdout.split("\n")) await fs.promises.rm(file, { force: true });
-  if (isStopping?.()) return;
-  await gitAsync(directory, ["checkout", "--quiet", "--detach", "--force", commit], { trackChild });
-  if (isStopping?.()) return;
+  if (isStopping?.() || signal?.aborted) return;
+  await gitAsync(directory, ["checkout", "--quiet", "--detach", "--force", commit], {
+    trackChild,
+    signal,
+  });
+  if (isStopping?.() || signal?.aborted) return;
   // A package the commit removed leaves its node_modules alone in its folder; that goes too.
   // Force C locale so git's "Would remove " prefix is never translated.
   const listed = await gitAsync(directory, ["-c", "core.quotePath=false", "clean", "-ffdxn"], {
     env: { LC_ALL: "C", LANG: "C", LANGUAGE: "" },
     trackChild,
+    signal,
   });
-  if (isStopping?.()) return;
+  if (isStopping?.() || signal?.aborted) return;
   const kept = listed.stdout
     .split("\n")
     .filter((line) => line.startsWith("Would remove "))
@@ -1572,6 +1808,7 @@ async function resetCheckout(directory, commit, { trackChild, isStopping } = {})
     );
   await gitAsync(directory, ["clean", "-ffdxq", ...kept.flatMap((entry) => ["-e", `/${entry}/`])], {
     trackChild,
+    signal,
   });
 }
 
@@ -1593,21 +1830,21 @@ async function prepareCheckout(
   directory,
   commit,
   common,
-  { forceRebuild = false, trackChild, isStopping } = {},
+  { forceRebuild = false, trackChild, signal, isStopping } = {},
 ) {
-  if (isStopping?.()) return { reused: false };
-  if (!forceRebuild && (await checkoutOf(directory, common, { trackChild }))) {
-    if (isStopping?.()) return { reused: false };
+  if (isStopping?.() || signal?.aborted) return { reused: false };
+  if (!forceRebuild && (await checkoutOf(directory, common, { trackChild, signal }))) {
+    if (isStopping?.() || signal?.aborted) return { reused: false };
     try {
-      await resetCheckout(directory, commit, { trackChild, isStopping });
-      return { reused: !isStopping?.() };
+      await resetCheckout(directory, commit, { trackChild, signal, isStopping });
+      return { reused: !isStopping?.() && !signal?.aborted };
     } catch (error) {
-      if (isStopping?.()) return { reused: false };
+      if (isStopping?.() || signal?.aborted) return { reused: false };
       console.error(`landing: rebuilding ${directory}, which did not reset: ${error.message}`);
     }
   }
-  if (isStopping?.()) return { reused: false };
-  await rebuildCheckout(cwd, directory, commit, { trackChild, isStopping });
+  if (isStopping?.() || signal?.aborted) return { reused: false };
+  await rebuildCheckout(cwd, directory, commit, { trackChild, signal, isStopping });
   return { reused: false };
 }
 
@@ -1704,10 +1941,12 @@ async function acquireCheckoutSlot({
   waitSlot = defaultWaitSlot,
   localSlotPollMs = LOCAL_SLOT_POLL_MS,
   onWaitStart = () => {},
+  signal,
 }) {
   if (role !== "preWait" && role !== "underTurn") {
     throw new Error(`landing: unknown checkout slot role "${role}"`);
   }
+  throwIfAborted(signal);
   const common = fs.realpathSync.native(commonGitDir(cwd));
   const folder = checkoutsFolder(common);
   fs.mkdirSync(folder, { recursive: true });
@@ -1776,21 +2015,35 @@ async function acquireCheckoutSlot({
   }
 
   await sweepCheckouts(cwd, folder, now, limit);
+  throwIfAborted(signal);
   const queueDir = path.join(folder, QUEUE_FOLDER);
   if (!hasLiveWaiter(queueDir)) {
     const warm = tryLockWarm();
-    if (warm) return makeSlot(warm.index, warm.db, false, { extra: false });
+    if (warm) {
+      if (signal?.aborted) {
+        warm.db.close();
+        throwIfAborted(signal);
+      }
+      return makeSlot(warm.index, warm.db, false, { extra: false });
+    }
   }
 
   onWaitStart();
   const ticket = joinLocalQueue(queueDir);
   try {
     for (;;) {
+      throwIfAborted(signal);
       if (isFirstWaiter(queueDir, ticket.name)) {
         const warm = tryLockWarm();
-        if (warm) return makeSlot(warm.index, warm.db, true, { extra: false });
+        if (warm) {
+          if (signal?.aborted) {
+            warm.db.close();
+            throwIfAborted(signal);
+          }
+          return makeSlot(warm.index, warm.db, true, { extra: false });
+        }
       }
-      await waitSlot(localSlotPollMs);
+      await waitWithSignal(() => waitSlot(localSlotPollMs, signal), signal);
     }
   } finally {
     ticket.leave();
@@ -1801,7 +2054,8 @@ async function acquireCheckoutSlot({
  * Prepares `slot` at `commit`, tracks its dirty marker and active child processes, and runs `run(directory, context)`.
  * Caller owns calling `slot.release()` in a `finally` block.
  */
-async function runInCheckoutSlot(slot, commit, run) {
+async function runInCheckoutSlot(slot, commit, run, { signal } = {}) {
+  if (signal?.aborted) return undefined;
   const { cwd, common, folder, index, directory, extra } = slot;
   const dirtyPath = path.join(folder, `${index}.dirty`);
   const host = dirtyMarkerHost();
@@ -1871,7 +2125,7 @@ async function runInCheckoutSlot(slot, commit, run) {
     }
   };
   const stopListening = () => {
-    for (const signal of STOP_SIGNALS) process.removeListener(signal, onStop);
+    for (const stopSignal of STOP_SIGNALS) process.removeListener(stopSignal, onStop);
   };
   const teardownExtra = () => {
     if (teardownPromise !== null) return teardownPromise;
@@ -1888,7 +2142,7 @@ async function runInCheckoutSlot(slot, commit, run) {
     })();
     return teardownPromise;
   };
-  function onStop(signal) {
+  function onStop(stopSignal) {
     if (stopping) return;
     stopping = true;
     slot.claimStop();
@@ -1899,32 +2153,38 @@ async function runInCheckoutSlot(slot, commit, run) {
         slot.release({ force: true });
       }
       try {
-        process.kill(process.pid, signal);
+        process.kill(process.pid, stopSignal);
       } catch {
-        process.exit(signal === "SIGHUP" ? 129 : signal === "SIGINT" ? 130 : 143);
+        process.exit(stopSignal === "SIGHUP" ? 129 : stopSignal === "SIGINT" ? 130 : 143);
       }
     })();
   }
   const waitIfStopping = () => (stopping ? new Promise(() => {}) : Promise.resolve());
-  if (extra) for (const signal of STOP_SIGNALS) process.on(signal, onStop);
+  if (extra) for (const stopSignal of STOP_SIGNALS) process.on(stopSignal, onStop);
   try {
     const wasDirty = await stopDirtyGroup(dirtyPath);
     await waitIfStopping();
+    if (signal?.aborted) return undefined;
     writeDirty();
     await waitIfStopping();
     const { reused } = await prepareCheckout(cwd, directory, commit, common, {
       forceRebuild: wasDirty,
       trackChild,
+      signal,
       isStopping: () => stopping,
     });
     await waitIfStopping();
-    const rebuild = async (signal) => {
-      await rebuildCheckout(cwd, directory, commit, {
+    if (signal?.aborted) {
+      dirtyOnExit = true;
+      return undefined;
+    }
+    const rebuild = async (rebuildSignal, targetCommit = commit) => {
+      await rebuildCheckout(cwd, directory, targetCommit, {
         trackChild,
-        signal,
+        signal: rebuildSignal,
         isStopping: () => stopping,
       });
-      if (signal?.aborted) dirtyOnExit = true;
+      if (rebuildSignal?.aborted) dirtyOnExit = true;
     };
     const result = await run(directory, {
       reused,
@@ -1933,6 +2193,7 @@ async function runInCheckoutSlot(slot, commit, run) {
       isStopping: () => stopping,
     });
     await waitIfStopping();
+    if (signal?.aborted) dirtyOnExit = true;
     if (!extra && !dirtyOnExit) removeDirtyMarker(dirtyPath);
     return result;
   } finally {
@@ -2130,84 +2391,269 @@ async function runLanding(
       (directory, checkoutContext) =>
         check(turn, base, budgetSeconds, directory, signal, checkoutContext),
     );
+  let specTask = null;
+  let lastSpecPromise = Promise.resolve();
+  const stopSpeculative = async (reason) => {
+    const active = specTask;
+    specTask = null;
+    if (active && !active.controller.signal.aborted) {
+      active.controller.abort(new Error(reason));
+    }
+    await lastSpecPromise;
+  };
+  const startSpeculative = (candidate) => {
+    const prevPromise = lastSpecPromise;
+    const controller = new AbortController();
+    const specSignal = controller.signal;
+    const specTreeDeferred = Promise.withResolvers();
+    const task = {
+      candidate,
+      controller,
+      specTree: null,
+      specTreeReady: specTreeDeferred.promise,
+      passed: false,
+      settled: false,
+      promise: null,
+    };
+    const runPromise = (async () => {
+      try {
+        await prevPromise;
+        if (specSignal.aborted) return;
+        const specRef = `refs/worktree/landing-turn/spec-${randomUUID()}`;
+        let fetchedSha = null;
+        try {
+          const fetched = await gitAsync(
+            cwd,
+            [...FETCH_OBJECTS, "--refmap=", remote, `+${CANDIDATE_REF}:${specRef}`],
+            { allowFailure: true, signal: specSignal, timeoutMs: mainCallMs, after },
+          );
+          if (!fetched.ok || specSignal.aborted) return;
+          const parsed = git(cwd, ["rev-parse", "--verify", `${specRef}^{commit}`], {
+            allowFailure: true,
+          });
+          if (parsed.ok) fetchedSha = parsed.stdout;
+        } finally {
+          git(cwd, ["update-ref", "-d", specRef], { allowFailure: true });
+        }
+        if (specSignal.aborted || fetchedSha !== candidate) return;
+        if (git(cwd, ["merge-base", "--is-ancestor", candidate, tip], { allowFailure: true }).ok) {
+          return;
+        }
+        const scriptsChanged = git(
+          cwd,
+          ["diff", "--name-only", `${checked}..${candidate}`, "--", ".github/scripts/"],
+          { allowFailure: true },
+        );
+        if (!scriptsChanged.ok || scriptsChanged.stdout) return;
+        record.note({ speculativeReused: false });
+        await record.time("speculativeCheck", async () => {
+          const specSlot = await acquireCheckoutSlot({
+            cwd,
+            role: "preWait",
+            warmLimit,
+            now,
+            waitSlot,
+            localSlotPollMs,
+            signal: specSignal,
+          });
+          try {
+            if (specSignal.aborted) return;
+            const ok = await runInCheckoutSlot(
+              specSlot,
+              tip,
+              async (directory, checkoutContext) => {
+                if (specSignal.aborted) return false;
+                await rebaseOnto(directory, candidate, {
+                  signal: specSignal,
+                  trackChild: checkoutContext.trackChild,
+                });
+                if (specSignal.aborted) return false;
+                if (notesMergeProblem(directory)) return false;
+                const specTip = git(directory, ["rev-parse", "HEAD"]).stdout;
+                task.specTree = git(directory, ["rev-parse", "HEAD^{tree}"]).stdout;
+                specTreeDeferred.resolve(task.specTree);
+                const specCheckoutContext = {
+                  ...checkoutContext,
+                  rebuild: (rebuildSignal) => checkoutContext.rebuild(rebuildSignal, specTip),
+                };
+                return await check(
+                  null,
+                  candidate,
+                  undefined,
+                  directory,
+                  specSignal,
+                  specCheckoutContext,
+                );
+              },
+              { signal: specSignal },
+            );
+            if (ok && !specSignal.aborted) task.passed = true;
+          } finally {
+            specSlot.release();
+          }
+        });
+      } catch {
+        // Speculative pre-check is best-effort; failures fall back to the normal under-turn check.
+      } finally {
+        specTreeDeferred.resolve(task.specTree);
+        task.settled = true;
+      }
+    })();
+    task.promise = runPromise;
+    lastSpecPromise = runPromise;
+    return task;
+  };
+  const onWaitState = ({ firstInQueue, holder }) => {
+    const candidate =
+      firstInQueue && typeof holder?.candidate === "string" && OBJECT_ID.test(holder.candidate)
+        ? holder.candidate
+        : null;
+    if (!candidate || candidate === checked) {
+      if (specTask && !specTask.controller.signal.aborted) {
+        specTask.controller.abort(
+          new Error(firstInQueue ? "candidate cleared" : "no longer first in queue"),
+        );
+      }
+      specTask = null;
+      return;
+    }
+    if (specTask?.candidate === candidate) return;
+    if (specTask && !specTask.controller.signal.aborted) {
+      specTask.controller.abort(new Error("candidate changed"));
+    }
+    specTask = startSpeculative(candidate);
+  };
   record.note({ stage: "waiting" });
   const waited = record.begin("waitForTurn");
-  const { result, releaseConfirmed } = await runWithTurn(
-    { cwd, remote, now, mainCallMs, after, awakeClock, ...rest },
-    async (turn, signal, pushMain) => {
-      waited();
-      record.note({ stage: "under-turn" });
-      const turnStarted = turnClock();
-      const leftMs = turnEnd(JSON.parse(leaseLine(cwd, turn))) - now();
-      const lostTurn = () => ({ status: "lost-turn", reason: signal.reason.message });
-      const base = await fetchMain(cwd, remote, branch, turn, mainCall);
-      record.note({ base });
-      // The checks passed for this commit, not for one checked out during the wait or this fetch.
-      const headAfterFetch = git(cwd, ["rev-parse", "HEAD"]).stdout;
-      if (headAfterFetch !== tip) {
-        return { status: "head-moved", expected: tip, actual: headAfterFetch };
-      }
-      const rebasedUnderTurn = base !== checked;
-      if (rebasedUnderTurn) {
-        await record.time("rebase", () => rebaseOnto(cwd, base));
-        tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
-        record.note({ head: tip });
-      }
-      if (signal.aborted) return lostTurn();
-      const verifyUnchanged = async (expectedTip, expectedBase) => {
-        const currentHead = git(cwd, ["rev-parse", "HEAD"]).stdout;
-        if (currentHead !== expectedTip) {
-          return { status: "head-moved", expected: expectedTip, actual: currentHead };
+  let result;
+  let releaseConfirmed;
+  try {
+    ({ result, releaseConfirmed } = await runWithTurn(
+      { cwd, remote, now, mainCallMs, after, awakeClock, onWaitState, ...rest },
+      async (turn, signal, pushMain, publishCandidate) => {
+        try {
+          waited();
+          record.note({ stage: "under-turn" });
+          const turnStarted = turnClock();
+          const leftMs = turnEnd(JSON.parse(leaseLine(cwd, turn))) - now();
+          const lostTurn = () => ({ status: "lost-turn", reason: signal.reason.message });
+          const base = await fetchMain(cwd, remote, branch, turn, mainCall);
+          record.note({ base });
+          // The checks passed for this commit, not for one checked out during the wait or this fetch.
+          const headAfterFetch = git(cwd, ["rev-parse", "HEAD"]).stdout;
+          if (headAfterFetch !== tip) {
+            await stopSpeculative("head moved");
+            return { status: "head-moved", expected: tip, actual: headAfterFetch };
+          }
+          const rebasedUnderTurn = base !== checked;
+          if (!rebasedUnderTurn || !specTask || specTask.candidate !== base) {
+            await stopSpeculative("base does not match speculative candidate");
+          }
+          if (rebasedUnderTurn) {
+            await record.time("rebase", () => rebaseOnto(cwd, base));
+            tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+            record.note({ head: tip });
+          }
+          if (signal.aborted) {
+            await stopSpeculative("turn lost");
+            return lostTurn();
+          }
+          let speculativeReused = false;
+          if (rebasedUnderTurn && specTask && specTask.candidate === base) {
+            const activeSpec = specTask;
+            const tipTree = git(cwd, ["rev-parse", "HEAD^{tree}"]).stdout;
+            const onTurnLost = () => {
+              if (!activeSpec.controller.signal.aborted) {
+                activeSpec.controller.abort(new Error("turn lost"));
+              }
+            };
+            signal.addEventListener("abort", onTurnLost, { once: true });
+            if (signal.aborted) onTurnLost();
+            try {
+              const specTree = await activeSpec.specTreeReady;
+              if (
+                (specTree === null || specTree !== tipTree) &&
+                !activeSpec.controller.signal.aborted
+              ) {
+                activeSpec.controller.abort(new Error("speculative tree mismatch"));
+              }
+              await activeSpec.promise;
+            } finally {
+              signal.removeEventListener("abort", onTurnLost);
+            }
+            specTask = null;
+            if (signal.aborted) return lostTurn();
+            speculativeReused =
+              activeSpec.passed && activeSpec.candidate === base && activeSpec.specTree === tipTree;
+            if (speculativeReused) record.note({ speculativeReused: true });
+          }
+          if (((rebasedUnderTurn && !speculativeReused) || Boolean(finalize)) && !signal.aborted) {
+            publishCandidate(tip);
+            if (signal.aborted) return lostTurn();
+          }
+          const verifyUnchanged = async (expectedTip, expectedBase) => {
+            const currentHead = git(cwd, ["rev-parse", "HEAD"]).stdout;
+            if (currentHead !== expectedTip) {
+              return { status: "head-moved", expected: expectedTip, actual: currentHead };
+            }
+            const currentBase = await remoteBranchSha(cwd, remote, branch, mainCall);
+            if (signal.aborted) return lostTurn();
+            if (currentBase !== expectedBase) {
+              return { status: "base-moved", expected: expectedBase, actual: currentBase };
+            }
+            return null;
+          };
+          if (finalize) {
+            const finalizedTip = tip;
+            const finalizedBase = base;
+            const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
+            const approved = await record.time("finalize", () =>
+              withPrivateCheckout(
+                { cwd, commit: finalizedTip, role: "underTurn", warmLimit, now },
+                (directory, checkoutContext) =>
+                  finalize({
+                    turn,
+                    commit: finalizedTip,
+                    base: finalizedBase,
+                    rebased: rebasedUnderTurn,
+                    budgetSeconds: budget,
+                    directory,
+                    signal,
+                    trackChild: checkoutContext.trackChild,
+                    isStopping: checkoutContext.isStopping,
+                  }),
+              ),
+            );
+            if (signal.aborted) return lostTurn();
+            if (!approved) {
+              return { status: "finalize-failed", commit: finalizedTip, base: finalizedBase };
+            }
+            const drift = await verifyUnchanged(finalizedTip, finalizedBase);
+            if (drift) return drift;
+          }
+          if (rebasedUnderTurn && !speculativeReused) {
+            const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
+            const passed = await record.time("underTurnCheck", () =>
+              checkUnderTurn(turn, base, budget, signal),
+            );
+            if (signal.aborted) return lostTurn();
+            if (!passed) return { status: "check-failed" };
+            const drift = await verifyUnchanged(tip, base);
+            if (drift) return drift;
+          } else if (rebasedUnderTurn && speculativeReused && !finalize) {
+            const drift = await verifyUnchanged(tip, base);
+            if (drift) return drift;
+          }
+          if (!(await record.time("push", () => pushMain(branch, tip)))) return lostTurn();
+          return { status: "landed", commit: tip };
+        } finally {
+          await stopSpeculative("turn ended");
         }
-        const currentBase = await remoteBranchSha(cwd, remote, branch, mainCall);
-        if (signal.aborted) return lostTurn();
-        if (currentBase !== expectedBase) {
-          return { status: "base-moved", expected: expectedBase, actual: currentBase };
-        }
-        return null;
-      };
-      if (finalize) {
-        const finalizedTip = tip;
-        const finalizedBase = base;
-        const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
-        const approved = await record.time("finalize", () =>
-          withPrivateCheckout(
-            { cwd, commit: finalizedTip, role: "underTurn", warmLimit, now },
-            (directory, checkoutContext) =>
-              finalize({
-                turn,
-                commit: finalizedTip,
-                base: finalizedBase,
-                rebased: rebasedUnderTurn,
-                budgetSeconds: budget,
-                directory,
-                signal,
-                trackChild: checkoutContext.trackChild,
-                isStopping: checkoutContext.isStopping,
-              }),
-          ),
-        );
-        if (signal.aborted) return lostTurn();
-        if (!approved) {
-          return { status: "finalize-failed", commit: finalizedTip, base: finalizedBase };
-        }
-        const drift = await verifyUnchanged(finalizedTip, finalizedBase);
-        if (drift) return drift;
-      }
-      if (rebasedUnderTurn) {
-        const budget = checkBudgetSeconds(leftMs, turnClock() - turnStarted);
-        const passed = await record.time("underTurnCheck", () =>
-          checkUnderTurn(turn, base, budget, signal),
-        );
-        if (signal.aborted) return lostTurn();
-        if (!passed) return { status: "check-failed" };
-        const drift = await verifyUnchanged(tip, base);
-        if (drift) return drift;
-      }
-      if (!(await record.time("push", () => pushMain(branch, tip)))) return lostTurn();
-      return { status: "landed", commit: tip };
-    },
-  );
+      },
+    ));
+  } finally {
+    await stopSpeculative("landing finished");
+  }
   record.note({ releaseConfirmed });
   return releaseConfirmed ? result : { ...result, releaseConfirmed };
 }
@@ -2486,6 +2932,7 @@ if (require.main === module) {
 module.exports = {
   BOOT_ID,
   LEASE_REF,
+  CANDIDATE_REF,
   TURN_ENV,
   RECORD_ENV,
   FINAL_COMMIT_ENV,
@@ -2510,6 +2957,7 @@ module.exports = {
   testing: {
     tryAcquire,
     acquire,
+    acquireAsync,
     release,
     runCheck,
     runFinalize,
