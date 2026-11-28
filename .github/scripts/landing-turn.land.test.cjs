@@ -922,7 +922,7 @@ test("a command given an argument it does not take is refused before it takes th
     assert.deepEqual(
       errors,
       Array(11).fill(
-        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs> | land --finalize <command>",
+        "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs> | land [--remote <host[,...]>] [--remote-dir <path>] [--local] [--finalize <command>]",
       ),
     );
     assert.equal(git(origin, "rev-parse", "main"), main_);

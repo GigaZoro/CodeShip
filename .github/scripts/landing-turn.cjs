@@ -7,6 +7,7 @@ const { createHash, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { StringDecoder } = require("node:string_decoder");
 const { TIMED_OUT_STATUS } = require("./bounded-git.cjs");
 const { GIT_OUTPUT_MAX_BYTES, REAL_HISTORY_ENV, markedFiles } = require("./git-history.cjs");
 const { startLandingRecord } = require("./landing-record.cjs");
@@ -16,6 +17,8 @@ const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs"
 
 const LEASE_REF = "refs/heads/landing-lease/main";
 const CANDIDATE_REF = "refs/heads/landing-lease/candidate";
+// Staging refs live outside refs/heads/landing-lease/ so lease/queue scans stay strictly scoped.
+const STAGING_REF_PREFIX = "refs/heads/landing-staging/";
 // .gitattributes names this driver. Only a landing's own rebase configures it; a manual one merges the file as text.
 const BUDGET_MERGE_CONFIG = [
   [
@@ -26,6 +29,12 @@ const BUDGET_MERGE_CONFIG = [
 const TURN_ENV = "T3_LANDING_TURN";
 // What a landing's relaunch after its rebase gets of the first process's record.
 const RECORD_ENV = "T3_LANDING_RECORD";
+const REMOTE_HOST_ENV = "T3_LANDING_REMOTE_HOST";
+const REMOTE_DIR_ENV = "T3_LANDING_REMOTE_DIR";
+const REMOTE_HOST_RE = /^[A-Za-z0-9._@%+\-[\]:]+$/;
+const PROBE_CONNECT_TIMEOUT_SEC = 10;
+const PROBE_TIMEOUT_MS = 15 * 1000;
+const PROBE_OUTPUT_MAX_BYTES = 1024 * 1024;
 const TEST_STEP_MAX_ENV = "CHECK_CHANGED_TEST_STEP_MAX";
 const CHECK_METRICS_FILE_ENV = "CHECK_CHANGED_METRICS_FILE";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -2278,6 +2287,21 @@ async function land({
   }
 }
 
+function checkLocalWorktree(cwd) {
+  // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
+  // so the pre-push hook would refuse it only after the whole check.
+  if (stoppedRebase(cwd)) return { status: "rebase-in-progress" };
+  const uncommitted = git(cwd, ["status", "--porcelain"]).stdout;
+  if (uncommitted) return { status: "uncommitted", files: uncommitted.split("\n") };
+  // `status` does not list edits to files marked assume-unchanged or skip-worktree, which the checks would read.
+  const marked = markedFiles(cwd);
+  if (marked.length > 0) return { status: "marked-files", files: marked };
+  // Found before the wait, not after a rebase that breaks the notes and checks that fail on them.
+  const problem = notesMergeProblem(cwd);
+  if (problem) throw new Error(problem);
+  return null;
+}
+
 async function runLanding(
   {
     cwd,
@@ -2306,17 +2330,8 @@ async function runLanding(
   const { stdout: topic } = git(cwd, ["branch", "--show-current"], { allowFailure: true });
   record.note({ branch: topic || null, head: tip });
   if (rebased && tip !== rebased.head) return { status: "head-moved" };
-  // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
-  // so the pre-push hook would refuse it only after the whole check.
-  if (stoppedRebase(cwd)) return { status: "rebase-in-progress" };
-  const uncommitted = git(cwd, ["status", "--porcelain"]).stdout;
-  if (uncommitted) return { status: "uncommitted", files: uncommitted.split("\n") };
-  // `status` does not list edits to files marked assume-unchanged or skip-worktree, which the checks would read.
-  const marked = markedFiles(cwd);
-  if (marked.length > 0) return { status: "marked-files", files: marked };
-  // Found before the wait, not after a rebase that breaks the notes and checks that fail on them.
-  const problem = notesMergeProblem(cwd);
-  if (problem) throw new Error(problem);
+  const preflightIssue = checkLocalWorktree(cwd);
+  if (preflightIssue) return preflightIssue;
   // Before the wait, so a conflict stops the landing with no turn held. The CLI then lands the rebased commit again
   // from its tree, so the wait runs that tree's copy of this script, checking against the base it rebased onto.
   let checked = rebased?.base ?? (await fetchMain(cwd, remote, branch, randomUUID(), mainCall));
@@ -2877,19 +2892,996 @@ async function runFinalize(
   ).ok;
 }
 
+class RemoteConfigError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RemoteConfigError";
+    this.exitCode = 2;
+  }
+}
+
+function hasControlChar(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function validateRemoteHost(host) {
+  if (
+    typeof host !== "string" ||
+    host.length === 0 ||
+    host.startsWith("-") ||
+    !REMOTE_HOST_RE.test(host)
+  ) {
+    throw new RemoteConfigError(`landing turn: invalid remote host ${JSON.stringify(host)}`);
+  }
+  return host;
+}
+
+function parseRemoteHosts(raw) {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    throw new RemoteConfigError("landing turn: remote host list must not be empty");
+  }
+  const hosts = [];
+  const seen = new Set();
+  for (const segment of raw.split(",")) {
+    const host = validateRemoteHost(segment.trim());
+    if (!seen.has(host)) {
+      seen.add(host);
+      hosts.push(host);
+    }
+  }
+  return hosts;
+}
+
+function validateRemoteDir(dir) {
+  if (dir === undefined || dir === null) return undefined;
+  if (typeof dir !== "string" || dir.trim().length === 0) {
+    throw new RemoteConfigError("landing turn: remote directory must not be empty");
+  }
+  if (hasControlChar(dir)) {
+    throw new RemoteConfigError("landing turn: remote directory contains control characters");
+  }
+  return dir;
+}
+
+/** Strict POSIX single-quoting helper: safe for every dynamic value passed in a remote shell snippet. */
+function shellQuote(value) {
+  const text = String(value);
+  if (text.includes("\0")) {
+    throw new RemoteConfigError("landing turn: shell argument contains NUL byte");
+  }
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+function buildSshArgs(host, remoteCommand, { connectTimeoutSec = PROBE_CONNECT_TIMEOUT_SEC } = {}) {
+  validateRemoteHost(host);
+  return [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    `ConnectTimeout=${connectTimeoutSec}`,
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "ServerAliveCountMax=3",
+    "--",
+    host,
+    remoteCommand,
+  ];
+}
+
+function normalizeOriginUrl(url) {
+  const trimmed = String(url ?? "").trim();
+  if (!trimmed) return "";
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
+    if (/^file:\/\//i.test(trimmed)) {
+      const local = trimmed.slice(7);
+      if (!local) return "";
+      try {
+        return fs.realpathSync.native(local);
+      } catch {
+        return path.resolve(local);
+      }
+    }
+    if (/^(?:https?|ssh|git|git\+https?|git\+ssh):\/\//i.test(trimmed)) {
+      try {
+        const parsed = new URL(trimmed);
+        parsed.username = "";
+        parsed.password = "";
+        const repo = parsed.pathname
+          .replace(/^\/+/, "")
+          .replace(/\/+$/, "")
+          .replace(/\.git$/i, "")
+          .replace(/\/+$/, "");
+        if (!parsed.hostname || !repo) return "";
+        return `${parsed.hostname}/${repo}`.toLowerCase();
+      } catch {
+        // Never propagate malformed URLs that may contain embedded credentials.
+        return "";
+      }
+    }
+    // Fail closed on any unsupported URI scheme (e.g. ftp://, ftps://, custom+scheme://).
+    return "";
+  }
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]{2,}):(.+)$/.exec(trimmed);
+  if (scp) {
+    const repo = scp[2]
+      .replace(/^\/+/, "")
+      .replace(/\/+$/, "")
+      .replace(/\.git$/i, "")
+      .replace(/\/+$/, "");
+    if (!repo) return "";
+    return `${scp[1]}/${repo}`.toLowerCase();
+  }
+  // Already-normalized remote origin (e.g. "github.com/org/repo") stays idempotent instead of resolving as a relative path.
+  if (
+    !path.isAbsolute(trimmed) &&
+    !trimmed.startsWith(".") &&
+    !trimmed.startsWith("~") &&
+    !fs.existsSync(trimmed) &&
+    /^[^@:/\s]+\/[^:\s]+$/.test(trimmed)
+  ) {
+    return trimmed
+      .replace(/\/+$/, "")
+      .replace(/\.git$/i, "")
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  }
+  try {
+    return fs.realpathSync.native(trimmed);
+  } catch {
+    return path.resolve(trimmed);
+  }
+}
+
+// Inline Node probe executed on candidate SSH hosts (no single quotes or double backslashes so quoting stays portable across POSIX/csh/fish shells).
+const REMOTE_PROBE_SCRIPT = [
+  'const fs = require("node:fs");',
+  'const os = require("node:os");',
+  'const path = require("node:path");',
+  'const { execFileSync } = require("node:child_process");',
+  'const [rawDir = "", expectedOrigin = ""] = process.argv.slice(1);',
+  "const home = os.homedir();",
+  'const expand = (p) => (p === "~" ? home : p.startsWith("~/") ? path.join(home, p.slice(2)) : p);',
+  "const norm = (u) => {",
+  '  const t = String(u || "").trim();',
+  '  if (!t) return "";',
+  "  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\\/\\//.test(t)) {",
+  "    if (/^file:\\/\\//i.test(t)) {",
+  "      const local = t.slice(7);",
+  '      if (!local) return "";',
+  "      try { return fs.realpathSync.native(local); } catch { return path.resolve(local); }",
+  "    }",
+  "    if (/^(?:https?|ssh|git|git\\+https?|git\\+ssh):\\/\\//i.test(t)) {",
+  "      try {",
+  "        const parsed = new URL(t);",
+  '        parsed.username = "";',
+  '        parsed.password = "";',
+  '        const repo = parsed.pathname.replace(/^\\/+/, "").replace(/\\/+$/, "").replace(/\\.git$/i, "").replace(/\\/+$/, "");',
+  '        if (!parsed.hostname || !repo) return "";',
+  '        return (parsed.hostname + "/" + repo).toLowerCase();',
+  '      } catch { return ""; }',
+  "    }",
+  '    return "";',
+  "  }",
+  "  const scp = /^(?:[^@/\\s]+@)?([^:/\\s]{2,}):(.+)$/.exec(t);",
+  "  if (scp) {",
+  '    const repo = scp[2].replace(/^\\/+/, "").replace(/\\/+$/, "").replace(/\\.git$/i, "").replace(/\\/+$/, "");',
+  '    if (!repo) return "";',
+  '    return (scp[1] + "/" + repo).toLowerCase();',
+  "  }",
+  "  try { return fs.realpathSync.native(t); } catch { return path.resolve(t); }",
+  "};",
+  "const candidates = rawDir",
+  "  ? [path.resolve(expand(rawDir))]",
+  "  : [",
+  '      path.join(home, "CodeShip"),',
+  '      path.join(home, "code", "CodeShip"),',
+  '      path.join(home, "dev", "CodeShip"),',
+  '      path.join(home, "repos", "CodeShip"),',
+  '      path.join(home, "src", "CodeShip"),',
+  '      path.join(home, "projects", "CodeShip"),',
+  "    ];",
+  "let found = null;",
+  'let reason = "remote checkout not found";',
+  "for (const dir of candidates) {",
+  '  if (!fs.existsSync(path.join(dir, ".github", "scripts", "landing-turn.cjs"))) continue;',
+  "  try {",
+  '    execFileSync("git", ["-C", dir, "rev-parse", "--git-dir"], { stdio: "pipe" });',
+  "  } catch {",
+  '    reason = "not a git repository";',
+  "    continue;",
+  "  }",
+  '  let remoteOrigin = "";',
+  "  try {",
+  '    remoteOrigin = execFileSync("git", ["-C", dir, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();',
+  "  } catch {",
+  '    reason = "missing origin remote";',
+  "    continue;",
+  "  }",
+  "  if (expectedOrigin && norm(remoteOrigin) !== expectedOrigin) {",
+  '    reason = "origin remote mismatch";',
+  "    continue;",
+  "  }",
+  "  found = dir;",
+  "  break;",
+  "}",
+  "if (!found) {",
+  "  console.log(JSON.stringify({ ok: false, reason }));",
+  "  process.exit(0);",
+  "}",
+  'const cpus = typeof os.availableParallelism === "function" ? os.availableParallelism() : (os.cpus().length || null);',
+  'const load = process.platform === "win32" ? null : os.loadavg()[0];',
+  'const load1 = typeof load === "number" && Number.isFinite(load) ? load : null;',
+  "console.log(JSON.stringify({ ok: true, dir: found, load1, cpus }));",
+].join(" ");
+
+const REMOTE_PROBE_SHELL =
+  'if [ -f "$HOME/.config/vite-plus/env" ]; then . "$HOME/.config/vite-plus/env"; fi; PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; export PATH; exec node -e "$1" -- "$2" "$3"';
+
+function buildRemoteProbeCommand(remoteDir, expectedOriginUrl = "") {
+  const rawOrigin = String(expectedOriginUrl ?? "").trim();
+  const normalizedOrigin = normalizeOriginUrl(rawOrigin);
+  if (rawOrigin.length > 0 && normalizedOrigin === "") {
+    throw new Error("landing turn: invalid expected origin URL");
+  }
+  return `exec sh -c ${shellQuote(REMOTE_PROBE_SHELL)} sh ${shellQuote(REMOTE_PROBE_SCRIPT)} ${shellQuote(remoteDir ?? "")} ${shellQuote(normalizedOrigin)}`;
+}
+
+function validateStagingRef(stagingRef) {
+  if (
+    typeof stagingRef !== "string" ||
+    !stagingRef.startsWith(STAGING_REF_PREFIX) ||
+    stagingRef.length <= STAGING_REF_PREFIX.length ||
+    /\s/.test(stagingRef) ||
+    hasControlChar(stagingRef)
+  ) {
+    throw new Error(`landing turn: invalid staging ref ${JSON.stringify(stagingRef)}`);
+  }
+  return stagingRef;
+}
+
+const REMOTE_LAND_SHELL = [
+  'if [ -f "$HOME/.config/vite-plus/env" ]; then . "$HOME/.config/vite-plus/env"; fi',
+  'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"',
+  "export PATH",
+  "REMOTE_DIR=$1",
+  "STAGING_REF=$2",
+  "TIP=$3",
+  "TMP_BRANCH=$4",
+  "TMP_REF=$5",
+  "FINALIZE_CMD=${6-}",
+  'TMP_BASE="${TMPDIR:-/tmp}"',
+  'TMP_PARENT=$(mktemp -d "${TMP_BASE%/}/t3-remote-land-XXXXXX") || exit 1',
+  'TMP_WT="$TMP_PARENT/worktree"',
+  'CHILD_PID=""',
+  "CLEANED=0",
+  'cleanup() { [ "$CLEANED" -eq 1 ] && return; CLEANED=1; if [ -n "$CHILD_PID" ]; then kill -TERM "$CHILD_PID" >/dev/null 2>&1 || true; wait "$CHILD_PID" >/dev/null 2>&1 || true; fi; cd / >/dev/null 2>&1 || true; if [ -n "$TMP_WT" ]; then git -C "$REMOTE_DIR" worktree remove --force "$TMP_WT" >/dev/null 2>&1 || true; fi; if [ -n "$TMP_PARENT" ]; then rm -rf "$TMP_PARENT" >/dev/null 2>&1 || true; fi; git -C "$REMOTE_DIR" worktree prune >/dev/null 2>&1 || true; git -C "$REMOTE_DIR" branch -D "$TMP_BRANCH" >/dev/null 2>&1 || true; git -C "$REMOTE_DIR" update-ref -d "$TMP_REF" >/dev/null 2>&1 || true; }',
+  "trap cleanup EXIT",
+  'trap "cleanup; exit 130" INT',
+  'trap "cleanup; exit 143" TERM',
+  'trap "cleanup; exit 129" HUP',
+  'git -C "$REMOTE_DIR" fetch --quiet --no-tags --no-write-fetch-head origin "+$STAGING_REF:$TMP_REF" || exit 1',
+  'FETCHED=$(git -C "$REMOTE_DIR" rev-parse --verify "${TMP_REF}^{commit}") || exit 1',
+  'if [ "$FETCHED" != "$TIP" ]; then printf "%s\\n" "landing turn: remote fetched commit $FETCHED does not match expected $TIP" >&2; exit 1; fi',
+  'git -C "$REMOTE_DIR" worktree add --quiet -B "$TMP_BRANCH" "$TMP_WT" "$TIP" || exit 1',
+  'if [ -n "$FINALIZE_CMD" ]; then set -- land --finalize "$FINALIZE_CMD"; else set -- land; fi',
+  '( unset T3_LANDING_REMOTE_HOST T3_LANDING_REMOTE_DIR; cd "$TMP_WT" || exit 1; exec node .github/scripts/landing-turn.cjs "$@" ) & CHILD_PID=$!',
+  "RC=0",
+  'wait "$CHILD_PID" || RC=$?',
+  'CHILD_PID=""',
+  'exit "$RC"',
+].join("; ");
+
+function buildRemoteLandCommand({ remoteDir, stagingRef, tip, runId, finalizeCommand }) {
+  validateRemoteDir(remoteDir);
+  if (!remoteDir) {
+    throw new RemoteConfigError("landing turn: remote directory must not be empty");
+  }
+  validateStagingRef(stagingRef);
+  if (!OBJECT_ID.test(tip)) throw new Error(`landing turn: invalid commit "${tip}"`);
+  const safeId = String(runId).replace(/[^A-Za-z0-9-]/g, "");
+  if (!safeId) throw new Error("landing turn: invalid remote landing run id");
+  const tmpBranch = `remote-land-${safeId}`;
+  const tmpRef = `refs/tmp/remote-land-${safeId}`;
+  const args = [
+    remoteDir,
+    stagingRef,
+    tip,
+    tmpBranch,
+    tmpRef,
+    ...(finalizeCommand ? [finalizeCommand] : []),
+  ];
+  return `exec sh -c ${shellQuote(REMOTE_LAND_SHELL)} sh ${args.map(shellQuote).join(" ")}`;
+}
+
+const REMOTE_TERMINAL_STATUSES = new Set([
+  "landed",
+  "check-failed",
+  "conflict",
+  "finalize-failed",
+  "lost-turn",
+  "head-moved",
+  "base-moved",
+  "uncommitted",
+  "marked-files",
+  "rebase-in-progress",
+]);
+
+function isValidRemoteLandingResult(parsed) {
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    typeof parsed.status !== "string" ||
+    !REMOTE_TERMINAL_STATUSES.has(parsed.status)
+  ) {
+    return false;
+  }
+  if (parsed.releaseConfirmed !== undefined && typeof parsed.releaseConfirmed !== "boolean") {
+    return false;
+  }
+  if (parsed.status === "landed" && !OBJECT_ID.test(parsed.commit ?? "")) {
+    return false;
+  }
+  return true;
+}
+
+function parseLandingResultLine(line) {
+  const trimmed = String(line ?? "").trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (isValidRemoteLandingResult(parsed)) return parsed;
+  } catch {
+    // Not a landing JSON result line.
+  }
+  return null;
+}
+
+function parseLastLandingResult(stdout) {
+  const lines = String(stdout ?? "").split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].trim().length === 0) continue;
+    return parseLandingResultLine(lines[index]);
+  }
+  return null;
+}
+
+function parseProbeOutput(stdout) {
+  const lines = String(stdout ?? "").split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const trimmed = lines[index].trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed !== null && typeof parsed === "object" && typeof parsed.ok === "boolean") {
+        return parsed;
+      }
+    } catch {
+      // Ignore non-JSON lines (such as remote login banners).
+    }
+  }
+  return null;
+}
+
+async function runSshCommand({
+  host,
+  remoteCommand,
+  timeoutMs,
+  connectTimeoutSec = PROBE_CONNECT_TIMEOUT_SEC,
+  after = runAfter,
+  streamStdout = false,
+  trackChild,
+}) {
+  const sshArgs = buildSshArgs(host, remoteCommand, { connectTimeoutSec });
+  const { child, stop, done, group } = spawnTree("ssh", sshArgs, {
+    stdio: ["ignore", "pipe", streamStdout ? "inherit" : "pipe"],
+    windowsHide: true,
+  });
+  const untrack = trackChild ? trackChild({ stop, done, group }) : () => {};
+  const cancel = timeoutMs === undefined ? () => {} : after(timeoutMs, stop);
+  const stdoutChunks = [];
+  const stderrChunks = [];
+  const decoder = streamStdout ? new StringDecoder("utf8") : null;
+  let capturedBytes = 0;
+  let remainder = "";
+  let pendingResultLine = null;
+  let lastResult = null;
+
+  const pushStdoutLine = (line) => {
+    const parsed = parseLandingResultLine(line);
+    if (parsed) {
+      if (pendingResultLine !== null) process.stderr.write(`${pendingResultLine}\n`);
+      pendingResultLine = line;
+      lastResult = parsed;
+      return;
+    }
+    if (line.trim().length > 0 && pendingResultLine !== null) {
+      process.stderr.write(`${pendingResultLine}\n`);
+      pendingResultLine = null;
+      lastResult = null;
+    }
+    process.stderr.write(`${line}\n`);
+  };
+
+  if (streamStdout) {
+    child.stdout.on("data", (chunk) => {
+      remainder += decoder.write(chunk);
+      let newlineIndex = remainder.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = remainder.slice(0, newlineIndex).replace(/\r$/, "");
+        remainder = remainder.slice(newlineIndex + 1);
+        pushStdoutLine(line);
+        newlineIndex = remainder.indexOf("\n");
+      }
+    });
+  } else {
+    const collect = (chunks) => (chunk) => {
+      if (capturedBytes >= PROBE_OUTPUT_MAX_BYTES) return;
+      const room = PROBE_OUTPUT_MAX_BYTES - capturedBytes;
+      const slice = chunk.length <= room ? chunk : chunk.subarray(0, room);
+      chunks.push(slice);
+      capturedBytes += slice.length;
+    };
+    child.stdout.on("data", collect(stdoutChunks));
+    child.stderr.on("data", collect(stderrChunks));
+  }
+
+  try {
+    const { code, signal, stopped } = await done;
+    if (streamStdout) {
+      remainder += decoder.end();
+      let newlineIndex = remainder.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = remainder.slice(0, newlineIndex).replace(/\r$/, "");
+        remainder = remainder.slice(newlineIndex + 1);
+        pushStdoutLine(line);
+        newlineIndex = remainder.indexOf("\n");
+      }
+      if (remainder.length > 0) {
+        const line = remainder.replace(/\r$/, "");
+        const parsed = parseLandingResultLine(line);
+        if (parsed) {
+          if (pendingResultLine !== null) process.stderr.write(`${pendingResultLine}\n`);
+          pendingResultLine = line;
+          lastResult = parsed;
+        } else {
+          if (line.trim().length > 0 && pendingResultLine !== null) {
+            process.stderr.write(`${pendingResultLine}\n`);
+            pendingResultLine = null;
+            lastResult = null;
+          }
+          process.stderr.write(line);
+        }
+      }
+    }
+    return {
+      code,
+      signal,
+      stopped,
+      stdout: streamStdout ? "" : Buffer.concat(stdoutChunks).toString("utf8"),
+      stderr: streamStdout ? "" : Buffer.concat(stderrChunks).toString("utf8"),
+      lastResult,
+    };
+  } finally {
+    cancel();
+    untrack();
+  }
+}
+
+async function probeRemoteHost({
+  host,
+  remoteDir,
+  expectedOriginUrl = "",
+  probeTimeoutMs = PROBE_TIMEOUT_MS,
+  after = runAfter,
+  execSsh = runSshCommand,
+}) {
+  const remoteCommand = buildRemoteProbeCommand(remoteDir, expectedOriginUrl);
+  let result;
+  try {
+    result = await execSsh({
+      host,
+      remoteCommand,
+      timeoutMs: probeTimeoutMs,
+      after,
+      streamStdout: false,
+    });
+  } catch (error) {
+    return { host, ok: false, reason: error?.message || "ssh failed" };
+  }
+  if (result.stopped) return { host, ok: false, reason: "probe timed out" };
+  if (result.code !== 0) {
+    const firstStderrLine = String(result.stderr ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    const detail =
+      firstStderrLine ||
+      (result.signal ? `signal ${result.signal}` : `ssh exit ${result.code ?? "unknown"}`);
+    return { host, ok: false, reason: detail };
+  }
+  const parsed = parseProbeOutput(result.stdout);
+  if (!parsed) return { host, ok: false, reason: "invalid probe output" };
+  if (!parsed.ok || typeof parsed.dir !== "string" || parsed.dir.length === 0) {
+    return {
+      host,
+      ok: false,
+      reason:
+        typeof parsed.reason === "string" && parsed.reason.length > 0
+          ? parsed.reason
+          : "remote checkout not ready",
+    };
+  }
+  let validatedDir;
+  try {
+    validatedDir = validateRemoteDir(parsed.dir);
+  } catch (error) {
+    return {
+      host,
+      ok: false,
+      reason: error?.message || "invalid remote checkout directory",
+    };
+  }
+  return {
+    host,
+    ok: true,
+    dir: validatedDir,
+    load1:
+      typeof parsed.load1 === "number" && Number.isFinite(parsed.load1) && parsed.load1 >= 0
+        ? parsed.load1
+        : null,
+    cpus:
+      typeof parsed.cpus === "number" && Number.isFinite(parsed.cpus) && parsed.cpus > 0
+        ? parsed.cpus
+        : null,
+  };
+}
+
+function normalizedLoad(probe) {
+  if (
+    typeof probe?.load1 === "number" &&
+    Number.isFinite(probe.load1) &&
+    probe.load1 >= 0 &&
+    typeof probe?.cpus === "number" &&
+    Number.isFinite(probe.cpus) &&
+    probe.cpus > 0
+  ) {
+    return probe.load1 / probe.cpus;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+async function selectRemoteHost({ hosts, remoteDir, expectedOriginUrl, probeHost }) {
+  const settled = await Promise.allSettled(
+    hosts.map((host) =>
+      Promise.resolve().then(() => probeHost({ host, remoteDir, expectedOriginUrl })),
+    ),
+  );
+  const probes = settled.map((entry, index) => {
+    if (entry.status === "fulfilled") return entry.value;
+    return {
+      host: hosts[index],
+      ok: false,
+      reason: entry.reason?.message || String(entry.reason || "probe failed"),
+    };
+  });
+  let best = null;
+  let bestLoad = Number.POSITIVE_INFINITY;
+  for (const probe of probes) {
+    if (!probe?.ok || typeof probe.dir !== "string" || probe.dir.length === 0) continue;
+    const load = normalizedLoad(probe);
+    if (best === null || load < bestLoad) {
+      best = probe;
+      bestLoad = load;
+    }
+  }
+  if (best !== null) return { selected: best, probes, reason: null };
+  const reason = probes
+    .map((probe) => `${probe?.host ?? "unknown"}: ${probe?.reason || "unreachable"}`)
+    .join("; ");
+  return { selected: null, probes, reason };
+}
+
+async function cleanupStagingRef({ cwd, remote, stagingRef, after = runAfter }) {
+  try {
+    const deleted = await gitAsync(cwd, ["push", "--quiet", remote, `:${stagingRef}`], {
+      allowFailure: true,
+      timeoutMs: CLEANUP_GIT_TIMEOUT_MS,
+      after,
+    });
+    if (deleted.ok) return;
+    const remaining = await gitAsync(cwd, ["ls-remote", "--refs", remote, stagingRef], {
+      allowFailure: true,
+      timeoutMs: CLEANUP_GIT_TIMEOUT_MS,
+      after,
+    });
+    if (remaining.ok && remaining.stdout === "") return;
+    warnLanding(`delete staging ref ${stagingRef}`, new Error(deleted.stderr || "push failed"));
+  } catch (error) {
+    warnLanding(`delete staging ref ${stagingRef}`, error);
+  }
+}
+
+async function syncLocalAfterRemoteLand({
+  cwd,
+  remote,
+  branch,
+  tip,
+  topic,
+  landedCommit,
+  mainCallMs = MAIN_CALL_MS,
+  after = runAfter,
+  trackChild,
+}) {
+  const syncRef = `refs/worktree/landing-turn/sync-${randomUUID()}`;
+  try {
+    const fetched = await gitAsync(
+      cwd,
+      [...FETCH_OBJECTS, remote, `+refs/heads/${branch}:${syncRef}`],
+      {
+        allowFailure: true,
+        timeoutMs: mainCallMs,
+        after,
+        trackChild,
+      },
+    );
+    if (!fetched.ok) {
+      warnLanding(`fetch ${remote}/${branch} after remote landing`, new Error(fetched.stderr));
+      return;
+    }
+    const isAncestor = git(cwd, ["merge-base", "--is-ancestor", landedCommit, syncRef], {
+      allowFailure: true,
+    }).ok;
+    if (!isAncestor) return;
+    const headResult = git(cwd, ["rev-parse", "HEAD"], { allowFailure: true });
+    const topicResult = git(cwd, ["branch", "--show-current"], { allowFailure: true });
+    const statusResult = git(cwd, ["status", "--porcelain", "--untracked-files=all"], {
+      allowFailure: true,
+    });
+    const clean =
+      headResult.ok &&
+      topicResult.ok &&
+      statusResult.ok &&
+      !stoppedRebase(cwd) &&
+      statusResult.stdout === "" &&
+      markedFiles(cwd).length === 0;
+    if (!clean || headResult.stdout !== tip || topicResult.stdout !== topic) {
+      process.stderr.write(
+        `landing turn: landed remotely at ${landedCommit}, but left local worktree untouched because it changed while remote landing ran.\n`,
+      );
+      return;
+    }
+    if (tip !== landedCommit) {
+      const reset = git(cwd, ["reset", "--keep", "--quiet", landedCommit], { allowFailure: true });
+      if (!reset.ok) {
+        warnLanding("sync local branch to remotely landed commit", new Error(reset.stderr));
+      }
+    }
+  } catch (error) {
+    warnLanding("sync local worktree after remote landing", error);
+  } finally {
+    git(cwd, ["update-ref", "-d", syncRef], { allowFailure: true });
+  }
+}
+
+/**
+ * Offloads `land` to the least-loaded reachable SSH host via a staging ref and temporary remote worktree.
+ * Returns `{ status: "remote-unavailable", reason }` only before remote execution starts, preventing duplicate landers.
+ */
+async function landRemote({
+  cwd,
+  remote = "origin",
+  branch = "main",
+  hosts: rawHosts,
+  remoteDir: rawRemoteDir,
+  finalizeCommand,
+  now = Date.now,
+  recordClock = () => performance.now(),
+  mainCallMs = MAIN_CALL_MS,
+  probeTimeoutMs = PROBE_TIMEOUT_MS,
+  after = runAfter,
+  execSsh = runSshCommand,
+  probeHost,
+  runRemote,
+}) {
+  const hosts = Array.isArray(rawHosts)
+    ? [
+        ...new Set(
+          rawHosts.map((host) => validateRemoteHost(typeof host === "string" ? host.trim() : "")),
+        ),
+      ]
+    : parseRemoteHosts(rawHosts);
+  if (hosts.length === 0) {
+    throw new RemoteConfigError("landing turn: remote host list must not be empty");
+  }
+  const remoteDir = validateRemoteDir(rawRemoteDir);
+
+  const record = startLandingRecord({ now, clock: recordClock });
+  let status;
+  let shouldRecord = true;
+  try {
+    const tip = git(cwd, ["rev-parse", "HEAD"]).stdout;
+    const { stdout: topic } = git(cwd, ["branch", "--show-current"], { allowFailure: true });
+    record.note({ branch: topic || null, head: tip });
+    const preflightIssue = checkLocalWorktree(cwd);
+    if (preflightIssue) {
+      status = preflightIssue.status;
+      return preflightIssue;
+    }
+    const rawOriginUrl = git(cwd, ["remote", "get-url", remote], {
+      allowFailure: true,
+    }).stdout;
+    const expectedOriginUrl = normalizeOriginUrl(rawOriginUrl);
+    if (!expectedOriginUrl) {
+      const originReason = rawOriginUrl
+        ? "could not normalize local origin URL"
+        : "missing local origin remote";
+      shouldRecord = false;
+      process.stderr.write(
+        `landing turn: remote landing unavailable (${originReason}); falling back to local landing.\n`,
+      );
+      return { status: "remote-unavailable", reason: originReason };
+    }
+    const effectiveProbe =
+      probeHost ??
+      (({ host, remoteDir: targetDir, expectedOriginUrl: originUrl }) =>
+        probeRemoteHost({
+          host,
+          remoteDir: targetDir,
+          expectedOriginUrl: originUrl,
+          probeTimeoutMs,
+          after,
+          execSsh,
+        }));
+    const { selected, reason } = await record.time("remoteProbe", () =>
+      selectRemoteHost({
+        hosts,
+        remoteDir,
+        expectedOriginUrl,
+        probeHost: effectiveProbe,
+      }),
+    );
+    if (!selected) {
+      shouldRecord = false;
+      process.stderr.write(
+        `landing turn: remote landing unavailable (${reason}); falling back to local landing.\n`,
+      );
+      return { status: "remote-unavailable", reason };
+    }
+    record.note({ remote: true, stage: "remote" });
+    const runId = randomUUID();
+    const stagingRef = `${STAGING_REF_PREFIX}${runId}`;
+
+    const activeChildren = new Set();
+    let stopping = false;
+    let cleanupPromise = null;
+    let stagingPushedOrStarted = false;
+
+    const trackChild = (entry) => {
+      activeChildren.add(entry);
+      if (stopping) {
+        try {
+          entry.stop();
+        } catch (error) {
+          warnLanding("stop active remote landing child", error);
+        }
+      }
+      let untracked = false;
+      return () => {
+        if (untracked) return;
+        untracked = true;
+        activeChildren.delete(entry);
+      };
+    };
+
+    const stopActiveChildren = async () => {
+      while (activeChildren.size > 0) {
+        const tracked = [...activeChildren];
+        for (const child of tracked) {
+          try {
+            child.stop();
+          } catch (error) {
+            warnLanding("stop active remote landing child", error);
+          }
+        }
+        await Promise.allSettled(tracked.map((child) => child.done));
+        for (const child of tracked) activeChildren.delete(child);
+      }
+    };
+
+    const stopListening = () => {
+      for (const stopSignal of STOP_SIGNALS) process.removeListener(stopSignal, onStop);
+    };
+
+    const cleanupOnce = () => {
+      if (cleanupPromise !== null) return cleanupPromise;
+      cleanupPromise = (async () => {
+        if (!stagingPushedOrStarted) return;
+        await cleanupStagingRef({ cwd, remote, stagingRef, after });
+      })();
+      return cleanupPromise;
+    };
+
+    function onStop(stopSignal) {
+      if (stopping) return;
+      stopping = true;
+      shouldRecord = false;
+      stopListening();
+      void (async () => {
+        try {
+          await stopActiveChildren();
+          await cleanupOnce();
+        } finally {
+          try {
+            process.kill(process.pid, stopSignal);
+          } catch {
+            process.exit(stopSignal === "SIGHUP" ? 129 : stopSignal === "SIGINT" ? 130 : 143);
+          }
+        }
+      })();
+    }
+
+    const waitIfStopping = () => (stopping ? new Promise(() => {}) : Promise.resolve());
+    for (const stopSignal of STOP_SIGNALS) process.on(stopSignal, onStop);
+
+    try {
+      stagingPushedOrStarted = true;
+      await record.time("stagingPush", () =>
+        gitAsync(cwd, ["push", "--quiet", remote, `${tip}:${stagingRef}`], {
+          timeoutMs: mainCallMs,
+          after,
+          trackChild,
+        }),
+      );
+      await waitIfStopping();
+      const remoteCommand = buildRemoteLandCommand({
+        remoteDir: selected.dir,
+        stagingRef,
+        tip,
+        runId,
+        finalizeCommand,
+      });
+      const remoteExec = await record.time("remoteLand", () =>
+        runRemote
+          ? runRemote({
+              host: selected.host,
+              dir: selected.dir,
+              stagingRef,
+              tip,
+              runId,
+              finalizeCommand,
+              remoteCommand,
+              trackChild,
+            })
+          : execSsh({
+              host: selected.host,
+              remoteCommand,
+              streamStdout: true,
+              trackChild,
+            }),
+      );
+      await waitIfStopping();
+      const exitCode = remoteExec?.code ?? null;
+      const rawParsed =
+        remoteExec?.result ??
+        remoteExec?.lastResult ??
+        (typeof remoteExec?.stdout === "string" ? parseLastLandingResult(remoteExec.stdout) : null);
+      let parsed = isValidRemoteLandingResult(rawParsed) ? rawParsed : null;
+      if (exitCode === 255 || exitCode === null) {
+        parsed = null;
+      }
+      if (
+        parsed &&
+        parsed.status === "landed" &&
+        parsed.releaseConfirmed !== false &&
+        exitCode !== 0
+      ) {
+        parsed = null;
+      }
+      if (parsed) {
+        const finalResult = { ...parsed, remote: selected.host };
+        status = finalResult.status;
+        if (finalResult.status === "landed") {
+          record.note({ head: finalResult.commit });
+          record.note({ releaseConfirmed: finalResult.releaseConfirmed ?? true });
+          if (finalResult.releaseConfirmed !== false) {
+            await syncLocalAfterRemoteLand({
+              cwd,
+              remote,
+              branch,
+              tip,
+              topic,
+              landedCommit: finalResult.commit,
+              mainCallMs,
+              after,
+              trackChild,
+            });
+            await waitIfStopping();
+          }
+        }
+        return finalResult;
+      }
+      if (exitCode === 255 || exitCode === null) {
+        process.stderr.write(
+          `landing turn: SSH session to ${selected.host} disconnected after remote landing started; not falling back to local landing. Inspect ${remote}/${branch} before retrying.\n`,
+        );
+        const disconnected = {
+          status: "remote-disconnected",
+          remote: selected.host,
+          exitCode,
+        };
+        status = disconnected.status;
+        return disconnected;
+      }
+      const failed = {
+        status: "remote-failed",
+        remote: selected.host,
+        exitCode,
+      };
+      status = failed.status;
+      return failed;
+    } finally {
+      if (stopping) {
+        await new Promise(() => {});
+      }
+      try {
+        await cleanupOnce();
+      } finally {
+        stopListening();
+      }
+    }
+  } catch (error) {
+    status = error?.landingStatus ?? "error";
+    throw error;
+  } finally {
+    if (shouldRecord) record.write(() => commonGitDir(cwd), status);
+  }
+}
+
 // How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
 // a real landing.
 const USAGE =
-  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs> | land --finalize <command>";
+  "usage: landing-turn.cjs land | land-rebased --base <sha> --head <sha> | push <commit> | holder | verify <remote> | merge-budget <base> <ours> <theirs> | land [--remote <host[,...]>] [--remote-dir <path>] [--local] [--finalize <command>]";
 const ARGUMENTS = { push: 1, holder: 0, verify: 1, "merge-budget": 3 };
 
 function parseLandArgs(command, rest) {
   if (command === "land") {
-    if (rest.length === 0) return { rebased: undefined, finalizeCommand: undefined };
-    if (rest.length === 2 && rest[0] === "--finalize" && rest[1].trim().length > 0) {
-      return { rebased: undefined, finalizeCommand: rest[1] };
+    let finalizeCommand;
+    let remoteSpec;
+    let remoteDir;
+    let local = false;
+    for (let index = 0; index < rest.length; index += 1) {
+      const arg = rest[index];
+      if (arg === "--local") {
+        if (local) return null;
+        local = true;
+        continue;
+      }
+      if (arg === "--finalize" || arg === "--remote" || arg === "--remote-dir") {
+        const value = rest[index + 1];
+        if (value === undefined || value.trim().length === 0) return null;
+        index += 1;
+        if (arg === "--finalize") {
+          if (finalizeCommand !== undefined) return null;
+          finalizeCommand = value;
+        } else if (arg === "--remote") {
+          if (remoteSpec !== undefined) return null;
+          remoteSpec = value;
+        } else {
+          if (remoteDir !== undefined) return null;
+          remoteDir = value;
+        }
+        continue;
+      }
+      return null;
     }
-    return null;
+    if (local && remoteSpec !== undefined) return null;
+    return { rebased: undefined, finalizeCommand, remoteSpec, remoteDir, local };
   }
   if (command === "land-rebased") {
     if (rest.length !== 4 && rest.length !== 6) return null;
@@ -2904,14 +3896,39 @@ function parseLandArgs(command, rest) {
     }
     if (rest.length === 6) {
       if (finalizeFlag !== "--finalize" || finalizeCommand.trim().length === 0) return null;
-      return { rebased: { base, head }, finalizeCommand };
+      return {
+        rebased: { base, head },
+        finalizeCommand,
+        remoteSpec: undefined,
+        remoteDir: undefined,
+        local: false,
+      };
     }
-    return { rebased: { base, head }, finalizeCommand: undefined };
+    return {
+      rebased: { base, head },
+      finalizeCommand: undefined,
+      remoteSpec: undefined,
+      remoteDir: undefined,
+      local: false,
+    };
   }
   return null;
 }
 
-async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = {}) {
+async function main(
+  argv,
+  {
+    cwd = process.cwd(),
+    env = process.env,
+    failingMs,
+    check,
+    finalize,
+    execSsh,
+    probeHost,
+    runRemote,
+    probeTimeoutMs,
+  } = {},
+) {
   const [command, ...rest] = argv;
   if (command === "land" || command === "land-rebased") {
     const parsed = parseLandArgs(command, rest);
@@ -2919,11 +3936,49 @@ async function main(argv, { cwd = process.cwd(), failingMs, check, finalize } = 
       console.error(USAGE);
       return 2;
     }
-    const { rebased, finalizeCommand } = parsed;
+    const { rebased, finalizeCommand, remoteSpec, remoteDir, local } = parsed;
+    let remoteConfig = null;
+    if (command === "land" && !local) {
+      const envRemote = typeof env[REMOTE_HOST_ENV] === "string" ? env[REMOTE_HOST_ENV].trim() : "";
+      const effectiveRemoteSpec = remoteSpec ?? (envRemote.length > 0 ? envRemote : undefined);
+      if (effectiveRemoteSpec !== undefined) {
+        const envDir = typeof env[REMOTE_DIR_ENV] === "string" ? env[REMOTE_DIR_ENV].trim() : "";
+        const effectiveRemoteDir = remoteDir ?? (envDir.length > 0 ? envDir : undefined);
+        try {
+          remoteConfig = {
+            hosts: parseRemoteHosts(effectiveRemoteSpec),
+            remoteDir: validateRemoteDir(effectiveRemoteDir),
+          };
+        } catch (error) {
+          if (error instanceof RemoteConfigError) {
+            console.error(error.message);
+            return 2;
+          }
+          throw error;
+        }
+      }
+    }
+    keepAwake();
+    if (remoteConfig !== null) {
+      const remoteResult = await landRemote({
+        cwd,
+        remote: "origin",
+        hosts: remoteConfig.hosts,
+        remoteDir: remoteConfig.remoteDir,
+        finalizeCommand,
+        ...(probeTimeoutMs === undefined ? {} : { probeTimeoutMs }),
+        ...(execSsh === undefined ? {} : { execSsh }),
+        ...(probeHost === undefined ? {} : { probeHost }),
+        ...(runRemote === undefined ? {} : { runRemote }),
+      });
+      if (remoteResult.status !== "remote-unavailable") {
+        console.log(JSON.stringify(remoteResult));
+        return remoteResult.status === "landed" && remoteResult.releaseConfirmed !== false ? 0 : 1;
+      }
+    }
     // Taken out of the environment, so no child process inherits it.
     const carried = rebased ? process.env[RECORD_ENV] : undefined;
     delete process.env[RECORD_ENV];
-    keepAwake();
     let carry;
     const result = await land({
       cwd,
@@ -3041,9 +4096,12 @@ module.exports = {
   BOOT_ID,
   LEASE_REF,
   CANDIDATE_REF,
+  STAGING_REF_PREFIX,
   TURN_ENV,
   RECORD_ENV,
   CHECK_METRICS_FILE_ENV,
+  REMOTE_HOST_ENV,
+  REMOTE_DIR_ENV,
   FINAL_COMMIT_ENV,
   FINAL_BASE_ENV,
   FINAL_REBASED_ENV,
@@ -3059,6 +4117,7 @@ module.exports = {
   pushChecked,
   verifyPush,
   land,
+  landRemote,
   overlappingWorktrees,
   main,
   processHost,
@@ -3085,5 +4144,22 @@ module.exports = {
     stopDirtyGroup,
     KEPT_CHECKOUTS,
     WARM_CHECKOUTS_ENV,
+    RemoteConfigError,
+    parseLandArgs,
+    parseRemoteHosts,
+    validateRemoteHost,
+    validateRemoteDir,
+    shellQuote,
+    buildSshArgs,
+    normalizeOriginUrl,
+    buildRemoteProbeCommand,
+    buildRemoteLandCommand,
+    parseLandingResultLine,
+    probeRemoteHost,
+    normalizedLoad,
+    selectRemoteHost,
+    cleanupStagingRef,
+    syncLocalAfterRemoteLand,
+    runSshCommand,
   },
 };

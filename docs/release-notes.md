@@ -1,3 +1,7 @@
+## 2026-11-28 — Optional remote landing over SSH with load-aware host selection
+
+- Maintainers: `landing-turn.cjs land` now supports `--remote <host[,host2,...]>` / `T3_LANDING_REMOTE_HOST` (plus `--remote-dir <path>` / `T3_LANDING_REMOTE_DIR` and `--local` to override) to offload landings to the least-loaded reachable SSH host (`load1 / cpus`) via a temporary staging ref (`refs/heads/landing-staging/<id>`) and temporary remote worktree without touching the remote host's main checkout. If no candidate host is reachable, it falls back cleanly to local landing; once remote execution starts, check failures, conflicts, and disconnects fail closed without launching a duplicate local lander, and the staging ref is always cleaned up.
+
 ## 2026-11-28 — Agents check unmerged work before saying a chat can settle
 
 - Asked whether a chat can settle, agents now check the same thing the Settle button warns about: commits in the chat's worktree that are not on the default branch, and uncommitted files. Work that is only filed or scheduled no longer counts as done.
