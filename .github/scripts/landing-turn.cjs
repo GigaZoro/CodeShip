@@ -2413,12 +2413,10 @@ async function runLanding(
     const prevPromise = lastSpecPromise;
     const controller = new AbortController();
     const specSignal = controller.signal;
-    const specTreeDeferred = Promise.withResolvers();
     const task = {
       candidate,
       controller,
       specTree: null,
-      specTreeReady: specTreeDeferred.promise,
       checkingStarted: false,
       passed: false,
       settled: false,
@@ -2480,7 +2478,6 @@ async function runLanding(
                 if (notesMergeProblem(directory)) return false;
                 const specTip = git(directory, ["rev-parse", "HEAD"]).stdout;
                 task.specTree = git(directory, ["rev-parse", "HEAD^{tree}"]).stdout;
-                specTreeDeferred.resolve(task.specTree);
                 if (specSignal.aborted) return false;
                 task.checkingStarted = true;
                 const specCheckoutContext = {
@@ -2506,7 +2503,6 @@ async function runLanding(
       } catch {
         // Speculative pre-check is best-effort; failures fall back to the normal under-turn check.
       } finally {
-        specTreeDeferred.resolve(task.specTree);
         task.settled = true;
         onSpeculativeSettled({
           candidate,
@@ -2617,9 +2613,11 @@ async function runLanding(
               if (speculativeReused) record.note({ speculativeReused: true });
             } else {
               await stopSpeculative(
-                activeSpec.checkingStarted
-                  ? "speculative tree mismatch"
-                  : "speculative check not started before turn",
+                activeSpec.settled
+                  ? "speculative check did not pass"
+                  : activeSpec.checkingStarted
+                    ? "speculative tree mismatch"
+                    : "speculative check not started before turn",
               );
               if (signal.aborted) return lostTurn();
             }
