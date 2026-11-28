@@ -145,9 +145,8 @@ is refused while the runtime is in use.
 
 Open **Usage** to see tokens and estimated API cost from Antigravity's local conversation
 history. With the managed runtime and a Google sign-in, **Usage > Limits** shows the remaining
-allowances reported by the built-in `/usage` command. If you use the same account on two
-environments, its limits can appear twice because the command omits the account ID.
-Threads show any retry time the runtime supplies when a request reaches a limit.
+allowances reported by the built-in `/usage` command. Threads show any retry time the runtime
+supplies when a request reaches a limit.
 
 A server restart keeps your Google sign-in. The provider shows the saved account
 until a session, a refresh, or a sign-out reports something new.

@@ -62,6 +62,7 @@ import { makeAcpNativeLoggerFactory } from "@t3tools/provider-acp/server/nativeL
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAntigravityProvider } from "../AntigravityProvider.ts";
 import {
+  makeAntigravityCredentialFingerprintResolver,
   readAntigravityAcpQuota,
   supportsAntigravityAcpQuota,
   unavailableAntigravityLimits,
@@ -499,6 +500,7 @@ export const AntigravityDriver: ProviderDriver<
         .pipe(Effect.provideService(Scope.Scope, processScope));
     }, Effect.scoped);
 
+    const credentialFingerprint = yield* makeAntigravityCredentialFingerprintResolver();
     const readUsage = Effect.fn("AntigravityDriver.readUsage")(function* () {
       const checkedAt = DateTime.formatIso(yield* DateTime.now);
       if (!antigravityAuthUsesBrowser(auth.authMethod))
@@ -507,28 +509,43 @@ export const AntigravityDriver: ProviderDriver<
       if (installed.source !== "managed" || !supportsAntigravityAcpQuota(installed.version)) {
         return unavailableAntigravityLimits(checkedAt, "unsupported");
       }
+      const tokenPath = path.join(profiles.active, "antigravity-acp", "acp_token.json");
       // The managed runtime stores the active profile's login here. A probe must never initiate sign-in.
-      if (
-        !(yield* fileSystem.exists(path.join(profiles.active, "antigravity-acp", "acp_token.json")))
-      ) {
+      if (!(yield* fileSystem.exists(tokenPath))) {
         return unavailableAntigravityLimits(checkedAt, "unsupported");
       }
-      return yield* withDisposableRuntime(true, readAntigravityAcpQuota);
+      const limits = yield* installation.withQuotaProbePermit(
+        withDisposableRuntime(true, readAntigravityAcpQuota).pipe(Effect.timeout("90 seconds")),
+      );
+      if (limits.unavailable?.reason === "probeFailed") {
+        return yield* new ProviderDriverError({
+          driver: DRIVER,
+          instanceId,
+          detail: "Antigravity quota probe returned no usable limits.",
+        });
+      }
+      if (limits.unavailable !== undefined) return limits;
+      const fingerprint = yield* credentialFingerprint.resolve(tokenPath);
+      return fingerprint === undefined ? limits : { ...limits, credentialFingerprint: fingerprint };
     });
     // An ACP launch unpacks the runtime; repeated status refreshes share the same recent read.
-    const [probeUsage, clearUsage] = yield* Effect.cachedInvalidateWithTTL(
-      readUsage().pipe(
-        Effect.timeout("30 seconds"),
-        Effect.catch(() =>
-          DateTime.now.pipe(
-            Effect.map((now) =>
-              unavailableAntigravityLimits(DateTime.formatIso(now), "probeFailed"),
-            ),
-          ),
-        ),
-      ),
+    const [cachedProbeUsage, invalidateUsage] = yield* Effect.cachedInvalidateWithTTL(
+      readUsage(),
       "5 minutes",
     );
+    const probeUsage = cachedProbeUsage.pipe(
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? invalidateUsage : Effect.void)),
+      Effect.catch((error) =>
+        Effect.logWarning("Antigravity quota probe failed", {
+          instanceId,
+          errorTag: error._tag,
+        }).pipe(
+          Effect.andThen(DateTime.now),
+          Effect.map((now) => unavailableAntigravityLimits(DateTime.formatIso(now), "probeFailed")),
+        ),
+      ),
+    );
+    const clearUsage = invalidateUsage.pipe(Effect.andThen(credentialFingerprint.clear));
     const provider = yield* makeAntigravityProvider(settings, {
       stampIdentity: classifyModels,
       probe,

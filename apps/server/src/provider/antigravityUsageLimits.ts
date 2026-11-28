@@ -4,12 +4,34 @@ import {
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "@t3tools/provider-core/server/usageLimits";
+import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 const MAX_REPORT_LENGTH = 64_000;
+const MANUAL_REDIRECT: RequestInit = { redirect: "manual" };
+
+const TokenFile = Schema.Struct({
+  client_id: Schema.NonEmptyString,
+  client_secret: Schema.NonEmptyString,
+  refresh_token: Schema.NonEmptyString,
+});
+const TokenResponse = Schema.Struct({
+  access_token: Schema.NonEmptyString,
+});
+const UserInfo = Schema.Struct({
+  id: Schema.NonEmptyString,
+});
+
+const decodeTokenFile = Schema.decodeEffect(Schema.fromJsonString(TokenFile));
+const decodeTokenResponse = Schema.decodeUnknownEffect(TokenResponse);
+const decodeUserInfo = Schema.decodeUnknownEffect(UserInfo);
 
 export function supportsAntigravityAcpQuota(version: string | null | undefined): boolean {
   const release = version?.trim();
@@ -56,7 +78,7 @@ export function parseAntigravityUsageReport(
     const scope = groupScope(group);
     const kind = /weekly|\bweek\b/i.test(bucket)
       ? "weekly"
-      : /\b5[ -]?(?:h|hours?)\b/i.test(bucket)
+      : /\b(?:5|five)[ -]?(?:h|hours?)\b/i.test(bucket)
         ? "session"
         : "other";
     const family = scope === "gemini-default" ? "gemini" : scope === "third-party" ? "3p" : scope;
@@ -88,6 +110,97 @@ export function parseAntigravityUsageReport(
     ? { ...makeUsageLimits({ checkedAt, windows }), source: "antigravity-acp" }
     : unavailableAntigravityLimits(checkedAt, "probeFailed");
 }
+
+/**
+ * Resolves a stable cross-environment fingerprint from the active Antigravity OAuth token.
+ * Caches successful Google account ID lookups per token and falls back without failing the probe.
+ */
+export const makeAntigravityCredentialFingerprintResolver = Effect.fn(
+  "makeAntigravityCredentialFingerprintResolver",
+)(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const crypto = yield* Crypto.Crypto;
+  const httpClient = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+
+  let cached:
+    | { readonly tokenFingerprint: string; readonly accountFingerprint: string }
+    | undefined;
+  let generation = 0;
+
+  const sha256 = (text: string) =>
+    crypto
+      .digest("SHA-256", new TextEncoder().encode(text))
+      .pipe(
+        Effect.map((digest) =>
+          Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+        ),
+      );
+
+  const fetchJson = (request: HttpClientRequest.HttpClientRequest) =>
+    httpClient.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, MANUAL_REDIRECT),
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap((response) => response.json),
+      Effect.timeout("10 seconds"),
+    );
+
+  const resolve = Effect.fn("AntigravityCredentialFingerprint.resolve")(function* (
+    tokenPath: string,
+  ) {
+    const startedGeneration = generation;
+    const token = yield* fs
+      .readFileString(tokenPath)
+      .pipe(Effect.flatMap(decodeTokenFile), Effect.option);
+    if (Option.isNone(token)) return undefined;
+    const tokenFingerprintOption = yield* sha256(
+      `${token.value.client_id}\0${token.value.refresh_token}`,
+    ).pipe(Effect.option);
+    if (Option.isNone(tokenFingerprintOption)) return undefined;
+    const tokenFingerprint = tokenFingerprintOption.value;
+    if (cached?.tokenFingerprint === tokenFingerprint) {
+      return cached.accountFingerprint;
+    }
+    if (cached !== undefined) {
+      cached = undefined;
+    }
+    const accountFingerprint = yield* fetchJson(
+      HttpClientRequest.post("https://oauth2.googleapis.com/token").pipe(
+        HttpClientRequest.bodyUrlParams({
+          client_id: token.value.client_id,
+          client_secret: token.value.client_secret,
+          refresh_token: token.value.refresh_token,
+          grant_type: "refresh_token",
+        }),
+      ),
+    ).pipe(
+      Effect.flatMap(decodeTokenResponse),
+      Effect.flatMap((refreshed) =>
+        fetchJson(
+          HttpClientRequest.get("https://www.googleapis.com/oauth2/v2/userinfo").pipe(
+            HttpClientRequest.setHeaders({ Authorization: `Bearer ${refreshed.access_token}` }),
+          ),
+        ),
+      ),
+      Effect.flatMap(decodeUserInfo),
+      Effect.flatMap((info) => sha256(`google-account\0${info.id}`)),
+      Effect.option,
+    );
+    if (Option.isSome(accountFingerprint)) {
+      if (generation === startedGeneration) {
+        cached = { tokenFingerprint, accountFingerprint: accountFingerprint.value };
+      }
+      return accountFingerprint.value;
+    }
+    return tokenFingerprint;
+  });
+
+  const clear = Effect.sync(() => {
+    generation += 1;
+    cached = undefined;
+  });
+
+  return { resolve, clear };
+});
 
 type QuotaRuntime = Pick<
   AcpSessionRuntime["Service"],

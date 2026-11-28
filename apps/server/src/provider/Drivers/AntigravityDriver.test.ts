@@ -2,16 +2,26 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
+  EnvironmentId,
   ProviderInstanceId,
   type AntigravitySettings,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { collectLimitAccounts } from "@t3tools/shared/usageLimits";
+import { markWindowsJobSpawner } from "@t3tools/shared/windowsJobSpawner";
+import type * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/http";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
@@ -19,6 +29,7 @@ import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AntigravityInstallation from "../AntigravityInstallation.ts";
 import {
+  ANTIGRAVITY_AUTH_BROWSER_MARKER,
   ANTIGRAVITY_AUTH_STDOUT_PREFIX,
   resolveAntigravityInstanceDirectories,
 } from "../antigravityAuthSupport.ts";
@@ -142,6 +153,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     managedDirectory: root,
     latestVersion: Effect.succeed("1.5.3"),
     upgrade: (version) => Effect.sync(() => void installedUpdates.push(version)),
+    withQuotaProbePermit: (effect) => effect,
     resolve: () =>
       Effect.gen(function* () {
         if (controls.failResolution) {
@@ -463,6 +475,502 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
         );
         expect(yield* fs.exists(directories.runtimeTemp)).toBe(false);
         expect(yield* fs.exists(legacyRoot)).toBe(false);
+      }).pipe(Effect.scoped),
+  );
+
+  const QUOTA_REPORT_152 = [
+    "### Quota Limits",
+    "- **Gemini Models**",
+    "  - **Five Hour Limit Remaining:** 80% remaining",
+    "  - **Weekly Limit Remaining:** 90% remaining",
+  ].join("\n");
+
+  const makeManagedAntigravityInstallation = Effect.fn("makeManagedAntigravityInstallation")(
+    function* (baseDir: string) {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const platform = yield* HostProcess.Platform;
+      const arch = yield* HostProcess.Architecture;
+      const releaseId = "a".repeat(64);
+      const managedDir = path.join(baseDir, "tools", "antigravity-acp", `${platform}-${arch}`);
+      const versionDir = path.join(managedDir, "versions", releaseId);
+      const executableName = platform === "win32" ? "agy_acp_server.exe" : "agy_acp_server.par";
+      const harnessName =
+        platform === "win32" ? "localharness_external.exe" : "localharness_external";
+      yield* fs.makeDirectory(versionDir, { recursive: true });
+      yield* fs.writeFileString(path.join(versionDir, executableName), "stub");
+      yield* fs.writeFileString(path.join(versionDir, harnessName), "stub");
+      if (platform !== "win32") {
+        yield* fs.chmod(path.join(versionDir, executableName), 0o755);
+        yield* fs.chmod(path.join(versionDir, harnessName), 0o755);
+      }
+      yield* fs.writeFileString(
+        path.join(versionDir, ".install-complete.json"),
+        JSON.stringify({
+          releaseId,
+          version: "1.5.2",
+          executable: { name: executableName, bytes: 4 },
+          harness: { name: harnessName, bytes: 4 },
+        }),
+      );
+      yield* fs.writeFileString(
+        path.join(managedDir, "active.json"),
+        JSON.stringify({ releaseId }),
+      );
+      return yield* AntigravityInstallation.makeAntigravityInstallation({ baseDir });
+    },
+  );
+
+  const makeQuotaSpawner = (
+    onQuotaLaunch: (context: { readonly attempt: number }) => {
+      readonly beforeInitialize?: Effect.Effect<void>;
+      readonly report?: string;
+    },
+  ) => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    let attempts = 0;
+    let active = 0;
+    let maxConcurrent = 0;
+    const spawner = markWindowsJobSpawner(
+      ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (command._tag !== "StandardCommand") {
+            return yield* Effect.die("Unexpected command");
+          }
+          if (command.args[0] === "-e") {
+            const preflight = `${ANTIGRAVITY_AUTH_BROWSER_MARKER}"https://example.invalid/t3-antigravity-browser-preflight"\n`;
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(100),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              stdin: Sink.drain,
+              stdout: Stream.empty,
+              stderr: Stream.make(encoder.encode(preflight)),
+              all: Stream.make(encoder.encode(preflight)),
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+              unref: Effect.succeed(Effect.void),
+            });
+          }
+          attempts++;
+          active++;
+          maxConcurrent = Math.max(maxConcurrent, active);
+          const behavior = onQuotaLaunch({ attempt: attempts });
+          const stdout = yield* Queue.unbounded<Uint8Array, Cause.Done>();
+          const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+          const scope = yield* Effect.scope;
+          let released = false;
+          const release = Effect.sync(() => {
+            if (released) return;
+            released = true;
+            active--;
+          });
+          yield* Effect.addFinalizer(() =>
+            release.pipe(
+              Effect.andThen(Queue.end(stdout).pipe(Effect.ignore)),
+              Effect.andThen(
+                Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0)).pipe(Effect.ignore),
+              ),
+            ),
+          );
+          const send = (payload: unknown) =>
+            Queue.offer(stdout, encoder.encode(`${JSON.stringify(payload)}\n`)).pipe(Effect.asVoid);
+          let buffer = "";
+          const handleMessage = (rawLine: string) =>
+            Effect.gen(function* () {
+              const message = JSON.parse(rawLine) as {
+                readonly id?: number;
+                readonly method?: string;
+              };
+              if (message.method === "initialize") {
+                if (behavior.beforeInitialize) yield* behavior.beforeInitialize;
+                yield* send({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    protocolVersion: 1,
+                    agentInfo: { name: "antigravity-acp", version: "1.5.2" },
+                    agentCapabilities: {
+                      loadSession: true,
+                      sessionCapabilities: { resume: {} },
+                      auth: { logout: {} },
+                    },
+                    authMethods: [{ id: "oauth-personal", name: "Log in with Google" }],
+                  },
+                });
+              } else if (
+                message.method === "authenticate" ||
+                message.method === "auth/login" ||
+                message.method === "logout"
+              ) {
+                yield* send({ jsonrpc: "2.0", id: message.id, result: {} });
+              } else if (message.method === "session/new") {
+                yield* send({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: { sessionId: "quota-session" },
+                });
+                yield* send({
+                  jsonrpc: "2.0",
+                  method: "session/update",
+                  params: {
+                    sessionId: "quota-session",
+                    update: {
+                      sessionUpdate: "available_commands_update",
+                      availableCommands: [{ name: "usage", description: "Usage" }],
+                    },
+                  },
+                });
+              } else if (message.method === "session/prompt") {
+                yield* send({
+                  jsonrpc: "2.0",
+                  method: "session/update",
+                  params: {
+                    sessionId: "quota-session",
+                    update: {
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: behavior.report ?? QUOTA_REPORT_152 },
+                    },
+                  },
+                });
+                yield* send({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: { stopReason: "end_turn" },
+                });
+              }
+            });
+          const stdin = Sink.forEach<Uint8Array, void, never, never>((chunk) =>
+            Effect.gen(function* () {
+              buffer += decoder.decode(chunk, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() ?? "";
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                yield* handleMessage(trimmed).pipe(Effect.ignore, Effect.forkIn(scope));
+              }
+            }),
+          );
+          return ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(200 + attempts),
+            exitCode: Deferred.await(exited),
+            isRunning: Deferred.isDone(exited).pipe(Effect.map((done) => !done)),
+            kill: () =>
+              release.pipe(
+                Effect.andThen(Queue.end(stdout).pipe(Effect.ignore)),
+                Effect.andThen(
+                  Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0)).pipe(Effect.ignore),
+                ),
+              ),
+            stdin,
+            stdout: Stream.fromQueue(stdout),
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+            unref: Effect.succeed(Effect.void),
+          });
+        }),
+      ),
+    );
+    return {
+      spawner,
+      getAttempts: () => attempts,
+      getMaxConcurrent: () => maxConcurrent,
+    };
+  };
+
+  const writeTokenFile = Effect.fn("writeAntigravityTokenFile")(function* (
+    instanceId: ProviderInstanceId,
+    refreshToken: string,
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const directories = yield* resolveAntigravityInstanceDirectories(config.stateDir, instanceId);
+    const acpDir = path.join(directories.profile, "antigravity-acp");
+    yield* fs.makeDirectory(acpDir, { recursive: true });
+    yield* fs.writeFileString(
+      path.join(acpDir, "acp_token.json"),
+      JSON.stringify({
+        client_id: "google-client-id",
+        client_secret: "google-client-secret",
+        refresh_token: refreshToken,
+      }),
+    );
+  });
+
+  const makeGoogleIdentityHttpClient = (input: {
+    readonly userIdByRefreshToken?: Readonly<Record<string, string>>;
+    readonly shouldFailUserInfo?: () => boolean;
+  }) => {
+    let tokenCalls = 0;
+    let userInfoCalls = 0;
+    const client = HttpClient.make((request) =>
+      Effect.gen(function* () {
+        if (request.url === "https://oauth2.googleapis.com/token") {
+          tokenCalls++;
+          const body =
+            request.body._tag === "Uint8Array"
+              ? new URLSearchParams(new TextDecoder().decode(request.body.body))
+              : new URLSearchParams();
+          const refreshToken = body.get("refresh_token") ?? "";
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(
+              JSON.stringify({ access_token: `access:${refreshToken}`, expires_in: 3600 }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+          );
+        }
+        if (request.url === "https://www.googleapis.com/oauth2/v2/userinfo") {
+          userInfoCalls++;
+          if (input.shouldFailUserInfo?.()) {
+            return HttpClientResponse.fromWeb(
+              request,
+              new Response("unavailable", { status: 503 }),
+            );
+          }
+          const auth = request.headers.authorization ?? "";
+          const refreshToken = auth.replace(/^Bearer access:/, "");
+          const id = input.userIdByRefreshToken?.[refreshToken] ?? "google-user-default";
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(JSON.stringify({ id }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }
+        return yield* Effect.die(`Unexpected HTTP request: ${request.url}`);
+      }),
+    );
+    return {
+      client,
+      getTokenCalls: () => tokenCalls,
+      getUserInfoCalls: () => userInfoCalls,
+    };
+  };
+
+  it.effect(
+    "does not cache timed-out quota probes and retries immediately on the next refresh",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-retry-" });
+        const installation = yield* makeManagedAntigravityInstallation(baseDir);
+        const attempt1Started = yield* Deferred.make<void>();
+        const fake = makeQuotaSpawner(({ attempt }) => ({
+          beforeInitialize:
+            attempt === 1
+              ? Deferred.succeed(attempt1Started, undefined).pipe(Effect.andThen(Effect.never))
+              : Effect.void,
+        }));
+        const google = makeGoogleIdentityHttpClient({});
+        const instanceId = ProviderInstanceId.make("agy-retry-test");
+        yield* writeTokenFile(instanceId, "refresh-retry");
+        const instance = yield* AntigravityDriver.create({
+          instanceId,
+          displayName: "Retry account",
+          enabled: true,
+          config: AntigravityDriver.defaultConfig(),
+          environment: [],
+        }).pipe(
+          Effect.provideService(AntigravityInstallation.AntigravityInstallation, installation),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+          Effect.provideService(HttpClient.HttpClient, google.client),
+        );
+
+        const firstRefresh = yield* instance.snapshot.refreshUsage!.pipe(Effect.forkChild);
+        yield* Deferred.await(attempt1Started);
+        yield* TestClock.adjust("91 seconds");
+        yield* Fiber.join(firstRefresh);
+
+        const failedSnapshot = yield* instance.snapshot.getSnapshot;
+        expect(failedSnapshot.usageLimits?.unavailable?.reason).toBe("probeFailed");
+        expect(fake.getAttempts()).toBe(1);
+
+        // Immediate retry succeeds without waiting for the 5-minute TTL.
+        yield* instance.snapshot.refreshUsage!;
+        const recoveredSnapshot = yield* instance.snapshot.getSnapshot;
+        expect(recoveredSnapshot.usageLimits?.unavailable).toBeUndefined();
+        expect(recoveredSnapshot.usageLimits?.windows.length).toBeGreaterThan(0);
+        expect(fake.getAttempts()).toBe(2);
+
+        // Subsequent refresh within 5 minutes reuses the cached successful reading.
+        yield* instance.snapshot.refreshUsage!;
+        expect(fake.getAttempts()).toBe(2);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "serializes quota probes across drivers and gives a queued 50s probe its full 90s timeout budget",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-serial-" });
+        const installation = yield* makeManagedAntigravityInstallation(baseDir);
+        const firstStarted = yield* Deferred.make<void>();
+        const secondStarted = yield* Deferred.make<void>();
+        const fake = makeQuotaSpawner(({ attempt }) => ({
+          beforeInitialize: (attempt === 1
+            ? Deferred.succeed(firstStarted, undefined)
+            : Deferred.succeed(secondStarted, undefined)
+          ).pipe(Effect.andThen(Effect.sleep("50 seconds"))),
+        }));
+        const google = makeGoogleIdentityHttpClient({});
+        const firstId = ProviderInstanceId.make("agy-serial-1");
+        const secondId = ProviderInstanceId.make("agy-serial-2");
+        yield* writeTokenFile(firstId, "refresh-serial-1");
+        yield* writeTokenFile(secondId, "refresh-serial-2");
+
+        const createDriver = (instanceId: ProviderInstanceId, displayName: string) =>
+          AntigravityDriver.create({
+            instanceId,
+            displayName,
+            enabled: true,
+            config: AntigravityDriver.defaultConfig(),
+            environment: [],
+          }).pipe(
+            Effect.provideService(AntigravityInstallation.AntigravityInstallation, installation),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+            Effect.provideService(HttpClient.HttpClient, google.client),
+          );
+
+        const firstDriver = yield* createDriver(firstId, "Account 1");
+        const secondDriver = yield* createDriver(secondId, "Account 2");
+
+        const firstFiber = yield* firstDriver.snapshot.refreshUsage!.pipe(Effect.forkChild);
+        yield* Deferred.await(firstStarted);
+        const secondFiber = yield* secondDriver.snapshot.refreshUsage!.pipe(Effect.forkChild);
+
+        yield* TestClock.adjust("10 seconds");
+        expect(fake.getAttempts()).toBe(1);
+        expect(fake.getMaxConcurrent()).toBe(1);
+
+        yield* TestClock.adjust("40 seconds");
+        yield* Deferred.await(secondStarted);
+        expect(fake.getAttempts()).toBe(2);
+        expect(fake.getMaxConcurrent()).toBe(1);
+
+        yield* TestClock.adjust("50 seconds");
+        yield* Fiber.join(firstFiber);
+        yield* Fiber.join(secondFiber);
+
+        const firstSnapshot = yield* firstDriver.snapshot.getSnapshot;
+        const secondSnapshot = yield* secondDriver.snapshot.getSnapshot;
+        expect(firstSnapshot.usageLimits?.unavailable).toBeUndefined();
+        expect(firstSnapshot.usageLimits?.windows.length).toBeGreaterThan(0);
+        expect(secondSnapshot.usageLimits?.unavailable).toBeUndefined();
+        expect(secondSnapshot.usageLimits?.windows.length).toBeGreaterThan(0);
+        expect(fake.getMaxConcurrent()).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "deduplicates Antigravity accounts across environments via Google userinfo, caches identity, and recovers from transient failures",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-identity-" });
+        const installation = yield* makeManagedAntigravityInstallation(baseDir);
+        const fake = makeQuotaSpawner(() => ({}));
+        let failUserInfo = false;
+        const google = makeGoogleIdentityHttpClient({
+          userIdByRefreshToken: {
+            "refresh-machine-a": "google-sub-42",
+            "refresh-machine-b": "google-sub-42",
+            "refresh-transient": "google-sub-99",
+          },
+          shouldFailUserInfo: () => failUserInfo,
+        });
+
+        const createDriver = (instanceId: ProviderInstanceId, displayName: string) =>
+          AntigravityDriver.create({
+            instanceId,
+            displayName,
+            enabled: true,
+            config: AntigravityDriver.defaultConfig(),
+            environment: [],
+          }).pipe(
+            Effect.provideService(AntigravityInstallation.AntigravityInstallation, installation),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+            Effect.provideService(HttpClient.HttpClient, google.client),
+          );
+
+        const idA = ProviderInstanceId.make("agy-env-a");
+        const idB = ProviderInstanceId.make("agy-env-b");
+        yield* writeTokenFile(idA, "refresh-machine-a");
+        yield* writeTokenFile(idB, "refresh-machine-b");
+
+        const driverA = yield* createDriver(idA, "Personal (Mac)");
+        const driverB = yield* createDriver(idB, "Personal (Windows)");
+        yield* driverA.snapshot.refreshUsage!;
+        yield* driverB.snapshot.refreshUsage!;
+
+        const snapA = yield* driverA.snapshot.getSnapshot;
+        const snapB = yield* driverB.snapshot.getSnapshot;
+        expect(snapA.usageLimits?.credentialFingerprint).toBeDefined();
+        expect(snapA.usageLimits?.credentialFingerprint).toBe(
+          snapB.usageLimits?.credentialFingerprint,
+        );
+
+        const merged = collectLimitAccounts(
+          new Map([
+            [
+              EnvironmentId.make("env-a"),
+              {
+                entry: { target: { label: "Mac" } },
+                serverConfig: {
+                  providers: [{ ...snapA, installed: true, status: "ready" as const }],
+                },
+              },
+            ],
+            [
+              EnvironmentId.make("env-b"),
+              {
+                entry: { target: { label: "Windows" } },
+                serverConfig: {
+                  providers: [{ ...snapB, installed: true, status: "ready" as const }],
+                },
+              },
+            ],
+          ]),
+        );
+        expect(merged).toHaveLength(1);
+
+        // Identity lookup is cached across quota TTL expiries until sign-out clears it.
+        const callsBeforeSecondTtl = google.getUserInfoCalls();
+        yield* TestClock.adjust("6 minutes");
+        yield* driverA.snapshot.refreshUsage!;
+        expect(google.getUserInfoCalls()).toBe(callsBeforeSecondTtl);
+
+        yield* driverA.auth!.logout!(Effect.void);
+        yield* writeTokenFile(idA, "refresh-machine-a");
+        yield* driverA.snapshot.refreshUsage!;
+        expect(google.getUserInfoCalls()).toBe(callsBeforeSecondTtl + 1);
+
+        // Transient userinfo failure falls back without failing the quota probe and retries next read.
+        const idTransient = ProviderInstanceId.make("agy-transient");
+        yield* writeTokenFile(idTransient, "refresh-transient");
+        const driverTransient = yield* createDriver(idTransient, "Transient");
+        failUserInfo = true;
+        yield* driverTransient.snapshot.refreshUsage!;
+        const fallbackSnap = yield* driverTransient.snapshot.getSnapshot;
+        expect(fallbackSnap.usageLimits?.unavailable).toBeUndefined();
+        expect(fallbackSnap.usageLimits?.windows.length).toBeGreaterThan(0);
+        const fallbackFingerprint = fallbackSnap.usageLimits?.credentialFingerprint;
+        expect(fallbackFingerprint).toBeDefined();
+
+        failUserInfo = false;
+        yield* TestClock.adjust("6 minutes");
+        yield* driverTransient.snapshot.refreshUsage!;
+        const resolvedSnap = yield* driverTransient.snapshot.getSnapshot;
+        expect(resolvedSnap.usageLimits?.credentialFingerprint).toBeDefined();
+        expect(resolvedSnap.usageLimits?.credentialFingerprint).not.toBe(fallbackFingerprint);
       }).pipe(Effect.scoped),
   );
 });

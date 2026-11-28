@@ -1,3 +1,8 @@
+## 2026-11-28 — Antigravity Usage > Limits loads reliably and deduplicates accounts
+
+- Antigravity quota checks now run one at a time with a 90-second launch budget and never cache failed probes for 5 minutes, so refreshing multiple Antigravity accounts no longer times out into an empty **Usage > Limits** panel.
+- Antigravity 1.5.2's `Five Hour Limit Remaining` bucket is now recognized as a 5-hour session window, and **Usage > Limits** deduplicates the same Google account across linked environments again.
+
 ## 2026-11-28 — Auto mode and account failover now include Antigravity
 
 - When every Claude and Codex account is out of usage, new Auto mode chats can fail over to Antigravity (choosing Gemini 4 Neon with headroom before falling back to Antigravity's Claude Opus pool), and Antigravity now participates in multi-account failover, Auto primary provider selection, Settings Auto model defaults, and signed-out login recovery.

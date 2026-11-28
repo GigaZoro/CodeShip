@@ -63,6 +63,65 @@ describe("Antigravity subscription limits", () => {
     }
   });
 
+  it("parses Antigravity 1.5.2 Five Hour Limit Remaining as a 5h session window", () => {
+    const report152 = [
+      "### Session Usage",
+      "- **Session total:** 0 tokens",
+      "",
+      "### Quota Limits",
+      "- **Gemini Models**",
+      "  - **Weekly Limit Remaining:** 92% remaining (resets Oct 07, 2026, 08:22 UTC)",
+      "  - **Five Hour Limit Remaining:** 80% remaining (resets Oct 01, 2026, 11:22 UTC)",
+      "- **Claude & GPT Models**",
+      "  - **Weekly Limit Remaining:** 100% remaining (resets Oct 08, 2026, 08:22 UTC)",
+      "  - **Five Hour Limit Remaining:** 40% remaining (resets Oct 01, 2026, 12:22 UTC)",
+    ].join("\n");
+    const reading = parseAntigravityUsageReport(report152, checkedAt);
+    expect(
+      reading.windows.map(({ id, kind, scope, usedPercent, windowDurationMins, resetsAt }) => ({
+        id,
+        kind,
+        scope,
+        usedPercent,
+        windowDurationMins,
+        resetsAt,
+      })),
+    ).toEqual([
+      {
+        id: "3p-5h",
+        kind: "session",
+        scope: "third-party",
+        usedPercent: 60,
+        windowDurationMins: 300,
+        resetsAt: "2026-10-01T12:22:00.000Z",
+      },
+      {
+        id: "gemini-5h",
+        kind: "session",
+        scope: "gemini-default",
+        usedPercent: 20,
+        windowDurationMins: 300,
+        resetsAt: "2026-10-01T11:22:00.000Z",
+      },
+      {
+        id: "3p-weekly",
+        kind: "weekly",
+        scope: "third-party",
+        usedPercent: 0,
+        windowDurationMins: 10_080,
+        resetsAt: undefined,
+      },
+      {
+        id: "gemini-weekly",
+        kind: "weekly",
+        scope: "gemini-default",
+        usedPercent: 8,
+        windowDurationMins: 10_080,
+        resetsAt: "2026-10-07T08:22:00.000Z",
+      },
+    ]);
+  });
+
   it.effect("only sends the built-in command after the qualified runtime advertises it", () =>
     Effect.gen(function* () {
       const makeRuntime = (

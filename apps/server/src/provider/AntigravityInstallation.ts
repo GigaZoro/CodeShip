@@ -109,6 +109,9 @@ interface AntigravityInstallationService {
   readonly remove: (
     protectedBinaryPaths?: ReadonlyArray<string>,
   ) => Effect.Effect<void, AntigravityInstallationError>;
+  readonly withQuotaProbePermit: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
 }
 
 export class AntigravityInstallation extends Context.Service<
@@ -189,6 +192,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
   const versionsDirectory = path.join(managedDirectory, "versions");
   const activePath = path.join(managedDirectory, "active.json");
   const gate = yield* Semaphore.make(1);
+  const quotaProbeGate = yield* Semaphore.make(1);
   const leases = new Map<string, number>();
   let running: { readonly operationId: string; readonly fiber: Fiber.Fiber<void> } | undefined;
   const state = yield* SubscriptionRef.make<ProviderInstallState>({
@@ -983,5 +987,6 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
     state: SubscriptionRef.get(state),
     changes: SubscriptionRef.changes(state),
     remove,
+    withQuotaProbePermit: quotaProbeGate.withPermit,
   });
 });
