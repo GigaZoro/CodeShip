@@ -206,6 +206,7 @@ export function startThreadNotifications(
             </>
           ),
         data: {
+          source: "thread-notification",
           hideCopyButton: true,
           leadingIcon:
             kind === "completion" ? (

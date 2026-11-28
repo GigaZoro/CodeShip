@@ -35,6 +35,7 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { ExpandableText } from "./ExpandableText";
+import { RecentNoticesDiagnostics } from "./RecentNoticesDiagnostics";
 import { ResourceTelemetryDiagnostics } from "./ResourceTelemetryDiagnostics";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -940,6 +941,7 @@ function DiagnosticsSettingsBody() {
       scopeLead={t("Showing diagnostics for")}
     >
       <ResourceTelemetryDiagnostics environmentId={environmentId} />
+      <RecentNoticesDiagnostics />
 
       <SettingsSection
         title={t("Live Processes")}

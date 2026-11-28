@@ -18,6 +18,7 @@ export function startKeybindingsUpdateToasts(): () => void {
         type: "success",
         title: t("Keybindings updated"),
         description: t("Keybindings configuration reloaded successfully."),
+        data: { source: "keybindings-update" },
       });
       return;
     }
@@ -35,6 +36,7 @@ export function startKeybindingsUpdateToasts(): () => void {
             availableEditors={serverConfig?.availableEditors ?? []}
           />
         ),
+        data: { source: "keybindings-update" },
       }),
     );
   });

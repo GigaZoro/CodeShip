@@ -23,6 +23,7 @@ import { startDesktopUpdateLaunchNotice } from "./components/sidebar/updateEvery
 import { startSlowRpcRequestToasts } from "./components/SlowRpcRequestToastCoordinator";
 import { startThreadNotifications } from "./components/ThreadNotificationCoordinator";
 import { startGuideRunNotifications } from "./components/pullRequest/guide/PullRequestGuideRunCoordinator";
+import { startNoticeTracing } from "./observability/noticeTracing";
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "./branding";
 import { resolveServerBackedAppDisplayName } from "./branding.logic";
 import { setDocumentAppName } from "./documentTitle";
@@ -224,6 +225,7 @@ export function startAppServices(): AppRouter {
   startThreadVisitedMigration(appAtomRegistry);
   startSshPasswordPromptQueue();
 
+  startNoticeTracing();
   startKeybindingsUpdateToasts();
   startSlowRpcRequestToasts();
   startHostFreezeToasts();

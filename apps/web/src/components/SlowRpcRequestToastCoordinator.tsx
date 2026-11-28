@@ -36,7 +36,7 @@ function SlowRequestDetails({ requests }: { requests: ReadonlyArray<SlowRpcAckRe
   );
 }
 
-/** One warning toast that tracks the set of slow requests while any are outstanding. */
+/** One activity log entry that tracks the set of slow requests while any are outstanding. */
 export function startSlowRpcRequestToasts(): () => void {
   let toastId: ReturnType<typeof toastManager.add> | null = null;
 
@@ -51,6 +51,8 @@ export function startSlowRpcRequestToasts(): () => void {
 
     const nextToast = {
       data: {
+        source: "slow-rpc" as const,
+        quiet: true,
         expandableContent: <SlowRequestDetails requests={slowRequests} />,
         expandableDescriptionTrigger: true,
         expandableLabels: { collapse: t("Hide requests"), expand: t("Show requests") },

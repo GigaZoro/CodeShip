@@ -55,7 +55,10 @@ repair that touches it.
 3. The lint rule doesn't see every string. Read upstream's diff of user-facing files
    (`git diff ORIG_HEAD..HEAD -- apps/*/src packages/client-runtime/src packages/shared/src`) for
    text in helpers, error builders, and option tables, and route it through the translator too.
-4. For a large sync, split this step by directory across subagents with explicit file lists and
+4. A `t3code/require-toast-source` finding is an upstream toast without a `data.source` tag.
+   Tag the ones a fork coordinator owns; for the rest run `node scripts/toast-source-baseline.ts`,
+   which rewrites the per-file counts of untagged toasts the rule allows.
+5. For a large sync, split this step by directory across subagents with explicit file lists and
    this skill's path, then review their diffs.
 
 ## 4. Translate and verify

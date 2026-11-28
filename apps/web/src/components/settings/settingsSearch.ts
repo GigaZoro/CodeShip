@@ -920,6 +920,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["logs traces processes resource history failures spans cpu memory"],
   },
   {
+    id: "recent-notices",
+    title: msg("Recent notices"),
+    to: "/settings/diagnostics",
+    targetId: "recent-notices",
+    searchTerms: ["toasts notifications activity log emitters noisy"],
+  },
+  {
     id: "open-source-licenses",
     title: msg("Open source licenses"),
     to: "/settings/maintenance",

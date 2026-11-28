@@ -2803,6 +2803,7 @@ const catalog: MessageCatalog = {
   "Auto-accept edits": "Автоприйняття змін",
   "Auto-approve edits, ask before other actions.":
     "Автоматично схвалювати зміни, питати перед іншими діями.",
+  "Auto-dismissed": "Зникли самі",
   "Auto-merge": "Автозлиття",
   "Auto-merge ({method})": "Автозлиття ({method})",
   "Auto-merge disabled": "Автозлиття вимкнено",
@@ -2902,6 +2903,8 @@ const catalog: MessageCatalog = {
   "Background activity": "Фонова активність",
   "Background Activity": "Фонова активність",
   "Background activity profile": "Профіль фонової активності",
+  "Background notices": "Фонові сповіщення",
+  "Background notices, {count} new": "Фонові сповіщення, нових: {count}",
   "Background policy details": "Докладно про фонову політику",
   "Background setup": "Фонове налаштування",
   "Background setup is still running: {name}. Show setup progress.":
@@ -2911,6 +2914,8 @@ const catalog: MessageCatalog = {
   "background task": "фонове завдання",
   "Background task": "Фонове завдання",
   "Background task failed": "Фонове завдання не вдалося",
+  "Background updates such as slow requests and clone progress show here.":
+    "Тут з’являються фонові оновлення, як-от повільні запити та перебіг клонування.",
   "Background work": "Фонова робота",
   "Backup: {path}": "Резервна копія: {path}",
   "Bad signature": "Хибний підпис",
@@ -3617,6 +3622,7 @@ const catalog: MessageCatalog = {
   "Click to reveal email": "Натисніть, щоб показати email",
   "Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit.":
     "Натисніть, щоб збільшити або повернути за розміром. Прокручуйте для масштабування, перетягуйте для зсуву. Enter перемикає масштаб, плюс і мінус змінюють його, 0 повертає за розміром.",
+  Clicked: "Натиснуто",
   "Clicking a pull request link opens it in T3.CodeShip. Turn off to open pull request links like any other link, on your git host.":
     "Клік на посилання пул-реквесту відкриває його в T3.CodeShip. Вимкніть, щоб відкривати такі посилання як звичайні, на вашому git-хостингу.",
   Clicks: "Кліки",
@@ -3740,6 +3746,7 @@ const catalog: MessageCatalog = {
     many: "Закрито {count} пул-реквестів",
     other: "Закрито {count} пул-реквесту",
   },
+  "Closed by you": "Закрили ви",
   "Closing the window hides it in the notification area, so agents and scheduled tasks keep running. Quit from the tray icon or the File menu.":
     "Закрите вікно ховається в область сповіщень, тож агенти й заплановані завдання продовжують працювати. Вийти можна через значок у треї або меню «Файл».",
   "Closing...": "Закриття...",
@@ -6705,6 +6712,7 @@ const catalog: MessageCatalog = {
   "In a separate worktree": "В окремому worktree",
   "in a terminal {times}": "у терміналі {times}",
   "In a text field": "У текстовому полі",
+  "In background": "У фоні",
   "In each project, matches recent change descriptions and change request titles.":
     "У кожному проєкті враховує нещодавні описи змін і назви запитів на зміни.",
   "In messages": "У повідомленнях",
@@ -7096,6 +7104,8 @@ const catalog: MessageCatalog = {
   "Large diffs are not rendered by default.": "Великі зміни за замовчуванням не відображаються.",
   "Large paste attached as {name}": "Великий фрагмент додано як {name}",
   "Largest shown": "Спочатку більші",
+  Last: "Останнє",
+  "Last {count} in this window": "Останні {count} у цьому вікні",
   "Last activity": "Остання активність",
   "Last connected at {time}": "Востаннє підключено {time}",
   "last project": "останній проєкт",
@@ -8188,6 +8198,7 @@ const catalog: MessageCatalog = {
   "No newer version is available yet.": "Новішої версії поки немає.",
   "No non-test files loaded yet": "Нетестові файли ще не завантажено",
   "No note": "Без нотатки",
+  "No notices since this window opened.": "Відколи це вікно відкрито, сповіщень не було.",
   "No open {label}": "Немає відкритого {label}",
   "No open threads": "Немає відкритих чатів",
   "No other environments are published to your account yet. Publish one from another device and it will show up here.":
@@ -8534,6 +8545,7 @@ const catalog: MessageCatalog = {
   "One tab open": "Відкрита одна вкладка",
   "One UI": "One UI",
   "One-year token": "Токен на один рік",
+  Ongoing: "Триває",
   "Ongoing activity enabled": "Поточну активність ввімкнено",
   "Ongoing activity unavailable": "Поточна активність недоступна",
   "Ongoing Agent Activity": "Поточна активність агента",
@@ -9684,6 +9696,7 @@ const catalog: MessageCatalog = {
     other: "Отримано {count} оновлення",
   },
   "receives changes from": "отримує зміни з",
+  "Recent notices": "Останні сповіщення",
   "Recent requests to this task's webhook URL.": "Останні запити до URL вебгука цього завдання.",
   "Recent threads": "Останні чати",
   "Recent Threads": "Нещодавні чати",
@@ -11353,6 +11366,7 @@ const catalog: MessageCatalog = {
   "Showing the newest {count} pages.": "Показано {count} найновіших сторінок.",
   "Showing the source response. The saved quote is unchanged.":
     "Показано вихідну відповідь. Збережена цитата не змінилася.",
+  Shown: "Показано",
   "Shown in picker": "Показується у виборі",
   "Shown in the provider list and model picker.":
     "Показується в списку провайдерів і виборі моделі.",
@@ -13667,6 +13681,7 @@ const catalog: MessageCatalog = {
     "Щоб дізнатися більше про те, як використовуються ваші дані та як відмовитися, перегляньте нашу {link}.",
   "To read more about how your data is used, see our {link}.":
     "Щоб дізнатися більше про те, як використовуються ваші дані, перегляньте нашу {link}.",
+  Toasts: "Сповіщення",
   today: "сьогодні",
   Today: "Сьогодні",
   Toggle: "Перемкнути",

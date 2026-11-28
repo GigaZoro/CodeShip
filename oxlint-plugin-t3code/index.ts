@@ -45,6 +45,7 @@ import requireCenteredScrollGutter from "./rules/require-centered-scroll-gutter.
 import requireDisposableRender from "./rules/require-disposable-render.ts";
 import requireJsonWrappedSubquery from "./rules/require-json-wrapped-subquery.ts";
 import requireSuppressionReason from "./rules/require-suppression-reason.ts";
+import requireToastSource from "./rules/require-toast-source.ts";
 
 export default definePlugin({
   meta: {
@@ -96,5 +97,6 @@ export default definePlugin({
     "require-disposable-render": requireDisposableRender,
     "require-json-wrapped-subquery": requireJsonWrappedSubquery,
     "require-suppression-reason": requireSuppressionReason,
+    "require-toast-source": requireToastSource,
   },
 });

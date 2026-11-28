@@ -5,7 +5,7 @@ import { environmentSummaries } from "../state/presentation";
 import { environmentServerConfigsAtom } from "../state/server";
 import { toastManager } from "./ui/toast";
 
-/** Tells the user why a host dropped, once per stall, when it reports one on reconnect. */
+/** Logs why a host dropped, once per stall, when it reports one on reconnect. */
 export function startHostFreezeToasts(): () => void {
   const shown = new Set<string>();
   return appAtomRegistry.subscribe(
@@ -24,7 +24,14 @@ export function startHostFreezeToasts(): () => void {
           config.environment.label;
         const notice = hostFreezeNotice(label, stall);
         if (notice !== null) {
-          toastManager.add({ type: "warning", ...notice });
+          // The host is answering again, so the entry is already resolved.
+          toastManager.close(
+            toastManager.add({
+              type: "warning",
+              ...notice,
+              data: { source: "host-freeze", quiet: true },
+            }),
+          );
         }
       }
     },

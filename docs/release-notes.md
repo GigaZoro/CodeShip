@@ -1,3 +1,9 @@
+## 2026-11-28 — Fewer pop-ups: repeats count up and background notices wait in the sidebar
+
+- Slow requests, machines that answered again, legacy thread migration and clone progress now go to **Background notices** at the top of the sidebar on web and desktop instead of popping up.
+- A pop-up that repeats from the same place within a minute shows a count instead of stacking.
+- **Settings > Diagnostics > Recent notices** shows which parts of the app raised the most notices, and how many were clicked, closed or timed out.
+
 ## 2026-11-28 — `check:changed` runs server tests in parallel chains with RAM-backed temp dirs
 
 - Maintainers: `vp run check:changed` now splits `apps/server` test groups across up to four independent serial chains when the machine's concurrency budget allows, without invalidating cached test passes when the chain count changes.

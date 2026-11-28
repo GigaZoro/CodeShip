@@ -62,6 +62,18 @@ each opening on click: first the ones that need you, longest wait first, then ru
 latest started first, and the threads you last sent to. Recent threads follow the
 sidebar's project and machine scope. The list goes away once you start typing.
 
+## Background notices
+
+On web and desktop, notices that need nothing from you, such as a slow request, a machine that
+answered again or a clone in progress, go to **Background notices** at the top of the sidebar
+instead of popping up. A dot on its button marks notices you have not opened yet. A clone that
+stalls, finishes or fails still shows as a pop-up, and so does anything you can act on or undo.
+
+The same message from the same place within a minute updates the open pop-up with a count
+instead of stacking another one. **Settings > Diagnostics > Recent notices** lists which parts of
+the app raised the last 200 notices in this window, how many you clicked or closed yourself, and
+how many timed out.
+
 ## See what needs you
 
 Threads waiting on you sit together under **Needs you** on web and desktop, in a box at the

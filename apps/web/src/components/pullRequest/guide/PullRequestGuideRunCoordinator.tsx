@@ -122,6 +122,7 @@ function watchGuideRun(
         title,
         description: failure === null ? body : `${body}: ${failure}`,
         data: {
+          source: "guide-run",
           hideCopyButton: true,
           leadingIcon:
             failure === null ? (

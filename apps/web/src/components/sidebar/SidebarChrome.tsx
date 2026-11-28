@@ -24,6 +24,7 @@ import { CodeShipBrand } from "../CodeShipBrand";
 import { Button } from "../ui/button";
 import { SidebarFooter, SidebarMenu, SidebarTrigger } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { NoticeActivityLog } from "../NoticeActivityLog";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdateRunCapsule } from "./SidebarUpdatePill";
@@ -78,6 +79,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
               <HistoryNavigationButton direction="forward" onBackdrop={backdropVariant !== null} />
             </div>
           ) : null}
+          <NoticeActivityLog onBackdrop={backdropVariant !== null} />
         </div>
         {pillLabel ? (
           <div className="ml-1 flex h-7 items-center">
@@ -112,6 +114,7 @@ export function SidebarBrandWidthProbe({
     >
       <div className="ml-[var(--workspace-titlebar-content-left)] flex gap-1">
         <SidebarBrandMark onBackdrop={false} />
+        <div className="w-[var(--workspace-titlebar-control-size)]" />
         {isElectron ? <div className="w-[calc(2*var(--workspace-titlebar-control-size))]" /> : null}
       </div>
     </div>

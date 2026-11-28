@@ -57,6 +57,7 @@ function showPermissionNotice(
       },
     },
     data: {
+      source: "permission-update",
       actionLayout: "stacked-end",
       secondaryActionProps: { children: t("Dismiss"), onClick: dismiss },
       secondaryActionVariant: "ghost",
